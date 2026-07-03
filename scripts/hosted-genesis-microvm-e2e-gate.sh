@@ -16,11 +16,28 @@
 #      ControllerRuntimeDispatcher wired via the H1.5 NewServer seam against an
 #      in-memory MemorySessionRegistry + stub provider. Proves the happy path,
 #      kill-VM recovery, and the MaximumDurationSeconds timeout-budget wiring.
-#      This is the proof that runs in CI; it does NOT call AWS.
-#   2. LAB DEPLOY GATE (runs only when LAB_E2E_HOST is set): drives the deployed
-#      lab control-plane endpoints with a real instance key + registration id.
-#      The principal runs this against the lab deploy after `theory app up
-#      --stage lab`. It exercises the live MicroVM path end-to-end.
+#      This is the proof that runs in CI; it does NOT call AWS. It needs NO
+#      configuration — in-memory stubs only.
+#   2. LAB DEPLOY GATE (runs only with --stage lab): drives the deployed lab
+#      control-plane endpoints. ALL configuration is SYSTEM-SOURCED — no
+#      operator-set env vars for system config:
+#      - Connection details (control-plane API host) -> read from the CDK stack
+#        outputs file (produced by `cdk deploy --outputs-file <path>`, or
+#        `aws cloudformation describe-stacks --query Outputs`). The system owns
+#        this; the harness only takes the path to it. If the outputs file is
+#        absent, Phase 2 FAILS CLOSED with instructions to deploy first — it
+#        does NOT fall back to env vars.
+#      - Test fixtures (registration id, agent id, model, messages) -> read from
+#        the committed system-owned fixture file scripts/lab-e2e-fixtures.json
+#        (non-secret lab fixture identifiers only).
+#      - The raw instance API key (a credential the system never persists in
+#        plaintext — see docs/hosted-genesis-microvm-lab-canary.md) is read from
+#        a runtime secret file scripts/.lab-e2e-instance-key (gitignored), which
+#        the principal provisions out-of-band when provisioning the lab instance.
+#        It is a CREDENTIAL, not system config, and never lives in env vars,
+#        git, fixtures, or CloudFormation outputs.
+#      The principal runs this against the lab deploy after
+#      `theory app up --stage lab`. It exercises the live MicroVM path end-to-end.
 #
 # Timeout-budget wiring (roadmap decision 7):
 #   - accept 202 must return in <2s  (ACCEPT_BUDGET_S=2)
@@ -32,18 +49,20 @@
 #     inside the MicroVM, not the controller Lambda.
 #
 # Usage:
-#   # CI / local stub proof (no AWS):
+#   # CI / local stub proof (no AWS, no config):
 #   bash scripts/hosted-genesis-microvm-e2e-gate.sh
 #
-#   # Lab deploy gate (principal only; requires lab deploy + an instance key):
-#   LAB_E2E_HOST=https://lesser.host \
-#   LAB_E2E_INSTANCE_KEY=<raw instance api key> \
-#   LAB_E2E_REGISTRATION_ID=<registration id> \
-#   LAB_E2E_AGENT_ID=<agent id hex> \
-#   bash scripts/hosted-genesis-microvm-e2e-gate.sh
+#   # Lab deploy gate (principal only; requires a lab deploy + the CDK outputs
+#   # file + a provisioned lab instance key):
+#   bash scripts/hosted-genesis-microvm-e2e-gate.sh --stage lab \
+#     --outputs-file cdk/lcdk-outputs.json
+#   # (the raw instance key must be present at scripts/.lab-e2e-instance-key,
+#   # provisioned out-of-band when the lab instance was created)
 #
-# Exit codes: 0 = both phases passed (or only the stub phase, when
-# LAB_E2E_HOST is unset). Non-zero = a phase failed.
+# Exit codes: 0 = both phases passed (or only the stub phase, when --stage lab
+# is not requested). Non-zero = a phase failed. Phase 2 fails closed (non-zero)
+# if the CDK outputs file or the runtime secret key file is absent — it never
+# falls back to operator-set env vars.
 
 set -euo pipefail
 
@@ -51,7 +70,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
 # ---------------------------------------------------------------------------
-# Phase 1 — stub/local-proved gate (CI-safe, no AWS).
+# Phase 1 — stub/local-proved gate (CI-safe, no AWS, no config).
 # ---------------------------------------------------------------------------
 echo "==> [1/2] stub/local-proved E2E gate (no AWS)"
 go test ./internal/controlplane \
@@ -67,34 +86,170 @@ go test ./cmd/hosted-genesis-microvm-controller \
 echo "==> [1/2] stub/local-proved E2E gate: PASS"
 
 # ---------------------------------------------------------------------------
-# Phase 2 — lab deploy gate (principal only).
+# Phase 2 — lab deploy gate (principal only, system-sourced config).
 # ---------------------------------------------------------------------------
-if [[ -z "${LAB_E2E_HOST:-}" ]]; then
-  echo "==> [2/2] lab deploy gate: SKIPPED (set LAB_E2E_HOST to run against lab)"
+stage=""
+outputs_file=""
+fixtures_file="scripts/lab-e2e-fixtures.json"
+key_file="scripts/.lab-e2e-instance-key"
+
+usage() {
+  cat >&2 <<EOF
+usage: bash scripts/hosted-genesis-microvm-e2e-gate.sh [--stage lab] [--outputs-file <path>]
+
+  (no args)         Phase 1 stub/local-proved gate only (CI-safe, no AWS).
+  --stage lab       Also run Phase 2 (lab deploy gate). Requires:
+                      --outputs-file <path>  CDK stack outputs JSON (produced by
+                                             'cdk deploy --outputs-file <path>'
+                                             or 'aws cloudformation
+                                             describe-stacks --query Outputs').
+                    And the runtime instance-key secret at ${key_file}
+                    (provisioned out-of-band; see scripts/lab-e2e-fixtures.json).
+                    Fixtures are read from ${fixtures_file} (committed).
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --stage)
+      stage="${2:-}"
+      shift 2
+      ;;
+    --outputs-file)
+      outputs_file="${2:-}"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "unknown argument: $1" >&2
+      usage
+      exit 2
+      ;;
+  esac
+done
+
+if [[ "$stage" != "lab" ]]; then
+  echo "==> [2/2] lab deploy gate: SKIPPED (pass --stage lab to run against lab)"
   echo "==> H1.5 E2E gate: PASS (stub/local-proved)"
   exit 0
 fi
 
-: "${LAB_E2E_INSTANCE_KEY:?LAB_E2E_INSTANCE_KEY (raw instance api key) is required for the lab gate}"
-: "${LAB_E2E_REGISTRATION_ID:?LAB_E2E_REGISTRATION_ID is required for the lab gate}"
-: "${LAB_E2E_AGENT_ID:?LAB_E2E_AGENT_ID (agent id hex) is required for the lab gate}"
+# --- System config: CDK stack outputs file (connection details). ---
+# The system produces this via `cdk deploy --outputs-file <path>`; the harness
+# only consumes it. Fail closed if absent — NEVER fall back to env vars.
+if [[ -z "$outputs_file" ]]; then
+  echo "FAIL: --stage lab requires --outputs-file <path> (the CDK stack outputs JSON)." >&2
+  echo "      Produce it with: cdk deploy --stage lab --outputs-file cdk/lab-outputs.json" >&2
+  echo "      (or: aws cloudformation describe-stacks --stack-name <lesser-host-lab> --query 'Stacks[0].Outputs' > cdk/lab-outputs.json)" >&2
+  exit 1
+fi
+if [[ ! -f "$outputs_file" ]]; then
+  echo "FAIL: CDK outputs file not found at ${outputs_file}." >&2
+  echo "      System config is absent — run 'cdk deploy --stage lab --outputs-file ${outputs_file}' first." >&2
+  echo "      The harness does NOT fall back to operator-set env vars." >&2
+  exit 1
+fi
+
+# cdk deploy --outputs-file writes {"<StackName>": {<OutputKey>: <Value>, ...}}.
+# aws cloudformation describe-stacks --query Outputs writes [{"OutputKey":..,"OutputValue":..}].
+# Support both shapes by resolving the ControlPlaneUrl value defensively.
+resolve_cfn_output() {
+  # $1 = output key. Prints the value or empty.
+  local key="$1"
+  python3 - "$outputs_file" "$key" <<'PY'
+import json, sys
+path, key = sys.argv[1], sys.argv[2]
+with open(path) as fh:
+    data = json.load(fh)
+# Shape A: cdk deploy --outputs-file -> {StackName: {Key: Value}}
+if isinstance(data, dict):
+    for _stack, outs in data.items():
+        if isinstance(outs, dict) and key in outs:
+            print(outs[key])
+            sys.exit(0)
+# Shape B: aws cloudformation describe-stacks --query Outputs -> [{OutputKey, OutputValue}]
+if isinstance(data, list):
+    for item in data:
+        if isinstance(item, dict) and item.get("OutputKey") == key:
+            print(item.get("OutputValue", ""))
+            sys.exit(0)
+PY
+}
+
+lab_host="$(resolve_cfn_output 'ControlPlaneUrl')"
+if [[ -z "$lab_host" ]]; then
+  echo "FAIL: 'ControlPlaneUrl' not found in CDK outputs file ${outputs_file}." >&2
+  echo "      Ensure the lab stack exports ControlPlaneUrl (cdk/lib/lesser-host-stack.ts) and re-run" >&2
+  echo "      'cdk deploy --stage lab --outputs-file ${outputs_file}'." >&2
+  exit 1
+fi
+
+# --- System fixtures: committed, non-secret identifiers (scripts/lab-e2e-fixtures.json). ---
+if [[ ! -f "$fixtures_file" ]]; then
+  echo "FAIL: system fixture file not found at ${fixtures_file}." >&2
+  exit 1
+fi
+fixture_json_field() {
+  # $1 = field name. Prints the value or empty.
+  python3 - "$fixtures_file" "$1" <<'PY'
+import json, sys
+path, field = sys.argv[1], sys.argv[2]
+with open(path) as fh:
+    data = json.load(fh)
+val = data.get(field)
+print(val if isinstance(val, str) else "")
+PY
+}
+registration_id="$(fixture_json_field 'registrationId')"
+agent_id_hex="$(fixture_json_field 'agentIdHex')"
+fixt_model="$(fixture_json_field 'model')"
+fixt_message="$(fixture_json_field 'message')"
+fixt_kill_message="$(fixture_json_field 'killArcMessage')"
+fixt_retry_message="$(fixture_json_field 'retryMessage')"
+if [[ -z "$registration_id" || -z "$agent_id_hex" ]]; then
+  echo "FAIL: system fixture file ${fixtures_file} missing registrationId or agentIdHex." >&2
+  exit 1
+fi
+e2e_model="${fixt_model:-anthropic:claude-sonnet-4-6}"
+e2e_message="${fixt_message:-Please draft my soul declaration. Take your time; this is a long reflection.}"
+e2e_kill_message="${fixt_kill_message:-A second long reflection for the kill-VM recovery arc.}"
+e2e_retry_message="${fixt_retry_message:-Retry after kill-VM recovery.}"
+
+# --- Runtime credential: raw instance API key (secret, never committed/env-var). ---
+# The system stores only sha256(raw_key); the raw key is shown once at creation
+# (admin endpoint, wallet-authed) and provisioned out-of-band into this file by
+# the principal. See docs/hosted-genesis-microvm-lab-canary.md.
+if [[ ! -s "$key_file" ]]; then
+  echo "FAIL: runtime instance-key secret not found (or empty) at ${key_file}." >&2
+  echo "      Provision the raw lab instance API key there out-of-band (chmod 600 recommended)." >&2
+  echo "      It is a CREDENTIAL, not system config — never commit it, never put it in an env var." >&2
+  exit 1
+fi
+instance_key="$(cat "$key_file")"
+if [[ -z "$instance_key" ]]; then
+  echo "FAIL: runtime instance-key file ${key_file} is empty." >&2
+  exit 1
+fi
 
 ACCEPT_BUDGET_S="${ACCEPT_BUDGET_S:-2}"
 POLL_INTERVAL_S="${POLL_INTERVAL_S:-3}"
 POLL_DEADLINE_S="${POLL_DEADLINE_S:-300}"          # >30s LLM turn + extraction headroom
 RECOVER_POLL_DEADLINE_S="${RECOVER_POLL_DEADLINE_S:-60}"
 
-base="$LAB_E2E_HOST/api/v1/soul/instance/agents/register/${LAB_E2E_REGISTRATION_ID}/mint-conversation"
-auth="Authorization: Bearer ${LAB_E2E_INSTANCE_KEY}"
+base="${lab_host}/api/v1/soul/instance/agents/register/${registration_id}/mint-conversation"
+auth="Authorization: Bearer ${instance_key}"
 json_ct="Content-Type: application/json"
 now_ms() { date +%s%3N; }
 
-echo "==> [2/2] lab deploy gate against ${LAB_E2E_HOST}"
+echo "==> [2/2] lab deploy gate against ${lab_host} (config: CDK outputs ${outputs_file}; fixtures: ${fixtures_file})"
 
 # --- Accept: POST /mint-conversation -> expect 202 in_progress ---
 idem="e2e-$(date +%s)-$$"
 accept_body=$(cat <<EOF
-{"model":"${LAB_E2E_MODEL:-anthropic:claude-sonnet-4-6}","message":"${LAB_E2E_MESSAGE:-Please draft my soul declaration. Take your time; this is a long reflection.}","idempotencyKey":"${idem}","correlationID":"e2e-${idem}"}
+{"model":"${e2e_model}","message":"${e2e_message}","idempotencyKey":"${idem}","correlationID":"e2e-${idem}"}
 EOF
 )
 accept_start=$(now_ms)
@@ -182,7 +337,7 @@ echo "==> happy path: PASS"
 echo "==> kill-VM recovery arc"
 idem2="e2e-kill-$(date +%s)-$$"
 kill_body=$(cat <<EOF
-{"model":"${LAB_E2E_MODEL:-anthropic:claude-sonnet-4-6}","message":"${LAB_E2E_MESSAGE:-A second long reflection for the kill-VM recovery arc.}","idempotencyKey":"${idem2}","correlationID":"e2e-${idem2}"}
+{"model":"${e2e_model}","message":"${e2e_kill_message}","idempotencyKey":"${idem2}","correlationID":"e2e-${idem2}"}
 EOF
 )
 kill_accept=$(curl -sS -w '\n__HTTP_STATUS__%{http_code}' -X POST "$base" -H "$auth" -H "$json_ct" -d "$kill_body" || true)
@@ -224,7 +379,7 @@ echo "    recovery surfaced failed: ${kill_observed}"
 # Retry works: a new accept on a fresh conversation dispatches a fresh VM.
 retry_accept=$(curl -sS -w '\n__HTTP_STATUS__%{http_code}' -X POST "$base" -H "$auth" -H "$json_ct" -d \
   "$(cat <<EOF
-{"model":"${LAB_E2E_MODEL:-anthropic:claude-sonnet-4-6}","message":"Retry after kill-VM recovery.","idempotencyKey":"e2e-retry-$(date +%s)-$$","correlationID":"e2e-retry"}
+{"model":"${e2e_model}","message":"${e2e_retry_message}","idempotencyKey":"e2e-retry-$(date +%s)-$$","correlationID":"e2e-retry"}
 EOF
 )" || true)
 retry_status=$(printf '%s' "$retry_accept" | sed -n 's/.*__HTTP_STATUS__\([0-9]*\).*/\1/p')
