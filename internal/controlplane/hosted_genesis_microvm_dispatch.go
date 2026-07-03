@@ -119,16 +119,17 @@ func newHostedGenesisMicroVMDispatcher(ctx context.Context, cfg config.Config, s
 			return nil
 		}
 	} else {
-		registryDB, err := registryDBFactory()
-		if err != nil {
-			log.Printf("controlplane: hosted genesis microvm dispatcher unavailable (session registry construction failed) err=%v", err)
+		registryDB, dbErr := registryDBFactory()
+		if dbErr != nil {
+			log.Printf("controlplane: hosted genesis microvm dispatcher unavailable (session registry construction failed) err=%v", dbErr)
 			return nil
 		}
-		registry, err = runtimemicrovm.NewTableTheorySessionRegistry(registryDB)
-		if err != nil {
-			log.Printf("controlplane: hosted genesis microvm dispatcher unavailable (session registry init failed) err=%v", err)
+		builtRegistry, regErr := runtimemicrovm.NewTableTheorySessionRegistry(registryDB)
+		if regErr != nil {
+			log.Printf("controlplane: hosted genesis microvm dispatcher unavailable (session registry init failed) err=%v", regErr)
 			return nil
 		}
+		registry = builtRegistry
 	}
 
 	reconstructionStaleAfter := opts.reconstructionStaleAfter

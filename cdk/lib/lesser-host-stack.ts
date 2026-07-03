@@ -688,14 +688,7 @@ export class LesserHostStack extends cdk.Stack {
 			{ memorySize: 512, timeoutSeconds: 30 },
 		);
 		const costTelemetry = new CostTelemetryWorker(this, 'CostTelemetry', { namePrefix, repoRoot, stage });
-		void configureHostedGenesisMicrovmLab(this, {
-			stage,
-			namePrefix,
-			repoRoot,
-			removalPolicy,
-			stateTable,
-			controlPlaneFunction: controlPlaneFn,
-		});
+		void configureHostedGenesisMicrovmLab(this, { stage, namePrefix, repoRoot, removalPolicy, stateTable, controlPlaneFunction: controlPlaneFn });
 		stateTable.grantReadWriteData(controlPlaneFn);
 		stateTable.grantReadWriteData(trustFn);
 		stateTable.grantReadWriteData(renderWorkerFn);

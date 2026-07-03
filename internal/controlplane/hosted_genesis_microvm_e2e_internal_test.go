@@ -109,8 +109,19 @@ func TestH1_5_E2E_HappyPathAndKillVMRecovery(t *testing.T) {
 		t.Fatalf("happy path: extraction expected running state, got %q", extraction.LifecycleRef.LifecycleState)
 	}
 
-	// --- Kill-VM recovery arc ---
-	// A fresh binding models a second conversation whose VM is killed mid-turn.
+	// --- Kill-VM recovery arc (extracted to keep the happy-path test under the
+	// gocognit budget) ---
+	h1_5KillVMRecoveryArc(t, dispatcher, provider)
+}
+
+// h1_5KillVMRecoveryArc drives the kill-VM recovery half of the E2E gate:
+// dispatch a fresh session, terminate it mid-turn in the stub provider (the VM
+// was killed), reconcile get surfaces Terminal=true (recover maps to loud
+// failed), then a retry dispatch allocates a fresh in_progress ref. Extracted
+// from TestH1_5_E2E_HappyPathAndKillVMRecovery to keep that func's cognitive
+// complexity under the gocognit >20 budget.
+func h1_5KillVMRecoveryArc(t *testing.T, dispatcher hostedgenesis.MicroVMDispatcher, provider *stubHostedGenesisMicroVMProvider) {
+	t.Helper()
 	killedBinding := hostedgenesis.MicroVMSessionBinding{
 		InstanceSlug:   "acme",
 		RegistrationID: "reg_e2e",
@@ -124,7 +135,7 @@ func TestH1_5_E2E_HappyPathAndKillVMRecovery(t *testing.T) {
 	}
 	// Simulate the VM being killed mid-turn: terminate the session in the stub
 	// provider so a subsequent reconcile get observes a terminal state.
-	if _, err := provider.Terminate(context.Background(), runtimemicrovm.ProviderSessionInput{
+	termInput := runtimemicrovm.ProviderSessionInput{
 		RequestID: "req_e2e_kill",
 		TenantID:  killedBinding.TenantID(),
 		Namespace: hostedgenesis.MicroVMNamespace,
@@ -134,8 +145,9 @@ func TestH1_5_E2E_HappyPathAndKillVMRecovery(t *testing.T) {
 			SessionID:         killedBinding.ConversationID,
 			ProviderMicroVMID: killedDispatch.LifecycleRef.MicroVMID,
 		},
-	}); err != nil {
-		t.Fatalf("kill-vm: terminate stub session failed: %v", err)
+	}
+	if _, termErr := provider.Terminate(context.Background(), termInput); termErr != nil {
+		t.Fatalf("kill-vm: terminate stub session failed: %v", termErr)
 	}
 
 	// Recover: reconcile get surfaces Terminal=true -> recover maps to loud failed.

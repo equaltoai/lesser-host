@@ -262,9 +262,14 @@ func Load() Config {
 	}
 	// MaximumDurationSeconds is sized for the longest LLM turn plus in-VM
 	// declaration extraction (decision 7): default 300s, bounded to the M16
-	// provider's int32 range. A non-positive config disables the cap and lets the
-	// provider/default apply (still fail-closed; never a sync fallback).
-	microvmMaxDuration := int32(envInt64Bounded("HOSTED_GENESIS_MICROVM_MAXIMUM_DURATION_SECONDS", 300, 0, 3600))
+	// provider's int32 range [0,3600]. A non-positive config disables the cap
+	// and lets the provider/default apply (still fail-closed; never a sync
+	// fallback). The bound keeps the int64->int32 narrowing safe (gosec G115).
+	microvmMaxDurationRaw := envInt64Bounded("HOSTED_GENESIS_MICROVM_MAXIMUM_DURATION_SECONDS", 300, 0, 3600)
+	microvmMaxDuration := int32(0)
+	if microvmMaxDurationRaw > 0 && microvmMaxDurationRaw <= 3600 {
+		microvmMaxDuration = int32(microvmMaxDurationRaw)
+	}
 	microvmReconstructionStaleAfter := envInt64Bounded("HOSTED_GENESIS_MICROVM_RECONSTRUCTION_STALE_AFTER_SECONDS", 300, 1, 3600)
 	microvmCfg := HostedGenesisMicroVMConfig{
 		Enabled:                   envBoolOn("HOSTED_GENESIS_MICROVM_ENABLED"),
