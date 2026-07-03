@@ -13,6 +13,7 @@ import * as cdk from "aws-cdk-lib";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
 import * as lambda from "aws-cdk-lib/aws-lambda";
+import * as s3assets from "aws-cdk-lib/aws-s3-assets";
 import type { Construct } from "constructs";
 
 export const HOSTED_GENESIS_MICROVM_NAMESPACE = "hosted-genesis" as const;
@@ -29,7 +30,6 @@ const contextKeys = {
   baseImageArn: "hostedGenesisMicrovmBaseImageArn",
   baseImageVersion: "hostedGenesisMicrovmBaseImageVersion",
   buildRoleArn: "hostedGenesisMicrovmBuildRoleArn",
-  codeArtifactUri: "hostedGenesisMicrovmCodeArtifactUri",
   authorizerTokenSha256: "hostedGenesisMicrovmAuthorizerTokenSha256",
 } as const;
 
@@ -108,6 +108,17 @@ export function configureHostedGenesisMicrovmLab(
     "HostedGenesisMicrovmShellIngressConnector",
   );
 
+  // The MicroVM image consumes a repo-built artifact (the in-VM hosted-genesis
+  // workload at cmd/hosted-genesis-microvm-workload), not an external
+  // codeArtifactUri CDK context value (kills G4). The workload binary is built
+  // at synth time and uploaded as a CDK S3 asset; the image's codeArtifact.uri
+  // points at that asset's S3 object URL.
+  const workloadArtifact = buildHostedGenesisMicrovmWorkloadAsset(
+    scope,
+    "HostedGenesisMicrovmWorkloadArtifact",
+    props.repoRoot,
+  );
+
   const microvmImage = new AppTheoryMicrovmImage(
     scope,
     "HostedGenesisMicrovmImage",
@@ -118,7 +129,7 @@ export function configureHostedGenesisMicrovmLab(
       baseImageArn: cfg.baseImageArn,
       baseImageVersion: cfg.baseImageVersion,
       buildRoleArn: cfg.buildRoleArn,
-      codeArtifact: { uri: cfg.codeArtifactUri },
+      codeArtifact: { uri: workloadArtifact.s3ObjectUrl },
       egressNetworkConnectors: [egressConnector],
       hooks: {
         port: 8080,
@@ -262,7 +273,6 @@ function readRequiredContext(
     baseImageArn: requiredContext(scope, contextKeys.baseImageArn),
     baseImageVersion: requiredContext(scope, contextKeys.baseImageVersion),
     buildRoleArn: requiredContext(scope, contextKeys.buildRoleArn),
-    codeArtifactUri: requiredContext(scope, contextKeys.codeArtifactUri),
     authorizerTokenSha256: normalizeTokenHash(
       requiredContext(scope, contextKeys.authorizerTokenSha256),
     ),
@@ -316,4 +326,38 @@ function buildGoBootstrapAsset(
     },
   });
   return lambda.Code.fromAsset(buildDir);
+}
+
+// buildHostedGenesisMicrovmWorkloadAsset builds the in-VM hosted-genesis
+// workload entrypoint (cmd/hosted-genesis-microvm-workload) for the MicroVM
+// image's linux/arm64 runtime and packages it as a CDK S3 asset. The returned
+// asset's s3ObjectUrl is the AppTheoryMicrovmImage codeArtifact.uri — a
+// repo-built artifact, not an external CDK context value (kills G4).
+//
+// The workload is a long-running HTTP server inside the MicroVM image (not a
+// Lambda handler), so it is packaged as a tarball the image build extracts. The
+// binary is built with CGO disabled for a static image payload.
+function buildHostedGenesisMicrovmWorkloadAsset(
+  scope: Construct,
+  id: string,
+  repoRoot: string,
+): s3assets.Asset {
+  const buildDir = path.join(repoRoot, "cdk", ".build", id);
+  fs.mkdirSync(buildDir, { recursive: true });
+  const binaryPath = path.join(buildDir, "hosted-genesis-microvm-workload");
+  execFileSync(
+    "go",
+    ["build", "-o", binaryPath, "./cmd/hosted-genesis-microvm-workload"],
+    {
+      cwd: repoRoot,
+      stdio: "inherit",
+      env: {
+        ...process.env,
+        CGO_ENABLED: "0",
+        GOOS: "linux",
+        GOARCH: "arm64",
+      },
+    },
+  );
+  return new s3assets.Asset(scope, id, { path: buildDir });
 }

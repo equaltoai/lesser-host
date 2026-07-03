@@ -634,7 +634,6 @@ const hostedGenesisMicrovmLabContext = {
 	hostedGenesisMicrovmBaseImageArn: 'arn:aws:lambda:us-east-1:123456789012:microvm-image/base/apptheory-al2023',
 	hostedGenesisMicrovmBaseImageVersion: '1',
 	hostedGenesisMicrovmBuildRoleArn: 'arn:aws:iam::123456789012:role/apptheory-microvm-image-build-lab',
-	hostedGenesisMicrovmCodeArtifactUri: 's3://lesser-host-lab-artifacts/microvm/hosted-genesis.tar',
 	hostedGenesisMicrovmAuthorizerTokenSha256: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
 };
 
