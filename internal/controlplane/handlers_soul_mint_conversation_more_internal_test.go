@@ -243,6 +243,11 @@ type stubMicroVMDispatcher struct {
 	// observedState is the lifecycle state the stub reports from a controller
 	// get reconciliation (defaults to running/non-terminal).
 	observedState runtimemicrovm.LifecycleState
+	// expired forces the stub's reconcile to report an expired (dead) session:
+	// Terminal=true even when observedState is non-terminal, mirroring the
+	// production seam's ExpiresAt-in-the-past mapping. H1.4 covers dead/expired
+	// VM sessions, not only terminated/failed lifecycle states.
+	expired bool
 }
 
 func (d *stubMicroVMDispatcher) DispatchMicroVMRun(ctx context.Context, requestID string, binding hostedgenesis.MicroVMSessionBinding) (hostedgenesis.MicroVMDispatchResult, error) {
@@ -318,10 +323,16 @@ func (d *stubMicroVMDispatcher) ReconcileMicroVM(ctx context.Context, requestID 
 	if err != nil {
 		d.t.Fatalf("stub dispatcher failed to reconcile lifecycle ref: %v", err)
 	}
+	terminal := runtimemicrovm.IsTerminalState(reconciled.LifecycleState)
+	if d.expired {
+		// Mirror the production seam: an expired session is terminal (dead) even
+		// when its observed lifecycle state is non-terminal.
+		terminal = true
+	}
 	return hostedgenesis.MicroVMReconcileResult{
 		LifecycleRef: reconciled,
 		SessionID:    strings.TrimSpace(binding.ConversationID),
-		Terminal:     runtimemicrovm.IsTerminalState(reconciled.LifecycleState),
+		Terminal:     terminal,
 	}, nil
 }
 

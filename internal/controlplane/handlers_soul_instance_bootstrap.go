@@ -18,16 +18,17 @@ import (
 )
 
 const (
-	soulInstanceBootstrapCodeUnauthorized       = "soul_instance.unauthorized"
-	soulInstanceBootstrapCodeInvalidRequest     = "soul_instance.invalid_request"
-	soulInstanceBootstrapCodeBoundaryViolation  = "soul_instance.boundary_violation"
-	soulInstanceBootstrapCodeConflict           = "soul_instance.conflict"
-	soulInstanceBootstrapCodeNotFound           = "soul_instance.not_found"
-	soulInstanceBootstrapCodeInternal           = "soul_instance.internal"
-	soulInstanceBootstrapCodeMicroVMUnavailable = "soul_instance.microvm_unavailable"
-	soulInstanceBootstrapMessageUnauthorized    = "unauthorized"
-	soulInstanceBootstrapMessageBoundary        = "resource is outside the authenticated instance boundary"
-	soulInstanceBootstrapBoundaryInstanceDomain = "instance_domain"
+	soulInstanceBootstrapCodeUnauthorized        = "soul_instance.unauthorized"
+	soulInstanceBootstrapCodeInvalidRequest      = "soul_instance.invalid_request"
+	soulInstanceBootstrapCodeBoundaryViolation   = "soul_instance.boundary_violation"
+	soulInstanceBootstrapCodeConflict            = "soul_instance.conflict"
+	soulInstanceBootstrapCodeNotFound            = "soul_instance.not_found"
+	soulInstanceBootstrapCodeInternal            = "soul_instance.internal"
+	soulInstanceBootstrapCodeMicroVMUnavailable  = "soul_instance.microvm_unavailable"
+	soulInstanceBootstrapCodeAssistantTurnFailed = "soul_instance.assistant_turn_failed"
+	soulInstanceBootstrapMessageUnauthorized     = "unauthorized"
+	soulInstanceBootstrapMessageBoundary         = "resource is outside the authenticated instance boundary"
+	soulInstanceBootstrapBoundaryInstanceDomain  = "instance_domain"
 )
 
 // appErrCodeMicroVMUnavailable is the control-plane AppError code emitted when
@@ -36,6 +37,15 @@ const (
 // never confused with a generic internal error or silently downgraded to a
 // synchronous control-plane LLM call.
 const appErrCodeMicroVMUnavailable = "app.microvm_unavailable"
+
+// appErrCodeAssistantTurnFailed is the control-plane AppError code emitted when
+// a hosted genesis assistant turn failed (the LLM provider errored or returned
+// an empty response on the retained non-production sync path). H1.4 (kills G10a)
+// makes a failed turn surface as a loud non-2xx typed failure instead of HTTP
+// 200 with a failed body: the caller returns the error, so the public surface
+// emits 502, never a silent 200-on-failure. The durable session is still
+// persisted as a retryable failed turn before the error is returned.
+const appErrCodeAssistantTurnFailed = "app.assistant_turn_failed"
 
 type soulInstanceBootstrapContext struct {
 	key          *models.InstanceKey
@@ -675,6 +685,8 @@ func soulInstanceBootstrapErrorFromAppError(appErr *apptheory.AppError) *apptheo
 		return soulInstanceBootstrapError(soulInstanceBootstrapCodeNotFound, appErr.Message, http.StatusNotFound, nil)
 	case appErrCodeMicroVMUnavailable:
 		return soulInstanceBootstrapError(soulInstanceBootstrapCodeMicroVMUnavailable, appErr.Message, http.StatusServiceUnavailable, nil)
+	case appErrCodeAssistantTurnFailed:
+		return soulInstanceBootstrapError(soulInstanceBootstrapCodeAssistantTurnFailed, appErr.Message, http.StatusBadGateway, nil)
 	default:
 		return soulInstanceBootstrapError(soulInstanceBootstrapCodeInternal, "internal error", http.StatusInternalServerError, nil)
 	}
@@ -712,6 +724,8 @@ func soulInstanceBootstrapConversationErrorFromAppError(appErr *apptheory.AppErr
 		return soulInstanceBootstrapError(soulInstanceBootstrapCodeNotFound, appErr.Message, http.StatusNotFound, nil)
 	case appErrCodeMicroVMUnavailable:
 		return soulInstanceBootstrapError(soulInstanceBootstrapCodeMicroVMUnavailable, appErr.Message, http.StatusServiceUnavailable, nil)
+	case appErrCodeAssistantTurnFailed:
+		return soulInstanceBootstrapError(soulInstanceBootstrapCodeAssistantTurnFailed, appErr.Message, http.StatusBadGateway, nil)
 	default:
 		return soulInstanceBootstrapError(soulInstanceBootstrapCodeInternal, "internal error", http.StatusInternalServerError, nil)
 	}

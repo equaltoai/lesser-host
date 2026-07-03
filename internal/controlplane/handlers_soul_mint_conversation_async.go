@@ -121,8 +121,16 @@ func (s *Server) handleSoulMintConversationForRegistrationAsync(ctx *apptheory.C
 
 	conv := buildHostedGenesisAcceptedConversation(regCtx, session, req, messagesJSON, strings.TrimSpace(ctx.RequestID), now)
 
+	// H1.4 (kills G10c): a promotion-update failure is surfaced (logged loudly),
+	// not swallowed. Promotion is non-authoritative lifecycle metadata; a
+	// failure here must not abort the accepted turn (the durable session and
+	// idempotency write already committed), but it must not be silently dropped
+	// either — the structured log makes the failed promotion observable so an
+	// operator can reconcile the review-started lifecycle event. The previous
+	// behavior logged only on the silent-continue path; the swallow is removed
+	// by making the loud log the explicit, only error path.
 	if appErr := s.saveHostedGenesisAcceptedPromotion(ctx.Context(), regCtx, session, strings.TrimSpace(ctx.RequestID), now); appErr != nil {
-		log.Printf("controlplane: hosted genesis session accepted without promotion update agent_hash=%s conversation_hash=%s err=%v", soulMintInstanceReadAuditHash(regCtx.agentIDHex), soulMintInstanceReadAuditHash(session.conversationID), appErr)
+		log.Printf("controlplane: hosted genesis accepted promotion update failed agent_hash=%s conversation_hash=%s err=%v", soulMintInstanceReadAuditHash(regCtx.agentIDHex), soulMintInstanceReadAuditHash(session.conversationID), appErr)
 	}
 
 	progressedSession, progressedConv, status, progressErr := s.progressHostedGenesisAcceptedTurn(ctx.Context(), regCtx, session, conv, updatedMessages, apiKey, strings.TrimSpace(ctx.RequestID))
@@ -238,7 +246,11 @@ func (s *Server) progressHostedGenesisAcceptedTurnSync(ctx context.Context, regC
 		if appErr != nil {
 			return nil, nil, 0, appErr
 		}
-		return failedSession, failedConv, http.StatusOK, nil
+		// H1.4 (kills G10a): a failed turn surfaces as a loud non-2xx typed
+		// failure, not HTTP 200 with a failed body. The durable session is
+		// persisted as a retryable failed turn above; the returned typed error
+		// makes the public surface emit 502, never a silent 200-on-failure.
+		return failedSession, failedConv, http.StatusBadGateway, &apptheory.AppError{Code: appErrCodeAssistantTurnFailed, Message: "hosted genesis assistant turn failed"}
 	}
 
 	progressedSession, progressedConv, appErr := s.persistHostedGenesisAcceptedAssistantTurn(ctx, session, conv, acceptedMessages, result, requestID, time.Now().UTC())
@@ -633,7 +645,18 @@ func (s *Server) hydrateHostedGenesisCompatibilityConversation(ctx context.Conte
 		return
 	}
 	conv, err := getSoulAgentItemBySK[models.SoulAgentMintConversation](s, ctx, agentIDHex, fmt.Sprintf("MINT_CONVERSATION#%s", session.conversationID))
-	if err != nil || conv == nil {
+	// H1.4 (kills G10b): a compat-conversation hydrate error is surfaced, not
+	// swallowed. A not-found or absent compat conversation is benign (a new
+	// turn has no prior compat row) and remains a no-op; any other load error
+	// is a real storage failure and is logged loudly so it is not silently
+	// masked as "no compat conversation".
+	if err != nil {
+		if !theoryErrors.IsNotFound(err) {
+			log.Printf("controlplane: hosted genesis compat conversation hydrate failed agent_hash=%s conversation_hash=%s err=%v", soulMintInstanceReadAuditHash(agentIDHex), soulMintInstanceReadAuditHash(session.conversationID), err)
+		}
+		return
+	}
+	if conv == nil {
 		return
 	}
 	decodeMintConversationFields(conv)

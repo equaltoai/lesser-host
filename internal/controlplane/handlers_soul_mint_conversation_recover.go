@@ -79,23 +79,21 @@ func (s *Server) handleSoulInstanceRecoverMintConversation(ctx *apptheory.Contex
 	// No MicroVM lifecycle ref is populated: the session predates the H1.2
 	// dispatch wiring (or the dispatch never landed). Re-dispatch the accepted
 	// turn through the MicroVM path rather than silently stranding the turn.
+	// H1.4: recovery is dispatch-only — it never re-runs a turn synchronously.
+	// The retained sync assistant runner (hostedGenesisSyncAssistantFallbackEnabled)
+	// is reachable only from the accept path's non-production guard, never from
+	// recovery; an unwired dispatcher is a loud retryable failure, never a sync
+	// LLM call and never a silent 200.
 	turnSession, acceptedMessages, buildErr := hostedGenesisRecoveryTurnSession(convCtx)
 	if buildErr != nil {
 		return nil, soulInstanceBootstrapConversationErrorFromAppError(buildErr)
 	}
-	apiKey, apiKeyErr := s.apiKeyForMintConversationModel(ctx.Context(), turnSession.modelSet)
-	if apiKeyErr != nil {
-		return nil, soulInstanceBootstrapConversationErrorFromAppError(apiKeyErr)
-	}
-
-	progressedSession, progressedConv, status, progressErr := s.progressHostedGenesisAcceptedTurn(
-		ctx.Context(),
+	progressedSession, progressedConv, status, progressErr := s.dispatchHostedGenesisRecoveryTurn(
+		ctx,
 		mintConversationRegistrationContext{reg: convCtx.reg, inst: convCtx.inst, agentIDHex: convCtx.agentIDHex},
 		turnSession,
 		convCtx.conv,
 		acceptedMessages,
-		apiKey,
-		strings.TrimSpace(ctx.RequestID),
 	)
 	if progressErr != nil {
 		return nil, soulInstanceBootstrapConversationErrorFromAppError(progressErr)
@@ -108,8 +106,57 @@ func (s *Server) handleSoulInstanceRecoverMintConversation(ctx *apptheory.Contex
 	if err != nil {
 		return nil, err
 	}
-	s.recordSoulMintInstanceReadAudit(ctx, convCtx.key, convCtx.agentIDHex, convCtx.conversationID, soulMintInstanceReadRouteRecover, "success", resp.Status, len(resp.Body), started)
+	s.recordSoulMintInstanceReadAudit(ctx, convCtx.key, convCtx.agentIDHex, convCtx.conversationID, soulMintInstanceReadRouteRecover, "redispatched", resp.Status, len(resp.Body), started)
 	return resp, nil
+}
+
+// dispatchHostedGenesisRecoveryTurn re-dispatches a stuck accepted turn through
+// the MicroVM controller run command on the production recover path. It is the
+// dispatch-only recovery site for sessions that predate the H1.2 lifecycle-ref
+// wiring (no MicroVMLifecycleRef). H1.4 makes recovery never re-run a turn
+// synchronously: the retained sync assistant runner is never consulted here, so
+// production recovery cannot fall back to a control-plane LLM call. An unwired
+// dispatcher, an invalid binding, or a rejected dispatch is a loud retryable
+// microvm_unavailable failed session — never a silent 200 and never a sync LLM.
+// A successful dispatch persists the durable in_progress session with the
+// refreshed MicroVM lifecycle ref and returns 202 accepted-pending.
+func (s *Server) dispatchHostedGenesisRecoveryTurn(ctx *apptheory.Context, regCtx mintConversationRegistrationContext, session hostedGenesisTurnSession, conv *models.SoulAgentMintConversation, acceptedMessages []soulMintConversationMessage) (*models.HostedGenesisSession, *models.SoulAgentMintConversation, int, *apptheory.AppError) {
+	if session.session == nil || conv == nil {
+		return nil, nil, 0, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	if s.hostedGenesisMicroVMDispatcher == nil {
+		log.Printf("controlplane: hosted genesis recovery dispatch unavailable agent_hash=%s conversation_hash=%s", soulMintInstanceReadAuditHash(regCtx.agentIDHex), soulMintInstanceReadAuditHash(session.conversationID))
+		failedSession, failedConv, appErr := s.persistHostedGenesisAcceptedTurnFailure(ctx.Context(), session, conv, acceptedMessages, hostedGenesisFailureMicroVMUnavailable, strings.TrimSpace(ctx.RequestID), time.Now().UTC())
+		if appErr != nil {
+			return nil, nil, 0, appErr
+		}
+		return failedSession, failedConv, http.StatusOK, &apptheory.AppError{Code: appErrCodeMicroVMUnavailable, Message: "MicroVM recovery dispatch is unavailable"}
+	}
+	binding := session.session.MicroVMSessionBinding()
+	if err := binding.Validate(); err != nil {
+		log.Printf("controlplane: hosted genesis recovery dispatch binding invalid agent_hash=%s conversation_hash=%s err=%v", soulMintInstanceReadAuditHash(regCtx.agentIDHex), soulMintInstanceReadAuditHash(session.conversationID), err)
+		failedSession, failedConv, appErr := s.persistHostedGenesisAcceptedTurnFailure(ctx.Context(), session, conv, acceptedMessages, hostedGenesisFailureMicroVMUnavailable, strings.TrimSpace(ctx.RequestID), time.Now().UTC())
+		if appErr != nil {
+			return nil, nil, 0, appErr
+		}
+		return failedSession, failedConv, http.StatusOK, &apptheory.AppError{Code: appErrCodeMicroVMUnavailable, Message: "MicroVM recovery dispatch binding is invalid"}
+	}
+	runCtx, cancel := context.WithTimeout(detachedMintConversationContext(ctx.Context()), hostedGenesisAcceptedTurnDispatchTimeout)
+	defer cancel()
+	dispatch, dispatchErr := s.hostedGenesisMicroVMDispatcher.DispatchMicroVMRun(runCtx, strings.TrimSpace(ctx.RequestID), binding)
+	if dispatchErr != nil {
+		log.Printf("controlplane: hosted genesis recovery dispatch failed agent_hash=%s conversation_hash=%s err=%v", soulMintInstanceReadAuditHash(regCtx.agentIDHex), soulMintInstanceReadAuditHash(session.conversationID), dispatchErr)
+		failedSession, failedConv, appErr := s.persistHostedGenesisAcceptedTurnFailure(ctx.Context(), session, conv, acceptedMessages, hostedGenesisFailureMicroVMUnavailable, strings.TrimSpace(ctx.RequestID), time.Now().UTC())
+		if appErr != nil {
+			return nil, nil, 0, appErr
+		}
+		return failedSession, failedConv, http.StatusOK, &apptheory.AppError{Code: appErrCodeMicroVMUnavailable, Message: "MicroVM recovery dispatch failed"}
+	}
+	progressedSession, progressedConv, appErr := s.persistHostedGenesisAcceptedMicroVMDispatch(ctx.Context(), session, conv, acceptedMessages, dispatch, strings.TrimSpace(ctx.RequestID), time.Now().UTC())
+	if appErr != nil {
+		return nil, nil, 0, appErr
+	}
+	return progressedSession, progressedConv, http.StatusAccepted, nil
 }
 
 // hostedGenesisMicroVMRecoveryResult is the bounded outcome of a production
