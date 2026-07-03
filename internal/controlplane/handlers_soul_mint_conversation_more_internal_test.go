@@ -234,10 +234,15 @@ func stubHostedGenesisMicroVMDispatcher(t *testing.T, s *Server) *stubMicroVMDis
 }
 
 type stubMicroVMDispatcher struct {
-	t           *testing.T
-	calls       int
-	lastBinding hostedgenesis.MicroVMSessionBinding
-	dispatchErr error
+	t              *testing.T
+	calls          int
+	reconcileCalls int
+	lastBinding    hostedgenesis.MicroVMSessionBinding
+	dispatchErr    error
+	reconcileErr   error
+	// observedState is the lifecycle state the stub reports from a controller
+	// get reconciliation (defaults to running/non-terminal).
+	observedState runtimemicrovm.LifecycleState
 }
 
 func (d *stubMicroVMDispatcher) DispatchMicroVMRun(ctx context.Context, requestID string, binding hostedgenesis.MicroVMSessionBinding) (hostedgenesis.MicroVMDispatchResult, error) {
@@ -273,6 +278,51 @@ func (d *stubMicroVMDispatcher) DispatchMicroVMRun(ctx context.Context, requestI
 		d.t.Fatalf("stub dispatcher failed to build lifecycle ref: %v", err)
 	}
 	return hostedgenesis.MicroVMDispatchResult{LifecycleRef: ref, SessionID: resp.SessionID}, nil
+}
+
+// ReconcileMicroVM is the stub's controller get reconciliation. It mirrors the
+// production seam: it fails closed on a configured reconcileErr, otherwise it
+// reports the configured observedState (defaulting to running) and reconciles
+// the lifecycle ref via the canonical ReconcileMicroVMRegistryStatus so the
+// control-plane reconciliation path observes the same shape production does.
+func (d *stubMicroVMDispatcher) ReconcileMicroVM(ctx context.Context, requestID string, binding hostedgenesis.MicroVMSessionBinding, ref hostedgenesis.MicroVMLifecycleRef) (hostedgenesis.MicroVMReconcileResult, error) {
+	d.t.Helper()
+	d.reconcileCalls++
+	d.lastBinding = binding
+	if d.reconcileErr != nil {
+		return hostedgenesis.MicroVMReconcileResult{}, d.reconcileErr
+	}
+	if err := binding.Validate(); err != nil {
+		d.t.Fatalf("stub dispatcher received invalid binding: %v", err)
+	}
+	if strings.TrimSpace(requestID) == "" {
+		d.t.Fatalf("stub dispatcher received empty request id")
+	}
+	observed := d.observedState
+	if observed == "" {
+		observed = runtimemicrovm.StateRunning
+	}
+	status := runtimemicrovm.SessionStatus{
+		TenantID:        binding.TenantID(),
+		Namespace:       hostedgenesis.MicroVMNamespace,
+		SessionID:       strings.TrimSpace(binding.ConversationID),
+		State:           observed,
+		DesiredState:    observed,
+		LifecycleState:  observed,
+		MicroVMID:       ref.MicroVMID,
+		LastAction:      runtimemicrovm.CommandGet,
+		LastTransition:  time.Now().UTC(),
+		RegistryVersion: ref.RegistryVersion,
+	}
+	reconciled, err := hostedgenesis.ReconcileMicroVMRegistryStatus(binding, ref, status)
+	if err != nil {
+		d.t.Fatalf("stub dispatcher failed to reconcile lifecycle ref: %v", err)
+	}
+	return hostedgenesis.MicroVMReconcileResult{
+		LifecycleRef: reconciled,
+		SessionID:    strings.TrimSpace(binding.ConversationID),
+		Terminal:     runtimemicrovm.IsTerminalState(reconciled.LifecycleState),
+	}, nil
 }
 
 func stubMintConversationRegistration(t *testing.T, tdb *mintConversationTestDB, reg models.SoulAgentRegistration) {
