@@ -12,6 +12,7 @@ import {
 import * as cdk from "aws-cdk-lib";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
+import * as iam from "aws-cdk-lib/aws-iam";
 import * as lambda from "aws-cdk-lib/aws-lambda";
 import * as s3assets from "aws-cdk-lib/aws-s3-assets";
 import type { Construct } from "constructs";
@@ -39,6 +40,15 @@ export interface HostedGenesisMicrovmLabProps {
   readonly repoRoot: string;
   readonly removalPolicy: cdk.RemovalPolicy;
   readonly stateTable: dynamodb.ITable;
+  // controlPlaneFunction is the control-plane API Lambda that, under P52 H1.5,
+  // dispatches MicroVM runs in-process via a ControllerRuntimeDispatcher wired
+  // in controlplane.NewServer. When provided, the construct grants it the
+  // MicroVM control-plane IAM actions, PassNetworkConnector, read/write on the
+  // session registry table, and the image/network-connector/session-table env
+  // vars so NewServer can build the real dispatcher. Fail-closed auth is
+  // preserved: the controller routes stay authorizer-required + deny-by-default
+  // regardless of this grant.
+  readonly controlPlaneFunction?: lambda.Function;
 }
 
 export interface HostedGenesisMicrovmLabResult {
@@ -53,11 +63,13 @@ export function configureHostedGenesisMicrovmLab(
   if (!contextBoolean(scope, contextKeys.enabled)) {
     return { enabled: false };
   }
-  if (props.stage !== "lab") {
-    throw new Error(
-      "hosted genesis AppTheory MicroVM controller is lab-only; disable hostedGenesisMicrovmLabEnabled outside lab",
-    );
-  }
+  // P52 H1.5: the stage === "lab" throw is removed so deployed stages (lab AND
+  // live) get the MicroVM construct. Fail-closed auth is preserved: the
+  // AppTheoryMicrovmController construct always sets AUTH_REQUIRED=true and
+  // AUTH_DEFAULT=deny, the authorizer is attached to every route, and the
+  // controller runtime re-checks both env vars at startup (refusing to serve if
+  // either is loosened). The principal chooses the stage at deploy time (lab
+  // first), not at synth time.
 
   const cfg = readRequiredContext(scope);
   const vpc = ec2.Vpc.fromVpcAttributes(scope, "HostedGenesisMicrovmVpc", {
@@ -236,7 +248,7 @@ export function configureHostedGenesisMicrovmLab(
       sessionTableDeletionProtection: false,
       enableSessionTablePointInTimeRecovery: true,
       stage: {
-        stageName: "lab",
+        stageName: props.stage,
         accessLogging: true,
         throttlingRateLimit: 10,
         throttlingBurstLimit: 20,
@@ -245,10 +257,29 @@ export function configureHostedGenesisMicrovmLab(
   );
   props.stateTable.grantReadData(controller.controllerFunction);
 
+  // P52 H1.5: grant the control-plane Lambda the MicroVM control-plane IAM
+  // actions, PassNetworkConnector, read/write on the session registry table,
+  // and the image/network-connector/session-table env vars so
+  // controlplane.NewServer can construct the in-process
+  // ControllerRuntimeDispatcher. This mirrors what the AppTheoryMicrovmController
+  // construct grants its own controllerFunction, applied to the control-plane
+  // Lambda so dispatch is in-process (no HTTP hop, meets the <2s accept
+  // budget). Fail-closed auth on the controller routes is unaffected.
+  if (props.controlPlaneFunction) {
+    grantControlPlaneMicroVMDispatch(
+      scope,
+      props.controlPlaneFunction,
+      controller.sessionTable,
+      microvmImage.microvmImageArn,
+      [ingressConnector.networkConnectorArn],
+      [egressConnector.networkConnectorArn],
+    );
+  }
+
   new cdk.CfnOutput(scope, "HostedGenesisMicrovmControllerEndpoint", {
     value: controller.endpoint,
     description:
-      "Lab-only AppTheory MicroVM controller endpoint; operator canary only, never browser/public Host response.",
+      "AppTheory MicroVM controller endpoint (operator canary only, never browser/public Host response).",
   });
   new cdk.CfnOutput(scope, "HostedGenesisMicrovmSessionRegistryTable", {
     value: controller.sessionTable.tableName,
@@ -257,6 +288,91 @@ export function configureHostedGenesisMicrovmLab(
   });
 
   return { enabled: true, controller };
+}
+
+// grantControlPlaneMicroVMDispatch grants the control-plane Lambda the
+// constrained MicroVM control-plane IAM actions + PassNetworkConnector + session
+// registry read/write, and injects the env vars controlplane.NewServer reads to
+// build the in-process ControllerRuntimeDispatcher. The IAM shape mirrors the
+// AppTheoryMicrovmController construct's grantMicrovmControlPlane so the
+// control-plane Lambda can RunMicrovm/GetMicrovm/ListMicrovms/Suspend/Resume/
+// Terminate + create auth tokens against the constrained MicroVM instance
+// resource, without ever receiving a raw AWS SDK client.
+function grantControlPlaneMicroVMDispatch(
+  scope: Construct,
+  fn: lambda.Function,
+  sessionTable: dynamodb.ITable,
+  imageArn: string,
+  ingressConnectorArns: string[],
+  egressConnectorArns: string[],
+): void {
+  const microvmInstanceArn = cdk.Stack.of(scope).formatArn({
+    service: "lambda",
+    resource: "microvm",
+    resourceName: "*",
+    arnFormat: cdk.ArnFormat.COLON_RESOURCE_NAME,
+  });
+
+  fn.addToRolePolicy(
+    new iam.PolicyStatement({
+      sid: "HostedGenesisMicrovmControlPlane",
+      actions: [
+        "lambda:CreateMicrovmAuthToken",
+        "lambda:CreateMicrovmShellAuthToken",
+        "lambda:GetMicrovm",
+        "lambda:ResumeMicrovm",
+        "lambda:RunMicrovm",
+        "lambda:SuspendMicrovm",
+        "lambda:TerminateMicrovm",
+      ],
+      resources: [microvmInstanceArn],
+    }),
+  );
+
+  fn.addToRolePolicy(
+    new iam.PolicyStatement({
+      sid: "HostedGenesisMicrovmList",
+      actions: ["lambda:ListMicrovms"],
+      resources: ["*"],
+    }),
+  );
+
+  // PassNetworkConnector is permission-only (no resource-level support, per
+  // AppTheory). The permitted connector set is constrained through the typed
+  // props + fail-closed env wiring, not raw request strings.
+  fn.addToRolePolicy(
+    new iam.PolicyStatement({
+      sid: "HostedGenesisMicrovmPassNetworkConnectors",
+      actions: ["lambda:PassNetworkConnector"],
+      resources: ["*"],
+    }),
+  );
+
+  sessionTable.grantReadWriteData(fn);
+
+  // Inject the env vars controlplane.NewServer's dispatcher constructor reads.
+  // These mirror the AppTheoryMicrovmController construct's controller env
+  // wiring so the in-process runtime binds the same image + connectors +
+  // session registry table. addEnvironment is the CDK-supported way to append
+  // env vars to a Function constructed elsewhere.
+  fn.addEnvironment("APPTHEORY_MICROVM_IMAGE_REF", imageArn);
+  fn.addEnvironment(
+    "APPTHEORY_MICROVM_INGRESS_NETWORK_CONNECTOR_REFS",
+    ingressConnectorArns.join(","),
+  );
+  fn.addEnvironment(
+    "APPTHEORY_MICROVM_EGRESS_NETWORK_CONNECTOR_REFS",
+    egressConnectorArns.join(","),
+  );
+  fn.addEnvironment(
+    "APPTHEORY_MICROVM_NETWORK_CONNECTOR_REFS",
+    egressConnectorArns.join(","),
+  );
+  fn.addEnvironment(
+    "APPTHEORY_MICROVM_SESSION_REGISTRY_TABLE",
+    sessionTable.tableName,
+  );
+  fn.addEnvironment("HOSTED_GENESIS_MICROVM_ENABLED", "true");
 }
 
 function readRequiredContext(

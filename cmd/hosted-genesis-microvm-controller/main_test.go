@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -28,6 +29,57 @@ func TestControllerEventFailsClosedWhenDisabled(t *testing.T) {
 	}
 	if strings.Contains(strings.ToLower(resp.Body), "token") || strings.Contains(strings.ToLower(resp.Body), "authorization") {
 		t.Fatalf("fail-closed response leaked auth vocabulary: %s", resp.Body)
+	}
+}
+
+// TestControllerEventFailsClosedWhenAuthLoosened proves the H1.5 de-lab-gating
+// kept fail-closed auth: with STAGE set to a non-lab value but the auth env vars
+// loosened (AUTH_REQUIRED not "true" or AUTH_DEFAULT not "deny"), the controller
+// still refuses to serve (403). The runtime lab-gate is gone, but the
+// authorizer-required + deny-by-default posture is intact across all stages.
+func TestControllerEventFailsClosedWhenAuthLoosened(t *testing.T) {
+	t.Parallel()
+	event := events.APIGatewayV2HTTPRequest{RequestContext: events.APIGatewayV2HTTPRequestContext{RequestID: "req-2"}}
+	// Non-lab stage with fail-closed auth intact should NOT be rejected by a
+	// lab gate (the lab gate is gone); but auth loosened must still 403.
+	loosenedAuth := func(key string) string {
+		switch key {
+		case "STAGE":
+			return "live"
+		case "APPTHEORY_MICROVM_CONTROLLER_AUTH_REQUIRED":
+			return "false"
+		case "APPTHEORY_MICROVM_CONTROLLER_AUTH_DEFAULT":
+			return runtimemicrovm.ControllerAuthDefaultDeny
+		}
+		return ""
+	}
+	resp, err := handleControllerEvent(context.Background(), event, loosenedAuth)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.StatusCode != 403 {
+		t.Fatalf("expected 403 when auth is loosened (fail-closed preserved), got %d", resp.StatusCode)
+	}
+	if !strings.Contains(strings.ToLower(resp.Body), "fail-closed") {
+		t.Fatalf("expected fail-closed message, got %s", resp.Body)
+	}
+}
+
+// TestControllerEventGateNoLongerLabOnly is the grep-proof structural guard
+// that the H1.5 de-lab-gating removed the runtime lab gate from the controller
+// (the STAGE != "lab" disjunct is gone) while keeping the fail-closed auth
+// checks (AUTH_REQUIRED == true, AUTH_DEFAULT == deny).
+func TestControllerEventGateNoLongerLabOnly(t *testing.T) {
+	t.Parallel()
+	src := mustReadControllerSource(t, "main.go")
+	if strings.Contains(src, `getenv("STAGE")) != "lab"`) {
+		t.Fatalf("H1.5 regression: controller still lab-gates on STAGE != \"lab\"; the runtime lab gate should be removed (fail-closed auth preserved)")
+	}
+	if !strings.Contains(src, `getenv("APPTHEORY_MICROVM_CONTROLLER_AUTH_REQUIRED")) != "true"`) {
+		t.Fatalf("H1.5 regression: fail-closed AUTH_REQUIRED check missing from controller gate")
+	}
+	if !strings.Contains(src, `getenv("APPTHEORY_MICROVM_CONTROLLER_AUTH_DEFAULT")) != runtimemicrovm.ControllerAuthDefaultDeny`) {
+		t.Fatalf("H1.5 regression: fail-closed AUTH_DEFAULT deny check missing from controller gate")
 	}
 }
 
@@ -201,4 +253,15 @@ func runBody(sessionID string) string {
 func tokenHash(token string) string {
 	sum := sha256.Sum256([]byte(token))
 	return hex.EncodeToString(sum[:])
+}
+
+// mustReadControllerSource reads a file from this cmd package for grep-proof
+// structural guards. It fails the test if the file cannot be read.
+func mustReadControllerSource(t *testing.T, name string) string {
+	t.Helper()
+	data, err := os.ReadFile(name)
+	if err != nil {
+		t.Fatalf("read %s: %v", name, err)
+	}
+	return string(data)
 }

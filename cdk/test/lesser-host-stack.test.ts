@@ -659,9 +659,18 @@ test('hosted genesis AppTheory MicroVM lab wiring fails closed without required 
 		() => synthTemplateWithContext({ ...hostedGenesisMicrovmLabContext, hostedGenesisMicrovmAuthorizerTokenSha256: 'raw-token' }),
 		/hostedGenesisMicrovmAuthorizerTokenSha256 must be a sha256 digest/,
 	);
-	assert.throws(
-		() => synthTemplateForStage('live', hostedGenesisMicrovmLabContext),
-		/lab-only/,
+	// P52 H1.5: the stage === "lab" synth-time throw is removed (de-lab-gating).
+	// The construct now synthesizes for live as well as lab; the principal
+	// chooses the stage at deploy time (lab first). Fail-closed auth is
+	// preserved by the AppTheoryMicrovmController construct (AUTH_REQUIRED=true,
+	// AUTH_DEFAULT=deny, authorizer on every route) and the controller runtime
+	// re-check, not by a synth-time stage gate.
+	const liveTemplate = synthTemplateForStage('live', hostedGenesisMicrovmLabContext);
+	assert.ok(
+		findResourceEntries(liveTemplate, 'AWS::Lambda::Function').some(([, fn]) =>
+			String(fn.Properties?.FunctionName ?? '').includes('hosted-genesis-microvm-controller'),
+		),
+		'expected the AppTheory MicroVM controller Lambda to synthesize for live after de-lab-gating',
 	);
 });
 
@@ -760,6 +769,49 @@ test('hosted genesis AppTheory MicroVM lab wiring uses AppTheory constructs with
 		'dynamodb:Query',
 	]) {
 		assert.ok(controllerPolicyJson.includes(action), `expected controller IAM to include ${action}`);
+	}
+});
+
+test('P52 H1.5: control-plane Lambda receives MicroVM dispatch env + IAM for in-process dispatcher', () => {
+	const template = synthTemplateWithContext(hostedGenesisMicrovmLabContext);
+	const controlPlaneFn = findLambdaEntryByFunctionName(template, 'control-plane-api');
+	assert.ok(controlPlaneFn, 'expected control-plane Lambda to synthesize');
+	const controlPlaneEnv = lambdaEnvironment(controlPlaneFn[1].Properties ?? {});
+	// controlplane.NewServer reads these env vars to construct the in-process
+	// ControllerRuntimeDispatcher (HostedGenesisMicroVM config block).
+	assert.equal(controlPlaneEnv.HOSTED_GENESIS_MICROVM_ENABLED, 'true', 'expected HOSTED_GENESIS_MICROVM_ENABLED on control-plane Lambda');
+	assert.ok(controlPlaneEnv.APPTHEORY_MICROVM_IMAGE_REF, 'expected APPTHEORY_MICROVM_IMAGE_REF on control-plane Lambda');
+	assert.ok(controlPlaneEnv.APPTHEORY_MICROVM_INGRESS_NETWORK_CONNECTOR_REFS, 'expected ingress connector refs on control-plane Lambda');
+	assert.ok(controlPlaneEnv.APPTHEORY_MICROVM_EGRESS_NETWORK_CONNECTOR_REFS, 'expected egress connector refs on control-plane Lambda');
+	assert.ok(controlPlaneEnv.APPTHEORY_MICROVM_SESSION_REGISTRY_TABLE, 'expected session registry table env on control-plane Lambda');
+
+	// The control-plane Lambda role must carry the MicroVM control-plane IAM
+	// actions + PassNetworkConnector (mirroring the controller function grant)
+	// so the in-process provider can dispatch without a raw AWS SDK client.
+	const controlPlaneRoleRef = controlPlaneFn[1].Properties?.Role as { 'Fn::GetAtt'?: unknown[] } | undefined;
+	assert.ok(controlPlaneRoleRef && Array.isArray(controlPlaneRoleRef['Fn::GetAtt']), 'expected control-plane Lambda role reference');
+	const controlPlaneRoleLogicalId = String(controlPlaneRoleRef['Fn::GetAtt'][0] ?? '');
+	assert.ok(controlPlaneRoleLogicalId, 'expected control-plane Lambda role logical id');
+	const controlPlanePolicies = findResourceEntries(template, 'AWS::IAM::Policy').filter(([, policy]) => {
+		const roles = policy.Properties?.Roles;
+		return Array.isArray(roles) && roles.some((role) => role && typeof role === 'object' &&
+			'Ref' in role && (role as { Ref?: string }).Ref === controlPlaneRoleLogicalId);
+	});
+	const controlPlanePolicyJson = JSON.stringify(controlPlanePolicies.map(([, policy]) => policy.Properties ?? {}));
+	for (const action of [
+		'lambda:RunMicrovm',
+		'lambda:GetMicrovm',
+		'lambda:ListMicrovms',
+		'lambda:SuspendMicrovm',
+		'lambda:ResumeMicrovm',
+		'lambda:TerminateMicrovm',
+		'lambda:CreateMicrovmAuthToken',
+		'lambda:CreateMicrovmShellAuthToken',
+		'lambda:PassNetworkConnector',
+		'dynamodb:GetItem',
+		'dynamodb:Query',
+	]) {
+		assert.ok(controlPlanePolicyJson.includes(action), `expected control-plane IAM to include ${action} for in-process MicroVM dispatch`);
 	}
 });
 

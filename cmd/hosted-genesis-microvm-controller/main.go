@@ -47,8 +47,15 @@ func handleControllerEvent(ctx context.Context, event events.APIGatewayV2HTTPReq
 	if getenv == nil {
 		getenv = os.Getenv
 	}
-	if strings.TrimSpace(getenv("STAGE")) != "lab" || strings.TrimSpace(getenv("APPTHEORY_MICROVM_CONTROLLER_AUTH_REQUIRED")) != "true" || strings.TrimSpace(getenv("APPTHEORY_MICROVM_CONTROLLER_AUTH_DEFAULT")) != runtimemicrovm.ControllerAuthDefaultDeny {
-		return jsonResponse(http.StatusForbidden, safeFailure(runtimemicrovm.Command(""), requestIDFromEvent(event), "hosted_genesis_microvm_controller_disabled", "hosted genesis microvm controller is lab-only and fail-closed"))
+	// P52 H1.5: the runtime lab-gate is removed so deployed stages (lab AND
+	// live) get the MicroVM controller. Fail-closed auth is preserved: the
+	// AppTheoryMicrovmController CDK construct always sets
+	// APPTHEORY_MICROVM_CONTROLLER_AUTH_REQUIRED=true and
+	// APPTHEORY_MICROVM_CONTROLLER_AUTH_DEFAULT=deny; if either is missing or
+	// loosened the controller refuses to serve (403). This keeps the
+	// authorizer-required, deny-by-default posture intact across all stages.
+	if strings.TrimSpace(getenv("APPTHEORY_MICROVM_CONTROLLER_AUTH_REQUIRED")) != "true" || strings.TrimSpace(getenv("APPTHEORY_MICROVM_CONTROLLER_AUTH_DEFAULT")) != runtimemicrovm.ControllerAuthDefaultDeny {
+		return jsonResponse(http.StatusForbidden, safeFailure(runtimemicrovm.Command(""), requestIDFromEvent(event), "hosted_genesis_microvm_controller_disabled", "hosted genesis microvm controller is fail-closed (auth required, deny by default)"))
 	}
 
 	runtime, err := newRuntimeController(ctx, getenv)

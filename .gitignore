@@ -23,6 +23,11 @@ cdk/cdk.context.local.json
 cdk/dist/
 cdk/.build/
 cdk/**/.build/
+# Stray Go binaries produced by `go build` without -o in the repo root (e.g.
+# cmd entrypoints). They must never be committed (AGPL-no-blobs).
+/hosted-genesis-microvm-controller
+/hosted-genesis-microvm-workload
+/bootstrap
 web/dist/
 gov-infra/.tools/
 gov-infra/evidence/*-output.log
