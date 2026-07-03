@@ -115,6 +115,19 @@ func NewServer(cfg config.Config, st *store.Store) *Server {
 	}
 	srv.enqueueCommMessage = srv.queues.enqueueCommMessage
 	srv.enqueueHostedGenesisMessage = srv.queues.enqueueHostedGenesisMessage
+
+	// P52 H1.5: wire the production AppTheory M16 MicroVM dispatcher for deployed
+	// stages. When the config is enabled and complete, NewServer constructs the
+	// real in-process ControllerRuntimeDispatcher so the hosted genesis accept
+	// path dispatches the controller run and returns 202. When the config is
+	// disabled/incomplete or construction fails, the dispatcher stays nil and the
+	// accept path fails closed and loudly with a typed 503 microvm_unavailable —
+	// never a silent fallback to the synchronous control-plane LLM. The retained
+	// sync assistant runner stays behind its defaulted-false non-production guard
+	// (H2.1 deletes it).
+	dispatcherCtx, dispatcherCancel := context.WithTimeout(context.Background(), hostedGenesisMicroVMDispatcherInitTimeout)
+	defer dispatcherCancel()
+	srv.hostedGenesisMicroVMDispatcher = hostedGenesisMicroVMDispatcherBuilder(dispatcherCtx, cfg, st, hostedGenesisMicroVMDispatcherOptions{})
 	return srv
 }
 

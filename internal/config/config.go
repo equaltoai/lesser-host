@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"strings"
 )
 
 // Config holds runtime configuration loaded from environment variables.
@@ -143,6 +144,40 @@ type Config struct {
 	PaymentsCheckoutSuccessURL  string // redirect target after checkout completion
 	PaymentsCheckoutCancelURL   string // redirect target after checkout cancel
 	PaymentsCentsPer1000Credits int64  // pricing policy: cents per 1000 credits
+
+	// HostedGenesisMicroVM configures the production AppTheory M16 MicroVM
+	// dispatch path wired into controlplane.NewServer (P52 H1.5). When enabled
+	// and complete, NewServer constructs an in-process MicroVMControllerRuntime
+	// and wraps it in a ControllerRuntimeDispatcher on the Server so the hosted
+	// genesis accept path dispatches the controller run command and returns 202
+	// without a synchronous control-plane LLM call. When disabled or incomplete,
+	// NewServer leaves the dispatcher unwired and the accept path fails closed
+	// and loudly with a typed 503 microvm_unavailable (no sync LLM fallback).
+	// These mirror the env vars the AppTheoryMicrovmController CDK construct sets
+	// on the controller Lambda; the CDK grants the control-plane Lambda the same
+	// values plus MicroVM IAM + session-registry access.
+	HostedGenesisMicroVM HostedGenesisMicroVMConfig
+}
+
+// HostedGenesisMicroVMConfig groups the AppTheory M16 MicroVM controller runtime
+// inputs controlplane.NewServer uses to construct the production dispatcher.
+type HostedGenesisMicroVMConfig struct {
+	Enabled                   bool
+	ImageRef                  string
+	NetworkConnectorRef       string
+	IngressConnectorRefs      []string
+	EgressConnectorRefs       []string
+	SessionRegistryTable      string
+	MaximumDurationSeconds    int32
+	ReconstructionStaleAfterS int64
+}
+
+// Complete reports whether the MicroVM dispatch config has the minimum required
+// fields to construct a real ControllerRuntimeDispatcher. NewServer uses this to
+// decide between wiring the real dispatcher and failing closed (never a silent
+// sync LLM fallback).
+func (c HostedGenesisMicroVMConfig) Complete() bool {
+	return c.Enabled && c.ImageRef != "" && c.NetworkConnectorRef != "" && c.SessionRegistryTable != ""
 }
 
 // Load reads environment variables and returns a Config with defaults applied.
@@ -209,6 +244,38 @@ func Load() Config {
 
 	paymentsProvider := envLowerStringDefault("PAYMENTS_PROVIDER", "none")
 	centsPer1000Credits := envInt64Bounded("PAYMENTS_CENTS_PER_1000_CREDITS", 100, 1, 1_000_000)
+
+	// P52 H1.5: production MicroVM dispatch config. The AppTheoryMicrovmController
+	// CDK construct sets these env vars on the controller Lambda; the CDK also
+	// grants the control-plane Lambda the same values (plus MicroVM IAM + session
+	// registry access) so NewServer can construct the in-process dispatcher.
+	microvmEgressRefs := parseCSV(envString("APPTHEORY_MICROVM_EGRESS_NETWORK_CONNECTOR_REFS"))
+	if len(microvmEgressRefs) == 0 {
+		microvmEgressRefs = parseCSV(envString("APPTHEORY_MICROVM_NETWORK_CONNECTOR_REFS"))
+	}
+	microvmNetworkConnectorRef := ""
+	for _, ref := range microvmEgressRefs {
+		if ref = strings.TrimSpace(ref); ref != "" {
+			microvmNetworkConnectorRef = ref
+			break
+		}
+	}
+	// MaximumDurationSeconds is sized for the longest LLM turn plus in-VM
+	// declaration extraction (decision 7): default 300s, bounded to the M16
+	// provider's int32 range. A non-positive config disables the cap and lets the
+	// provider/default apply (still fail-closed; never a sync fallback).
+	microvmMaxDuration := int32(envInt64Bounded("HOSTED_GENESIS_MICROVM_MAXIMUM_DURATION_SECONDS", 300, 0, 3600))
+	microvmReconstructionStaleAfter := envInt64Bounded("HOSTED_GENESIS_MICROVM_RECONSTRUCTION_STALE_AFTER_SECONDS", 300, 1, 3600)
+	microvmCfg := HostedGenesisMicroVMConfig{
+		Enabled:                   envBoolOn("HOSTED_GENESIS_MICROVM_ENABLED"),
+		ImageRef:                  envString("APPTHEORY_MICROVM_IMAGE_REF"),
+		NetworkConnectorRef:       microvmNetworkConnectorRef,
+		IngressConnectorRefs:      parseCSV(envString("APPTHEORY_MICROVM_INGRESS_NETWORK_CONNECTOR_REFS")),
+		EgressConnectorRefs:       microvmEgressRefs,
+		SessionRegistryTable:      envString("APPTHEORY_MICROVM_SESSION_REGISTRY_TABLE"),
+		MaximumDurationSeconds:    microvmMaxDuration,
+		ReconstructionStaleAfterS: microvmReconstructionStaleAfter,
+	}
 
 	portalHost := envStringDefault("WEBAUTHN_RP_ID", "lesser.host")
 	checkoutSuccessURL := envStringDefault(
@@ -327,6 +394,8 @@ func Load() Config {
 		PaymentsCheckoutSuccessURL:  checkoutSuccessURL,
 		PaymentsCheckoutCancelURL:   checkoutCancelURL,
 		PaymentsCentsPer1000Credits: centsPer1000Credits,
+
+		HostedGenesisMicroVM: microvmCfg,
 	}
 }
 
