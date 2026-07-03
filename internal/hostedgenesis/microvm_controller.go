@@ -35,6 +35,11 @@ type MicroVMControllerRuntime struct {
 	networkConnectorRef         string
 	ingressNetworkConnectorRefs []string
 	egressNetworkConnectorRefs  []string
+	// maximumDurationSeconds caps each dispatched MicroVM run session duration
+	// (decision 7: sized for the longest LLM turn plus in-VM declaration
+	// extraction). Zero/positive-only; a non-positive value lets the AppTheory
+	// provider default apply. It is set on the run request envelope only.
+	maximumDurationSeconds int32
 }
 
 // MicroVMControllerRuntimeConfig configures the AppTheory M16 controller
@@ -54,6 +59,10 @@ type MicroVMControllerRuntimeConfig struct {
 	IDGenerator                 runtimemicrovm.IDGenerator
 	SessionTTL                  time.Duration
 	ReconstructionStaleAfter    time.Duration
+	// MaximumDurationSeconds caps each dispatched MicroVM run session duration,
+	// sized for the longest LLM turn plus in-VM declaration extraction (P52 H1.5
+	// decision 7). Non-positive leaves the AppTheory provider default in place.
+	MaximumDurationSeconds int32
 }
 
 // NewMicroVMControllerRuntime creates the AppTheory M16 real controller Host
@@ -99,6 +108,7 @@ func NewMicroVMControllerRuntime(cfg MicroVMControllerRuntimeConfig) (*MicroVMCo
 		networkConnectorRef:         networkConnectorRef,
 		ingressNetworkConnectorRefs: normalizeStringSlice(cfg.IngressNetworkConnectorRefs),
 		egressNetworkConnectorRefs:  normalizeStringSlice(cfg.EgressNetworkConnectorRefs),
+		maximumDurationSeconds:      cfg.MaximumDurationSeconds,
 	}, nil
 }
 
@@ -130,6 +140,13 @@ func (r *MicroVMControllerRuntime) Handle(ctx context.Context, req runtimemicrov
 		}
 		if len(req.EgressNetworkConnectorRefs) == 0 {
 			req.EgressNetworkConnectorRefs = append([]string(nil), r.egressNetworkConnectorRefs...)
+		}
+		// P52 H1.5 decision 7: cap the dispatched run session duration for the
+		// longest LLM turn plus in-VM extraction. A caller-provided positive value
+		// wins; otherwise the runtime-configured cap applies. A non-positive cap
+		// leaves the AppTheory provider default in place.
+		if req.MaximumDurationSeconds <= 0 && r.maximumDurationSeconds > 0 {
+			req.MaximumDurationSeconds = r.maximumDurationSeconds
 		}
 	}
 	if req.Command == runtimemicrovm.CommandAuthToken && len(req.AllowedPortScope) == 0 {

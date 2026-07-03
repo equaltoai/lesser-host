@@ -23,6 +23,11 @@ cdk/cdk.context.local.json
 cdk/dist/
 cdk/.build/
 cdk/**/.build/
+# Stray Go binaries produced by `go build` without -o in the repo root (e.g.
+# cmd entrypoints). They must never be committed (AGPL-no-blobs).
+/hosted-genesis-microvm-controller
+/hosted-genesis-microvm-workload
+/bootstrap
 web/dist/
 gov-infra/.tools/
 gov-infra/evidence/*-output.log
@@ -33,6 +38,13 @@ gov-infra/evidence/gov-rubric-report.json
 
 # Local command transcripts may contain bearer tokens; keep them out of git.
 **/*local-command-caveatcaveat*
+
+# P52 H1.5 lab E2E gate: runtime instance API key (raw secret) provisioned
+# out-of-band by the principal who provisioned the lab instance. NEVER committed
+# (see docs/hosted-genesis-microvm-lab-canary.md — raw bearer tokens stay out of
+# git/logs/fixtures/CloudFormation outputs). Read by the lab gate as a credential,
+# not system config; system config comes from the CDK outputs file.
+scripts/.lab-e2e-instance-key
 
 # Deployment manifests and operational logs (environment-specific)
 docs/deployments/*

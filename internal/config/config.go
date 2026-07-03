@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"strings"
 )
 
 // Config holds runtime configuration loaded from environment variables.
@@ -143,6 +144,55 @@ type Config struct {
 	PaymentsCheckoutSuccessURL  string // redirect target after checkout completion
 	PaymentsCheckoutCancelURL   string // redirect target after checkout cancel
 	PaymentsCentsPer1000Credits int64  // pricing policy: cents per 1000 credits
+
+	// HostedGenesisMicroVM configures the production AppTheory M16 MicroVM
+	// dispatch path wired into controlplane.NewServer (P52 H1.5). When enabled
+	// and complete, NewServer constructs an HTTPControllerDispatcher that drives
+	// the governed AppTheoryMicrovmController HTTP API (POST /microvms to run,
+	// GET /microvms/{session_id} to reconcile) and wires it onto the Server so
+	// the hosted genesis accept path dispatches the controller run command and
+	// returns 202 without a synchronous control-plane LLM call. When disabled or
+	// incomplete, NewServer leaves the dispatcher unwired and the accept path
+	// fails closed and loudly with a typed 503 microvm_unavailable (no sync LLM
+	// fallback). The controller Lambda is the single governed surface; the
+	// control plane never makes raw AWS RunMicrovm/GetMicrovm SDK calls or
+	// touches the session registry directly — it only speaks HTTP to the
+	// controller endpoint with an authorizer bearer token. The auth token is a
+	// credential loaded at runtime from SSM (its parameter name from env), never
+	// committed or logged; the endpoint + image/network refs are non-secret
+	// CDK-provided env vars.
+	HostedGenesisMicroVM HostedGenesisMicroVMConfig
+}
+
+// HostedGenesisMicroVMConfig groups the AppTheory M16 MicroVM controller HTTP
+// transport inputs controlplane.NewServer uses to construct the production
+// dispatcher. ControllerEndpoint is the governed AppTheoryMicrovmController
+// /microvms base URL. AuthTokenSSMParam names the SSM SecureString holding the
+// authorizer bearer token (the authorizer's identity source); the raw token is
+// loaded at runtime, never committed. ImageRef / NetworkConnectorRef /
+// IngressConnectorRefs / EgressConnectorRefs are non-secret refs the control
+// plane sends in the POST /microvms run body (the HTTP route handler does not
+// fill them from env the way the in-process runtime did). MaximumDurationSeconds
+// caps each dispatched run session duration.
+type HostedGenesisMicroVMConfig struct {
+	Enabled                bool
+	ControllerEndpoint     string
+	AuthTokenSSMParam      string
+	ImageRef               string
+	NetworkConnectorRef    string
+	IngressConnectorRefs   []string
+	EgressConnectorRefs    []string
+	MaximumDurationSeconds int32
+}
+
+// Complete reports whether the MicroVM dispatch config has the minimum required
+// fields to construct an HTTPControllerDispatcher. NewServer uses this to decide
+// between wiring the HTTP dispatcher and failing closed (never a silent sync LLM
+// fallback). The auth token itself is fetched at construction time from the SSM
+// parameter named here; Complete only requires the parameter name. A missing or
+// empty token at fetch time fails the dispatcher construction loudly.
+func (c HostedGenesisMicroVMConfig) Complete() bool {
+	return c.Enabled && c.ControllerEndpoint != "" && c.AuthTokenSSMParam != "" && c.ImageRef != "" && c.NetworkConnectorRef != ""
 }
 
 // Load reads environment variables and returns a Config with defaults applied.
@@ -209,6 +259,46 @@ func Load() Config {
 
 	paymentsProvider := envLowerStringDefault("PAYMENTS_PROVIDER", "none")
 	centsPer1000Credits := envInt64Bounded("PAYMENTS_CENTS_PER_1000_CREDITS", 100, 1, 1_000_000)
+
+	// P52 H1.5: production MicroVM HTTP-transport dispatch config. The
+	// AppTheoryMicrovmController CDK construct exposes the controller endpoint
+	// (HostedGenesisMicrovmControllerEndpoint CfnOutput → control-plane env);
+	// the CDK grants the control-plane Lambda HTTP egress to that endpoint +
+	// ssm:GetParameter on the auth-token SecureString. The control plane never
+	// receives MicroVM IAM or session-registry access — it only speaks HTTP to
+	// the governed controller API with the authorizer bearer token (loaded from
+	// SSM at runtime, never committed or logged).
+	microvmEgressRefs := parseCSV(envString("APPTHEORY_MICROVM_EGRESS_NETWORK_CONNECTOR_REFS"))
+	if len(microvmEgressRefs) == 0 {
+		microvmEgressRefs = parseCSV(envString("APPTHEORY_MICROVM_NETWORK_CONNECTOR_REFS"))
+	}
+	microvmNetworkConnectorRef := ""
+	for _, ref := range microvmEgressRefs {
+		if ref = strings.TrimSpace(ref); ref != "" {
+			microvmNetworkConnectorRef = ref
+			break
+		}
+	}
+	// MaximumDurationSeconds is sized for the longest LLM turn plus in-VM
+	// declaration extraction (decision 7): default 300s, bounded to the M16
+	// provider's int32 range [0,3600]. A non-positive config disables the cap
+	// and lets the provider/default apply (still fail-closed; never a sync
+	// fallback). The bound keeps the int64->int32 narrowing safe (gosec G115).
+	microvmMaxDurationRaw := envInt64Bounded("HOSTED_GENESIS_MICROVM_MAXIMUM_DURATION_SECONDS", 300, 0, 3600)
+	microvmMaxDuration := int32(0)
+	if microvmMaxDurationRaw > 0 && microvmMaxDurationRaw <= 3600 {
+		microvmMaxDuration = int32(microvmMaxDurationRaw)
+	}
+	microvmCfg := HostedGenesisMicroVMConfig{
+		Enabled:                envBoolOn("HOSTED_GENESIS_MICROVM_ENABLED"),
+		ControllerEndpoint:     strings.TrimSpace(envString("APPTHEORY_MICROVM_CONTROLLER_ENDPOINT")),
+		AuthTokenSSMParam:      strings.TrimSpace(envString("HOSTED_GENESIS_MICROVM_AUTH_TOKEN_SSM_PARAM")),
+		ImageRef:               envString("APPTHEORY_MICROVM_IMAGE_REF"),
+		NetworkConnectorRef:    microvmNetworkConnectorRef,
+		IngressConnectorRefs:   parseCSV(envString("APPTHEORY_MICROVM_INGRESS_NETWORK_CONNECTOR_REFS")),
+		EgressConnectorRefs:    microvmEgressRefs,
+		MaximumDurationSeconds: microvmMaxDuration,
+	}
 
 	portalHost := envStringDefault("WEBAUTHN_RP_ID", "lesser.host")
 	checkoutSuccessURL := envStringDefault(
@@ -327,6 +417,8 @@ func Load() Config {
 		PaymentsCheckoutSuccessURL:  checkoutSuccessURL,
 		PaymentsCheckoutCancelURL:   checkoutCancelURL,
 		PaymentsCentsPer1000Credits: centsPer1000Credits,
+
+		HostedGenesisMicroVM: microvmCfg,
 	}
 }
 

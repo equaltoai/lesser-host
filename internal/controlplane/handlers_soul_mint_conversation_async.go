@@ -193,7 +193,12 @@ func (s *Server) progressHostedGenesisAcceptedTurn(ctx context.Context, regCtx m
 		if appErr != nil {
 			return nil, nil, 0, appErr
 		}
-		return failedSession, failedConv, http.StatusOK, &apptheory.AppError{Code: appErrCodeMicroVMUnavailable, Message: "MicroVM execution dispatch is unavailable"}
+		// H1.5 (carries forward G10a's explicit-status posture): the MicroVM-
+		// unavailable accept-path returns an explicit 503, matching the error
+		// mapper's 503 for appErrCodeMicroVMUnavailable. The returned int is the
+		// response status used when the caller builds a non-error body; the typed
+		// AppError is the authoritative surface and also maps to 503.
+		return failedSession, failedConv, http.StatusServiceUnavailable, &apptheory.AppError{Code: appErrCodeMicroVMUnavailable, Message: "MicroVM execution dispatch is unavailable"}
 	}
 
 	binding := session.session.MicroVMSessionBinding()
@@ -203,7 +208,8 @@ func (s *Server) progressHostedGenesisAcceptedTurn(ctx context.Context, regCtx m
 		if appErr != nil {
 			return nil, nil, 0, appErr
 		}
-		return failedSession, failedConv, http.StatusOK, &apptheory.AppError{Code: appErrCodeMicroVMUnavailable, Message: "MicroVM execution dispatch is unavailable"}
+		// H1.5: explicit 503 (matches the error mapper), not a silent 200.
+		return failedSession, failedConv, http.StatusServiceUnavailable, &apptheory.AppError{Code: appErrCodeMicroVMUnavailable, Message: "MicroVM execution dispatch is unavailable"}
 	}
 
 	runCtx, cancel := context.WithTimeout(detachedMintConversationContext(ctx), hostedGenesisAcceptedTurnDispatchTimeout)
@@ -215,7 +221,8 @@ func (s *Server) progressHostedGenesisAcceptedTurn(ctx context.Context, regCtx m
 		if appErr != nil {
 			return nil, nil, 0, appErr
 		}
-		return failedSession, failedConv, http.StatusOK, &apptheory.AppError{Code: appErrCodeMicroVMUnavailable, Message: "MicroVM execution dispatch failed"}
+		// H1.5: explicit 503 (matches the error mapper), not a silent 200.
+		return failedSession, failedConv, http.StatusServiceUnavailable, &apptheory.AppError{Code: appErrCodeMicroVMUnavailable, Message: "MicroVM execution dispatch failed"}
 	}
 
 	progressedSession, progressedConv, appErr := s.persistHostedGenesisAcceptedMicroVMDispatch(ctx, session, conv, acceptedMessages, dispatch, requestID, time.Now().UTC())

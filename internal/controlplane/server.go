@@ -115,6 +115,24 @@ func NewServer(cfg config.Config, st *store.Store) *Server {
 	}
 	srv.enqueueCommMessage = srv.queues.enqueueCommMessage
 	srv.enqueueHostedGenesisMessage = srv.queues.enqueueHostedGenesisMessage
+
+	// P52 H1.5: wire the production AppTheory M16 MicroVM dispatcher for deployed
+	// stages. When the config is enabled and complete, NewServer constructs the
+	// real HTTPControllerDispatcher against the governed AppTheoryMicrovmController
+	// HTTP API (POST /microvms to run, GET /microvms/{session_id} to reconcile)
+	// so the hosted genesis accept path dispatches the controller run and returns
+	// 202. The authorizer bearer token is fetched at construction time from SSM
+	// via the Server's ssmGetParameter. When the config is disabled/incomplete,
+	// the SSM fetch fails, or construction fails, the dispatcher stays nil and
+	// the accept path fails closed and loudly with a typed 503
+	// microvm_unavailable — never a silent fallback to the synchronous
+	// control-plane LLM. The retained sync assistant runner stays behind its
+	// defaulted-false non-production guard (H2.1 deletes it). The control plane
+	// never makes raw AWS RunMicrovm/GetMicrovm SDK calls: the controller Lambda
+	// is the single governed surface.
+	dispatcherCtx, dispatcherCancel := context.WithTimeout(context.Background(), hostedGenesisMicroVMDispatcherInitTimeout)
+	defer dispatcherCancel()
+	srv.hostedGenesisMicroVMDispatcher = hostedGenesisMicroVMDispatcherBuilder(dispatcherCtx, cfg, srv.ssmGetParameter, hostedGenesisMicroVMDispatcherOptions{})
 	return srv
 }
 

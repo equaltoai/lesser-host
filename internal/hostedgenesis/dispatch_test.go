@@ -2,28 +2,182 @@ package hostedgenesis
 
 import (
 	"context"
-	"errors"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 	runtimemicrovm "github.com/theory-cloud/apptheory/runtime/microvm"
-	microvmtestkit "github.com/theory-cloud/apptheory/testkit/microvm"
 )
 
-func TestControllerRuntimeDispatcherDispatchesM16Run(t *testing.T) {
-	t.Parallel()
+// stubControllerServer is an httptest.Server-backed stub of the governed
+// AppTheoryMicrovmController HTTP API. It serves POST /microvms (run) and GET
+// /microvms/{session_id} (get), serializing the same ControllerResponse JSON
+// shape the real controller route handler emits, so the HTTPControllerDispatcher
+// under test exercises the real HTTP transport + response decoding path. It
+// validates the Authorization bearer header + x-tenant-id + x-namespace-id the
+// dispatcher presents, and lets a test terminate a session so a subsequent get
+// observes a terminal state (the kill-VM recovery arc).
+type stubControllerServer struct {
+	t        *testing.T
+	token    string
+	mu       sync.Mutex
+	sessions map[string]runtimemicrovm.ControllerResponse
+}
 
-	binding := testMicroVMBinding()
-	runtime, err := NewMicroVMControllerRuntime(MicroVMControllerRuntimeConfig{
-		Provider:            microvmtestkit.NewFakeProvider(),
-		Registry:            runtimemicrovm.NewMemorySessionRegistry(),
+func newStubControllerServer(t *testing.T, token string) *stubControllerServer {
+	t.Helper()
+	return &stubControllerServer{
+		t:        t,
+		token:    token,
+		sessions: map[string]runtimemicrovm.ControllerResponse{},
+	}
+}
+
+func (s *stubControllerServer) handler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/microvms", s.handleRun)
+	mux.HandleFunc("/microvms/", s.handleGet)
+	return mux
+}
+
+func (s *stubControllerServer) authorize(r *http.Request) bool {
+	authorization := strings.TrimSpace(r.Header.Get("Authorization"))
+	token := strings.TrimSpace(strings.TrimPrefix(authorization, "Bearer "))
+	if token == "" || token == authorization {
+		return false
+	}
+	if token != s.token {
+		return false
+	}
+	if strings.TrimSpace(r.Header.Get("x-tenant-id")) == "" || strings.TrimSpace(r.Header.Get("x-namespace-id")) == "" {
+		return false
+	}
+	return true
+}
+
+func (s *stubControllerServer) handleRun(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.authorize(r) {
+		writeControllerJSON(w, http.StatusUnauthorized, runtimemicrovm.ControllerResponse{
+			Error: &runtimemicrovm.SafeError{Code: "m15.microvm.unauthenticated_controller", Message: "unauthorized"},
+		})
+		return
+	}
+	var payload microvmRunRequestPayload
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		writeControllerJSON(w, http.StatusBadRequest, runtimemicrovm.ControllerResponse{
+			Error: &runtimemicrovm.SafeError{Code: "m15.microvm.invalid_controller_request", Message: "malformed"},
+		})
+		return
+	}
+	sessionID := strings.TrimSpace(payload.SessionID)
+	if sessionID == "" {
+		sessionID = "stub-session"
+	}
+	now := time.Now().UTC()
+	resp := runtimemicrovm.ControllerResponse{
+		Command:           runtimemicrovm.CommandRun,
+		RequestID:         strings.TrimSpace(r.Header.Get("x-request-id")),
+		TenantID:          strings.TrimSpace(r.Header.Get("x-tenant-id")),
+		Namespace:         strings.TrimSpace(r.Header.Get("x-namespace-id")),
+		SessionID:         sessionID,
+		State:             runtimemicrovm.StateRunning,
+		LifecycleState:    runtimemicrovm.StateRunning,
+		DesiredState:      runtimemicrovm.StateRunning,
+		ProviderMicroVMID: "stub-microvm-" + sessionID,
+		ProviderState:     "running",
+		LastAction:        runtimemicrovm.CommandRun,
+		LastTransition:    now,
+		RegistryVersion:   1,
+		ExpiresAt:         now.Add(time.Hour),
+	}
+	s.mu.Lock()
+	s.sessions[sessionID] = resp
+	s.mu.Unlock()
+	writeControllerJSON(w, http.StatusOK, resp)
+}
+
+func (s *stubControllerServer) handleGet(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.authorize(r) {
+		writeControllerJSON(w, http.StatusUnauthorized, runtimemicrovm.ControllerResponse{
+			Error: &runtimemicrovm.SafeError{Code: "m15.microvm.unauthenticated_controller", Message: "unauthorized"},
+		})
+		return
+	}
+	sessionID := strings.TrimPrefix(strings.TrimPrefix(r.URL.Path, "/microvms/"), "/")
+	s.mu.Lock()
+	resp, ok := s.sessions[sessionID]
+	s.mu.Unlock()
+	if !ok {
+		writeControllerJSON(w, http.StatusNotFound, runtimemicrovm.ControllerResponse{
+			Error: &runtimemicrovm.SafeError{Code: "m15.microvm.session_registry_incomplete", Message: "session not found"},
+		})
+		return
+	}
+	resp.Command = runtimemicrovm.CommandGet
+	resp.LastAction = runtimemicrovm.CommandGet
+	resp.LastTransition = time.Now().UTC()
+	writeControllerJSON(w, http.StatusOK, resp)
+}
+
+// terminate marks a session terminated so a subsequent get observes a terminal
+// state (the kill-VM recovery arc).
+func (s *stubControllerServer) terminate(sessionID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	resp, ok := s.sessions[sessionID]
+	if !ok {
+		return
+	}
+	resp.State = runtimemicrovm.StateTerminated
+	resp.LifecycleState = runtimemicrovm.StateTerminated
+	resp.DesiredState = runtimemicrovm.StateTerminated
+	resp.ProviderState = "terminated"
+	resp.LastAction = runtimemicrovm.CommandTerminate
+	resp.ExpiresAt = time.Now().UTC().Add(-time.Minute) // past expiry → terminal
+	s.sessions[sessionID] = resp
+}
+
+func writeControllerJSON(w http.ResponseWriter, status int, resp runtimemicrovm.ControllerResponse) {
+	w.Header().Set("content-type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+func testHTTPDispatcher(t *testing.T, endpoint, token string) *HTTPControllerDispatcher {
+	t.Helper()
+	d, err := NewHTTPControllerDispatcher(HTTPControllerDispatcherConfig{
+		Endpoint:            endpoint,
+		AuthToken:           token,
 		ImageRef:            "arn:aws:lambda:us-east-1:123456789012:microvm-image/hosted-genesis:1",
 		NetworkConnectorRef: "arn:aws:lambda:us-east-1:123456789012:network-connector/hosted-genesis-egress",
+		MaxDurationSeconds:  300,
+		HTTPClient:          &http.Client{Timeout: 5 * time.Second},
 	})
 	require.NoError(t, err)
+	return d
+}
 
-	dispatcher := NewControllerRuntimeDispatcher(runtime)
+func TestHTTPControllerDispatcherDispatchesRunViaPOST(t *testing.T) {
+	t.Parallel()
+	stub := newStubControllerServer(t, "stub-bearer")
+	srv := httptest.NewServer(stub.handler())
+	t.Cleanup(srv.Close)
+
+	binding := testMicroVMBinding()
+	dispatcher := testHTTPDispatcher(t, srv.URL+"/microvms", stub.token)
 	result, err := dispatcher.DispatchMicroVMRun(context.Background(), "req-dispatch", binding)
 	require.NoError(t, err)
 	require.Equal(t, binding.ConversationID, result.SessionID)
@@ -31,84 +185,22 @@ func TestControllerRuntimeDispatcherDispatchesM16Run(t *testing.T) {
 	require.Equal(t, MicroVMSourceOfTruth, result.LifecycleRef.SourceOfTruth)
 	require.Equal(t, runtimemicrovm.CommandRun, result.LifecycleRef.LastAction)
 	require.NotEmpty(t, result.LifecycleRef.MicroVMID)
+	require.Equal(t, runtimemicrovm.StateRunning, result.LifecycleRef.LifecycleState)
 }
 
-func TestControllerRuntimeDispatcherFailsClosedWhenRuntimeNil(t *testing.T) {
+func TestHTTPControllerDispatcherReconcilesViaGET(t *testing.T) {
 	t.Parallel()
-
-	dispatcher := NewControllerRuntimeDispatcher(nil)
-	_, err := dispatcher.DispatchMicroVMRun(context.Background(), "req-dispatch", testMicroVMBinding())
-	require.ErrorIs(t, err, ErrMicroVMDispatchUnavailable)
-}
-
-func TestControllerRuntimeDispatcherFailsClosedOnInvalidBinding(t *testing.T) {
-	t.Parallel()
-
-	runtime, err := NewMicroVMControllerRuntime(MicroVMControllerRuntimeConfig{
-		Provider:            microvmtestkit.NewFakeProvider(),
-		Registry:            runtimemicrovm.NewMemorySessionRegistry(),
-		ImageRef:            "image-ref",
-		NetworkConnectorRef: "network-ref",
-	})
-	require.NoError(t, err)
-	dispatcher := NewControllerRuntimeDispatcher(runtime)
-	_, err = dispatcher.DispatchMicroVMRun(context.Background(), "req-dispatch", MicroVMSessionBinding{})
-	require.Error(t, err)
-}
-
-func TestControllerRuntimeDispatcherFailsClosedOnEmptyRequestID(t *testing.T) {
-	t.Parallel()
-
-	runtime, err := NewMicroVMControllerRuntime(MicroVMControllerRuntimeConfig{
-		Provider:            microvmtestkit.NewFakeProvider(),
-		Registry:            runtimemicrovm.NewMemorySessionRegistry(),
-		ImageRef:            "image-ref",
-		NetworkConnectorRef: "network-ref",
-	})
-	require.NoError(t, err)
-	dispatcher := NewControllerRuntimeDispatcher(runtime)
-	_, err = dispatcher.DispatchMicroVMRun(context.Background(), "  ", testMicroVMBinding())
-	require.ErrorIs(t, err, ErrMicroVMDispatchUnavailable)
-}
-
-func TestControllerRuntimeDispatcherPropagatesControllerError(t *testing.T) {
-	t.Parallel()
-
-	// A controller backed by a registry that has lost the session cannot run;
-	// the dispatcher must surface the controller error rather than fall back.
-	runtime, err := NewMicroVMControllerRuntime(MicroVMControllerRuntimeConfig{
-		Provider:            microvmtestkit.NewFakeProvider(),
-		Registry:            &failingSessionRegistry{err: errors.New("registry unavailable")},
-		ImageRef:            "image-ref",
-		NetworkConnectorRef: "network-ref",
-	})
-	require.NoError(t, err)
-	dispatcher := NewControllerRuntimeDispatcher(runtime)
-	_, err = dispatcher.DispatchMicroVMRun(context.Background(), "req-dispatch", testMicroVMBinding())
-	require.Error(t, err)
-}
-
-func TestControllerRuntimeDispatcherReconcilesViaControllerGet(t *testing.T) {
-	t.Parallel()
+	stub := newStubControllerServer(t, "stub-bearer")
+	srv := httptest.NewServer(stub.handler())
+	t.Cleanup(srv.Close)
 
 	binding := testMicroVMBinding()
-	provider := microvmtestkit.NewFakeProvider()
-	runtime, err := NewMicroVMControllerRuntime(MicroVMControllerRuntimeConfig{
-		Provider:            provider,
-		Registry:            runtimemicrovm.NewMemorySessionRegistry(),
-		ImageRef:            "arn:aws:lambda:us-east-1:123456789012:microvm-image/hosted-genesis:1",
-		NetworkConnectorRef: "arn:aws:lambda:us-east-1:123456789012:network-connector/hosted-genesis-egress",
-	})
-	require.NoError(t, err)
-	dispatcher := NewControllerRuntimeDispatcher(runtime)
-
-	// Dispatch a run first so the session exists in the provider + registry and
-	// Host has a populated lifecycle ref to reconcile against.
+	dispatcher := testHTTPDispatcher(t, srv.URL+"/microvms", stub.token)
 	dispatch, err := dispatcher.DispatchMicroVMRun(context.Background(), "req-run", binding)
 	require.NoError(t, err)
 
-	// Reconcile via the M16 controller get command: the live VM is observed as
-	// running (non-terminal) and the reconciled ref maps back to the binding.
+	// Reconcile via GET /microvms/{session_id}: the live VM is observed running
+	// (non-terminal) and the reconciled ref maps back to the binding.
 	result, err := dispatcher.ReconcileMicroVM(context.Background(), "req-get", binding, dispatch.LifecycleRef)
 	require.NoError(t, err)
 	require.Equal(t, binding.ConversationID, result.SessionID)
@@ -117,93 +209,150 @@ func TestControllerRuntimeDispatcherReconcilesViaControllerGet(t *testing.T) {
 	require.Equal(t, runtimemicrovm.CommandGet, result.LifecycleRef.LastAction)
 }
 
-func TestControllerRuntimeDispatcherReconcileTerminalVMReportsTerminal(t *testing.T) {
+func TestHTTPControllerDispatcherReconcileTerminalVMReportsTerminal(t *testing.T) {
 	t.Parallel()
+	stub := newStubControllerServer(t, "stub-bearer")
+	srv := httptest.NewServer(stub.handler())
+	t.Cleanup(srv.Close)
 
 	binding := testMicroVMBinding()
-	provider := microvmtestkit.NewFakeProvider()
-	runtime, err := NewMicroVMControllerRuntime(MicroVMControllerRuntimeConfig{
-		Provider:            provider,
-		Registry:            runtimemicrovm.NewMemorySessionRegistry(),
-		ImageRef:            "arn:aws:lambda:us-east-1:123456789012:microvm-image/hosted-genesis:1",
-		NetworkConnectorRef: "arn:aws:lambda:us-east-1:123456789012:network-connector/hosted-genesis-egress",
-	})
-	require.NoError(t, err)
-	dispatcher := NewControllerRuntimeDispatcher(runtime)
-
+	dispatcher := testHTTPDispatcher(t, srv.URL+"/microvms", stub.token)
 	dispatch, err := dispatcher.DispatchMicroVMRun(context.Background(), "req-run", binding)
 	require.NoError(t, err)
 
-	// Terminate the VM through the controller so the provider reports a terminal
-	// state; reconciliation must surface Terminal=true (dead/expired VM) so the
-	// control plane maps it to a loud failure, not a silent no-op.
-	_, err = runtime.Command(context.Background(), runtimemicrovm.CommandTerminate, "req-terminate", binding)
-	require.NoError(t, err)
+	// Simulate the VM being killed mid-turn: terminate the stub session so a
+	// subsequent reconcile get observes a terminal state.
+	stub.terminate(binding.ConversationID)
 
 	result, err := dispatcher.ReconcileMicroVM(context.Background(), "req-get", binding, dispatch.LifecycleRef)
 	require.NoError(t, err)
 	require.True(t, result.Terminal, "terminated VM must reconcile as terminal")
+	require.Equal(t, runtimemicrovm.StateTerminated, result.LifecycleRef.LifecycleState)
 	require.NoError(t, result.LifecycleRef.Validate(binding))
 }
 
-func TestControllerRuntimeDispatcherReconcileFailsClosedWhenRuntimeNil(t *testing.T) {
+func TestHTTPControllerDispatcherFailsClosedWhenNil(t *testing.T) {
 	t.Parallel()
-
-	dispatcher := NewControllerRuntimeDispatcher(nil)
-	_, err := dispatcher.ReconcileMicroVM(context.Background(), "req-get", testMicroVMBinding(), MicroVMLifecycleRef{})
+	var dispatcher *HTTPControllerDispatcher
+	_, err := dispatcher.DispatchMicroVMRun(context.Background(), "req-dispatch", testMicroVMBinding())
+	require.ErrorIs(t, err, ErrMicroVMDispatchUnavailable)
+	_, err = dispatcher.ReconcileMicroVM(context.Background(), "req-get", testMicroVMBinding(), MicroVMLifecycleRef{})
 	require.ErrorIs(t, err, ErrMicroVMDispatchUnavailable)
 }
 
-func TestControllerRuntimeDispatcherReconcileFailsClosedOnInvalidRef(t *testing.T) {
+func TestHTTPControllerDispatcherConstructionFailsClosedOnMissingConfig(t *testing.T) {
 	t.Parallel()
-
-	runtime, err := NewMicroVMControllerRuntime(MicroVMControllerRuntimeConfig{
-		Provider:            microvmtestkit.NewFakeProvider(),
-		Registry:            runtimemicrovm.NewMemorySessionRegistry(),
-		ImageRef:            "image-ref",
-		NetworkConnectorRef: "network-ref",
-	})
-	require.NoError(t, err)
-	dispatcher := NewControllerRuntimeDispatcher(runtime)
-	// An empty ref cannot validate against the binding: fail closed.
-	_, err = dispatcher.ReconcileMicroVM(context.Background(), "req-get", testMicroVMBinding(), MicroVMLifecycleRef{})
-	require.Error(t, err)
-}
-
-func TestControllerRuntimeDispatcherReconcilePropagatesControllerError(t *testing.T) {
-	t.Parallel()
-
-	binding := testMicroVMBinding()
-	runtime, err := NewMicroVMControllerRuntime(MicroVMControllerRuntimeConfig{
-		Provider:            microvmtestkit.NewFakeProvider(),
-		Registry:            &failingSessionRegistry{err: errors.New("registry unavailable")},
-		ImageRef:            "image-ref",
-		NetworkConnectorRef: "network-ref",
-	})
-	require.NoError(t, err)
-	dispatcher := NewControllerRuntimeDispatcher(runtime)
-	dispatch, err := dispatcher.DispatchMicroVMRun(context.Background(), "req-run", binding)
-	// The failing registry may reject the run; if it succeeded enough to build
-	// a ref, exercise reconcile against the same failing registry. Either way
-	// reconcile must surface an error rather than silently no-op.
-	if err == nil {
-		_, reconcileErr := dispatcher.ReconcileMicroVM(context.Background(), "req-get", binding, dispatch.LifecycleRef)
-		require.Error(t, reconcileErr)
+	client := &http.Client{Timeout: time.Second}
+	cases := []struct {
+		name string
+		cfg  HTTPControllerDispatcherConfig
+	}{
+		{"missing endpoint", HTTPControllerDispatcherConfig{AuthToken: "tok", ImageRef: "img", NetworkConnectorRef: "net", HTTPClient: client}},
+		{"missing auth token", HTTPControllerDispatcherConfig{Endpoint: "https://example/microvms", ImageRef: "img", NetworkConnectorRef: "net", HTTPClient: client}},
+		{"missing image ref", HTTPControllerDispatcherConfig{Endpoint: "https://example/microvms", AuthToken: "tok", NetworkConnectorRef: "net", HTTPClient: client}},
+		{"missing network ref", HTTPControllerDispatcherConfig{Endpoint: "https://example/microvms", AuthToken: "tok", ImageRef: "img", HTTPClient: client}},
+		{"nil http client", HTTPControllerDispatcherConfig{Endpoint: "https://example/microvms", AuthToken: "tok", ImageRef: "img", NetworkConnectorRef: "net"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := NewHTTPControllerDispatcher(tc.cfg)
+			require.ErrorIs(t, err, ErrMicroVMDispatchUnavailable, "incomplete config must fail closed, not panic")
+		})
 	}
 }
 
-type failingSessionRegistry struct {
-	err error
+func TestHTTPControllerDispatcherFailsClosedOnInvalidBinding(t *testing.T) {
+	t.Parallel()
+	stub := newStubControllerServer(t, "stub-bearer")
+	srv := httptest.NewServer(stub.handler())
+	t.Cleanup(srv.Close)
+	dispatcher := testHTTPDispatcher(t, srv.URL+"/microvms", stub.token)
+	_, err := dispatcher.DispatchMicroVMRun(context.Background(), "req-dispatch", MicroVMSessionBinding{})
+	require.Error(t, err)
 }
 
-func (f *failingSessionRegistry) Get(ctx context.Context, key runtimemicrovm.SessionKey) (runtimemicrovm.SessionRecord, error) {
-	return runtimemicrovm.SessionRecord{}, f.err
+func TestHTTPControllerDispatcherFailsClosedOnEmptyRequestID(t *testing.T) {
+	t.Parallel()
+	stub := newStubControllerServer(t, "stub-bearer")
+	srv := httptest.NewServer(stub.handler())
+	t.Cleanup(srv.Close)
+	dispatcher := testHTTPDispatcher(t, srv.URL+"/microvms", stub.token)
+	_, err := dispatcher.DispatchMicroVMRun(context.Background(), "  ", testMicroVMBinding())
+	require.ErrorIs(t, err, ErrMicroVMDispatchUnavailable)
 }
-func (f *failingSessionRegistry) Put(ctx context.Context, record runtimemicrovm.SessionRecord) (runtimemicrovm.SessionRecord, error) {
-	return runtimemicrovm.SessionRecord{}, f.err
+
+func TestHTTPControllerDispatcherFailsClosedOnUnauthorized(t *testing.T) {
+	t.Parallel()
+	stub := newStubControllerServer(t, "expected-token")
+	srv := httptest.NewServer(stub.handler())
+	t.Cleanup(srv.Close)
+	// Present the wrong bearer token: the stub authorizer denies, the
+	// controller returns 401 with a SafeError, and the dispatcher must surface
+	// the error rather than fall back.
+	dispatcher := testHTTPDispatcher(t, srv.URL+"/microvms", "wrong-token")
+	_, err := dispatcher.DispatchMicroVMRun(context.Background(), "req-dispatch", testMicroVMBinding())
+	require.Error(t, err)
 }
-func (f *failingSessionRegistry) Delete(ctx context.Context, key runtimemicrovm.SessionKey) error {
-	return f.err
+
+func TestHTTPControllerDispatcherFailsClosedOnHTTPError(t *testing.T) {
+	t.Parallel()
+	// A server returning 500 with no SafeError body must surface a loud error.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte("internal error"))
+	}))
+	t.Cleanup(srv.Close)
+	dispatcher := testHTTPDispatcher(t, srv.URL+"/microvms", "any")
+	_, err := dispatcher.DispatchMicroVMRun(context.Background(), "req-dispatch", testMicroVMBinding())
+	require.Error(t, err)
+}
+
+func TestHTTPControllerDispatcherFailsClosedOnUnreachableEndpoint(t *testing.T) {
+	t.Parallel()
+	// A closed server simulates an unreachable controller endpoint.
+	stub := newStubControllerServer(t, "stub-bearer")
+	srv := httptest.NewServer(stub.handler())
+	srv.Close()
+	dispatcher := testHTTPDispatcher(t, srv.URL+"/microvms", stub.token)
+	_, err := dispatcher.DispatchMicroVMRun(context.Background(), "req-dispatch", testMicroVMBinding())
+	require.Error(t, err)
+}
+
+// TestHTTPControllerDispatcherLifecycleRefFromResponseFields proves
+// MicroVMLifecycleRefFromResponse populates the three MicroVM execution/cache
+// fields (MicroVMID, ExecutionStateRef via LifecycleState, MicroVMLifecycleRef)
+// from the HTTP response body — the grep-proof that the HTTP response shape maps
+// to the same ref the in-process path produced.
+func TestHTTPControllerDispatcherLifecycleRefFromResponseFields(t *testing.T) {
+	t.Parallel()
+	binding := testMicroVMBinding()
+	now := time.Now().UTC()
+	resp := runtimemicrovm.ControllerResponse{
+		Command:           runtimemicrovm.CommandRun,
+		RequestID:         "req-fields",
+		TenantID:          binding.TenantID(),
+		Namespace:         MicroVMNamespace,
+		SessionID:         binding.ConversationID,
+		State:             runtimemicrovm.StateRunning,
+		LifecycleState:    runtimemicrovm.StateRunning,
+		ProviderMicroVMID: "microvm-id-from-http",
+		ProviderState:     "running",
+		LastAction:        runtimemicrovm.CommandRun,
+		LastTransition:    now,
+		RegistryVersion:   7,
+		ExpiresAt:         now.Add(time.Hour),
+	}
+	ref, err := MicroVMLifecycleRefFromResponse(binding, resp, now)
+	require.NoError(t, err)
+	require.Equal(t, "microvm-id-from-http", ref.MicroVMID, "MicroVMID must populate from HTTP ProviderMicroVMID")
+	require.Equal(t, runtimemicrovm.StateRunning, ref.LifecycleState, "LifecycleState must populate from HTTP response")
+	require.Equal(t, int64(7), ref.RegistryVersion, "RegistryVersion must populate from HTTP response")
+	// ExecutionStateRef is the compact string Host records; it must reflect the
+	// HTTP-derived lifecycle state + registry version (the three MicroVM
+	// execution/cache fields Host records on HostedGenesisSession).
+	require.Contains(t, FormatMicroVMExecutionStateRef(ref), "#running@7",
+		"FormatMicroVMExecutionStateRef must reflect the HTTP-derived LifecycleState + RegistryVersion")
 }
 
 // TestH1_4_MicroVMReconcileIsTerminalClassification proves the H1.4 terminal
