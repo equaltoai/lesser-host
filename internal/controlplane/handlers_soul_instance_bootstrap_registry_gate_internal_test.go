@@ -56,7 +56,7 @@ func TestSoulInstanceHostedOffchainMintConversation_DoesNotRequireRegistryContra
 	s.cfg.SoulRegistryContractAddress = ""
 	reg := mintConversationHandleReg()
 	t.Setenv("ANTHROPIC_API_KEY", "anthropic-test-key")
-	stubHostedGenesisAssistantRunner(t, s, "assistant reply", nil)
+	stubHostedGenesisMicroVMDispatcher(t, s)
 	s.enqueueHostedGenesisMessage = func(_ context.Context, msg hostedgenesis.QueueMessage) error {
 		t.Fatalf("hosted/off-chain mint conversation must not enqueue SQS authority: %#v", msg)
 		return nil
@@ -68,7 +68,7 @@ func TestSoulInstanceHostedOffchainMintConversation_DoesNotRequireRegistryContra
 	stubMintConversationIdentity(t, tdb, nil, theoryErrors.ErrItemNotFound)
 	tdb.qMintIdem.On("First", mock.AnythingOfType("*models.SoulMintConversationIdempotency")).Return(theoryErrors.ErrItemNotFound).Once()
 	expectSoulInstanceMintConversationDebit(t, tdb, reg.AgentID, true)
-	expectSoulInstanceMintConversationProgression(t, tdb, hostedgenesis.StatusAssistantTurnReady)
+	expectSoulInstanceMintConversationProgression(t, tdb, hostedgenesis.StatusInProgress)
 
 	resp, err := s.handleSoulInstanceMintConversation(newSoulInstanceBootstrapContext(
 		map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
@@ -78,7 +78,7 @@ func TestSoulInstanceHostedOffchainMintConversation_DoesNotRequireRegistryContra
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
-	out := assertSoulInstanceMintConversationAcceptedResponse(t, resp)
+	out := assertSoulInstanceMintConversationDispatchedResponse(t, resp)
 	if out.Conversation.RegistrationID != reg.ID || out.Conversation.AgentID != reg.AgentID {
 		t.Fatalf("expected hosted session for registration/agent, got %#v", out.Conversation)
 	}

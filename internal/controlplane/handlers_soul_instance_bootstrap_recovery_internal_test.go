@@ -20,20 +20,7 @@ func TestSoulInstanceRecoverMintConversation_RetriggersStuckTurn(t *testing.T) {
 	s := newMintConversationServer(tdb)
 	reg := mintConversationHandleReg()
 	t.Setenv("ANTHROPIC_API_KEY", "anthropic-test-key")
-	runnerCalled := false
-	s.hostedGenesisAssistantRunner = func(_ context.Context, in hostedGenesisAssistantRunInput) (hostedGenesisAssistantRunResult, error) {
-		runnerCalled = true
-		if len(in.messages) != 1 || in.messages[0].Role != hostedGenesisTranscriptRoleUser || in.messages[0].Content != "stuck user turn" {
-			t.Fatalf("recovery must replay existing accepted messages without appending a duplicate turn: %#v", in.messages)
-		}
-		if strings.Contains(in.systemPrompt, mintConversationInstanceReadTestRawKey) {
-			t.Fatalf("recovery prompt leaked instance key")
-		}
-		return hostedGenesisAssistantRunResult{
-			fullResponse: "recovered assistant turn",
-			usage:        models.AIUsage{Provider: "test", Model: in.modelSet, InputTokens: 1, OutputTokens: 2, TotalTokens: 3},
-		}, nil
-	}
+	dispatcher := stubHostedGenesisMicroVMDispatcher(t, s)
 
 	expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, soulInstanceBootstrapTestInstanceSlug)
 	stubMintConversationRegistration(t, tdb, reg)
@@ -48,7 +35,7 @@ func TestSoulInstanceRecoverMintConversation_RetriggersStuckTurn(t *testing.T) {
 		CreatedAt:      time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC),
 	})
 	stubSoulInstanceRecoverySession(t, tdb, hostedGenesisRecoverySessionFixture(t, reg, hostedgenesis.StatusInProgress, ""))
-	expectSoulInstanceMintConversationProgression(t, tdb, hostedgenesis.StatusAssistantTurnReady)
+	expectSoulInstanceMintConversationProgression(t, tdb, hostedgenesis.StatusInProgress)
 
 	resp, err := s.handleSoulInstanceRecoverMintConversation(newSoulInstanceBootstrapContext(
 		map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
@@ -58,21 +45,26 @@ func TestSoulInstanceRecoverMintConversation_RetriggersStuckTurn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected recovery err: %v", err)
 	}
-	if !runnerCalled {
-		t.Fatalf("expected recovery to rerun the assistant turn")
+	if dispatcher.calls != 1 {
+		t.Fatalf("expected recovery to redispatch the stuck turn via the MicroVM controller, got %d dispatch calls", dispatcher.calls)
 	}
-	if resp.Status != http.StatusOK {
-		t.Fatalf("expected 200 recovery response, got %#v", resp)
+	if dispatcher.lastBinding.ConversationID != mintConversationTestConversationID {
+		t.Fatalf("expected recovery dispatch bound to the stuck conversation, got %#v", dispatcher.lastBinding)
+	}
+	if resp.Status != http.StatusAccepted {
+		t.Fatalf("expected 202 dispatched recovery response, got %#v", resp)
 	}
 	var out hostedGenesisConversationResponse
 	if err := json.Unmarshal(resp.Body, &out); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if out.Conversation.Status != models.SoulMintConversationStatusAssistantTurnReady ||
-		out.Conversation.MessageCount != 2 ||
-		len(out.Conversation.Messages) != 2 ||
-		out.Conversation.Messages[1].Content != "recovered assistant turn" {
-		t.Fatalf("expected recovered assistant-ready response with transcript, got %#v", out.Conversation)
+	if out.Conversation.Status != models.SoulMintConversationStatusInProgress {
+		t.Fatalf("expected in_progress dispatched recovery, got %#v", out.Conversation)
+	}
+	for _, msg := range out.Conversation.Messages {
+		if msg.Role == hostedGenesisTranscriptRoleAssistant {
+			t.Fatalf("recovery dispatch must not append an inline assistant message: %#v", out.Conversation.Messages)
+		}
 	}
 	if strings.Contains(string(resp.Body), mintConversationInstanceReadTestRawKey) {
 		t.Fatalf("recovery response leaked credential material: %s", string(resp.Body))

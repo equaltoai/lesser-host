@@ -189,6 +189,7 @@ const (
 	FailureCodeInvalidProducedDeclarations FailureCode = "invalid_produced_declarations"
 	FailureCodeTenantBoundaryViolation     FailureCode = "tenant_boundary_violation"
 	FailureCodeOperatorActionRequired      FailureCode = "operator_action_required"
+	FailureCodeMicroVMUnavailable          FailureCode = "microvm_unavailable"
 )
 
 // Recovery is the typed recovery envelope exposed on failed compact projections.
@@ -233,7 +234,8 @@ func isAllowedFailureCode(code FailureCode) bool {
 		FailureCodeMissingProducedDeclarations,
 		FailureCodeInvalidProducedDeclarations,
 		FailureCodeTenantBoundaryViolation,
-		FailureCodeOperatorActionRequired:
+		FailureCodeOperatorActionRequired,
+		FailureCodeMicroVMUnavailable:
 		return true
 	default:
 		return false
