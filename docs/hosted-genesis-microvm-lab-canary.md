@@ -15,8 +15,9 @@ When explicitly enabled for `stage=lab`, CDK requires all operator-owned context
 - `hostedGenesisMicrovmBaseImageArn`
 - `hostedGenesisMicrovmBaseImageVersion`
 - `hostedGenesisMicrovmBuildRoleArn`
-- `hostedGenesisMicrovmCodeArtifactUri`
 - `hostedGenesisMicrovmAuthorizerTokenSha256` — SHA-256 digest only, never a raw token
+
+The MicroVM image code artifact is built in-repo from `cmd/hosted-genesis-microvm-workload` at synth time and uploaded as a CDK S3 asset; no external `codeArtifactUri` context is required.
 
 The wiring fails closed outside `lab` and fails closed when the digest is not a SHA-256 value.
 
