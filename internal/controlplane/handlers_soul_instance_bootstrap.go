@@ -24,10 +24,18 @@ const (
 	soulInstanceBootstrapCodeConflict           = "soul_instance.conflict"
 	soulInstanceBootstrapCodeNotFound           = "soul_instance.not_found"
 	soulInstanceBootstrapCodeInternal           = "soul_instance.internal"
+	soulInstanceBootstrapCodeMicroVMUnavailable = "soul_instance.microvm_unavailable"
 	soulInstanceBootstrapMessageUnauthorized    = "unauthorized"
 	soulInstanceBootstrapMessageBoundary        = "resource is outside the authenticated instance boundary"
 	soulInstanceBootstrapBoundaryInstanceDomain = "instance_domain"
 )
+
+// appErrCodeMicroVMUnavailable is the control-plane AppError code emitted when
+// the hosted genesis accept path cannot dispatch the M16 MicroVM controller
+// run. It maps to a loud 5xx at every public surface so MicroVM-unavailable is
+// never confused with a generic internal error or silently downgraded to a
+// synchronous control-plane LLM call.
+const appErrCodeMicroVMUnavailable = "app.microvm_unavailable"
 
 type soulInstanceBootstrapContext struct {
 	key          *models.InstanceKey
@@ -665,6 +673,8 @@ func soulInstanceBootstrapErrorFromAppError(appErr *apptheory.AppError) *apptheo
 		return soulInstanceBootstrapError(soulInstanceBootstrapCodeBoundaryViolation, appErr.Message, http.StatusForbidden, nil)
 	case soulMintAppErrCodeNotFound:
 		return soulInstanceBootstrapError(soulInstanceBootstrapCodeNotFound, appErr.Message, http.StatusNotFound, nil)
+	case appErrCodeMicroVMUnavailable:
+		return soulInstanceBootstrapError(soulInstanceBootstrapCodeMicroVMUnavailable, appErr.Message, http.StatusServiceUnavailable, nil)
 	default:
 		return soulInstanceBootstrapError(soulInstanceBootstrapCodeInternal, "internal error", http.StatusInternalServerError, nil)
 	}
@@ -700,6 +710,8 @@ func soulInstanceBootstrapConversationErrorFromAppError(appErr *apptheory.AppErr
 		return soulInstanceBootstrapError(soulInstanceBootstrapCodeConflict, appErr.Message, http.StatusConflict, nil)
 	case soulMintAppErrCodeNotFound:
 		return soulInstanceBootstrapError(soulInstanceBootstrapCodeNotFound, appErr.Message, http.StatusNotFound, nil)
+	case appErrCodeMicroVMUnavailable:
+		return soulInstanceBootstrapError(soulInstanceBootstrapCodeMicroVMUnavailable, appErr.Message, http.StatusServiceUnavailable, nil)
 	default:
 		return soulInstanceBootstrapError(soulInstanceBootstrapCodeInternal, "internal error", http.StatusInternalServerError, nil)
 	}

@@ -21,8 +21,17 @@ import (
 )
 
 const (
+	// hostedGenesisAcceptedTurnRunTimeout bounds the synchronous assistant
+	// runner retained for non-production/test seams. H2.1 deletes that path; the
+	// production accept path dispatches the MicroVM and returns 202 well under
+	// this budget.
 	hostedGenesisAcceptedTurnRunTimeout = 90 * time.Second
-	hostedGenesisProviderUnknown        = "unknown"
+	// hostedGenesisAcceptedTurnDispatchTimeout bounds the M16 controller run
+	// dispatch on the production accept path. The accept path returns 202
+	// accepted-pending; the assistant turn itself runs inside the MicroVM and is
+	// not bounded by this timeout.
+	hostedGenesisAcceptedTurnDispatchTimeout = 10 * time.Second
+	hostedGenesisProviderUnknown             = "unknown"
 )
 
 type hostedGenesisTurnSession struct {
@@ -160,6 +169,60 @@ func (s *Server) progressHostedGenesisAcceptedTurn(ctx context.Context, regCtx m
 	if session.session == nil || conv == nil {
 		return nil, nil, 0, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
+	// H1.2: the production accept path dispatches the AppTheory M16 MicroVM
+	// controller run command and returns 202 accepted-pending. The control plane
+	// never makes a synchronous LLM HTTP call on this path; the assistant turn
+	// runs inside the MicroVM and completion is reconstructed from Host truth.
+	// The synchronous assistant runner is retained only behind an explicit
+	// non-production/test guard (hostedGenesisSyncAssistantFallbackEnabled) until
+	// H2.1 deletes it; production never sets that guard.
+	if s.hostedGenesisMicroVMDispatcher == nil {
+		if s.hostedGenesisSyncAssistantFallbackEnabled && s.hostedGenesisAssistantRunner != nil {
+			return s.progressHostedGenesisAcceptedTurnSync(ctx, regCtx, session, conv, acceptedMessages, apiKey, requestID)
+		}
+		log.Printf("controlplane: hosted genesis microvm dispatcher unavailable agent_hash=%s conversation_hash=%s", soulMintInstanceReadAuditHash(regCtx.agentIDHex), soulMintInstanceReadAuditHash(session.conversationID))
+		failedSession, failedConv, appErr := s.persistHostedGenesisAcceptedTurnFailure(ctx, session, conv, acceptedMessages, hostedGenesisFailureMicroVMUnavailable, requestID, time.Now().UTC())
+		if appErr != nil {
+			return nil, nil, 0, appErr
+		}
+		return failedSession, failedConv, http.StatusOK, &apptheory.AppError{Code: appErrCodeMicroVMUnavailable, Message: "MicroVM execution dispatch is unavailable"}
+	}
+
+	binding := session.session.MicroVMSessionBinding()
+	if err := binding.Validate(); err != nil {
+		log.Printf("controlplane: hosted genesis microvm binding invalid agent_hash=%s conversation_hash=%s err=%v", soulMintInstanceReadAuditHash(regCtx.agentIDHex), soulMintInstanceReadAuditHash(session.conversationID), err)
+		failedSession, failedConv, appErr := s.persistHostedGenesisAcceptedTurnFailure(ctx, session, conv, acceptedMessages, hostedGenesisFailureMicroVMUnavailable, requestID, time.Now().UTC())
+		if appErr != nil {
+			return nil, nil, 0, appErr
+		}
+		return failedSession, failedConv, http.StatusOK, &apptheory.AppError{Code: appErrCodeMicroVMUnavailable, Message: "MicroVM execution dispatch is unavailable"}
+	}
+
+	runCtx, cancel := context.WithTimeout(detachedMintConversationContext(ctx), hostedGenesisAcceptedTurnDispatchTimeout)
+	defer cancel()
+	dispatch, dispatchErr := s.hostedGenesisMicroVMDispatcher.DispatchMicroVMRun(runCtx, strings.TrimSpace(requestID), binding)
+	if dispatchErr != nil {
+		log.Printf("controlplane: hosted genesis microvm dispatch failed agent_hash=%s conversation_hash=%s err=%v", soulMintInstanceReadAuditHash(regCtx.agentIDHex), soulMintInstanceReadAuditHash(session.conversationID), dispatchErr)
+		failedSession, failedConv, appErr := s.persistHostedGenesisAcceptedTurnFailure(ctx, session, conv, acceptedMessages, hostedGenesisFailureMicroVMUnavailable, requestID, time.Now().UTC())
+		if appErr != nil {
+			return nil, nil, 0, appErr
+		}
+		return failedSession, failedConv, http.StatusOK, &apptheory.AppError{Code: appErrCodeMicroVMUnavailable, Message: "MicroVM execution dispatch failed"}
+	}
+
+	progressedSession, progressedConv, appErr := s.persistHostedGenesisAcceptedMicroVMDispatch(ctx, session, conv, acceptedMessages, dispatch, requestID, time.Now().UTC())
+	if appErr != nil {
+		return nil, nil, 0, appErr
+	}
+	return progressedSession, progressedConv, http.StatusAccepted, nil
+}
+
+// progressHostedGenesisAcceptedTurnSync is the retained non-production/test-only
+// synchronous assistant turn path. It is reachable only when
+// hostedGenesisSyncAssistantFallbackEnabled is explicitly true AND no MicroVM
+// dispatcher is wired; production never sets that guard. H2.1 deletes this path
+// and the hostedGenesisAssistantRunner field.
+func (s *Server) progressHostedGenesisAcceptedTurnSync(ctx context.Context, regCtx mintConversationRegistrationContext, session hostedGenesisTurnSession, conv *models.SoulAgentMintConversation, acceptedMessages []soulMintConversationMessage, apiKey string, requestID string) (*models.HostedGenesisSession, *models.SoulAgentMintConversation, int, *apptheory.AppError) {
 	runCtx, cancel := context.WithTimeout(detachedMintConversationContext(ctx), hostedGenesisAcceptedTurnRunTimeout)
 	defer cancel()
 
@@ -183,6 +246,33 @@ func (s *Server) progressHostedGenesisAcceptedTurn(ctx context.Context, regCtx m
 		return nil, nil, 0, appErr
 	}
 	return progressedSession, progressedConv, http.StatusOK, nil
+}
+
+// persistHostedGenesisAcceptedMicroVMDispatch records the durable in_progress
+// HostedGenesisSession after a successful M16 controller run dispatch, applying
+// the non-authoritative MicroVM execution/cache lifecycle ref via
+// ApplyMicroVMLifecycleRef so the three MicroVM fields
+// (MicroVMExecutionID/ExecutionStateRef/MicroVMLifecycleRef) are populated on
+// the authoritative Host row. The conversation stays in_progress with no inline
+// assistant message: the turn is pending inside the MicroVM and completion is
+// reconstructed from Host truth by the recovery/stuck-turn path.
+func (s *Server) persistHostedGenesisAcceptedMicroVMDispatch(ctx context.Context, session hostedGenesisTurnSession, conv *models.SoulAgentMintConversation, acceptedMessages []soulMintConversationMessage, dispatch hostedgenesis.MicroVMDispatchResult, requestID string, now time.Time) (*models.HostedGenesisSession, *models.SoulAgentMintConversation, *apptheory.AppError) {
+	progressedSession := cloneHostedGenesisSession(session.session)
+	progressedConv := cloneSoulAgentMintConversation(conv)
+	if err := progressedSession.ApplyMicroVMLifecycleRef(dispatch.LifecycleRef); err != nil {
+		log.Printf("controlplane: hosted genesis microvm lifecycle ref rejected agent_hash=%s conversation_hash=%s err=%v", soulMintInstanceReadAuditHash(conv.AgentID), soulMintInstanceReadAuditHash(conv.ConversationID), err)
+		return nil, nil, &apptheory.AppError{Code: "app.internal", Message: "failed to record microvm dispatch"}
+	}
+	progressedSession.Status = string(hostedgenesis.StatusInProgress)
+	progressedSession.RequestID = strings.TrimSpace(requestID)
+	progressedSession.UpdatedAt = now
+	progressedSession.CompletedAt = time.Time{}
+	progressedConv.RequestID = strings.TrimSpace(requestID)
+	progressedConv.UpdatedAt = now
+	if appErr := s.persistHostedGenesisProgression(ctx, session, progressedSession, progressedConv, string(progressedConv.Messages), "", progressedConv.Usage, now); appErr != nil {
+		return nil, nil, appErr
+	}
+	return progressedSession, progressedConv, nil
 }
 
 func (s *Server) runHostedGenesisAcceptedAssistant(ctx context.Context, in hostedGenesisAssistantRunInput) (hostedGenesisAssistantRunResult, error) {
