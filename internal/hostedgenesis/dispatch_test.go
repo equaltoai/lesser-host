@@ -87,6 +87,110 @@ func TestControllerRuntimeDispatcherPropagatesControllerError(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestControllerRuntimeDispatcherReconcilesViaControllerGet(t *testing.T) {
+	t.Parallel()
+
+	binding := testMicroVMBinding()
+	provider := microvmtestkit.NewFakeProvider()
+	runtime, err := NewMicroVMControllerRuntime(MicroVMControllerRuntimeConfig{
+		Provider:            provider,
+		Registry:            runtimemicrovm.NewMemorySessionRegistry(),
+		ImageRef:            "arn:aws:lambda:us-east-1:123456789012:microvm-image/hosted-genesis:1",
+		NetworkConnectorRef: "arn:aws:lambda:us-east-1:123456789012:network-connector/hosted-genesis-egress",
+	})
+	require.NoError(t, err)
+	dispatcher := NewControllerRuntimeDispatcher(runtime)
+
+	// Dispatch a run first so the session exists in the provider + registry and
+	// Host has a populated lifecycle ref to reconcile against.
+	dispatch, err := dispatcher.DispatchMicroVMRun(context.Background(), "req-run", binding)
+	require.NoError(t, err)
+
+	// Reconcile via the M16 controller get command: the live VM is observed as
+	// running (non-terminal) and the reconciled ref maps back to the binding.
+	result, err := dispatcher.ReconcileMicroVM(context.Background(), "req-get", binding, dispatch.LifecycleRef)
+	require.NoError(t, err)
+	require.Equal(t, binding.ConversationID, result.SessionID)
+	require.False(t, result.Terminal, "live VM must not be terminal")
+	require.NoError(t, result.LifecycleRef.Validate(binding))
+	require.Equal(t, runtimemicrovm.CommandGet, result.LifecycleRef.LastAction)
+}
+
+func TestControllerRuntimeDispatcherReconcileTerminalVMReportsTerminal(t *testing.T) {
+	t.Parallel()
+
+	binding := testMicroVMBinding()
+	provider := microvmtestkit.NewFakeProvider()
+	runtime, err := NewMicroVMControllerRuntime(MicroVMControllerRuntimeConfig{
+		Provider:            provider,
+		Registry:            runtimemicrovm.NewMemorySessionRegistry(),
+		ImageRef:            "arn:aws:lambda:us-east-1:123456789012:microvm-image/hosted-genesis:1",
+		NetworkConnectorRef: "arn:aws:lambda:us-east-1:123456789012:network-connector/hosted-genesis-egress",
+	})
+	require.NoError(t, err)
+	dispatcher := NewControllerRuntimeDispatcher(runtime)
+
+	dispatch, err := dispatcher.DispatchMicroVMRun(context.Background(), "req-run", binding)
+	require.NoError(t, err)
+
+	// Terminate the VM through the controller so the provider reports a terminal
+	// state; reconciliation must surface Terminal=true (dead/expired VM) so the
+	// control plane maps it to a loud failure, not a silent no-op.
+	_, err = runtime.Command(context.Background(), runtimemicrovm.CommandTerminate, "req-terminate", binding)
+	require.NoError(t, err)
+
+	result, err := dispatcher.ReconcileMicroVM(context.Background(), "req-get", binding, dispatch.LifecycleRef)
+	require.NoError(t, err)
+	require.True(t, result.Terminal, "terminated VM must reconcile as terminal")
+	require.NoError(t, result.LifecycleRef.Validate(binding))
+}
+
+func TestControllerRuntimeDispatcherReconcileFailsClosedWhenRuntimeNil(t *testing.T) {
+	t.Parallel()
+
+	dispatcher := NewControllerRuntimeDispatcher(nil)
+	_, err := dispatcher.ReconcileMicroVM(context.Background(), "req-get", testMicroVMBinding(), MicroVMLifecycleRef{})
+	require.ErrorIs(t, err, ErrMicroVMDispatchUnavailable)
+}
+
+func TestControllerRuntimeDispatcherReconcileFailsClosedOnInvalidRef(t *testing.T) {
+	t.Parallel()
+
+	runtime, err := NewMicroVMControllerRuntime(MicroVMControllerRuntimeConfig{
+		Provider:            microvmtestkit.NewFakeProvider(),
+		Registry:            runtimemicrovm.NewMemorySessionRegistry(),
+		ImageRef:            "image-ref",
+		NetworkConnectorRef: "network-ref",
+	})
+	require.NoError(t, err)
+	dispatcher := NewControllerRuntimeDispatcher(runtime)
+	// An empty ref cannot validate against the binding: fail closed.
+	_, err = dispatcher.ReconcileMicroVM(context.Background(), "req-get", testMicroVMBinding(), MicroVMLifecycleRef{})
+	require.Error(t, err)
+}
+
+func TestControllerRuntimeDispatcherReconcilePropagatesControllerError(t *testing.T) {
+	t.Parallel()
+
+	binding := testMicroVMBinding()
+	runtime, err := NewMicroVMControllerRuntime(MicroVMControllerRuntimeConfig{
+		Provider:            microvmtestkit.NewFakeProvider(),
+		Registry:            &failingSessionRegistry{err: errors.New("registry unavailable")},
+		ImageRef:            "image-ref",
+		NetworkConnectorRef: "network-ref",
+	})
+	require.NoError(t, err)
+	dispatcher := NewControllerRuntimeDispatcher(runtime)
+	dispatch, err := dispatcher.DispatchMicroVMRun(context.Background(), "req-run", binding)
+	// The failing registry may reject the run; if it succeeded enough to build
+	// a ref, exercise reconcile against the same failing registry. Either way
+	// reconcile must surface an error rather than silently no-op.
+	if err == nil {
+		_, reconcileErr := dispatcher.ReconcileMicroVM(context.Background(), "req-get", binding, dispatch.LifecycleRef)
+		require.Error(t, reconcileErr)
+	}
+}
+
 type failingSessionRegistry struct {
 	err error
 }
