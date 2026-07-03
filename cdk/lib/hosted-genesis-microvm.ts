@@ -32,6 +32,12 @@ const contextKeys = {
   baseImageVersion: "hostedGenesisMicrovmBaseImageVersion",
   buildRoleArn: "hostedGenesisMicrovmBuildRoleArn",
   authorizerTokenSha256: "hostedGenesisMicrovmAuthorizerTokenSha256",
+  // authTokenSSMParamName is the NAME (not the value) of the SSM SecureString
+  // holding the raw authorizer bearer token the control plane presents to the
+  // controller API. The param name is non-secret; the raw token is a credential
+  // the principal provisions out-of-band. Required only when a control-plane
+  // function is granted HTTP dispatch (P52 H1.5).
+  authTokenSSMParamName: "hostedGenesisMicrovmAuthTokenSSMParamName",
 } as const;
 
 export interface HostedGenesisMicrovmLabProps {
@@ -41,13 +47,16 @@ export interface HostedGenesisMicrovmLabProps {
   readonly removalPolicy: cdk.RemovalPolicy;
   readonly stateTable: dynamodb.ITable;
   // controlPlaneFunction is the control-plane API Lambda that, under P52 H1.5,
-  // dispatches MicroVM runs in-process via a ControllerRuntimeDispatcher wired
-  // in controlplane.NewServer. When provided, the construct grants it the
-  // MicroVM control-plane IAM actions, PassNetworkConnector, read/write on the
-  // session registry table, and the image/network-connector/session-table env
-  // vars so NewServer can build the real dispatcher. Fail-closed auth is
-  // preserved: the controller routes stay authorizer-required + deny-by-default
-  // regardless of this grant.
+  // dispatches MicroVM runs through the governed AppTheoryMicrovmController HTTP
+  // API (POST /microvms to run, GET /microvms/{session_id} to reconcile) via an
+  // HTTPControllerDispatcher wired in controlplane.NewServer. When provided, the
+  // construct grants it ssm:GetParameter on the authorizer bearer-token
+  // SecureString and injects the controller endpoint + auth-token SSM param name
+  // + image/network-connector refs env vars so NewServer can build the real HTTP
+  // dispatcher. The control plane never receives MicroVM IAM or session-registry
+  // access — the controller Lambda is the single governed surface. Fail-closed
+  // auth is preserved: the controller routes stay authorizer-required +
+  // deny-by-default regardless of this grant.
   readonly controlPlaneFunction?: lambda.Function;
 }
 
@@ -257,22 +266,39 @@ export function configureHostedGenesisMicrovmLab(
   );
   props.stateTable.grantReadData(controller.controllerFunction);
 
-  // P52 H1.5: grant the control-plane Lambda the MicroVM control-plane IAM
-  // actions, PassNetworkConnector, read/write on the session registry table,
-  // and the image/network-connector/session-table env vars so
-  // controlplane.NewServer can construct the in-process
-  // ControllerRuntimeDispatcher. This mirrors what the AppTheoryMicrovmController
-  // construct grants its own controllerFunction, applied to the control-plane
-  // Lambda so dispatch is in-process (no HTTP hop, meets the <2s accept
-  // budget). Fail-closed auth on the controller routes is unaffected.
+  // P52 H1.5: provisioned concurrency on the controller Lambda keeps the
+  // governed HTTP API warm so the control plane's accept-path dispatch
+  // (POST /microvms) meets the <2s budget without a controller cold-start hit.
+  // currentVersionOptions alone does not publish a version/alias at synth time
+  // (CDK only materializes them when currentVersion is referenced), so publish
+  // an explicit alias carrying provisioned concurrency. The controller Lambda
+  // itself is created by the AppTheoryMicrovmController construct from the
+  // caller-supplied FunctionProps; this alias is the CDK-supported way to add
+  // provisioned concurrency to a Function constructed elsewhere.
+  const controllerVersion = controller.controllerFunction.currentVersion;
+  new lambda.Alias(scope, "HostedGenesisMicrovmControllerAlias", {
+    aliasName: "provisioned",
+    version: controllerVersion,
+    provisionedConcurrentExecutions: 1,
+  });
+
+  // P52 H1.5: grant the control-plane Lambda ssm:GetParameter on the authorizer
+  // bearer-token SecureString + inject the controller endpoint + auth-token SSM
+  // param name + image/network-connector refs env vars so controlplane.NewServer
+  // can construct the HTTPControllerDispatcher. The control plane never receives
+  // MicroVM IAM or session-registry access — it only speaks HTTP to the
+  // governed controller API with the authorizer bearer token (loaded from SSM
+  // at runtime, never committed or logged). Fail-closed auth on the controller
+  // routes is unaffected.
   if (props.controlPlaneFunction) {
     grantControlPlaneMicroVMDispatch(
       scope,
       props.controlPlaneFunction,
-      controller.sessionTable,
+      controller.endpoint,
       microvmImage.microvmImageArn,
       [ingressConnector.networkConnectorArn],
       [egressConnector.networkConnectorArn],
+      requiredContext(scope, contextKeys.authTokenSSMParamName),
     );
   }
 
@@ -291,70 +317,56 @@ export function configureHostedGenesisMicrovmLab(
 }
 
 // grantControlPlaneMicroVMDispatch grants the control-plane Lambda the
-// constrained MicroVM control-plane IAM actions + PassNetworkConnector + session
-// registry read/write, and injects the env vars controlplane.NewServer reads to
-// build the in-process ControllerRuntimeDispatcher. The IAM shape mirrors the
-// AppTheoryMicrovmController construct's grantMicrovmControlPlane so the
-// control-plane Lambda can RunMicrovm/GetMicrovm/ListMicrovms/Suspend/Resume/
-// Terminate + create auth tokens against the constrained MicroVM instance
-// resource, without ever receiving a raw AWS SDK client.
+// credentials it needs to dispatch MicroVM runs through the governed
+// AppTheoryMicrovmController HTTP API: ssm:GetParameter on the authorizer
+// bearer-token SecureString (the authorizer's identity source) + kms:Decrypt
+// for the SecureString, and injects the env vars controlplane.NewServer reads
+// to build the HTTPControllerDispatcher. The control plane never receives
+// MicroVM IAM (RunMicrovm/GetMicrovm/...) or session-registry access — the
+// controller Lambda is the single governed surface; the control plane only
+// speaks HTTP to the controller endpoint with the authorizer bearer token.
 function grantControlPlaneMicroVMDispatch(
   scope: Construct,
   fn: lambda.Function,
-  sessionTable: dynamodb.ITable,
+  controllerEndpoint: string,
   imageArn: string,
   ingressConnectorArns: string[],
   egressConnectorArns: string[],
+  authTokenSSMParamName: string,
 ): void {
-  const microvmInstanceArn = cdk.Stack.of(scope).formatArn({
-    service: "lambda",
-    resource: "microvm",
-    resourceName: "*",
-    arnFormat: cdk.ArnFormat.COLON_RESOURCE_NAME,
-  });
+  const authTokenSSMParamArn = ssmParamArn(scope, authTokenSSMParamName);
 
   fn.addToRolePolicy(
     new iam.PolicyStatement({
-      sid: "HostedGenesisMicrovmControlPlane",
-      actions: [
-        "lambda:CreateMicrovmAuthToken",
-        "lambda:CreateMicrovmShellAuthToken",
-        "lambda:GetMicrovm",
-        "lambda:ResumeMicrovm",
-        "lambda:RunMicrovm",
-        "lambda:SuspendMicrovm",
-        "lambda:TerminateMicrovm",
-      ],
-      resources: [microvmInstanceArn],
+      sid: "HostedGenesisMicrovmAuthTokenRead",
+      actions: ["ssm:GetParameter", "ssm:GetParameters"],
+      resources: [authTokenSSMParamArn],
     }),
   );
 
   fn.addToRolePolicy(
     new iam.PolicyStatement({
-      sid: "HostedGenesisMicrovmList",
-      actions: ["lambda:ListMicrovms"],
+      sid: "HostedGenesisMicrovmAuthTokenDecrypt",
+      actions: ["kms:Decrypt"],
       resources: ["*"],
+      conditions: {
+        StringEquals: { "kms:ViaService": `ssm.${cdk.Aws.REGION}.amazonaws.com` },
+      },
     }),
   );
 
-  // PassNetworkConnector is permission-only (no resource-level support, per
-  // AppTheory). The permitted connector set is constrained through the typed
-  // props + fail-closed env wiring, not raw request strings.
-  fn.addToRolePolicy(
-    new iam.PolicyStatement({
-      sid: "HostedGenesisMicrovmPassNetworkConnectors",
-      actions: ["lambda:PassNetworkConnector"],
-      resources: ["*"],
-    }),
+  // Inject the env vars controlplane.NewServer's HTTP dispatcher constructor
+  // reads: the governed controller endpoint, the auth-token SSM param name
+  // (the raw token is fetched at runtime, never committed), and the non-secret
+  // image/network-connector refs the control plane sends in the POST /microvms
+  // run body. addEnvironment is the CDK-supported way to append env vars to a
+  // Function constructed elsewhere.
+  fn.addEnvironment("HOSTED_GENESIS_MICROVM_ENABLED", "true");
+  fn.addEnvironment("APPTHEORY_MICROVM_CONTROLLER_ENDPOINT", controllerEndpoint);
+  fn.addEnvironment(
+    "HOSTED_GENESIS_MICROVM_AUTH_TOKEN_SSM_PARAM",
+    authTokenSSMParamName,
   );
-
-  sessionTable.grantReadWriteData(fn);
-
-  // Inject the env vars controlplane.NewServer's dispatcher constructor reads.
-  // These mirror the AppTheoryMicrovmController construct's controller env
-  // wiring so the in-process runtime binds the same image + connectors +
-  // session registry table. addEnvironment is the CDK-supported way to append
-  // env vars to a Function constructed elsewhere.
   fn.addEnvironment("APPTHEORY_MICROVM_IMAGE_REF", imageArn);
   fn.addEnvironment(
     "APPTHEORY_MICROVM_INGRESS_NETWORK_CONNECTOR_REFS",
@@ -368,16 +380,19 @@ function grantControlPlaneMicroVMDispatch(
     "APPTHEORY_MICROVM_NETWORK_CONNECTOR_REFS",
     egressConnectorArns.join(","),
   );
-  fn.addEnvironment(
-    "APPTHEORY_MICROVM_SESSION_REGISTRY_TABLE",
-    sessionTable.tableName,
-  );
-  fn.addEnvironment("HOSTED_GENESIS_MICROVM_ENABLED", "true");
+}
+
+// ssmParamArn formats the full ARN for an SSM parameter name (the parameter is
+// assumed to live in the current account + region). SSM parameter ARNs include
+// the leading slash of the name verbatim.
+function ssmParamArn(scope: Construct, paramName: string): string {
+  const name = paramName.startsWith("/") ? paramName : `/${paramName}`;
+  return `arn:aws:ssm:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:parameter${name}`;
 }
 
 function readRequiredContext(
   scope: Construct,
-): Record<keyof Omit<typeof contextKeys, "enabled">, string> {
+): Record<keyof Omit<typeof contextKeys, "enabled" | "authTokenSSMParamName">, string> {
   return {
     vpcId: requiredContext(scope, contextKeys.vpcId),
     privateSubnetId: requiredContext(scope, contextKeys.privateSubnetId),

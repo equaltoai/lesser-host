@@ -1,7 +1,12 @@
 package controlplane
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -9,52 +14,50 @@ import (
 	runtimemicrovm "github.com/theory-cloud/apptheory/runtime/microvm"
 
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
-	"github.com/equaltoai/lesser-host/internal/store"
 )
 
 // TestH1_5_E2E_HappyPathAndKillVMRecovery is the stub/local-proved E2E harness
 // for the P52 H1.5 lab gate. It drives the full MicroVM dispatch lifecycle
-// through the REAL ControllerRuntimeDispatcher wired via the H1.5 NewServer seam
-// (not a stubMicroVMDispatcher) against an in-memory MemorySessionRegistry + a
-// stub AWS provider, proving the state-machine arc the lab E2E gate exercises
-// without calling AWS:
+// through the REAL HTTPControllerDispatcher wired via the H1.5 NewServer seam
+// (not a stubMicroVMDispatcher) against an httptest.Server-backed stub
+// controller serving the governed AppTheoryMicrovmController HTTP routes,
+// proving the state-machine arc the lab E2E gate exercises without calling AWS:
 //
-//  1. Happy path: dispatch run -> in_progress lifecycle ref; reconcile get ->
-//     live VM preserves the pending ref (assistant_turn_ready is reached by the
-//     in-VM workload writing session truth out-of-band, modeled here by the
-//     provider keeping the session running); a follow-on extraction run
-//     dispatches on the same session (declaration_extraction_pending ->
-//     declaration_ready is the workload completing in-VM).
-//  2. Kill-VM recovery: dispatch run -> in_progress; the provider reports the
-//     session terminated (the VM was killed mid-turn); reconcile get surfaces
-//     Terminal=true -> the recover path maps it to a loud retryable failed
-//     session; a retry dispatch run allocates a fresh in_progress ref on the
-//     same session (retry works).
+//  1. Happy path: dispatch run (POST /microvms) -> in_progress lifecycle ref
+//     (well under the <2s accept budget); reconcile get (GET
+//     /microvms/{session_id}) -> live VM preserves the pending ref
+//     (assistant_turn_ready is reached by the in-VM workload writing session
+//     truth out-of-band, modeled here by the stub controller keeping the
+//     session running); a follow-on extraction run dispatches on the same
+//     session (declaration_extraction_pending -> declaration_ready is the
+//     workload completing in-VM).
+//  2. Kill-VM recovery: dispatch run -> in_progress; the stub controller
+//     reports the session terminated (the VM was killed mid-turn); reconcile
+//     get surfaces Terminal=true -> the recover path maps it to a loud
+//     retryable failed session; a retry dispatch run allocates a fresh
+//     in_progress ref on the same session (retry works).
 //
 // It complements the link-by-link H1.2/H1.3/H1.4 handler tests by proving the
-// wired dispatcher chain end-to-end. The runnable lab script
+// wired HTTP dispatcher chain end-to-end. The runnable lab script
 // (scripts/hosted-genesis-microvm-e2e-gate.sh) drives the same arc against the
 // deployed lab endpoints; this test is the local-proof gate that runs in CI.
 func TestH1_5_E2E_HappyPathAndKillVMRecovery(t *testing.T) {
 	cfg := microVMWiringTestConfig()
-	provider := newStubMicroVMProvider(t)
-	st := store.New(nil)
+	stub := newStubControllerServer("stub-bearer")
+	controllerSrv := httptest.NewServer(stub.handler())
+	t.Cleanup(controllerSrv.Close)
+	cfg.HostedGenesisMicroVM.ControllerEndpoint = controllerSrv.URL + "/microvms"
 
-	dispatcher := newHostedGenesisMicroVMDispatcher(context.Background(), cfg, st, hostedGenesisMicroVMDispatcherOptions{
-		providerFactory: func(_ context.Context) (runtimemicrovm.Provider, error) {
-			return provider, nil
-		},
-		registryFactory: func() (runtimemicrovm.SessionRegistry, error) {
-			return runtimemicrovm.NewMemorySessionRegistry(), nil
-		},
-		reconstructionStaleAfter: time.Minute,
-	})
+	dispatcher := newHostedGenesisMicroVMDispatcher(context.Background(), cfg, stubSSMGetter{
+		param: cfg.HostedGenesisMicroVM.AuthTokenSSMParam,
+		token: stub.token,
+	}.GetParameter, hostedGenesisMicroVMDispatcherOptions{})
 	if dispatcher == nil {
 		t.Fatalf("E2E harness expected a wired dispatcher, got nil")
 	}
-	crd, ok := dispatcher.(*hostedgenesis.ControllerRuntimeDispatcher)
+	crd, ok := dispatcher.(*hostedgenesis.HTTPControllerDispatcher)
 	if !ok || crd == nil {
-		t.Fatalf("E2E harness expected *ControllerRuntimeDispatcher, got %T", dispatcher)
+		t.Fatalf("E2E harness expected *HTTPControllerDispatcher, got %T", dispatcher)
 	}
 
 	binding := hostedgenesis.MicroVMSessionBinding{
@@ -111,16 +114,16 @@ func TestH1_5_E2E_HappyPathAndKillVMRecovery(t *testing.T) {
 
 	// --- Kill-VM recovery arc (extracted to keep the happy-path test under the
 	// gocognit budget) ---
-	h1_5KillVMRecoveryArc(t, dispatcher, provider)
+	h1_5KillVMRecoveryArc(t, dispatcher, stub)
 }
 
 // h1_5KillVMRecoveryArc drives the kill-VM recovery half of the E2E gate:
-// dispatch a fresh session, terminate it mid-turn in the stub provider (the VM
-// was killed), reconcile get surfaces Terminal=true (recover maps to loud
+// dispatch a fresh session, terminate it mid-turn in the stub controller (the
+// VM was killed), reconcile get surfaces Terminal=true (recover maps to loud
 // failed), then a retry dispatch allocates a fresh in_progress ref. Extracted
 // from TestH1_5_E2E_HappyPathAndKillVMRecovery to keep that func's cognitive
 // complexity under the gocognit >20 budget.
-func h1_5KillVMRecoveryArc(t *testing.T, dispatcher hostedgenesis.MicroVMDispatcher, provider *stubHostedGenesisMicroVMProvider) {
+func h1_5KillVMRecoveryArc(t *testing.T, dispatcher hostedgenesis.MicroVMDispatcher, stub *stubControllerServer) {
 	t.Helper()
 	killedBinding := hostedgenesis.MicroVMSessionBinding{
 		InstanceSlug:   "acme",
@@ -133,22 +136,9 @@ func h1_5KillVMRecoveryArc(t *testing.T, dispatcher hostedgenesis.MicroVMDispatc
 	if err != nil {
 		t.Fatalf("kill-vm: accept dispatch failed: %v", err)
 	}
-	// Simulate the VM being killed mid-turn: terminate the session in the stub
-	// provider so a subsequent reconcile get observes a terminal state.
-	termInput := runtimemicrovm.ProviderSessionInput{
-		RequestID: "req_e2e_kill",
-		TenantID:  killedBinding.TenantID(),
-		Namespace: hostedgenesis.MicroVMNamespace,
-		Binding: runtimemicrovm.ProviderSessionBinding{
-			TenantID:          killedBinding.TenantID(),
-			Namespace:         hostedgenesis.MicroVMNamespace,
-			SessionID:         killedBinding.ConversationID,
-			ProviderMicroVMID: killedDispatch.LifecycleRef.MicroVMID,
-		},
-	}
-	if _, termErr := provider.Terminate(context.Background(), termInput); termErr != nil {
-		t.Fatalf("kill-vm: terminate stub session failed: %v", termErr)
-	}
+	// Simulate the VM being killed mid-turn: terminate the stub session so a
+	// subsequent reconcile get observes a terminal state.
+	stub.terminate(killedBinding.ConversationID)
 
 	// Recover: reconcile get surfaces Terminal=true -> recover maps to loud failed.
 	killedReconcile, err := dispatcher.ReconcileMicroVM(context.Background(), "req_e2e_recover", killedBinding, killedDispatch.LifecycleRef)
@@ -164,7 +154,7 @@ func h1_5KillVMRecoveryArc(t *testing.T, dispatcher hostedgenesis.MicroVMDispatc
 
 	// Retry works: a fresh dispatch run on the same killed session allocates a
 	// new in_progress lifecycle ref (the controller re-runs the VM). The stub
-	// provider records a new running session for the retry.
+	// controller records a new running session for the retry.
 	retryDispatch, err := dispatcher.DispatchMicroVMRun(context.Background(), "req_e2e_retry", killedBinding)
 	if err != nil {
 		t.Fatalf("kill-vm: retry dispatch failed: %v", err)
@@ -179,25 +169,23 @@ func h1_5KillVMRecoveryArc(t *testing.T, dispatcher hostedgenesis.MicroVMDispatc
 
 // TestH1_5_E2E_MaximumDurationSecondsWired proves the H1.5 timeout-budget
 // wiring: the dispatcher-sized MaximumDurationSeconds (config, decision 7) is
-// set on the dispatched run request envelope so the MicroVM session is bounded
-// for the longest LLM turn plus in-VM extraction. The stub provider records the
-// value it received on Run.
+// set on the dispatched POST /microvms run body so the MicroVM session is
+// bounded for the longest LLM turn plus in-VM extraction. The stub controller
+// records the value it received on the run body.
 func TestH1_5_E2E_MaximumDurationSecondsWired(t *testing.T) {
 	cfg := microVMWiringTestConfig()
 	const wantMaxDuration = int32(300)
 	cfg.HostedGenesisMicroVM.MaximumDurationSeconds = wantMaxDuration
 
-	var capturedMaxDuration int32
-	provider := &capturingMaxDurationProvider{t: t, captured: &capturedMaxDuration, inner: newStubMicroVMProvider(t)}
-	dispatcher := newHostedGenesisMicroVMDispatcher(context.Background(), cfg, store.New(nil), hostedGenesisMicroVMDispatcherOptions{
-		providerFactory: func(_ context.Context) (runtimemicrovm.Provider, error) {
-			return provider, nil
-		},
-		registryFactory: func() (runtimemicrovm.SessionRegistry, error) {
-			return runtimemicrovm.NewMemorySessionRegistry(), nil
-		},
-		reconstructionStaleAfter: time.Minute,
-	})
+	stub := newMaxDurationCapturingControllerServer(t, "stub-bearer")
+	controllerSrv := httptest.NewServer(stub.handler())
+	t.Cleanup(controllerSrv.Close)
+	cfg.HostedGenesisMicroVM.ControllerEndpoint = controllerSrv.URL + "/microvms"
+
+	dispatcher := newHostedGenesisMicroVMDispatcher(context.Background(), cfg, stubSSMGetter{
+		param: cfg.HostedGenesisMicroVM.AuthTokenSSMParam,
+		token: stub.inner.token,
+	}.GetParameter, hostedGenesisMicroVMDispatcherOptions{})
 	if dispatcher == nil {
 		t.Fatalf("expected wired dispatcher for max-duration test, got nil")
 	}
@@ -211,52 +199,47 @@ func TestH1_5_E2E_MaximumDurationSecondsWired(t *testing.T) {
 	if _, err := dispatcher.DispatchMicroVMRun(context.Background(), "req_md", binding); err != nil {
 		t.Fatalf("max-duration dispatch failed: %v", err)
 	}
-	if capturedMaxDuration != wantMaxDuration {
-		t.Fatalf("expected MaximumDurationSeconds=%d on the run request, got %d", wantMaxDuration, capturedMaxDuration)
+	if got := stub.capturedMaxDuration(); got != wantMaxDuration {
+		t.Fatalf("expected MaximumDurationSeconds=%d on the run request, got %d", wantMaxDuration, got)
 	}
 }
 
-// capturingMaxDurationProvider wraps the stub provider and captures the
-// MaximumDurationSeconds passed to Run so the E2E harness can assert the
-// timeout-budget wiring without calling AWS.
-type capturingMaxDurationProvider struct {
-	t        *testing.T
+// maxDurationCapturingControllerServer wraps the stub controller and captures
+// the maximum_duration_seconds passed in the POST /microvms run body so the E2E
+// harness can assert the timeout-budget wiring without calling AWS.
+type maxDurationCapturingControllerServer struct {
+	inner    *stubControllerServer
 	captured *int32
-	inner    *stubHostedGenesisMicroVMProvider
 }
 
-func (p *capturingMaxDurationProvider) Run(ctx context.Context, input runtimemicrovm.ProviderRunInput) (runtimemicrovm.ProviderSession, error) {
-	*p.captured = input.MaximumDurationSeconds
-	return p.inner.Run(ctx, input)
+func newMaxDurationCapturingControllerServer(t *testing.T, token string) *maxDurationCapturingControllerServer {
+	t.Helper()
+	inner := newStubControllerServer(token)
+	return &maxDurationCapturingControllerServer{inner: inner, captured: new(int32)}
 }
 
-func (p *capturingMaxDurationProvider) Get(ctx context.Context, input runtimemicrovm.ProviderSessionInput) (runtimemicrovm.ProviderSession, error) {
-	return p.inner.Get(ctx, input)
+func (s *maxDurationCapturingControllerServer) handler() http.Handler {
+	innerHandler := s.inner.handler()
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/microvms") {
+			// Buffer the body so the inner handler can still decode it after we
+			// capture the duration field.
+			body, err := io.ReadAll(r.Body)
+			_ = r.Body.Close()
+			if err == nil {
+				var payload struct {
+					MaximumDurationSeconds int32 `json:"maximum_duration_seconds"`
+				}
+				_ = json.Unmarshal(body, &payload)
+				*s.captured = payload.MaximumDurationSeconds
+			}
+			r.Body = io.NopCloser(bytes.NewReader(body))
+		}
+		innerHandler.ServeHTTP(w, r)
+	})
 }
 
-func (p *capturingMaxDurationProvider) List(ctx context.Context, input runtimemicrovm.ProviderListInput) (runtimemicrovm.ProviderListOutput, error) {
-	return p.inner.List(ctx, input)
-}
-
-func (p *capturingMaxDurationProvider) Suspend(ctx context.Context, input runtimemicrovm.ProviderSessionInput) (runtimemicrovm.ProviderSession, error) {
-	return p.inner.Suspend(ctx, input)
-}
-
-func (p *capturingMaxDurationProvider) Resume(ctx context.Context, input runtimemicrovm.ProviderSessionInput) (runtimemicrovm.ProviderSession, error) {
-	return p.inner.Resume(ctx, input)
-}
-
-func (p *capturingMaxDurationProvider) Terminate(ctx context.Context, input runtimemicrovm.ProviderSessionInput) (runtimemicrovm.ProviderSession, error) {
-	return p.inner.Terminate(ctx, input)
-}
-
-func (p *capturingMaxDurationProvider) CreateAuthToken(ctx context.Context, input runtimemicrovm.ProviderTokenInput) (runtimemicrovm.ProviderToken, error) {
-	return p.inner.CreateAuthToken(ctx, input)
-}
-
-func (p *capturingMaxDurationProvider) CreateShellToken(ctx context.Context, input runtimemicrovm.ProviderTokenInput) (runtimemicrovm.ProviderToken, error) {
-	return p.inner.CreateShellToken(ctx, input)
-}
+func (s *maxDurationCapturingControllerServer) capturedMaxDuration() int32 { return *s.captured }
 
 // TestH1_5_E2E_HarnessConfigCompleteGuard is a lightweight guard that the
 // harness's wiring-test config satisfies config.HostedGenesisMicroVMConfig.Complete
@@ -266,9 +249,12 @@ func (p *capturingMaxDurationProvider) CreateShellToken(ctx context.Context, inp
 func TestH1_5_E2E_HarnessConfigCompleteGuard(t *testing.T) {
 	cfg := microVMWiringTestConfig()
 	if !cfg.HostedGenesisMicroVM.Complete() {
-		t.Fatalf("E2E harness config must be Complete (enabled + image + egress + session table), got %#v", cfg.HostedGenesisMicroVM)
+		t.Fatalf("E2E harness config must be Complete (enabled + endpoint + auth token + image + egress), got %#v", cfg.HostedGenesisMicroVM)
 	}
 	if !strings.HasPrefix(cfg.HostedGenesisMicroVM.ImageRef, "arn:") {
 		t.Fatalf("E2E harness config image ref drifted: %q", cfg.HostedGenesisMicroVM.ImageRef)
+	}
+	if !strings.HasPrefix(cfg.HostedGenesisMicroVM.ControllerEndpoint, "https://placeholder.example/microvms") {
+		t.Fatalf("E2E harness config controller endpoint drifted: %q", cfg.HostedGenesisMicroVM.ControllerEndpoint)
 	}
 }

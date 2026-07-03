@@ -13,11 +13,13 @@
 #
 # Two phases:
 #   1. STUB/LOCAL-PROVED GATE (always runs, no AWS, CI-safe): exercises the real
-#      ControllerRuntimeDispatcher wired via the H1.5 NewServer seam against an
-#      in-memory MemorySessionRegistry + stub provider. Proves the happy path,
-#      kill-VM recovery, and the MaximumDurationSeconds timeout-budget wiring.
-#      This is the proof that runs in CI; it does NOT call AWS. It needs NO
-#      configuration — in-memory stubs only.
+#      HTTPControllerDispatcher wired via the H1.5 NewServer seam against an
+#      httptest.Server-backed stub controller serving the governed
+#      AppTheoryMicrovmController HTTP routes (POST /microvms to run, GET
+#      /microvms/{session_id} to reconcile). Proves the happy path, kill-VM
+#      recovery, and the MaximumDurationSeconds timeout-budget wiring. This is
+#      the proof that runs in CI; it does NOT call AWS. It needs NO
+#      configuration — in-memory HTTP stubs only.
 #   2. LAB DEPLOY GATE (runs only with --stage lab): drives the deployed lab
 #      control-plane endpoints. ALL configuration is SYSTEM-SOURCED — no
 #      operator-set env vars for system config:
@@ -78,7 +80,7 @@ go test ./internal/controlplane \
   -count=1
 # NewServer wiring + fail-closed + explicit-503 guards (also CI-safe).
 go test ./internal/controlplane \
-  -run 'TestH1_5_NewServerWiresRealControllerRuntimeDispatcherForDeployedStages|TestH1_5_NewServerSetsNonNilDispatcherOnServer|TestH1_5_NewServerLeavesDispatcherNilWhenConfigIncomplete|TestH1_5_NewServerLeavesDispatcherNilForEmptyConfig|TestH1_5_DispatcherConstructionFailureFailsLoudlyNoSyncFallback|TestH1_5_MicroVMUnavailableAcceptPathReturnsExplicit503' \
+  -run 'TestH1_5_NewServerWiresHTTPControllerDispatcherForDeployedStages|TestH1_5_NewServerSetsNonNilDispatcherOnServer|TestH1_5_NewServerLeavesDispatcherNilWhenConfigIncomplete|TestH1_5_NewServerLeavesDispatcherNilForEmptyConfig|TestH1_5_DispatcherConstructionFailureFailsLoudlyNoSyncFallback|TestH1_5_MicroVMUnavailableAcceptPathReturnsExplicit503' \
   -count=1
 go test ./cmd/hosted-genesis-microvm-controller \
   -run 'TestControllerEventFailsClosedWhenDisabled|TestControllerEventFailsClosedWhenAuthLoosened|TestControllerEventGateNoLongerLabOnly' \

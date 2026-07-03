@@ -1,8 +1,13 @@
 package hostedgenesis
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
+	"net/http"
 	"strings"
 	"time"
 
@@ -44,50 +49,125 @@ type MicroVMReconcileResult struct {
 // genesis MicroVM execution path. The accept path calls DispatchMicroVMRun
 // after the HostedGenesisSession accepted turn is durably committed; the
 // dispatcher invokes the AppTheory M16 controller run command through the
-// constrained provider adapter (no raw AWS SDK) and returns the validated
-// lifecycle ref Host records as non-authoritative execution/cache state.
+// governed AppTheoryMicrovmController HTTP API (POST /microvms) and returns the
+// validated lifecycle ref Host records as non-authoritative execution/cache
+// state.
 //
-// ReconcileMicroVM issues the M16 controller get command for an existing
-// execution/cache ref so the control plane can observe real VM state and
-// reconcile the HostedGenesisSession. It is the production reconstruction
-// reachability site: the controller get drives the AppTheory reconstructing
-// session registry (Host's reconstruction hook fires on cache miss) and the
-// provider Get (real VM state). A dead/expired VM is reported as Terminal with
-// the reconciled ref; callers must map terminal state to a loud failure, never
-// a silent no-op.
+// ReconcileMicroVM issues the M16 controller get command (GET
+// /microvms/{session_id}) for an existing execution/cache ref so the control
+// plane can observe real VM state and reconcile the HostedGenesisSession. It is
+// the production reconstruction reachability site: the controller get drives the
+// AppTheory reconstructing session registry (Host's reconstruction hook fires on
+// cache miss) and the provider Get (real VM state). A dead/expired VM is
+// reported as Terminal with the reconciled ref; callers must map terminal state
+// to a loud failure, never a silent no-op.
 //
 // A nil/unwired dispatcher is fail-closed: the accept path must not fall back
 // to a synchronous in-request LLM call, and the reconcile path must not treat
-// an unwired dispatcher as a successful no-op reconstruction. Transport
-// selection (in-process controller runtime versus the lab-only controller
-// Lambda HTTP route) is encapsulated behind this seam; the control plane never
-// handles raw provider SDK clients, bearer tokens, or lifecycle hook payloads.
+// an unwired dispatcher as a successful no-op reconstruction. Transport is
+// HTTP through the governed controller API (the single AppTheory golden path);
+// the control plane never handles raw provider SDK clients, bearer-token
+// material beyond presenting the authorizer header, or lifecycle hook payloads.
 type MicroVMDispatcher interface {
 	DispatchMicroVMRun(ctx context.Context, requestID string, binding MicroVMSessionBinding) (MicroVMDispatchResult, error)
 	ReconcileMicroVM(ctx context.Context, requestID string, binding MicroVMSessionBinding, ref MicroVMLifecycleRef) (MicroVMReconcileResult, error)
 }
 
-// ControllerRuntimeDispatcher adapts an AppTheory M16 MicroVMControllerRuntime
-// into the MicroVMDispatcher contract. It issues a run command for the already
-// committed Host session binding and converts the safe controller envelope into
-// Host's compact, validated lifecycle ref.
-type ControllerRuntimeDispatcher struct {
-	runtime *MicroVMControllerRuntime
+// microvmRunRequestPayload is the POST /microvms request body shape the
+// AppTheoryMicrovmController HTTP route handler decodes
+// (runtime/microvm/controller_routes.go controllerRoutePayload). The route
+// handler fixes the command to "run", derives tenant_id from x-tenant-id /
+// query, and namespace from x-namespace-id; only the session + image/network
+// fields + the duration cap are caller-supplied in the body. AuthContext is
+// populated by the controller authorizer, not the body.
+type microvmRunRequestPayload struct {
+	SessionID                   string                     `json:"session_id,omitempty"`
+	ImageRef                    string                     `json:"image_ref"`
+	ImageVersion                string                     `json:"image_version,omitempty"`
+	NetworkConnectorRef         string                     `json:"network_connector_ref"`
+	IngressNetworkConnectorRefs []string                   `json:"ingress_network_connector_refs,omitempty"`
+	EgressNetworkConnectorRefs  []string                   `json:"egress_network_connector_refs,omitempty"`
+	SessionSpec                 runtimemicrovm.SessionSpec `json:"session_spec,omitempty"`
+	MaximumDurationSeconds      int32                      `json:"maximum_duration_seconds,omitempty"`
 }
 
-// NewControllerRuntimeDispatcher wraps a MicroVMControllerRuntime so the control
-// plane can dispatch controller run commands through the MicroVMDispatcher seam.
-// A nil runtime yields a fail-closed dispatcher.
-func NewControllerRuntimeDispatcher(runtime *MicroVMControllerRuntime) *ControllerRuntimeDispatcher {
-	return &ControllerRuntimeDispatcher{runtime: runtime}
+// HTTPControllerDispatcher adapts the governed AppTheoryMicrovmController HTTP
+// API into the MicroVMDispatcher contract. It POSTs /microvms to run a session
+// and GETs /microvms/{session_id} to reconcile one, presenting the authorizer
+// bearer token in the Authorization header (the construct's
+// authorizerHeaderName identity source). Responses are decoded into the same
+// runtimemicrovm.ControllerResponse shape the in-process path produced — the
+// HTTP route handler serializes that exact struct — so
+// MicroVMLifecycleRefFromResponse / ReconcileMicroVMRegistryStatus / the H1.4
+// expired-VM terminal classification all apply unchanged.
+//
+// The control plane never makes raw AWS RunMicrovm/GetMicrovm SDK calls or
+// touches the session registry through this dispatcher: the controller Lambda
+// is the single governed surface (auth, lifecycle validation, registry shape,
+// fail-closed env). There is no dual path.
+type HTTPControllerDispatcher struct {
+	endpoint        string // /microvms base URL (the construct's controller.endpoint)
+	authToken       string // authorizer bearer token (the identity source)
+	imageRef        string
+	networkConnRef  string
+	ingressConnRefs []string
+	egressConnRefs  []string
+	maxDuration     int32
+	httpClient      *http.Client
 }
 
-// DispatchMicroVMRun issues the AppTheory M16 run command for the binding and
-// records the validated lifecycle ref. It fails closed when the runtime is nil
-// or the controller rejects the request; it never falls back to a local
-// execution path.
-func (d *ControllerRuntimeDispatcher) DispatchMicroVMRun(ctx context.Context, requestID string, binding MicroVMSessionBinding) (MicroVMDispatchResult, error) {
-	if d == nil || d.runtime == nil {
+// HTTPControllerDispatcherConfig configures the HTTP MicroVM dispatcher. The
+// endpoint is the AppTheoryMicrovmController /microvms base URL; the authToken
+// is the authorizer bearer token presented in the Authorization header (a
+// credential — never committed or logged); the image/network refs are the
+// non-secret refs sent in the POST /microvms run body. MaxDurationSeconds caps
+// each run session; zero lets the controller/provider default apply.
+type HTTPControllerDispatcherConfig struct {
+	Endpoint             string
+	AuthToken            string //nolint:gosec // G117: name describes the authorizer bearer token; in-process config struct, never JSON-serialized over an untrusted wire.
+	ImageRef             string
+	NetworkConnectorRef  string
+	IngressConnectorRefs []string
+	EgressConnectorRefs  []string
+	MaxDurationSeconds   int32
+	HTTPClient           *http.Client
+}
+
+// NewHTTPControllerDispatcher constructs the production HTTP MicroVM
+// dispatcher. A nil http.Client yields a fail-closed dispatcher (the caller
+// must supply a client; construction failures are loud, never a sync fallback).
+// The endpoint + auth token + image/network refs must be non-empty; the
+// constructor is fail-closed when any are missing.
+func NewHTTPControllerDispatcher(cfg HTTPControllerDispatcherConfig) (*HTTPControllerDispatcher, error) {
+	endpoint := strings.TrimSpace(cfg.Endpoint)
+	authToken := strings.TrimSpace(cfg.AuthToken)
+	imageRef := strings.TrimSpace(cfg.ImageRef)
+	networkConnRef := strings.TrimSpace(cfg.NetworkConnectorRef)
+	if endpoint == "" || authToken == "" || imageRef == "" || networkConnRef == "" {
+		return nil, ErrMicroVMDispatchUnavailable
+	}
+	if cfg.HTTPClient == nil {
+		return nil, ErrMicroVMDispatchUnavailable
+	}
+	return &HTTPControllerDispatcher{
+		endpoint:        strings.TrimRight(endpoint, "/"),
+		authToken:       authToken,
+		imageRef:        imageRef,
+		networkConnRef:  networkConnRef,
+		ingressConnRefs: normalizeStringSlice(cfg.IngressConnectorRefs),
+		egressConnRefs:  normalizeStringSlice(cfg.EgressConnectorRefs),
+		maxDuration:     cfg.MaxDurationSeconds,
+		httpClient:      cfg.HTTPClient,
+	}, nil
+}
+
+// DispatchMicroVMRun POSTs /microvms to the governed controller API for the
+// binding and records the validated lifecycle ref. It fails closed when the
+// dispatcher is misconfigured, the HTTP call fails, the controller returns a
+// non-2xx status, or the response envelope carries a controller error; it
+// never falls back to a local execution path.
+func (d *HTTPControllerDispatcher) DispatchMicroVMRun(ctx context.Context, requestID string, binding MicroVMSessionBinding) (MicroVMDispatchResult, error) {
+	if d == nil {
 		return MicroVMDispatchResult{}, ErrMicroVMDispatchUnavailable
 	}
 	if err := binding.Validate(); err != nil {
@@ -97,7 +177,18 @@ func (d *ControllerRuntimeDispatcher) DispatchMicroVMRun(ctx context.Context, re
 	if requestID == "" {
 		return MicroVMDispatchResult{}, ErrMicroVMDispatchUnavailable
 	}
-	resp, err := d.runtime.Run(ctx, requestID, binding)
+	payload := microvmRunRequestPayload{
+		SessionID:                   strings.TrimSpace(binding.ConversationID),
+		ImageRef:                    d.imageRef,
+		NetworkConnectorRef:         d.networkConnRef,
+		IngressNetworkConnectorRefs: append([]string(nil), d.ingressConnRefs...),
+		EgressNetworkConnectorRefs:  append([]string(nil), d.egressConnRefs...),
+		SessionSpec: runtimemicrovm.SessionSpec{
+			Metadata: binding.Metadata(),
+		},
+		MaximumDurationSeconds: d.maxDuration,
+	}
+	resp, err := d.doControllerRequest(ctx, http.MethodPost, d.endpoint, requestID, binding, payload)
 	if err != nil {
 		return MicroVMDispatchResult{}, err
 	}
@@ -115,14 +206,14 @@ func (d *ControllerRuntimeDispatcher) DispatchMicroVMRun(ctx context.Context, re
 	return MicroVMDispatchResult{LifecycleRef: ref, SessionID: strings.TrimSpace(resp.SessionID)}, nil
 }
 
-// ReconcileMicroVM issues the AppTheory M16 get command for the binding's
-// existing execution/cache session and returns the reconciled lifecycle ref
-// reflecting real VM state. It fails closed when the runtime is nil, the
-// controller rejects the request, or the observed state no longer maps to the
-// Host session binding (stale/tenant mismatch). It never falls back to a local
-// execution path and never swallows a dead/expired VM as a silent no-op:
-// terminal observed state is reported via Terminal=true so the caller maps it
-// to a loud failure.
+// ReconcileMicroVM GETs /microvms/{session_id} from the governed controller API
+// for the binding's existing execution/cache session and returns the reconciled
+// lifecycle ref reflecting real VM state. It fails closed when the dispatcher is
+// misconfigured, the HTTP call fails, the controller returns a non-2xx status,
+// or the observed state no longer maps to the Host session binding
+// (stale/tenant mismatch). It never falls back to a local execution path and
+// never swallows a dead/expired VM as a silent no-op: terminal observed state is
+// reported via Terminal=true so the caller maps it to a loud failure.
 //
 // H1.4: a session is Terminal when EITHER the observed lifecycle state is a
 // terminal MicroVM state (terminated/failed) OR the controller-reported
@@ -132,8 +223,8 @@ func (d *ControllerRuntimeDispatcher) DispatchMicroVMRun(ctx context.Context, re
 // it to a loud retryable failure rather than preserve a pending status that can
 // never advance. The reconciled lifecycle ref still reflects the observed
 // non-terminal state; only the Terminal flag forces the loud-failed mapping.
-func (d *ControllerRuntimeDispatcher) ReconcileMicroVM(ctx context.Context, requestID string, binding MicroVMSessionBinding, ref MicroVMLifecycleRef) (MicroVMReconcileResult, error) {
-	if d == nil || d.runtime == nil {
+func (d *HTTPControllerDispatcher) ReconcileMicroVM(ctx context.Context, requestID string, binding MicroVMSessionBinding, ref MicroVMLifecycleRef) (MicroVMReconcileResult, error) {
+	if d == nil {
 		return MicroVMReconcileResult{}, ErrMicroVMDispatchUnavailable
 	}
 	if err := binding.Validate(); err != nil {
@@ -146,7 +237,9 @@ func (d *ControllerRuntimeDispatcher) ReconcileMicroVM(ctx context.Context, requ
 	if requestID == "" {
 		return MicroVMReconcileResult{}, ErrMicroVMDispatchUnavailable
 	}
-	resp, err := d.runtime.Command(ctx, runtimemicrovm.CommandGet, requestID, binding)
+	sessionID := strings.TrimSpace(binding.ConversationID)
+	getURL := d.endpoint + "/" + sessionID
+	resp, err := d.doControllerRequest(ctx, http.MethodGet, getURL, requestID, binding, nil)
 	if err != nil {
 		return MicroVMReconcileResult{}, err
 	}
@@ -180,6 +273,66 @@ func (d *ControllerRuntimeDispatcher) ReconcileMicroVM(ctx context.Context, requ
 		Terminal:     microVMReconcileIsTerminal(reconciled.LifecycleState, resp.ExpiresAt, observedAt),
 	}, nil
 }
+
+// doControllerRequest issues one HTTP call to the governed controller API and
+// decodes the response body into the AppTheory ControllerResponse shape. It
+// sets the authorizer bearer token (Authorization header), the tenant + Host
+// MicroVM namespace headers (the controller route handler derives tenant_id
+// from x-tenant-id and namespace from x-namespace-id), and x-request-id. A nil
+// body is sent for GET. A non-2xx HTTP status is a loud fail-closed error;
+// the body may still carry a controller SafeError on a 2xx response, which the
+// caller checks separately.
+func (d *HTTPControllerDispatcher) doControllerRequest(ctx context.Context, method, url, requestID string, binding MicroVMSessionBinding, body any) (runtimemicrovm.ControllerResponse, error) {
+	var bodyReader io.Reader
+	if body != nil {
+		encoded, err := json.Marshal(body)
+		if err != nil {
+			return runtimemicrovm.ControllerResponse{}, fmt.Errorf("hosted genesis microvm dispatch: encode request: %w", err)
+		}
+		bodyReader = bytes.NewReader(encoded)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, url, bodyReader)
+	if err != nil {
+		return runtimemicrovm.ControllerResponse{}, fmt.Errorf("hosted genesis microvm dispatch: build request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+d.authToken)
+	req.Header.Set("x-tenant-id", binding.TenantID())
+	req.Header.Set("x-namespace-id", MicroVMNamespace)
+	req.Header.Set("x-request-id", requestID)
+	if body != nil {
+		req.Header.Set("content-type", "application/json")
+	}
+	req.Header.Set("accept", "application/json")
+
+	httpResp, err := d.httpClient.Do(req) //nolint:gosec // G704: the endpoint is the CDK-provided AppTheoryMicrovmController URL from config (not user input); the control plane never dispatches to a caller-supplied URL.
+	if err != nil {
+		return runtimemicrovm.ControllerResponse{}, fmt.Errorf("hosted genesis microvm dispatch: controller call failed: %w", err)
+	}
+	defer func() { _ = httpResp.Body.Close() }()
+	raw, err := io.ReadAll(io.LimitReader(httpResp.Body, microvmHTTPResponseLimit))
+	if err != nil {
+		return runtimemicrovm.ControllerResponse{}, fmt.Errorf("hosted genesis microvm dispatch: read response: %w", err)
+	}
+	var resp runtimemicrovm.ControllerResponse
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return runtimemicrovm.ControllerResponse{}, fmt.Errorf("hosted genesis microvm dispatch: decode response (status %d): %w", httpResp.StatusCode, err)
+	}
+	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
+		// A controller SafeError in the body is the preferred error surface;
+		// otherwise synthesize a loud fail-closed error from the HTTP status.
+		if resp.Error != nil && resp.Error.Code != "" {
+			return resp, resp.Error
+		}
+		return resp, fmt.Errorf("hosted genesis microvm dispatch: controller returned status %d", httpResp.StatusCode)
+	}
+	return resp, nil
+}
+
+// microvmHTTPResponseLimit bounds the controller HTTP response body the control
+// plane reads, defending against a misbehaving or hostile endpoint returning an
+// unbounded stream. The ControllerResponse envelope is small (kilobytes); 1 MiB
+// is a generous ceiling.
+const microvmHTTPResponseLimit = 1 << 20
 
 // microVMReconcileIsTerminal reports whether a reconciled MicroVM session is
 // dead/expired and therefore must map to a loud retryable recovery failure. A

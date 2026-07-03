@@ -635,6 +635,7 @@ const hostedGenesisMicrovmLabContext = {
 	hostedGenesisMicrovmBaseImageVersion: '1',
 	hostedGenesisMicrovmBuildRoleArn: 'arn:aws:iam::123456789012:role/apptheory-microvm-image-build-lab',
 	hostedGenesisMicrovmAuthorizerTokenSha256: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+	hostedGenesisMicrovmAuthTokenSSMParamName: '/lesser-host/lab/hosted-genesis/microvm/auth-token',
 };
 
 test('hosted genesis AppTheory MicroVM lab wiring is disabled by default', () => {
@@ -770,24 +771,51 @@ test('hosted genesis AppTheory MicroVM lab wiring uses AppTheory constructs with
 	]) {
 		assert.ok(controllerPolicyJson.includes(action), `expected controller IAM to include ${action}`);
 	}
+
+	// P52 H1.5: the controller Lambda must carry provisioned concurrency so the
+	// governed HTTP API is warm and the control plane's accept-path dispatch
+	// (POST /microvms) meets the <2s budget without a controller cold-start hit.
+	// CDK expresses currentVersionOptions.provisionedConcurrentExecutions as an
+	// AWS::Lambda::Alias resource carrying a ProvisionedConcurrencyConfig.
+	const aliases = findResourceEntries(template, 'AWS::Lambda::Alias');
+	const provisioned = aliases.some(([, alias]) => {
+		const cfg = (alias.Properties ?? {}) as { ProvisionedConcurrencyConfig?: { ProvisionedConcurrentExecutions?: unknown } };
+		return cfg.ProvisionedConcurrencyConfig && Number(cfg.ProvisionedConcurrencyConfig.ProvisionedConcurrentExecutions) > 0;
+	});
+	assert.ok(provisioned, 'expected the MicroVM controller Lambda to carry provisioned concurrency (currentVersionOptions)');
 });
 
-test('P52 H1.5: control-plane Lambda receives MicroVM dispatch env + IAM for in-process dispatcher', () => {
+test('P52 H1.5: control-plane Lambda receives HTTP dispatch env + SSM auth-token grant (no MicroVM IAM, no registry writes)', () => {
 	const template = synthTemplateWithContext(hostedGenesisMicrovmLabContext);
 	const controlPlaneFn = findLambdaEntryByFunctionName(template, 'control-plane-api');
 	assert.ok(controlPlaneFn, 'expected control-plane Lambda to synthesize');
 	const controlPlaneEnv = lambdaEnvironment(controlPlaneFn[1].Properties ?? {});
-	// controlplane.NewServer reads these env vars to construct the in-process
-	// ControllerRuntimeDispatcher (HostedGenesisMicroVM config block).
+	// controlplane.NewServer reads these env vars to construct the
+	// HTTPControllerDispatcher (HostedGenesisMicroVM config block). The
+	// controller endpoint + auth-token SSM param name + image/egress refs are
+	// the HTTP-transport inputs; the raw auth token is fetched from SSM at
+	// runtime, never committed.
 	assert.equal(controlPlaneEnv.HOSTED_GENESIS_MICROVM_ENABLED, 'true', 'expected HOSTED_GENESIS_MICROVM_ENABLED on control-plane Lambda');
+	assert.ok(controlPlaneEnv.APPTHEORY_MICROVM_CONTROLLER_ENDPOINT, 'expected APPTHEORY_MICROVM_CONTROLLER_ENDPOINT on control-plane Lambda');
+	assert.equal(
+		controlPlaneEnv.HOSTED_GENESIS_MICROVM_AUTH_TOKEN_SSM_PARAM,
+		'/lesser-host/lab/hosted-genesis/microvm/auth-token',
+		'expected auth-token SSM param name env on control-plane Lambda',
+	);
 	assert.ok(controlPlaneEnv.APPTHEORY_MICROVM_IMAGE_REF, 'expected APPTHEORY_MICROVM_IMAGE_REF on control-plane Lambda');
 	assert.ok(controlPlaneEnv.APPTHEORY_MICROVM_INGRESS_NETWORK_CONNECTOR_REFS, 'expected ingress connector refs on control-plane Lambda');
 	assert.ok(controlPlaneEnv.APPTHEORY_MICROVM_EGRESS_NETWORK_CONNECTOR_REFS, 'expected egress connector refs on control-plane Lambda');
-	assert.ok(controlPlaneEnv.APPTHEORY_MICROVM_SESSION_REGISTRY_TABLE, 'expected session registry table env on control-plane Lambda');
+	// The control plane must NOT receive session-registry table env: it does
+	// not touch the registry directly (the controller Lambda owns it).
+	assert.ok(
+		!('APPTHEORY_MICROVM_SESSION_REGISTRY_TABLE' in controlPlaneEnv),
+		'control-plane Lambda must not carry the session registry table env (HTTP transport, controller owns the registry)',
+	);
 
-	// The control-plane Lambda role must carry the MicroVM control-plane IAM
-	// actions + PassNetworkConnector (mirroring the controller function grant)
-	// so the in-process provider can dispatch without a raw AWS SDK client.
+	// The control-plane Lambda role must carry ssm:GetParameter on the
+	// auth-token SecureString + kms:Decrypt for it — and must NOT carry any
+	// MicroVM control-plane IAM (RunMicrovm/GetMicrovm/...) or session-registry
+	// DynamoDB writes. The controller Lambda is the single governed surface.
 	const controlPlaneRoleRef = controlPlaneFn[1].Properties?.Role as { 'Fn::GetAtt'?: unknown[] } | undefined;
 	assert.ok(controlPlaneRoleRef && Array.isArray(controlPlaneRoleRef['Fn::GetAtt']), 'expected control-plane Lambda role reference');
 	const controlPlaneRoleLogicalId = String(controlPlaneRoleRef['Fn::GetAtt'][0] ?? '');
@@ -798,7 +826,14 @@ test('P52 H1.5: control-plane Lambda receives MicroVM dispatch env + IAM for in-
 			'Ref' in role && (role as { Ref?: string }).Ref === controlPlaneRoleLogicalId);
 	});
 	const controlPlanePolicyJson = JSON.stringify(controlPlanePolicies.map(([, policy]) => policy.Properties ?? {}));
-	for (const action of [
+	assert.ok(controlPlanePolicyJson.includes('ssm:GetParameter'), 'expected control-plane IAM to include ssm:GetParameter for the auth-token secret');
+	assert.ok(controlPlanePolicyJson.includes('kms:Decrypt'), 'expected control-plane IAM to include kms:Decrypt for the auth-token SecureString');
+	assert.ok(
+		controlPlanePolicyJson.includes('/lesser-host/lab/hosted-genesis/microvm/auth-token'),
+		'expected control-plane ssm:GetParameter to be scoped to the auth-token SSM parameter',
+	);
+	// grep-proof: the control plane must NOT carry MicroVM control-plane IAM.
+	for (const forbidden of [
 		'lambda:RunMicrovm',
 		'lambda:GetMicrovm',
 		'lambda:ListMicrovms',
@@ -808,11 +843,18 @@ test('P52 H1.5: control-plane Lambda receives MicroVM dispatch env + IAM for in-
 		'lambda:CreateMicrovmAuthToken',
 		'lambda:CreateMicrovmShellAuthToken',
 		'lambda:PassNetworkConnector',
-		'dynamodb:GetItem',
-		'dynamodb:Query',
 	]) {
-		assert.ok(controlPlanePolicyJson.includes(action), `expected control-plane IAM to include ${action} for in-process MicroVM dispatch`);
+		assert.ok(
+			!controlPlanePolicyJson.includes(forbidden),
+			`control-plane Lambda must NOT carry ${forbidden} (HTTP transport — controller Lambda is the single governed surface)`,
+		);
 	}
+	// The control plane must not hold session-registry DynamoDB grants scoped to
+	// the controller-owned sessions table (it does not touch the registry).
+	assert.ok(
+		!controlPlanePolicyJson.includes('hosted-genesis-microvm-sessions'),
+		'control-plane Lambda must not hold session-registry DynamoDB grants (controller owns the registry)',
+	);
 });
 
 function hostedGenesisTemplateGuardPath(): string {
