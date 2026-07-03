@@ -8,6 +8,8 @@ import (
 	"time"
 
 	runtimemicrovm "github.com/theory-cloud/apptheory/runtime/microvm"
+	tablecore "github.com/theory-cloud/tabletheory/pkg/core"
+	ttmocks "github.com/theory-cloud/tabletheory/pkg/mocks"
 
 	"github.com/equaltoai/lesser-host/internal/config"
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
@@ -288,6 +290,53 @@ func TestH1_5_NewServerLeavesDispatcherNilForEmptyConfig(t *testing.T) {
 	}
 	if srv.hostedGenesisMicroVMDispatcher != nil {
 		t.Fatalf("empty config must leave the dispatcher nil (fail-closed), got %T", srv.hostedGenesisMicroVMDispatcher)
+	}
+}
+
+// TestH1_5_DispatcherNilWhenStoreUnavailable covers the fail-closed store-nil
+// branch: a complete MicroVM config with a nil store must yield a nil
+// dispatcher (the reconstruction hook cannot be built without a store).
+func TestH1_5_DispatcherNilWhenStoreUnavailable(t *testing.T) {
+	cfg := microVMWiringTestConfig()
+	if dispatcher := newHostedGenesisMicroVMDispatcher(context.Background(), cfg, nil, hostedGenesisMicroVMDispatcherOptions{
+		providerFactory: func(_ context.Context) (runtimemicrovm.Provider, error) {
+			return newStubMicroVMProvider(t), nil
+		},
+		registryFactory: func() (runtimemicrovm.SessionRegistry, error) {
+			return runtimemicrovm.NewMemorySessionRegistry(), nil
+		},
+	}); dispatcher != nil {
+		t.Fatalf("nil store must yield a nil dispatcher (fail-closed), got %T", dispatcher)
+	}
+}
+
+// TestH1_5_DispatcherWiredViaRegistryDBElseBranch covers the production-default
+// registryDBFactory else-branch (the path that builds a TableTheory
+// SessionRegistry from a tablecore.DB rather than a test-injected
+// SessionRegistry). It uses a tabletheory MockDB (no AWS) so
+// NewTableTheorySessionRegistry succeeds and NewMicroVMControllerRuntime
+// constructs the real runtime, proving the else-branch + the
+// reconstruction-stale-after fallback (ReconstructionStaleAfterS=0) + the
+// controller-runtime success path are all reachable without AWS.
+func TestH1_5_DispatcherWiredViaRegistryDBElseBranch(t *testing.T) {
+	cfg := microVMWiringTestConfig()
+	cfg.HostedGenesisMicroVM.ReconstructionStaleAfterS = 0 // force the fallback stale-after path
+	st := store.New(nil)
+
+	dispatcher := newHostedGenesisMicroVMDispatcher(context.Background(), cfg, st, hostedGenesisMicroVMDispatcherOptions{
+		providerFactory: func(_ context.Context) (runtimemicrovm.Provider, error) {
+			return newStubMicroVMProvider(t), nil
+		},
+		// Leave registryFactory nil so the registryDBFactory else-branch runs.
+		registryDBFactory: func() (tablecore.DB, error) {
+			return new(ttmocks.MockDB), nil
+		},
+	})
+	if dispatcher == nil {
+		t.Fatalf("expected a wired dispatcher via the registryDB else-branch, got nil")
+	}
+	if _, ok := dispatcher.(*hostedgenesis.ControllerRuntimeDispatcher); !ok {
+		t.Fatalf("expected *ControllerRuntimeDispatcher, got %T", dispatcher)
 	}
 }
 
