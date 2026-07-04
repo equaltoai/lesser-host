@@ -299,23 +299,9 @@ export function configureHostedGenesisMicrovm(
           key: "STATE_TABLE_NAME",
           value: props.stateTable.tableName,
         },
-        // P52 H1.5 corrective (AppTheory v1.15.2): the in-VM workload runs inside
-        // an AWS Lambda MicroVM GUEST, not a Lambda function. A real Lambda has
-        // AWS_REGION auto-injected into its env; a MicroVM guest is NOT guaranteed
-        // that. Without an explicit region, tabletheory's getRegion() silently
-        // falls back to a hard-coded us-east-1 (wrong off us-east-1) and the SSM
-        // client built by internal/secrets.defaultClient (LoadDefaultConfig with no
-        // region option) cannot resolve an endpoint — so the v1.15.2 SSM
-        // provider-key fallback path fails at runtime. cdk.Aws.REGION is the
-        // {"Ref":"AWS::Region"} pseudo-param: it resolves to the deploy region at
-        // CloudFormation time, is not a literal, and carries no secret. This is
-        // deployment-owned config (not an AppTheory change, not a raw SDK call, not
-        // a baked secret) — the minimal fix that makes both tabletheory and the SSM
-        // client region-correct inside the VM.
-        {
-          key: "AWS_REGION",
-          value: cdk.Aws.REGION,
-        },
+        // AWS_REGION is reserved by the Lambda Microvms service (service-injected
+        // into the guest env); do NOT set it in environmentVariables — the workload
+        // reads the service-provided AWS_REGION at runtime.
       ],
       tags: {
         Service: "lesser-host",

@@ -372,23 +372,14 @@ test('P52 H1.5 corrective (AppTheory v1.15.2): host-owned MicroVM execution role
 		'expected STATE_TABLE_NAME image value to be a CDK reference to the state table, not a literal',
 	);
 
-	// P52 H1.5 corrective (AppTheory v1.15.2): the in-VM workload runs inside a
-	// MicroVM GUEST (not a Lambda), so AWS_REGION is not auto-injected; without it,
-	// tabletheory getRegion() falls back to us-east-1 and the SSM defaultClient
-	// cannot resolve an endpoint off-us-east-1, breaking the v1.15.2 provider-key
-	// fallback. The image env must carry AWS_REGION = {"Ref":"AWS::Region"} (a CDK
-	// reference object, not a literal) so it resolves to the deploy region at CFN time.
+	// AWS_REGION is a RESERVED environment variable key for the Lambda Microvms
+	// service (AWS::Lambda::MicrovmImage): the service injects it into the guest
+	// env, so the caller cannot set it — setting it causes CREATE_FAILED
+	// "Environment variable key 'AWS_REGION' is reserved". Assert it is ABSENT from
+	// the image environmentVariables; the workload reads the service-provided
+	// AWS_REGION at runtime.
 	const regionVar = imageEnv.find((env) => env?.Key === 'AWS_REGION');
-	assert.ok(regionVar, 'expected AWS_REGION in the MicroVM image environment');
-	assert.ok(
-		typeof regionVar?.Value === 'object',
-		'expected AWS_REGION image value to be a CDK reference (Ref to AWS::Region), not a literal string',
-	);
-	const regionValueJson = JSON.stringify(regionVar?.Value ?? {});
-	assert.ok(
-		regionValueJson.includes('"Ref":"AWS::Region"'),
-		'expected AWS_REGION image value to be a Ref to the AWS::Region pseudo-parameter',
-	);
+	assert.equal(regionVar, undefined, 'AWS_REGION must NOT be set in MicroVM image environmentVariables (reserved by the Lambda Microvms service)');
 
 	// No raw secret values anywhere in the synthesized template. P52 corrective
 	// #873: the auth bearer token is CDK-owned (custom resource), so neither the
