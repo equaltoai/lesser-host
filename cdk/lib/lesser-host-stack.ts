@@ -31,7 +31,7 @@ import * as apigwv2Integrations from 'aws-cdk-lib/aws-apigatewayv2-integrations'
 import * as wafv2 from 'aws-cdk-lib/aws-wafv2';
 import { renderProvisionRunnerBuildCommands, renderProvisionRunnerPreBuildCommands } from './provision-runner-buildspec';
 import { CostTelemetryWorker } from './cost-telemetry-worker-construct';
-import { configureHostedGenesisMicrovmLab } from './hosted-genesis-microvm';
+import { configureHostedGenesisMicrovm } from './hosted-genesis-microvm';
 import { INBOUND_EMAIL_RULE_SET_NAME } from './ses-inbound-rule-set-name';
 import { soulEmailInboundDomainFromContext } from './soul-email-inbound-domain';
 import {
@@ -688,7 +688,7 @@ export class LesserHostStack extends cdk.Stack {
 			{ memorySize: 512, timeoutSeconds: 30 },
 		);
 		const costTelemetry = new CostTelemetryWorker(this, 'CostTelemetry', { namePrefix, repoRoot, stage });
-		void configureHostedGenesisMicrovmLab(this, { stage, namePrefix, repoRoot, removalPolicy, stateTable, controlPlaneFunction: controlPlaneFn });
+		void configureHostedGenesisMicrovm(this, { stage, namePrefix, repoRoot, removalPolicy, stateTable, controlPlaneFunction: controlPlaneFn });
 		stateTable.grantReadWriteData(controlPlaneFn);
 		stateTable.grantReadWriteData(trustFn);
 		stateTable.grantReadWriteData(renderWorkerFn);

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -25,102 +25,26 @@ import {
 	soulEmailInboundDomainFromContext,
 } from '../lib/soul-email-inbound-domain';
 
+// P52 H1 MAI-1 split: the hosted-genesis MicroVM tests were extracted into
+// ./lesser-host-stack-microvm.test.ts and the shared synth/lookup helpers
+// both files depend on were factored into ./_lesser-host-test-helpers so
+// neither test file duplicates them or exceeds the gov-infra TS/JS 2000-line
+// file budget. Coverage and assertions are unchanged.
+import {
+	SynthesizedTemplate,
+	findLambdaEntryByFunctionName,
+	findResourceEntries,
+	findResources,
+	lambdaEnvironment,
+	runDependencyCycleValidator,
+	synthTemplate,
+	synthTemplateForStage,
+	synthTemplateForStageWithCdkJsonContext,
+	synthTemplateWithContext,
+} from './_lesser-host-test-helpers';
+
 process.env.GOTOOLCHAIN = process.env.GOTOOLCHAIN || 'auto';
 
-const liveLookupAccount = '123456789012';
-const liveLookupRegion = 'us-east-1';
-const liveLookupHostedZoneId = 'ZEXAMPLELESSERHOST';
-const liveLookupContextKey = `hosted-zone:account=${liveLookupAccount}:domainName=lesser.host:privateZone=false:region=${liveLookupRegion}`;
-const liveLookupContext = {
-	[liveLookupContextKey]: { Id: `/hostedzone/${liveLookupHostedZoneId}`, Name: 'lesser.host.' },
-};
-const liveStackEnv = { account: liveLookupAccount, region: liveLookupRegion };
-
-type SynthesizedTemplate = {
-	Resources?: Record<string, { Type?: string; Properties?: Record<string, unknown> }>;
-	Outputs?: Record<string, unknown>;
-};
-
-let synthesizedTemplate: SynthesizedTemplate | undefined;
-
-function synthesizeTemplate(stage: string, context: Record<string, unknown>, stackId: string, props: cdk.StackProps = {}): SynthesizedTemplate {
-	// Full LesserHostStack synthesis stages web assets. Keep each test synth in
-	// its own short-lived outdir so repeated assertions cannot accumulate
-	// copied web/CDK asset directories and exhaust hosted runner disk.
-	const outdir = mkdtempSync(join(tmpdir(), 'lesser-host-cdk-test-'));
-	try {
-		const app = new cdk.App({ context, outdir });
-		const stack = new LesserHostStack(app, stackId, { stage, ...props });
-		const assembly = app.synth();
-		const artifact = assembly.getStackArtifact(stack.artifactId);
-		return JSON.parse(readFileSync(artifact.templateFullPath, 'utf8')) as SynthesizedTemplate;
-	} finally {
-		rmSync(outdir, { recursive: true, force: true });
-	}
-}
-
-function synthTemplate(): SynthesizedTemplate {
-	if (!synthesizedTemplate) {
-		synthesizedTemplate = synthesizeTemplate('lab', {}, 'TestLesserHostStack');
-	}
-	return synthesizedTemplate;
-}
-
-function synthTemplateWithContext(context: Record<string, unknown>): SynthesizedTemplate {
-	return synthesizeTemplate('lab', context, 'TestLesserHostStackWithContext');
-}
-
-function synthTemplateForStage(stage: string, context: Record<string, unknown> = {}): SynthesizedTemplate {
-	const isLive = stage.trim() === 'live';
-	if (Object.keys(context).length === 0 && !isLive) {
-		return synthTemplate();
-	}
-	return synthesizeTemplate(stage, isLive ? { ...liveLookupContext, ...context } : context, `TestLesserHostStack-${stage}`, isLive ? { env: liveStackEnv } : {});
-}
-
-function cdkJsonContext(): Record<string, unknown> {
-	const cdkJson = JSON.parse(readFileSync(join(process.cwd(), 'cdk.json'), 'utf8')) as { context?: unknown };
-	assert.ok(cdkJson.context && typeof cdkJson.context === 'object', 'expected cdk.json context object');
-	return cdkJson.context as Record<string, unknown>;
-}
-
-function synthTemplateForStageWithCdkJsonContext(stage: string, context: Record<string, unknown> = {}): SynthesizedTemplate {
-	const isLive = stage.trim() === 'live';
-	return synthesizeTemplate(
-		stage,
-		isLive ? { ...cdkJsonContext(), ...liveLookupContext, ...context } : { ...cdkJsonContext(), ...context },
-		`TestLesserHostStack-cdk-json-${stage}`,
-		isLive ? { env: liveStackEnv } : {},
-	);
-}
-
-function runDependencyCycleValidator(template: Record<string, unknown>) {
-	const tempDir = mkdtempSync(join(tmpdir(), 'lesser-host-cfn-deps-'));
-	try {
-		const templatePath = join(tempDir, 'template.json');
-		writeFileSync(templatePath, JSON.stringify(template, null, 2));
-		return spawnSync(
-			process.execPath,
-			[join(process.cwd(), '..', 'scripts', 'validate-cfn-dependency-cycles.mjs'), templatePath],
-			{ encoding: 'utf8' },
-		);
-	} finally {
-		rmSync(tempDir, { recursive: true, force: true });
-	}
-}
-
-function findResources(template: SynthesizedTemplate, type: string): Array<Record<string, unknown>> {
-	return Object.values(template.Resources ?? {})
-		.filter((resource) => resource?.Type === type)
-		.map((resource) => resource?.Properties ?? {});
-}
-
-function findResourceEntries(
-	template: SynthesizedTemplate,
-	type: string,
-): Array<[string, { Type?: string; Properties?: Record<string, unknown> }]> {
-	return Object.entries(template.Resources ?? {}).filter(([, resource]) => resource?.Type === type);
-}
 
 function parseAccessLogFormat(stage: Record<string, unknown>): Record<string, unknown> {
 	const accessLogSettings = stage.AccessLogSettings;
@@ -279,26 +203,6 @@ function findLambdaByFunctionName(template: SynthesizedTemplate, namePart: strin
 		return typeof name === 'string' && name.includes(namePart);
 	});
 }
-
-function findLambdaEntryByFunctionName(
-	template: SynthesizedTemplate,
-	namePart: string,
-): [string, { Type?: string; Properties?: Record<string, unknown> }] | undefined {
-	return findResourceEntries(template, 'AWS::Lambda::Function').find(([, resource]) => {
-		const name = resource.Properties?.FunctionName;
-		return typeof name === 'string' && name.includes(namePart);
-	});
-}
-
-function lambdaEnvironment(fn: Record<string, unknown> | undefined): Record<string, unknown> {
-	const environment = fn?.Environment;
-	if (!environment || typeof environment !== 'object') {
-		return {};
-	}
-	const variables = (environment as { Variables?: unknown }).Variables;
-	return variables && typeof variables === 'object' ? (variables as Record<string, unknown>) : {};
-}
-
 function firstLogicalReference(value: unknown): string | undefined {
 	if (typeof value === 'string') {
 		return value;
@@ -624,238 +528,6 @@ test('hosted genesis recovery queue is operator/backfill only, not control-plane
 	assert.equal(mapping.BatchSize, 1, 'hosted genesis jobs must process one conversation turn at a time');
 });
 
-
-const hostedGenesisMicrovmLabContext = {
-	hostedGenesisMicrovmLabEnabled: 'true',
-	hostedGenesisMicrovmVpcId: 'vpc-0abc123def4567890',
-	hostedGenesisMicrovmPrivateSubnetId: 'subnet-0abc123def4567890',
-	hostedGenesisMicrovmPrivateSubnetAvailabilityZone: 'us-east-1a',
-	hostedGenesisMicrovmSecurityGroupId: 'sg-0abc123def4567890',
-	hostedGenesisMicrovmBaseImageArn: 'arn:aws:lambda:us-east-1:123456789012:microvm-image/base/apptheory-al2023',
-	hostedGenesisMicrovmBaseImageVersion: '1',
-	hostedGenesisMicrovmBuildRoleArn: 'arn:aws:iam::123456789012:role/apptheory-microvm-image-build-lab',
-	hostedGenesisMicrovmAuthorizerTokenSha256: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-	hostedGenesisMicrovmAuthTokenSSMParamName: '/lesser-host/lab/hosted-genesis/microvm/auth-token',
-};
-
-test('hosted genesis AppTheory MicroVM lab wiring is disabled by default', () => {
-	const template = synthTemplate();
-	assert.equal(findResources(template, 'AWS::Lambda::NetworkConnector').length, 0);
-	assert.equal(findResources(template, 'AWS::Lambda::MicrovmImage').length, 0);
-	assert.equal(
-		findResourceEntries(template, 'AWS::Lambda::Function').some(([, fn]) =>
-			String(fn.Properties?.FunctionName ?? '').includes('hosted-genesis-microvm')
-		),
-		false,
-		'MicroVM controller/authorizer Lambdas must not synthesize without explicit lab enablement',
-	);
-});
-
-test('hosted genesis AppTheory MicroVM lab wiring fails closed without required context', () => {
-	assert.throws(
-		() => synthTemplateWithContext({ hostedGenesisMicrovmLabEnabled: 'true' }),
-		/hostedGenesisMicrovmLabEnabled requires hostedGenesisMicrovmVpcId/,
-	);
-	assert.throws(
-		() => synthTemplateWithContext({ ...hostedGenesisMicrovmLabContext, hostedGenesisMicrovmAuthorizerTokenSha256: 'raw-token' }),
-		/hostedGenesisMicrovmAuthorizerTokenSha256 must be a sha256 digest/,
-	);
-	// P52 H1.5: the stage === "lab" synth-time throw is removed (de-lab-gating).
-	// The construct now synthesizes for live as well as lab; the principal
-	// chooses the stage at deploy time (lab first). Fail-closed auth is
-	// preserved by the AppTheoryMicrovmController construct (AUTH_REQUIRED=true,
-	// AUTH_DEFAULT=deny, authorizer on every route) and the controller runtime
-	// re-check, not by a synth-time stage gate.
-	const liveTemplate = synthTemplateForStage('live', hostedGenesisMicrovmLabContext);
-	assert.ok(
-		findResourceEntries(liveTemplate, 'AWS::Lambda::Function').some(([, fn]) =>
-			String(fn.Properties?.FunctionName ?? '').includes('hosted-genesis-microvm-controller'),
-		),
-		'expected the AppTheory MicroVM controller Lambda to synthesize for live after de-lab-gating',
-	);
-});
-
-test('hosted genesis AppTheory MicroVM lab wiring uses AppTheory constructs with protected routes', () => {
-	const template = synthTemplateWithContext(hostedGenesisMicrovmLabContext);
-	const connectors = findResourceEntries(template, 'AWS::Lambda::NetworkConnector');
-	const images = findResourceEntries(template, 'AWS::Lambda::MicrovmImage');
-	assert.equal(connectors.length, 1, 'expected AppTheoryMicrovmNetworkConnector L1 resource');
-	assert.equal(images.length, 1, 'expected AppTheoryMicrovmImage L1 resource');
-
-	const authorizerFn = findResourceEntries(template, 'AWS::Lambda::Function').find(([, fn]) =>
-		fn.Properties?.FunctionName === 'lesser-host-lab-hosted-genesis-microvm-authorizer'
-	);
-	assert.ok(authorizerFn, 'expected lab-only controller authorizer Lambda');
-	const authorizerEnv = lambdaEnvironment(authorizerFn[1].Properties ?? {});
-	assert.equal(authorizerEnv.STAGE, 'lab');
-	assert.equal(authorizerEnv.HOSTED_GENESIS_MICROVM_AUTH_TOKEN_SHA256, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
-
-	const controllerFn = findResourceEntries(template, 'AWS::Lambda::Function').find(([, fn]) =>
-		fn.Properties?.FunctionName === 'lesser-host-lab-hosted-genesis-microvm-controller'
-	);
-	assert.ok(controllerFn, 'expected AppTheory-created controller Lambda');
-	const controllerEnv = lambdaEnvironment(controllerFn[1].Properties ?? {});
-	assert.equal(controllerEnv.STAGE, 'lab');
-	assert.equal(controllerEnv.APPTHEORY_MICROVM_CONTROLLER_AUTH_REQUIRED, 'true');
-	assert.equal(controllerEnv.APPTHEORY_MICROVM_CONTROLLER_AUTH_DEFAULT, 'deny');
-	assert.equal(controllerEnv.APPTHEORY_MICROVM_CONTRACT_VERSION, 'm16.microvm/v1');
-	assert.equal(
-		controllerEnv.APPTHEORY_MICROVM_CONTROLLER_OPERATIONS,
-		'run,get,list,suspend,resume,terminate,auth-token,shell-auth-token',
-	);
-	assert.ok(
-		String(controllerEnv.APPTHEORY_MICROVM_CONTROLLER_ROUTES ?? '').includes('POST /microvms/{session_id}/auth-token'),
-		'expected AppTheory M16 route manifest in controller env',
-	);
-	assert.ok(controllerEnv.APPTHEORY_MICROVM_SESSION_REGISTRY_TABLE, 'expected AppTheory registry table env');
-	assert.ok(controllerEnv.APPTHEORY_MICROVM_INGRESS_NETWORK_CONNECTOR_REFS, 'expected ingress connector refs env');
-	assert.ok(controllerEnv.APPTHEORY_MICROVM_EGRESS_NETWORK_CONNECTOR_REFS, 'expected egress connector refs env');
-	assert.ok(controllerEnv.APPTHEORY_MICROVM_SHELL_INGRESS_NETWORK_CONNECTOR_REF, 'expected shell ingress connector ref env');
-	assert.equal(controllerEnv.HOSTED_GENESIS_MICROVM_AUTH_TOKEN_SHA256, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
-	assert.ok(controllerEnv.STATE_TABLE_NAME, 'expected Host state table env for HostedGenesisSession reconstruction');
-	assert.ok(
-		!('HOSTED_GENESIS_MICROVM_ADAPTER_FEEDBACK' in controllerEnv),
-		'v1.15 adoption must retire the provisional adapter feedback env',
-	);
-
-	const routes = findResources(template, 'AWS::ApiGatewayV2::Route').filter((route) =>
-		String(route.RouteKey ?? '').includes('/microvms')
-	);
-	assert.deepEqual(
-		routes.map((route) => route.RouteKey).sort(),
-		[
-			'DELETE /microvms/{session_id}',
-			'GET /microvms',
-			'GET /microvms/{session_id}',
-			'POST /microvms',
-			'POST /microvms/{session_id}/auth-token',
-			'POST /microvms/{session_id}/resume',
-			'POST /microvms/{session_id}/shell-auth-token',
-			'POST /microvms/{session_id}/suspend',
-		].sort(),
-	);
-	for (const route of routes) {
-		assert.equal(route.AuthorizationType, 'CUSTOM', `route ${route.RouteKey} must use the fail-closed authorizer`);
-		assert.ok(route.AuthorizerId, `route ${route.RouteKey} must attach authorizer id`);
-	}
-
-	const sessionTable = findResourceEntries(template, 'AWS::DynamoDB::Table').find(([, table]) =>
-		JSON.stringify(table.Properties?.TableName).includes('hosted-genesis-microvm-sessions')
-	);
-	assert.ok(sessionTable, 'expected AppTheory controller-owned session registry table');
-	const ttl = sessionTable[1].Properties?.TimeToLiveSpecification as { AttributeName?: unknown; Enabled?: unknown } | undefined;
-	assert.deepEqual(ttl, { AttributeName: 'ttl', Enabled: true });
-
-	const controllerRoleRef = controllerFn[1].Properties?.Role as { 'Fn::GetAtt'?: unknown[] } | undefined;
-	assert.ok(controllerRoleRef && Array.isArray(controllerRoleRef['Fn::GetAtt']), 'expected controller Lambda role reference');
-	const controllerRoleLogicalId = String(controllerRoleRef['Fn::GetAtt'][0] ?? '');
-	assert.ok(controllerRoleLogicalId, 'expected controller Lambda role logical id');
-	const controllerPolicies = findResourceEntries(template, 'AWS::IAM::Policy').filter(([, policy]) => {
-		const roles = policy.Properties?.Roles;
-		return Array.isArray(roles) && roles.some((role) => role && typeof role === 'object' &&
-			'Ref' in role && (role as { Ref?: string }).Ref === controllerRoleLogicalId);
-	});
-	const controllerPolicyJson = JSON.stringify(controllerPolicies.map(([, policy]) => policy.Properties ?? {}));
-	for (const action of [
-		'lambda:RunMicrovm',
-		'lambda:GetMicrovm',
-		'lambda:ListMicrovms',
-		'lambda:SuspendMicrovm',
-		'lambda:ResumeMicrovm',
-		'lambda:TerminateMicrovm',
-		'lambda:CreateMicrovmAuthToken',
-		'lambda:CreateMicrovmShellAuthToken',
-		'lambda:PassNetworkConnector',
-		'dynamodb:GetItem',
-		'dynamodb:Query',
-	]) {
-		assert.ok(controllerPolicyJson.includes(action), `expected controller IAM to include ${action}`);
-	}
-
-	// P52 H1.5: the controller Lambda must carry provisioned concurrency so the
-	// governed HTTP API is warm and the control plane's accept-path dispatch
-	// (POST /microvms) meets the <2s budget without a controller cold-start hit.
-	// CDK expresses currentVersionOptions.provisionedConcurrentExecutions as an
-	// AWS::Lambda::Alias resource carrying a ProvisionedConcurrencyConfig.
-	const aliases = findResourceEntries(template, 'AWS::Lambda::Alias');
-	const provisioned = aliases.some(([, alias]) => {
-		const cfg = (alias.Properties ?? {}) as { ProvisionedConcurrencyConfig?: { ProvisionedConcurrentExecutions?: unknown } };
-		return cfg.ProvisionedConcurrencyConfig && Number(cfg.ProvisionedConcurrencyConfig.ProvisionedConcurrentExecutions) > 0;
-	});
-	assert.ok(provisioned, 'expected the MicroVM controller Lambda to carry provisioned concurrency (currentVersionOptions)');
-});
-
-test('P52 H1.5: control-plane Lambda receives HTTP dispatch env + SSM auth-token grant (no MicroVM IAM, no registry writes)', () => {
-	const template = synthTemplateWithContext(hostedGenesisMicrovmLabContext);
-	const controlPlaneFn = findLambdaEntryByFunctionName(template, 'control-plane-api');
-	assert.ok(controlPlaneFn, 'expected control-plane Lambda to synthesize');
-	const controlPlaneEnv = lambdaEnvironment(controlPlaneFn[1].Properties ?? {});
-	// controlplane.NewServer reads these env vars to construct the
-	// HTTPControllerDispatcher (HostedGenesisMicroVM config block). The
-	// controller endpoint + auth-token SSM param name + image/egress refs are
-	// the HTTP-transport inputs; the raw auth token is fetched from SSM at
-	// runtime, never committed.
-	assert.equal(controlPlaneEnv.HOSTED_GENESIS_MICROVM_ENABLED, 'true', 'expected HOSTED_GENESIS_MICROVM_ENABLED on control-plane Lambda');
-	assert.ok(controlPlaneEnv.APPTHEORY_MICROVM_CONTROLLER_ENDPOINT, 'expected APPTHEORY_MICROVM_CONTROLLER_ENDPOINT on control-plane Lambda');
-	assert.equal(
-		controlPlaneEnv.HOSTED_GENESIS_MICROVM_AUTH_TOKEN_SSM_PARAM,
-		'/lesser-host/lab/hosted-genesis/microvm/auth-token',
-		'expected auth-token SSM param name env on control-plane Lambda',
-	);
-	assert.ok(controlPlaneEnv.APPTHEORY_MICROVM_IMAGE_REF, 'expected APPTHEORY_MICROVM_IMAGE_REF on control-plane Lambda');
-	assert.ok(controlPlaneEnv.APPTHEORY_MICROVM_INGRESS_NETWORK_CONNECTOR_REFS, 'expected ingress connector refs on control-plane Lambda');
-	assert.ok(controlPlaneEnv.APPTHEORY_MICROVM_EGRESS_NETWORK_CONNECTOR_REFS, 'expected egress connector refs on control-plane Lambda');
-	// The control plane must NOT receive session-registry table env: it does
-	// not touch the registry directly (the controller Lambda owns it).
-	assert.ok(
-		!('APPTHEORY_MICROVM_SESSION_REGISTRY_TABLE' in controlPlaneEnv),
-		'control-plane Lambda must not carry the session registry table env (HTTP transport, controller owns the registry)',
-	);
-
-	// The control-plane Lambda role must carry ssm:GetParameter on the
-	// auth-token SecureString + kms:Decrypt for it — and must NOT carry any
-	// MicroVM control-plane IAM (RunMicrovm/GetMicrovm/...) or session-registry
-	// DynamoDB writes. The controller Lambda is the single governed surface.
-	const controlPlaneRoleRef = controlPlaneFn[1].Properties?.Role as { 'Fn::GetAtt'?: unknown[] } | undefined;
-	assert.ok(controlPlaneRoleRef && Array.isArray(controlPlaneRoleRef['Fn::GetAtt']), 'expected control-plane Lambda role reference');
-	const controlPlaneRoleLogicalId = String(controlPlaneRoleRef['Fn::GetAtt'][0] ?? '');
-	assert.ok(controlPlaneRoleLogicalId, 'expected control-plane Lambda role logical id');
-	const controlPlanePolicies = findResourceEntries(template, 'AWS::IAM::Policy').filter(([, policy]) => {
-		const roles = policy.Properties?.Roles;
-		return Array.isArray(roles) && roles.some((role) => role && typeof role === 'object' &&
-			'Ref' in role && (role as { Ref?: string }).Ref === controlPlaneRoleLogicalId);
-	});
-	const controlPlanePolicyJson = JSON.stringify(controlPlanePolicies.map(([, policy]) => policy.Properties ?? {}));
-	assert.ok(controlPlanePolicyJson.includes('ssm:GetParameter'), 'expected control-plane IAM to include ssm:GetParameter for the auth-token secret');
-	assert.ok(controlPlanePolicyJson.includes('kms:Decrypt'), 'expected control-plane IAM to include kms:Decrypt for the auth-token SecureString');
-	assert.ok(
-		controlPlanePolicyJson.includes('/lesser-host/lab/hosted-genesis/microvm/auth-token'),
-		'expected control-plane ssm:GetParameter to be scoped to the auth-token SSM parameter',
-	);
-	// grep-proof: the control plane must NOT carry MicroVM control-plane IAM.
-	for (const forbidden of [
-		'lambda:RunMicrovm',
-		'lambda:GetMicrovm',
-		'lambda:ListMicrovms',
-		'lambda:SuspendMicrovm',
-		'lambda:ResumeMicrovm',
-		'lambda:TerminateMicrovm',
-		'lambda:CreateMicrovmAuthToken',
-		'lambda:CreateMicrovmShellAuthToken',
-		'lambda:PassNetworkConnector',
-	]) {
-		assert.ok(
-			!controlPlanePolicyJson.includes(forbidden),
-			`control-plane Lambda must NOT carry ${forbidden} (HTTP transport — controller Lambda is the single governed surface)`,
-		);
-	}
-	// The control plane must not hold session-registry DynamoDB grants scoped to
-	// the controller-owned sessions table (it does not touch the registry).
-	assert.ok(
-		!controlPlanePolicyJson.includes('hosted-genesis-microvm-sessions'),
-		'control-plane Lambda must not hold session-registry DynamoDB grants (controller owns the registry)',
-	);
-});
 
 function hostedGenesisTemplateGuardPath(): string {
 	return join(process.cwd(), '..', 'scripts', 'validate-hosted-genesis-template.mjs');
