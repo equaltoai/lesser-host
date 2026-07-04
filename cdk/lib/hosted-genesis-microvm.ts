@@ -278,7 +278,27 @@ export function configureHostedGenesisMicrovm(
           terminateTimeoutInSeconds: 30,
         },
       },
-      logging: { disabled: true },
+      // P52 H1: enable CloudWatch logging so a failing image build emits
+      // diagnosable logs. The 2026-07-04 lab deploy failed with
+      // HostedGenesisMicrovmImage CREATE_FAILED "did not stabilize" and the build
+      // produced NO logs because logging was { disabled: true }, leaving the
+      // failure undiagnosable. The AWS Lambda MicroVM developer guide publishes
+      // the build-log location as /aws/lambda/microvms/<image-name>
+      // (microvms-images.html "Image states and build states": "Check
+      // stateReason or CloudWatch logs (/aws/lambda/microvms/<image-name>) for
+      // failure details"; getting-started: "check the build logs in CloudWatch
+      // under /aws/lambda/microvms/my-first-microvm-image"). The image name is
+      // ${namePrefix}_hosted_genesis, so the log group follows the documented
+      // convention stage-aware (the stage prefix keeps lab/live build logs
+      // separate). The build role below carries the logs:CreateLogGroup /
+      // logs:CreateLogStream / logs:PutLogEvents the build service needs to
+      // write these logs (getting-started IAM example).
+      logging: {
+        cloudWatch: {
+          logGroup: `/aws/lambda/microvms/${props.namePrefix}_hosted_genesis`,
+          logStream: "build",
+        },
+      },
       resources: [{ minimumMemoryInMiB: 2048 }],
       environmentVariables: [
         {
@@ -826,6 +846,29 @@ function createHostedGenesisMicrovmImageBuildRole(
     }),
   );
 
+  // P52 H1: CloudWatch Logs permissions for the image build. The MicroVM image
+  // build service writes build logs to CloudWatch when logging is enabled (the
+  // logging.cloudWatch config on AppTheoryMicrovmImage above). The AWS Lambda
+  // MicroVM getting-started IAM example grants the build role
+  // logs:CreateLogGroup / logs:CreateLogStream / logs:PutLogEvents on
+  // arn:aws:logs:*:*:* (microvms-getting-started.html "Prerequisites"). Without
+  // these the build cannot emit logs, so a failing build is undiagnosable —
+  // exactly the 2026-07-04 failure. Scoped to CloudWatch Logs only (logs:*
+  // wildcard resource, matching the documented example); no other service is
+  // touched. The trust principal (lambda.amazonaws.com) and the MicroVM image
+  // actions above are unchanged.
+  role.addToPolicy(
+    new iam.PolicyStatement({
+      sid: "WriteMicrovmImageBuildLogs",
+      actions: [
+        "logs:CreateLogGroup",
+        "logs:CreateLogStream",
+        "logs:PutLogEvents",
+      ],
+      resources: ["arn:aws:logs:*:*:*"],
+    }),
+  );
+
   // Tag the role for traceability.
   cdk.Tags.of(role).add("Service", "lesser-host");
   cdk.Tags.of(role).add("Stage", stage);
@@ -982,9 +1025,33 @@ function buildGoBootstrapAsset(
 // asset's s3ObjectUrl is the AppTheoryMicrovmImage codeArtifact.uri — a
 // repo-built artifact, not an external CDK context value (kills G4).
 //
-// The workload is a long-running HTTP server inside the MicroVM image (not a
-// Lambda handler), so it is packaged as a tarball the image build extracts. The
-// binary is built with CGO disabled for a static image payload.
+// P52 H1: the AWS::Lambda::MicrovmImage code artifact zip MUST contain a
+// Dockerfile alongside the application artifacts. AWS Lambda MicroVM developer
+// guide (microvms-images.html): "you provide a zip package that contains a
+// Dockerfile and your application artifacts, which you upload to Amazon S3.
+// Your Dockerfile defines how your application is packaged. Lambda builds your
+// application container image by running your Dockerfile on top of an operating
+// system environment that is provided by a Lambda-managed MicroVM base image."
+// The 2026-07-04 lab deploy failed with HostedGenesisMicrovmImage CREATE_FAILED
+// "did not stabilize" precisely because the asset zip contained ONLY the binary
+// — no Dockerfile — so Lambda's build had nothing to run and the image build
+// transitioned to FAILED (~55s) with no diagnosable logs (logging was disabled).
+//
+// The Dockerfile's FROM is the CONTAINER base image (distinct from the MicroVM
+// base image set via baseImageArn). The Lambda MicroVMs AL2023 minimal base
+// container image (public.ecr.aws/lambda/microvms:al2023-minimal) is the
+// AWS-documented snapshot-compatible container base for al2023-based MicroVM
+// images (microvms-images.html "Container base images"). The binary is a static
+// linux/arm64 Go binary (CGO disabled) that serves the M16 lifecycle hooks on
+// port 8080 (hooks.port=8080); Lambda launches it via the CMD instruction
+// (microvms-images.html: "Launches your application using the ENTRYPOINT or CMD
+// instruction"; getting-started Step 1 uses `CMD ["node", "app.js"]`).
+//
+// s3assets.Asset packages the entire buildDir directory, so writing the
+// Dockerfile into buildDir alongside the binary makes the uploaded zip contain
+// binary + Dockerfile — the shape AWS requires. The Dockerfile is generated
+// (not committed) so it stays in sync with the binary name + port and never
+// drifts from the build step that produces the binary.
 function buildHostedGenesisMicrovmWorkloadAsset(
   scope: Construct,
   id: string,
@@ -1007,5 +1074,22 @@ function buildHostedGenesisMicrovmWorkloadAsset(
       },
     },
   );
+  // Write the Dockerfile into the same buildDir s3assets.Asset packages, so the
+  // code artifact zip contains the binary + Dockerfile. FROM the AWS-documented
+  // Lambda MicroVMs AL2023 minimal container base image; CMD launches the
+  // static Go binary that serves the M16 lifecycle hooks on port 8080.
+  const dockerfileContent = [
+    "# P52 H1: Lambda MicroVM image code artifact Dockerfile. Generated by",
+    "# cdk/lib/hosted-genesis-microvm.ts buildHostedGenesisMicrovmWorkloadAsset;",
+    "# do not edit by hand. The FROM is the CONTAINER base image (distinct from",
+    "# the MicroVM base image set via baseImageArn).",
+    "FROM public.ecr.aws/lambda/microvms:al2023-minimal",
+    "WORKDIR /app",
+    "COPY hosted-genesis-microvm-workload /app/hosted-genesis-microvm-workload",
+    "EXPOSE 8080",
+    "CMD [\"/app/hosted-genesis-microvm-workload\"]",
+    "",
+  ].join("\n");
+  fs.writeFileSync(path.join(buildDir, "Dockerfile"), dockerfileContent, "utf8");
   return new s3assets.Asset(scope, id, { path: buildDir });
 }

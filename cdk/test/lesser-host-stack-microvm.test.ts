@@ -20,6 +20,8 @@ import {
 import { HOSTED_GENESIS_MICROVM_BASE_IMAGE_ARN } from '../lib/hosted-genesis-microvm';
 
 import assert from 'node:assert/strict';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import test from 'node:test';
 
 test('hosted genesis AppTheory MicroVM deployed stages require NO credential-pair context (CDK-owned token)', () => {
@@ -118,6 +120,59 @@ test('hosted genesis AppTheory MicroVM deployed-stage wiring uses AppTheory cons
 		'expected AWS-managed INTERNET_EGRESS egress connector ref',
 	);
 
+	// P52 H1: CloudWatch logging must be ENABLED (not disabled) so a failing
+	// image build emits diagnosable logs. The 2026-07-04 lab deploy failed
+	// undiagnosably because logging was { disabled: true }. The AWS Lambda
+	// MicroVM developer guide publishes the build-log location as
+	// /aws/lambda/microvms/<image-name> (microvms-images.html "Image states and
+	// build states"; getting-started Step 3). The image name is
+	// lesser-host-lab_hosted_genesis, so the LogGroup must follow that
+	// convention and the framework must render CloudWatch (not Disabled).
+	const logging = imageProps.Logging as { CloudWatch?: { LogGroup?: string; LogStream?: string }; Disabled?: boolean } | undefined;
+	assert.ok(logging, 'expected the MicroVM image to carry a Logging config');
+	assert.ok(
+		logging?.CloudWatch && !logging.Disabled,
+		'expected MicroVM image Logging to use CloudWatch (not disabled) so build failures are diagnosable',
+	);
+	assert.equal(
+		logging?.CloudWatch?.LogStream,
+		'build',
+		'expected MicroVM image CloudWatch LogStream "build"',
+	);
+	assert.ok(
+		typeof logging?.CloudWatch?.LogGroup === 'string' &&
+			logging.CloudWatch.LogGroup === '/aws/lambda/microvms/lesser-host-lab_hosted_genesis',
+		'expected MicroVM image CloudWatch LogGroup to follow the AWS-documented /aws/lambda/microvms/<image-name> convention',
+	);
+
+	// P52 H1: the code artifact zip MUST contain a Dockerfile. AWS Lambda MicroVM
+	// developer guide (microvms-images.html): "you provide a zip package that
+	// contains a Dockerfile and your application artifacts". The 2026-07-04 lab
+	// deploy failed with HostedGenesisMicrovmImage CREATE_FAILED "did not
+	// stabilize" because the asset zip contained ONLY the binary. Synth runs
+	// buildHostedGenesisMicrovmWorkloadAsset which writes the Dockerfile into the
+	// asset buildDir (cdk/.build/HostedGenesisMicrovmWorkloadArtifact) alongside
+	// the binary, so s3assets.Asset packages binary + Dockerfile. Assert the
+	// generated Dockerfile exists, FROM the AWS-documented Lambda MicroVMs AL2023
+	// minimal container base image, and CMD launches the workload binary.
+	const workloadDockerfile = path.join(
+		process.cwd(), '.build', 'HostedGenesisMicrovmWorkloadArtifact', 'Dockerfile',
+	);
+	assert.ok(fs.existsSync(workloadDockerfile), 'expected the hosted-genesis MicroVM workload asset buildDir to contain a generated Dockerfile');
+	const dockerfileContent = fs.readFileSync(workloadDockerfile, 'utf8');
+	assert.ok(
+		dockerfileContent.includes('FROM public.ecr.aws/lambda/microvms:al2023-minimal'),
+		'expected the workload Dockerfile FROM the AWS-documented Lambda MicroVMs AL2023 minimal container base image',
+	);
+	assert.ok(
+		dockerfileContent.includes('CMD ["/app/hosted-genesis-microvm-workload"]'),
+		'expected the workload Dockerfile CMD to launch the hosted-genesis-microvm-workload binary',
+	);
+	assert.ok(
+		dockerfileContent.includes('EXPOSE 8080'),
+		'expected the workload Dockerfile to EXPOSE the M16 lifecycle-hook port 8080',
+	);
+
 	// The build role is host-created (lambda.amazonaws.com trust — the principal
 	// AWS Lambda MicroVM docs specify for the image build service; the
 	// microvms.lambda.amazonaws.com form is rejected by IAM as invalid), not a
@@ -142,6 +197,28 @@ test('hosted genesis AppTheory MicroVM deployed-stage wiring uses AppTheory cons
 	assert.ok(
 		typeof buildRoleArn === 'object',
 		'expected BuildRoleArn to be a CDK reference to the host-created role, not a literal ARN',
+	);
+
+	// P52 H1: the build role must carry CloudWatch Logs permissions so the
+	// MicroVM image build service can write build logs when logging is enabled.
+	// The AWS Lambda MicroVM getting-started IAM example grants the build role
+	// logs:CreateLogGroup / logs:CreateLogStream / logs:PutLogEvents on
+	// arn:aws:logs:*:*:* (microvms-getting-started.html "Prerequisites"). The
+	// 2026-07-04 lab deploy produced no build logs partly because the build role
+	// lacked these. The trust principal (lambda.amazonaws.com) is unchanged.
+	const buildRoleLogicalId = buildRole[0];
+	const buildRolePolicies = findResourceEntries(template, 'AWS::IAM::Policy').filter(([, policy]) => {
+		const roles = policy.Properties?.Roles;
+		return Array.isArray(roles) && roles.some((role) => role && typeof role === 'object' &&
+			'Ref' in role && (role as { Ref?: string }).Ref === buildRoleLogicalId);
+	});
+	const buildRolePolicyJson = JSON.stringify(buildRolePolicies.map(([, policy]) => policy.Properties ?? {}));
+	for (const action of ['logs:CreateLogGroup', 'logs:CreateLogStream', 'logs:PutLogEvents']) {
+		assert.ok(buildRolePolicyJson.includes(action), `expected MicroVM image build role to include ${action} for CloudWatch build logs`);
+	}
+	assert.ok(
+		buildRolePolicyJson.includes('arn:aws:logs:*:*:*'),
+		'expected MicroVM image build role logs permissions scoped to arn:aws:logs:*:*:* (the AWS-documented build-role logs resource)',
 	);
 
 	const authorizerFn = findResourceEntries(template, 'AWS::Lambda::Function').find(([, fn]) =>
