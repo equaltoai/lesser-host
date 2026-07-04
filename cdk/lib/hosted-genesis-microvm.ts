@@ -238,7 +238,15 @@ export function configureHostedGenesisMicrovm(
   // parameterize the region segment (cdk.Aws.REGION cannot be embedded in a
   // literal ARN string — that is a separate change, out of F1 scope).
   const baseImageArn = HOSTED_GENESIS_MICROVM_BASE_IMAGE_ARN;
-  const baseImageVersion = "1";
+  // baseImageVersion "0" is the only AVAILABLE managed version for al2023-1,
+  // verified via `aws lambda-microvms list-managed-microvm-image-versions
+  //   --image-identifier arn:aws:lambda:us-east-1:aws:microvm-image:al2023-1`
+  // (factory, 2026-07-04). The 2026-07-04 lab deploy failed on
+  // HostedGenesisMicrovmImage CREATE_FAILED: "No managed runtime with arn
+  // arn:aws:lambda:us-east-1:aws:microvm-image:al2023-1 and version 1 is
+  // available." — the ARN is correct; "1" was the wrong version. The API
+  // returned only {"imageVersion": "0"} for this image.
+  const baseImageVersion = "0";
 
   const microvmImage = new AppTheoryMicrovmImage(
     scope,

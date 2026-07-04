@@ -99,8 +99,10 @@ test('hosted genesis AppTheory MicroVM deployed-stage wiring uses AppTheory cons
 	// exactly. BaseImageArn renders as an Fn::Join (partition is a CFN token), so
 	// stringify before the substring check; `:aws:microvm-image:al2023-1` carries
 	// the load-bearing `aws` literal account, COLON separator, and al2023-1 runtime.
+	// BaseImageVersion "0" is the only available managed version (factory-verified
+	// via list-managed-microvm-image-versions, 2026-07-04); "1" failed the lab deploy.
 	const imageProps = images[0][1].Properties ?? {};
-	assert.equal(imageProps.BaseImageVersion, '1', 'expected deterministic base image version 1');
+	assert.equal(imageProps.BaseImageVersion, '0', 'expected deterministic base image version 0 (only available managed version)');
 	assert.ok(
 		JSON.stringify(imageProps.BaseImageArn ?? '').includes(HOSTED_GENESIS_MICROVM_BASE_IMAGE_ARN),
 		`expected BaseImageArn to be the pinned AWS-managed base runtime ARN (${HOSTED_GENESIS_MICROVM_BASE_IMAGE_ARN}), not a placeholder or operator-supplied context value`,
