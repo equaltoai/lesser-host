@@ -258,17 +258,6 @@ func incompleteEventError(requestID string, err error) runtimemicrovm.LifecycleR
 	return lifecycleFailedResult(runtimemicrovm.LifecycleEvent{RequestID: requestID}, "", err)
 }
 
-func cloneStringMap(in map[string]string) map[string]string {
-	if len(in) == 0 {
-		return nil
-	}
-	out := make(map[string]string, len(in))
-	for k, v := range in {
-		out[k] = v
-	}
-	return out
-}
-
 func writeJSON(w http.ResponseWriter, status int, body any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
