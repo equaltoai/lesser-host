@@ -103,17 +103,34 @@ func newHookServer(runner *turnRunner, namespace string) (*hookServer, error) {
 	return &hookServer{adapter: adapter, runner: runner, namespace: namespace}, nil
 }
 
+// hookPathPrefix is the URL prefix the AWS Lambda Microvms service invokes
+// lifecycle hooks at: /aws/lambda-microvms/runtime/v1/<hook-name> on the
+// configured port (see the OpenAPI spec in the AWS docs at
+// https://docs.aws.amazon.com/lambda/latest/dg/microvms-launching.html —
+// servers: [{ url: "/aws/lambda-microvms/runtime/v1" }] with paths /ready,
+// /validate, /run, /suspend, /resume, /terminate; the image-build hooks /ready
+// and /validate are documented at /aws/lambda-microvms/runtime/v1/<hook> in
+// https://docs.aws.amazon.com/lambda/latest/dg/microvms-images.html).
+//
+// The short /<hook> paths the workload previously registered are NOT called by
+// the service — the service got 404 at /ready during image creation, so the
+// ready hook never returned 200 and the build timed out (CREATE_FAILED "did not
+// stabilize"). AppTheory's M16 lifecycle contract defines the lifecycle event
+// handling (HookReady/HookValidate/...); it does not define the HTTP paths the
+// AWS service invokes, so the path registration is host-owned.
+const hookPathPrefix = "/aws/lambda-microvms/runtime/v1"
+
 // routes returns the HTTP handler that dispatches lifecycle hooks.
 func (s *hookServer) routes() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/validate", s.handleHook(runtimemicrovm.HookValidate))
-	mux.HandleFunc("/run", s.handleRunHook)
-	mux.HandleFunc("/ready", s.handleHook(runtimemicrovm.HookReady))
-	mux.HandleFunc("/suspend", s.handleHook(runtimemicrovm.HookSuspend))
-	mux.HandleFunc("/resume", s.handleHook(runtimemicrovm.HookResume))
-	mux.HandleFunc("/terminate", s.handleHook(runtimemicrovm.HookTerminate))
-	mux.HandleFunc("/failure", s.handleHook(runtimemicrovm.HookFailure))
-	mux.HandleFunc("/healthz", s.handleHealth)
+	mux.HandleFunc(hookPathPrefix+"/validate", s.handleHook(runtimemicrovm.HookValidate))
+	mux.HandleFunc(hookPathPrefix+"/run", s.handleRunHook)
+	mux.HandleFunc(hookPathPrefix+"/ready", s.handleHook(runtimemicrovm.HookReady))
+	mux.HandleFunc(hookPathPrefix+"/suspend", s.handleHook(runtimemicrovm.HookSuspend))
+	mux.HandleFunc(hookPathPrefix+"/resume", s.handleHook(runtimemicrovm.HookResume))
+	mux.HandleFunc(hookPathPrefix+"/terminate", s.handleHook(runtimemicrovm.HookTerminate))
+	mux.HandleFunc(hookPathPrefix+"/failure", s.handleHook(runtimemicrovm.HookFailure))
+	mux.HandleFunc("/healthz", s.handleHealth) // workload's own liveness check — not an AWS service hook
 	return mux
 }
 
