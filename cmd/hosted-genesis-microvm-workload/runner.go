@@ -13,6 +13,7 @@ import (
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis/completion"
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis/mintprompt"
+	"github.com/equaltoai/lesser-host/internal/secrets"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
@@ -272,17 +273,53 @@ func recoveryActionFor(code hostedgenesis.FailureCode) hostedgenesis.RecoveryAct
 	}
 }
 
-// providerAPIKey resolves the provider API key from the process environment for
-// a model set. It mirrors the control-plane env-first resolution; SSM fallback
-// is a control-plane concern and is not available in the MicroVM image env.
-func providerAPIKey(_ context.Context, modelSet string) (string, error) {
+// ssmKeyLoader loads a provider API key from SSM. It is a package-level
+// indirection so unit tests can substitute a fake loader without standing up a
+// real AWS SSM client. The production default delegates to internal/secrets
+// (OpenAIServiceKey / ClaudeAPIKey), which read the same unscoped SecureString
+// params the control plane reads (/lesser-host/api/openai/service and
+// /lesser-host/api/claude). The in-VM workload can reach SSM because the
+// host-owned MicroVM execution role (AppTheory v1.15.2 executionRole
+// propagation) grants ssm:GetParameter + kms:Decrypt on exactly those params.
+type ssmKeyLoader func(ctx context.Context, client secrets.SSMAPI) (string, error)
+
+// providerSSMLoaders resolves the SSM fallback loader for each provider family.
+// Defaults delegate to internal/secrets; tests override via setProviderSSMLoaders.
+var providerSSMLoaders = map[string]ssmKeyLoader{
+	"openai":    secrets.OpenAIServiceKey,
+	"anthropic": secrets.ClaudeAPIKey,
+}
+
+// providerAPIKey resolves the provider API key for a model set, env-first with
+// an SSM fallback. It mirrors the control-plane apiKeyForMintConversationModel
+// resolution: OPENAI_API_KEY / ANTHROPIC_API_KEY (or CLAUDE_API_KEY) win when
+// set; otherwise the loader reads the provider-key SecureString from SSM.
+//
+// P52 H1.5 corrective (AppTheory v1.15.2): the prior comment held that SSM
+// fallback was "a control-plane concern and not available in the MicroVM image
+// env" — that was true when the in-VM workload had no IAM identity. With v1.15.2
+// execution-role propagation, the MicroVM assumes the host-owned execution role
+// (DynamoDB + SSM provider-key grants), so SSM fallback is now available and is
+// the production path: the image env never carries raw provider keys (the
+// execution role + SSM keeps them out of the image/CloudFormation), while the
+// env-first path is preserved for local tests that set OPENAI_API_KEY directly.
+// A missing key in both env and SSM fails closed.
+func providerAPIKey(ctx context.Context, modelSet string) (string, error) {
 	modelSetNorm := strings.ToLower(strings.TrimSpace(modelSet))
 	switch {
 	case strings.HasPrefix(modelSetNorm, "openai:"):
 		if k := strings.TrimSpace(os.Getenv("OPENAI_API_KEY")); k != "" {
 			return k, nil
 		}
-		return "", errors.New("openai provider key not configured")
+		loader := providerSSMLoaders["openai"]
+		if loader == nil {
+			return "", errors.New("openai provider key not configured")
+		}
+		k, err := loader(ctx, nil)
+		if err != nil {
+			return "", errors.New("openai provider key not configured")
+		}
+		return k, nil
 	case strings.HasPrefix(modelSetNorm, "anthropic:"):
 		if k := strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY")); k != "" {
 			return k, nil
@@ -290,7 +327,15 @@ func providerAPIKey(_ context.Context, modelSet string) (string, error) {
 		if k := strings.TrimSpace(os.Getenv("CLAUDE_API_KEY")); k != "" {
 			return k, nil
 		}
-		return "", errors.New("anthropic provider key not configured")
+		loader := providerSSMLoaders["anthropic"]
+		if loader == nil {
+			return "", errors.New("anthropic provider key not configured")
+		}
+		k, err := loader(ctx, nil)
+		if err != nil {
+			return "", errors.New("anthropic provider key not configured")
+		}
+		return k, nil
 	default:
 		return "", fmt.Errorf("unsupported model set %q", modelSet)
 	}

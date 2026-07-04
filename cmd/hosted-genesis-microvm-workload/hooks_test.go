@@ -191,25 +191,25 @@ func TestHookServer_RunHookMissingBindingFails(t *testing.T) {
 	}
 }
 
-// TestNewHookServer_ValidatesRealContract proves newHookServer fails closed if
-// the M16 real lifecycle contract is invalid — no silent fallback to a partial
-// dispatcher. It also confirms the canonical M16 hooks are wired.
-func TestNewHookServer_ValidatesRealContract(t *testing.T) {
+// TestNewHookServer_UsesRealLifecycleAdapter proves newHookServer constructs
+// AppTheory's M16 real lifecycle adapter rather than a local transition engine.
+// A valid adapter call through the canonical real contract succeeds for each
+// non-run route already covered above; this direct call confirms the adapter is
+// available and wired.
+func TestNewHookServer_UsesRealLifecycleAdapter(t *testing.T) {
 	srv, err := newHookServer(nil, hostedgenesis.MicroVMNamespace)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if srv == nil || srv.contract.Hooks == nil {
-		t.Fatal("expected contract-holding dispatcher constructed")
+	if srv == nil || srv.adapter == nil {
+		t.Fatal("expected AppTheory lifecycle adapter constructed")
 	}
-	for _, hook := range []runtimemicrovm.LifecycleHook{
-		runtimemicrovm.HookValidate, runtimemicrovm.HookRun, runtimemicrovm.HookReady,
-		runtimemicrovm.HookSuspend, runtimemicrovm.HookResume, runtimemicrovm.HookTerminate,
-		runtimemicrovm.HookFailure,
-	} {
-		if _, ok := srv.handlers[hook]; !ok {
-			t.Fatalf("expected handler wired for hook %q", hook)
-		}
+	result, err := srv.adapter.Handle(context.Background(), validEvent(runtimemicrovm.HookReady, runtimemicrovm.StateRunning))
+	if err != nil {
+		t.Fatalf("adapter handle ready: %v", err)
+	}
+	if result.State != runtimemicrovm.StateReady {
+		t.Fatalf("expected adapter ready result, got %#v", result)
 	}
 }
 

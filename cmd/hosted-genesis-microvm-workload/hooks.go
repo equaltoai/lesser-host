@@ -21,15 +21,6 @@ import (
 // configuration in cdk/lib/hosted-genesis-microvm.ts.
 const hookPort = "8080"
 
-// Framework-feedback workaround (AppTheory v1.15.0): NewLifecycleAdapter
-// validates only with the M15 ValidateLifecycleContract, so it cannot ingest
-// DefaultRealLifecycleContract() (the documented M16 canonical vocabulary).
-// Until a real-contract-aware adapter constructor lands upstream, this workload
-// consumes the framework's EXPORTED M16 vocabulary directly: it validates the
-// contract with ValidateRealLifecycleContract at startup and derives each hook's
-// LifecycleResult from the framework's own DefaultRealLifecycleContract()
-// transition table. This is not a local substitute engine — no fork, no patched
-// adapter, no reimplemented sanitization. See memory mem-8365ca36ad0fd5f6.
 const (
 	hookErrorCode       = "m16.microvm.lifecycle_hook_failed"
 	hookErrorIncomplete = "m16.microvm.lifecycle_event_incomplete"
@@ -37,17 +28,16 @@ const (
 
 // hookServer serves the AppTheory M16 MicroVM image lifecycle hooks on the
 // configured port. Each hook path receives a sanitized microvm.LifecycleEvent
-// JSON body, validates it against the framework's M16 real lifecycle contract,
-// and returns the framework-shaped LifecycleResult. The run hook additionally
-// executes the assistant turn + declaration extraction and durably records
-// completion to HostedGenesisSession truth.
+// JSON body and drives it through AppTheory's real lifecycle adapter
+// (DefaultRealLifecycleContract + NewLifecycleAdapter). The run hook
+// additionally executes the assistant turn + declaration extraction and durably
+// records completion to HostedGenesisSession truth.
 //
 // The server is fail-closed: unknown hooks, malformed events, unsupported
 // transitions, and execution failures surface as a failed LifecycleResult with a
 // typed SafeError envelope. There is no degraded/non-MicroVM fallback path.
 type hookServer struct {
-	contract  runtimemicrovm.LifecycleContract
-	handlers  map[runtimemicrovm.LifecycleHook]runtimemicrovm.LifecycleHandler
+	adapter   *runtimemicrovm.LifecycleAdapter
 	runner    *turnRunner
 	namespace string
 }
@@ -91,25 +81,26 @@ func (b hookBinding) completionTurn() completion.CompletionTurn {
 	}
 }
 
-// newHookServer builds the workload's hook dispatcher over the framework's
-// exported M16 real lifecycle contract. It fails closed at startup if the
-// contract is invalid. Handlers are the workload's per-hook behavior; the run
-// handler executes the assistant turn + declaration extraction.
+// newHookServer builds the workload's hook dispatcher over the framework's M16
+// real lifecycle adapter. It fails closed at startup if the contract or handler
+// set is invalid. Handlers are the workload's per-hook behavior; the run handler
+// executes the assistant turn + declaration extraction.
 func newHookServer(runner *turnRunner, namespace string) (*hookServer, error) {
 	contract := runtimemicrovm.DefaultRealLifecycleContract()
-	if err := runtimemicrovm.ValidateRealLifecycleContract(contract); err != nil {
-		return nil, fmt.Errorf("validate M16 real lifecycle contract: %w", err)
+	adapter, err := runtimemicrovm.NewLifecycleAdapter(
+		runtimemicrovm.WithLifecycleContract(contract),
+		runtimemicrovm.WithLifecycleHandler(runtimemicrovm.HookValidate, namespaceBoundHook(namespace, validateHook)),
+		runtimemicrovm.WithLifecycleHandler(runtimemicrovm.HookRun, namespaceBoundHook(namespace, runHook(runner))),
+		runtimemicrovm.WithLifecycleHandler(runtimemicrovm.HookReady, namespaceBoundHook(namespace, readyHook)),
+		runtimemicrovm.WithLifecycleHandler(runtimemicrovm.HookSuspend, namespaceBoundHook(namespace, passthroughHook)),
+		runtimemicrovm.WithLifecycleHandler(runtimemicrovm.HookResume, namespaceBoundHook(namespace, passthroughHook)),
+		runtimemicrovm.WithLifecycleHandler(runtimemicrovm.HookTerminate, namespaceBoundHook(namespace, passthroughHook)),
+		runtimemicrovm.WithLifecycleHandler(runtimemicrovm.HookFailure, namespaceBoundHook(namespace, failureHook)),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("configure M16 real lifecycle adapter: %w", err)
 	}
-	handlers := map[runtimemicrovm.LifecycleHook]runtimemicrovm.LifecycleHandler{
-		runtimemicrovm.HookValidate:  validateHook,
-		runtimemicrovm.HookRun:       runHook(runner),
-		runtimemicrovm.HookReady:     readyHook,
-		runtimemicrovm.HookSuspend:   passthroughHook,
-		runtimemicrovm.HookResume:    passthroughHook,
-		runtimemicrovm.HookTerminate: passthroughHook,
-		runtimemicrovm.HookFailure:   failureHook,
-	}
-	return &hookServer{contract: contract, handlers: handlers, runner: runner, namespace: namespace}, nil
+	return &hookServer{adapter: adapter, runner: runner, namespace: namespace}, nil
 }
 
 // routes returns the HTTP handler that dispatches lifecycle hooks.
@@ -131,8 +122,8 @@ func (s *hookServer) handleHealth(w http.ResponseWriter, _ *http.Request) {
 }
 
 // handleHook returns a handler that drives one non-run lifecycle hook through
-// the framework's M16 contract vocabulary. It normalizes the event, validates
-// the transition, invokes the workload's hook handler, and returns the
+// AppTheory's M16 real lifecycle adapter. The adapter normalizes the event,
+// validates the transition, invokes the workload's hook handler, and returns the
 // framework-shaped LifecycleResult (success state, or failed with a SafeError).
 func (s *hookServer) handleHook(hook runtimemicrovm.LifecycleHook) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -161,60 +152,25 @@ func (s *hookServer) handleRunHook(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.drive(r.Context(), event))
 }
 
-// drive applies one lifecycle event through the framework's exported M16
-// contract vocabulary. It mirrors the LifecycleAdapter.Handle envelope (event
-// normalization, transition lookup, handler invocation, safe-error translation
-// to failed state) but uses DefaultRealLifecycleContract()'s transition table
-// directly because NewLifecycleAdapter cannot ingest the real contract
-// (framework gap; see memory mem-8365ca36ad0fd5f6).
+// drive applies one lifecycle event through AppTheory's M16 real lifecycle
+// adapter. There is no local transition engine: validation, transition lookup,
+// handler invocation, and safe-error translation stay inside the framework
+// adapter.
 func (s *hookServer) drive(ctx context.Context, event runtimemicrovm.LifecycleEvent) runtimemicrovm.LifecycleResult {
-	normalized, err := normalizeLifecycleEvent(event, s.namespace)
+	if s == nil || s.adapter == nil {
+		return lifecycleFailedResult(event, event.Hook, errors.New("lifecycle adapter is not configured"))
+	}
+	result, err := s.adapter.Handle(ctx, event)
 	if err != nil {
-		return lifecycleFailedResult(event, event.Hook, err)
-	}
-	spec, ok := hookSpec(s.contract, normalized.Hook)
-	if !ok {
-		return lifecycleFailedResult(normalized, normalized.Hook, errors.New("lifecycle hook is unsupported"))
-	}
-	activeState, ok := nextTransitionState(s.contract, normalized.State, normalized.Hook)
-	if !ok {
-		return lifecycleFailedResult(normalized, normalized.Hook, errors.New("lifecycle transition is unsupported"))
-	}
-	if normalized.Hook != runtimemicrovm.HookFailure && activeState != spec.State {
-		return lifecycleFailedResult(normalized, normalized.Hook, errors.New("lifecycle transition is not the hook active state"))
-	}
-	handler := s.handlers[normalized.Hook]
-	if handler == nil {
-		return lifecycleFailedResult(normalized, normalized.Hook, errors.New("lifecycle hook handler is missing"))
-	}
-	handlerEvent := normalized
-	handlerEvent.State = activeState
-	if err := handler(ctx, handlerEvent); err != nil {
 		slog.Error("hosted-genesis-microvm-workload: lifecycle hook failed", //nolint:gosec // G706: values are structured slog attributes (JSON-encoded key/values), not a log format string; no format-string injection surface.
-			slog.String("hook", string(normalized.Hook)),
-			slog.String("tenant_id", normalized.TenantID),
-			slog.String("session_id", normalized.SessionID),
-			slog.String("request_id", normalized.RequestID),
+			slog.String("hook", string(event.Hook)),
+			slog.String("tenant_id", strings.TrimSpace(event.TenantID)),
+			slog.String("session_id", strings.TrimSpace(event.SessionID)),
+			slog.String("request_id", strings.TrimSpace(event.RequestID)),
 			slog.String("error", err.Error()),
 		)
-		return lifecycleFailedResult(normalized, normalized.Hook, fmt.Errorf("lifecycle hook failed: %w", err))
 	}
-	state := spec.SuccessState
-	if normalized.Hook == runtimemicrovm.HookFailure {
-		state = runtimemicrovm.StateFailed
-	} else if !hasTransition(s.contract, activeState, normalized.Hook, state) {
-		return lifecycleFailedResult(normalized, normalized.Hook, errors.New("lifecycle success transition is unsupported"))
-	}
-	return runtimemicrovm.LifecycleResult{
-		RequestID:     normalized.RequestID,
-		TenantID:      normalized.TenantID,
-		Namespace:     normalized.Namespace,
-		SessionID:     normalized.SessionID,
-		Hook:          normalized.Hook,
-		PreviousState: normalized.State,
-		State:         state,
-		Metadata:      cloneStringMap(normalized.Metadata),
-	}
+	return result
 }
 
 // validateHook is the image-build validation hook. It fails closed if the
@@ -260,62 +216,24 @@ func failureHook(_ context.Context, _ runtimemicrovm.LifecycleEvent) error {
 	return nil
 }
 
-// normalizeLifecycleEvent trims and validates a lifecycle event envelope against
-// the hosted-genesis namespace binding. It mirrors the framework's unexported
-// normalizeLifecycleEvent shape using only exported contract vocabulary.
-func normalizeLifecycleEvent(event runtimemicrovm.LifecycleEvent, namespace string) (runtimemicrovm.LifecycleEvent, error) {
-	event.RequestID = strings.TrimSpace(event.RequestID)
-	event.TenantID = strings.TrimSpace(event.TenantID)
-	event.Namespace = strings.TrimSpace(event.Namespace)
-	event.SessionID = strings.TrimSpace(event.SessionID)
-	event.Hook = runtimemicrovm.LifecycleHook(strings.TrimSpace(string(event.Hook)))
-	event.State = runtimemicrovm.LifecycleState(strings.TrimSpace(string(event.State)))
-	event.Metadata = cloneStringMap(event.Metadata)
-	if event.RequestID == "" || event.TenantID == "" || event.Namespace == "" || event.SessionID == "" {
-		return runtimemicrovm.LifecycleEvent{}, errors.New("lifecycle envelope is incomplete")
-	}
-	if event.Hook == "" || event.State == "" {
-		return runtimemicrovm.LifecycleEvent{}, errors.New("lifecycle hook and state are required")
-	}
-	if namespace != "" && event.Namespace != namespace {
-		return runtimemicrovm.LifecycleEvent{}, fmt.Errorf("lifecycle event namespace %q is not %s", event.Namespace, namespace)
-	}
-	return event, nil
-}
-
-func hookSpec(contract runtimemicrovm.LifecycleContract, hook runtimemicrovm.LifecycleHook) (runtimemicrovm.LifecycleHookSpec, bool) {
-	for _, h := range contract.Hooks {
-		if runtimemicrovm.LifecycleHook(strings.TrimSpace(string(h.Name))) == hook {
-			return h, true
-		}
-	}
-	return runtimemicrovm.LifecycleHookSpec{}, false
-}
-
-func nextTransitionState(contract runtimemicrovm.LifecycleContract, from runtimemicrovm.LifecycleState, hook runtimemicrovm.LifecycleHook) (runtimemicrovm.LifecycleState, bool) {
-	for _, t := range contract.Transitions {
-		if t.From == from && t.Hook == hook {
-			return t.To, true
-		}
-	}
-	return "", false
-}
-
-func hasTransition(contract runtimemicrovm.LifecycleContract, from runtimemicrovm.LifecycleState, hook runtimemicrovm.LifecycleHook, to runtimemicrovm.LifecycleState) bool {
-	for _, t := range contract.Transitions {
-		if t.From == from && t.Hook == hook && t.To == to {
-			return true
-		}
-	}
-	return false
-}
-
 func decodeLifecycleEvent(r *http.Request) (runtimemicrovm.LifecycleEvent, error) {
 	var event runtimemicrovm.LifecycleEvent
 	if err := json.NewDecoder(r.Body).Decode(&event); err != nil {
 		return runtimemicrovm.LifecycleEvent{}, fmt.Errorf("decode lifecycle event: %w", err)
 	}
 	return event, nil
+}
+
+func namespaceBoundHook(namespace string, handler runtimemicrovm.LifecycleHandler) runtimemicrovm.LifecycleHandler {
+	return func(ctx context.Context, event runtimemicrovm.LifecycleEvent) error {
+		if namespace != "" && strings.TrimSpace(event.Namespace) != namespace {
+			return fmt.Errorf("lifecycle event namespace %q is not %s", event.Namespace, namespace)
+		}
+		if handler == nil {
+			return nil
+		}
+		return handler(ctx, event)
+	}
 }
 
 func lifecycleFailedResult(event runtimemicrovm.LifecycleEvent, hook runtimemicrovm.LifecycleHook, err error) runtimemicrovm.LifecycleResult {
