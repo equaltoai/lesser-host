@@ -96,24 +96,75 @@ func TestHookServer_Healthz(t *testing.T) {
 	}
 }
 
-// TestHookServer_BadNamespaceRejected proves the validate hook fails closed for
-// a non-hosted-genesis namespace, surfacing a failed lifecycle result.
-func TestHookServer_BadNamespaceRejected(t *testing.T) {
+// TestHookServer_ReadyValidateHandlersUnconditional proves the readyHook and
+// validateHook handlers return nil unconditionally (no namespace binding),
+// matching the AWS service's build-hook contract. The AWS Lambda Microvms
+// service invokes /ready and /validate during image creation with NO request
+// body (see the OpenAPI spec in the AWS docs at
+// https://docs.aws.amazon.com/lambda/latest/dg/microvms-launching.html — neither
+// /ready nor /validate defines a requestBody), so there is no namespace to bind;
+// the workload is ready/valid once it is serving the hooks. Requiring a
+// hosted-genesis namespace here made /ready return a failed lifecycle result,
+// which the service retried until the ~120s readyTimeoutInSeconds elapsed and
+// the image build failed with CREATE_FAILED "did not stabilize".
+func TestHookServer_ReadyValidateHandlersUnconditional(t *testing.T) {
+	if err := readyHook(context.Background(), runtimemicrovm.LifecycleEvent{}); err != nil {
+		t.Fatalf("readyHook returned error on empty event: %v", err)
+	}
+	if err := readyHook(context.Background(), runtimemicrovm.LifecycleEvent{Namespace: "other"}); err != nil {
+		t.Fatalf("readyHook returned error on non-hosted-genesis namespace: %v", err)
+	}
+	if err := validateHook(context.Background(), runtimemicrovm.LifecycleEvent{}); err != nil {
+		t.Fatalf("validateHook returned error on empty event: %v", err)
+	}
+	if err := validateHook(context.Background(), runtimemicrovm.LifecycleEvent{Namespace: "other"}); err != nil {
+		t.Fatalf("validateHook returned error on non-hosted-genesis namespace: %v", err)
+	}
+}
+
+// TestDecodeLifecycleEvent_ToleratesEmptyBody proves decodeLifecycleEvent
+// returns an empty event with no error when the request body is empty (io.EOF),
+// matching the AWS service's build-hook contract (/ready and /validate send NO
+// request body). A non-empty but malformed body still surfaces a decode error.
+func TestDecodeLifecycleEvent_ToleratesEmptyBody(t *testing.T) {
+	// Empty body (nil) → empty event, no error.
+	req := httptest.NewRequest(http.MethodPost, hookPathPrefix+"/ready", nil)
+	event, err := decodeLifecycleEvent(req)
+	if err != nil {
+		t.Fatalf("expected no error on empty body, got %v", err)
+	}
+	if event.Namespace != "" || event.RequestID != "" || event.SessionID != "" {
+		t.Fatalf("expected empty event on empty body, got %+v", event)
+	}
+
+	// Empty bytes.Reader body → empty event, no error (io.EOF path).
+	req = httptest.NewRequest(http.MethodPost, hookPathPrefix+"/ready", bytes.NewReader(nil))
+	event, err = decodeLifecycleEvent(req)
+	if err != nil {
+		t.Fatalf("expected no error on empty bytes body, got %v", err)
+	}
+	if event.Namespace != "" {
+		t.Fatalf("expected empty event on empty bytes body, got %+v", event)
+	}
+
+	// Malformed non-empty body → decode error (fail-closed preserved).
+	req = httptest.NewRequest(http.MethodPost, hookPathPrefix+"/ready", bytes.NewReader([]byte("{not json")))
+	if _, err = decodeLifecycleEvent(req); err == nil {
+		t.Fatal("expected error on malformed non-empty body, got nil")
+	}
+}
+
+// TestHookServer_ReadyHookEmptyBody200 proves the /aws/lambda-microvms/runtime/v1/ready
+// route returns HTTP 200 on an empty-body POST, the AWS service's image-build
+// readiness contract (POST /ready with no body → 200 once ready, 503 retried).
+func TestHookServer_ReadyHookEmptyBody200(t *testing.T) {
 	srv := newTestHookServer(t, nil)
-	event := validEvent(runtimemicrovm.HookValidate, runtimemicrovm.StateRequested)
-	event.Namespace = "other-namespace"
-	body, _ := json.Marshal(event)
-	req := httptest.NewRequest(http.MethodPost, hookPathPrefix+"/validate", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, hookPathPrefix+"/ready", nil)
 	rec := httptest.NewRecorder()
 	srv.routes().ServeHTTP(rec, req)
 
-	var result runtimemicrovm.LifecycleResult
-	_ = json.NewDecoder(rec.Body).Decode(&result)
-	if result.State != runtimemicrovm.StateFailed {
-		t.Fatalf("expected failed state for bad namespace, got %q", result.State)
-	}
-	if result.Error == nil {
-		t.Fatalf("expected a safe error for bad namespace")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 on empty-body /ready, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 
