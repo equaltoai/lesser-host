@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -12,7 +13,6 @@ import (
 
 	runtimemicrovm "github.com/theory-cloud/apptheory/runtime/microvm"
 
-	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis/completion"
 )
 
@@ -147,10 +147,13 @@ func (s *hookServer) handleHook(hook runtimemicrovm.LifecycleHook) http.HandlerF
 		event, err := decodeLifecycleEvent(r)
 		if err != nil {
 			writeJSON(w, http.StatusBadRequest, incompleteEventError("", err))
+			logHookRequest(r.URL.Path, http.StatusBadRequest, "")
 			return
 		}
 		event.Hook = hook
-		writeJSON(w, http.StatusOK, s.drive(r.Context(), event))
+		result := s.drive(r.Context(), event)
+		writeJSON(w, http.StatusOK, result)
+		logHookRequest(r.URL.Path, http.StatusOK, string(result.State))
 	}
 }
 
@@ -163,10 +166,32 @@ func (s *hookServer) handleRunHook(w http.ResponseWriter, r *http.Request) {
 	event, err := decodeLifecycleEvent(r)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, incompleteEventError("", err))
+		logHookRequest(r.URL.Path, http.StatusBadRequest, "")
 		return
 	}
 	event.Hook = runtimemicrovm.HookRun
-	writeJSON(w, http.StatusOK, s.drive(r.Context(), event))
+	result := s.drive(r.Context(), event)
+	writeJSON(w, http.StatusOK, result)
+	logHookRequest(r.URL.Path, http.StatusOK, string(result.State))
+}
+
+// logHookRequest emits one structured log line per lifecycle hook request with
+// its path + HTTP status (+ result state when non-empty), so image-build / hook
+// failures are diagnosable in the CloudWatch build log group
+// (/aws/lambda/microvms/<image-name>). The path is a structured slog attribute
+// (JSON-encoded key/value), not a printf format string, so there is no
+// format-string injection surface.
+//
+//nolint:gosec // G706: path/state are structured slog attributes (JSON-encoded key/values), not a log format string.
+func logHookRequest(path string, status int, state string) {
+	attrs := []any{
+		slog.String("path", path),
+		slog.Int("status", status),
+	}
+	if state != "" {
+		attrs = append(attrs, slog.String("state", state))
+	}
+	slog.Info("hosted-genesis-microvm-workload: hook request", attrs...)
 }
 
 // drive applies one lifecycle event through AppTheory's M16 real lifecycle
@@ -190,12 +215,14 @@ func (s *hookServer) drive(ctx context.Context, event runtimemicrovm.LifecycleEv
 	return result
 }
 
-// validateHook is the image-build validation hook. It fails closed if the
-// lifecycle event is not bound to the hosted-genesis namespace.
-func validateHook(_ context.Context, event runtimemicrovm.LifecycleEvent) error {
-	if strings.TrimSpace(event.Namespace) != hostedgenesis.MicroVMNamespace {
-		return fmt.Errorf("lifecycle event namespace %q is not %s", event.Namespace, hostedgenesis.MicroVMNamespace)
-	}
+// validateHook is the image-build validation hook. The AWS Lambda Microvms
+// service invokes /validate during image creation with NO request body (see the
+// OpenAPI spec in the AWS docs at
+// https://docs.aws.amazon.com/lambda/latest/dg/microvms-launching.html —
+// /validate defines no requestBody, only 200/503 responses), so there is no
+// namespace or session context to bind. The image is valid once the workload is
+// serving the hook; return nil unconditionally.
+func validateHook(_ context.Context, _ runtimemicrovm.LifecycleEvent) error {
 	return nil
 }
 
@@ -215,10 +242,16 @@ func runHook(runner *turnRunner) runtimemicrovm.LifecycleHandler {
 }
 
 // readyHook records a readiness observation without widening the state model.
-func readyHook(_ context.Context, event runtimemicrovm.LifecycleEvent) error {
-	if strings.TrimSpace(event.Namespace) != hostedgenesis.MicroVMNamespace {
-		return fmt.Errorf("lifecycle event namespace %q is not %s", event.Namespace, hostedgenesis.MicroVMNamespace)
-	}
+// The AWS Lambda Microvms service invokes /ready during image creation with NO
+// request body (see the OpenAPI spec in the AWS docs at
+// https://docs.aws.amazon.com/lambda/latest/dg/microvms-launching.html — /ready
+// defines no requestBody, only 200/503 responses, where 503 is retried until
+// timeout), so there is no namespace or session context to bind. The workload is
+// ready once it is serving the hook; return nil unconditionally. Returning a
+// non-nil error here (e.g. for a missing namespace) made the service retry /ready
+// until the ~120s readyTimeoutInSeconds elapsed, after which the image build
+// failed with CREATE_FAILED "did not stabilize".
+func readyHook(_ context.Context, _ runtimemicrovm.LifecycleEvent) error {
 	return nil
 }
 
@@ -233,9 +266,20 @@ func failureHook(_ context.Context, _ runtimemicrovm.LifecycleEvent) error {
 	return nil
 }
 
+// decodeLifecycleEvent reads a sanitized MicroVM lifecycle event from the hook
+// request body. The AWS Lambda Microvms service's image-build hooks (/ready and
+// /validate) send NO request body (see the OpenAPI spec in the AWS docs at
+// https://docs.aws.amazon.com/lambda/latest/dg/microvms-launching.html — neither
+// /ready nor /validate defines a requestBody). An empty body therefore decodes
+// to io.EOF, which is the build-hook contract, not a malformed event: return an
+// empty LifecycleEvent with no error so the hook can acknowledge readiness /
+// validity. Only a non-empty but malformed JSON body is a real decode failure.
 func decodeLifecycleEvent(r *http.Request) (runtimemicrovm.LifecycleEvent, error) {
 	var event runtimemicrovm.LifecycleEvent
 	if err := json.NewDecoder(r.Body).Decode(&event); err != nil {
+		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+			return runtimemicrovm.LifecycleEvent{}, nil
+		}
 		return runtimemicrovm.LifecycleEvent{}, fmt.Errorf("decode lifecycle event: %w", err)
 	}
 	return event, nil
