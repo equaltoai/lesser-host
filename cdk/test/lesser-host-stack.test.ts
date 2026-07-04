@@ -8,6 +8,7 @@ import test from 'node:test';
 import * as cdk from 'aws-cdk-lib';
 
 import { LesserHostStack, shouldUseLocalWebBundling } from '../lib/lesser-host-stack';
+import { HOSTED_GENESIS_MICROVM_BASE_IMAGE_ARN } from '../lib/hosted-genesis-microvm';
 import {
 	LAB_ENS_GATEWAY_CHAIN_ID,
 	LAB_ENS_GATEWAY_CHAIN_NAME,
@@ -37,24 +38,23 @@ const webLookupContext = {
 const webStackEnv = { account: webLookupAccount, region: webLookupRegion };
 
 function hostedGenesisMicrovmContext(_stage = 'lab'): Record<string, string> {
-	// P52 corrective #873 (revised): the hosted-genesis MicroVM path takes NO
-	// caller-supplied CREDENTIAL context for deployed stages. The authorizer
-	// bearer token is CDK-owned — a custom resource generates it and writes the
-	// raw value to a deterministic SSM SecureString, returning only the sha256
-	// digest + param name to CloudFormation. VPC/subnet/AZ/SG, base-image
-	// VERSION, build-role ARN, AND the credential pair (token sha256 + SSM param
-	// name) were all eliminated. The base-image ARN remains operator-supplied
-	// context: AppTheory's AppTheoryMicrovmImage passes baseImageArn through
-	// verbatim (no pin/default — microvm-image.ts:365,381), so the caller must
-	// supply a real base-image ARN that exists in the deploy account. Sourcing
-	// that real ARN is a separate H1 step; tests inject a clearly-fake test ARN
-	// (account 123456789012 — the canonical CDK placeholder account, never a
-	// real AWS-managed runtime) so synth succeeds without asserting any specific
-	// real AWS ARN.
-	return {
-		hostedGenesisMicrovmBaseImageArn:
-			'arn:aws:lambda:us-east-1:123456789012:microvm-image/test-base',
-	};
+	// P52 H1 step 2 (F1): the hosted-genesis MicroVM path takes NO caller-
+	// supplied context for deployed stages. The authorizer bearer token is
+	// CDK-owned — a custom resource generates it and writes the raw value to a
+	// deterministic SSM SecureString, returning only the sha256 digest + param
+	// name to CloudFormation. VPC/subnet/AZ/SG, base-image VERSION, build-role
+	// ARN, AND the credential pair (token sha256 + SSM param name) were all
+	// eliminated. As of F1 the base-image ARN is ALSO no longer operator-supplied
+	// context — it is the pinned AWS-managed managed-base literal
+	// HOSTED_GENESIS_MICROVM_BASE_IMAGE_ARN in cdk/lib/hosted-genesis-microvm.ts
+	// (arn:aws:lambda:us-east-1:aws:microvm-image:al2023-1), sourced from the
+	// AWS Lambda MicroVM developer guide. There is therefore no base-image
+	// context to inject; this fixture returns an empty record so the synth
+	// asserts the pinned literal flows through verbatim (the test at the image
+	// assertion site checks for the exact managed ARN string). Keeping the
+	// function (rather than deleting it) preserves the synth helper call sites
+	// that spread it into every test's context.
+	return {};
 }
 
 type SynthesizedTemplate = {
@@ -720,18 +720,27 @@ test('hosted genesis AppTheory MicroVM deployed-stage wiring uses AppTheory cons
 	assert.equal(connectors.length, 0, 'internetEgress synthesizes no AWS::Lambda::NetworkConnector resource');
 	assert.equal(images.length, 1, 'expected AppTheoryMicrovmImage L1 resource');
 
-	// The MicroVM image uses the operator-supplied base-image ARN (taken from
-	// CDK context — AppTheory passes baseImageArn through verbatim with no pin)
-	// and the host-owned build role. The test context injects a clearly-fake ARN
-	// (account 123456789012, the canonical CDK placeholder account — NOT a real
-	// AWS-managed runtime); sourcing the real base image is a separate H1 step.
-	// BaseImageArn / EgressNetworkConnectors render as Fn::Join objects (the
-	// partition is a CloudFormation token), so stringify before substring check.
+	// P52 H1 step 2 (F1): the MicroVM image uses the pinned AWS-managed base
+	// runtime ARN (HOSTED_GENESIS_MICROVM_BASE_IMAGE_ARN, sourced from the AWS
+	// Lambda MicroVM developer guide — see cdk/lib/hosted-genesis-microvm.ts for
+	// the doc URLs) and the host-owned build role. The managed base ARN is a
+	// literal constant; AppTheory passes baseImageArn through verbatim with no
+	// pin (microvm-image.ts:365,381), so it must appear in the synthesized
+	// BaseImageArn exactly. BaseImageArn renders as an Fn::Join object (the
+	// partition is a CloudFormation token), so stringify before the substring
+	// check; the asserted substring `microvm-image:al2023-1` carries the two
+	// load-bearing details — the COLON separator (not slash) and the `al2023-1`
+	// runtime name (not `base`) — plus the `aws` literal account that the
+	// substring check below also verifies.
 	const imageProps = images[0][1].Properties ?? {};
 	assert.equal(imageProps.BaseImageVersion, '1', 'expected deterministic base image version 1');
 	assert.ok(
-		JSON.stringify(imageProps.BaseImageArn ?? '').includes('microvm-image/test-base'),
-		'expected BaseImageArn to be the operator-supplied context value (test fixture ARN), not a hardcoded managed-runtime ARN',
+		JSON.stringify(imageProps.BaseImageArn ?? '').includes(HOSTED_GENESIS_MICROVM_BASE_IMAGE_ARN),
+		`expected BaseImageArn to be the pinned AWS-managed base runtime ARN (${HOSTED_GENESIS_MICROVM_BASE_IMAGE_ARN}), not a placeholder or operator-supplied context value`,
+	);
+	assert.ok(
+		JSON.stringify(imageProps.BaseImageArn ?? '').includes(':aws:microvm-image:al2023-1'),
+		'expected managed base ARN to use the `aws` literal account + colon separator + al2023-1 runtime (not a numeric account, not a slash, not `base`)',
 	);
 	const egressRefs = imageProps.EgressNetworkConnectors as unknown[] | undefined;
 	assert.ok(Array.isArray(egressRefs) && egressRefs.length === 1, 'expected one egress connector ref on the image');
