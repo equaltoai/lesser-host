@@ -43,11 +43,11 @@ func TestHookServer_NonRunHooksDriveAdapter(t *testing.T) {
 		state     runtimemicrovm.LifecycleState
 		wantState runtimemicrovm.LifecycleState
 	}{
-		{"/validate", runtimemicrovm.HookValidate, runtimemicrovm.StateRequested, runtimemicrovm.StateValidated},
-		{"/ready", runtimemicrovm.HookReady, runtimemicrovm.StateRunning, runtimemicrovm.StateReady},
-		{"/suspend", runtimemicrovm.HookSuspend, runtimemicrovm.StateReady, runtimemicrovm.StateSuspended},
-		{"/resume", runtimemicrovm.HookResume, runtimemicrovm.StateSuspended, runtimemicrovm.StateReady},
-		{"/terminate", runtimemicrovm.HookTerminate, runtimemicrovm.StateReady, runtimemicrovm.StateTerminated},
+		{hookPathPrefix + "/validate", runtimemicrovm.HookValidate, runtimemicrovm.StateRequested, runtimemicrovm.StateValidated},
+		{hookPathPrefix + "/ready", runtimemicrovm.HookReady, runtimemicrovm.StateRunning, runtimemicrovm.StateReady},
+		{hookPathPrefix + "/suspend", runtimemicrovm.HookSuspend, runtimemicrovm.StateReady, runtimemicrovm.StateSuspended},
+		{hookPathPrefix + "/resume", runtimemicrovm.HookResume, runtimemicrovm.StateSuspended, runtimemicrovm.StateReady},
+		{hookPathPrefix + "/terminate", runtimemicrovm.HookTerminate, runtimemicrovm.StateReady, runtimemicrovm.StateTerminated},
 	}
 	for _, c := range cases {
 		t.Run(c.path, func(t *testing.T) {
@@ -103,7 +103,7 @@ func TestHookServer_BadNamespaceRejected(t *testing.T) {
 	event := validEvent(runtimemicrovm.HookValidate, runtimemicrovm.StateRequested)
 	event.Namespace = "other-namespace"
 	body, _ := json.Marshal(event)
-	req := httptest.NewRequest(http.MethodPost, "/validate", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, hookPathPrefix+"/validate", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.routes().ServeHTTP(rec, req)
 
@@ -153,7 +153,7 @@ func TestHookServer_RunHookExecutesTurn(t *testing.T) {
 
 	event := validEvent(runtimemicrovm.HookRun, runtimemicrovm.StateValidated)
 	body, _ := json.Marshal(event)
-	req := httptest.NewRequest(http.MethodPost, "/run", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, hookPathPrefix+"/run", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.routes().ServeHTTP(rec, req)
 
@@ -180,7 +180,7 @@ func TestHookServer_RunHookMissingBindingFails(t *testing.T) {
 	event := validEvent(runtimemicrovm.HookRun, runtimemicrovm.StateValidated)
 	event.Metadata = nil // missing ids
 	body, _ := json.Marshal(event)
-	req := httptest.NewRequest(http.MethodPost, "/run", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, hookPathPrefix+"/run", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.routes().ServeHTTP(rec, req)
 
