@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -349,6 +350,140 @@ func newTestHookServer(t *testing.T, runner *turnRunner) *hookServer {
 	}
 	return srv
 }
+
+// TestLoggingListener_AcceptLogsRemote proves the logging listener wraps Accept
+// so every inbound raw TCP connection to the hook port is logged at the LISTENER
+// layer (below HTTP), with the remote address, before the connection is handed
+// to srv.Serve. This is the diagnostic added for deploy #9: the build log showed
+// "listening" + "registered routes" but ZERO HTTP-layer request logs, so a
+// connection that fails HTTP parsing (e.g. a TLS mismatch — the build service
+// calling HTTPS on a plain-HTTP server) would be invisible to the request-logging
+// middleware. The logging listener sees every Accept regardless of whether the
+// connection ever produces a parseable HTTP request.
+func TestLoggingListener_AcceptLogsRemote(t *testing.T) {
+	// Use an in-process pipe listener so the test does not depend on a real port
+	// and so Accept can be driven deterministically. A pipe conn exposes a
+	// non-nil RemoteAddr, so the logging branch's conn.RemoteAddr().String() is
+	// exercised.
+	client, server := net.Pipe()
+	t.Cleanup(func() { _ = client.Close() })
+	pipe := newPipeListener(server)
+
+	wrapped := &loggingListener{Listener: pipe}
+
+	// Accept on the wrapped listener returns the injected conn (not nil) and
+	// runs the logging branch. The wrapper must not block or alter the conn.
+	conn, err := wrapped.Accept()
+	if err != nil {
+		t.Fatalf("expected Accept to return a conn, got error: %v", err)
+	}
+	if conn == nil {
+		t.Fatal("expected Accept to return a non-nil conn")
+	}
+	if conn.RemoteAddr() == nil {
+		t.Fatal("expected the wrapped conn to expose a RemoteAddr")
+	}
+	_ = conn.Close()
+}
+
+// TestLoggingListener_AcceptErrorPropagates proves the logging listener logs and
+// propagates an Accept error (e.g. after the underlying listener is closed)
+// rather than swallowing it. srv.Serve relies on a non-nil Accept error to
+// return; hiding it would let Serve spin instead of exiting cleanly on shutdown.
+func TestLoggingListener_AcceptErrorPropagates(t *testing.T) {
+	pipe := newPipeListener(nil)
+	wrapped := &loggingListener{Listener: pipe}
+	_ = pipe.Close() // close the underlying listener so Accept returns ErrClosed
+
+	if _, err := wrapped.Accept(); err == nil {
+		t.Fatal("expected Accept to return an error after the listener was closed, got nil")
+	}
+}
+
+// TestServeWithListener_KeepaliveDoesNotBlockShutdown proves the keepalive
+// goroutine started in serveWithListener stops when srv.Serve returns, so a
+// graceful Shutdown (which closes the listener and makes Serve return
+// http.ErrServerClosed) does not leak the goroutine or block process exit. The
+// hook handlers, request-logging middleware, catch-all, and panic recovery are
+// unchanged; this exercises only the listener/keepalive/Serve-return wiring.
+func TestServeWithListener_KeepaliveDoesNotBlockShutdown(t *testing.T) {
+	srv := newTestHookServer(t, nil)
+
+	// Bind a real listener on an ephemeral port so Serve accepts connections,
+	// then shut the server down to drive Serve to return ErrServerClosed. The
+	// keepalive goroutine must stop and serveWithListener must return within a
+	// bounded time (no leak / no block). serveWithListener binds its own
+	// listener from the addr, so shut down via the SAME *http.Server it serves.
+	addr := "127.0.0.1:0"
+	httpSrv := &http.Server{
+		Handler:           srv.routes(),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- srv.serveWithListener(httpSrv, addr)
+	}()
+
+	// Give Serve a moment to bind + start, then shut down via the same server so
+	// Serve returns ErrServerClosed. The keepalive goroutine must stop on Serve
+	// return.
+	time.Sleep(30 * time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := httpSrv.Shutdown(ctx); err != nil {
+		t.Fatalf("shutdown: %v", err)
+	}
+
+	// serveWithListener must return (Serve returned ErrServerClosed) within a
+	// bounded time. The keepalive goroutine is stopped inside serveWithListener
+	// before it returns, so a hang here would indicate a leak.
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("expected nil from serveWithListener on graceful shutdown, got %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("serveWithListener did not return within 5s — keepalive goroutine likely blocked shutdown")
+	}
+}
+
+// newPipeListener builds an in-process net.Listener whose Accept returns the
+// connection fed in at construction. It lets the logging-listener test exercise
+// Accept without binding a real port.
+func newPipeListener(first net.Conn) *pipeListener {
+	pl := &pipeListener{ch: make(chan net.Conn, 4)}
+	if first != nil {
+		pl.ch <- first
+	}
+	return pl
+}
+
+type pipeListener struct {
+	ch     chan net.Conn
+	closed bool
+}
+
+func (pl *pipeListener) Accept() (net.Conn, error) {
+	c, ok := <-pl.ch
+	if !ok {
+		return nil, net.ErrClosed
+	}
+	return c, nil
+}
+
+func (pl *pipeListener) Close() error {
+	pl.closed = true
+	close(pl.ch)
+	return nil
+}
+
+func (pl *pipeListener) Addr() net.Addr { return pipeAddr{} }
+
+type pipeAddr struct{}
+
+func (pipeAddr) Network() string { return "pipe" }
+func (pipeAddr) String() string  { return "pipe" }
 
 // Ensure unused imports in this test file are referenced.
 var _ = context.Background
