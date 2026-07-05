@@ -1,0 +1,14 @@
+{
+  "domain": {
+    "lab": {
+      "rootDomain": "example.com",
+      "hostedZoneId": "Z000000000000000000000",
+      "hostedZoneName": "example.com"
+    },
+    "live": {
+      "rootDomain": "example.com",
+      "hostedZoneId": "Z000000000000000000000",
+      "hostedZoneName": "example.com"
+    }
+  }
+}

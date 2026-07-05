@@ -1,24 +1,5 @@
 {
   "schema": 1,
-  "frameworks": {
-    "apptheory": {
-      "module": "github.com/theory-cloud/apptheory",
-      "version": "v1.7.0",
-      "docs": [
-        "docs/getting-started.md",
-        "docs/migration/from-lift.md"
-      ]
-    },
-    "tabletheory": {
-      "module": "github.com/theory-cloud/tabletheory",
-      "version": "v1.8.3",
-      "docs": [
-        "docs/getting-started.md",
-        "docs/api-reference.md",
-        "docs/migration-guide.md"
-      ]
-    }
-  },
   "cdk": {
     "dir": "cdk",
     "up": "exec ../scripts/app-theory-cdk.sh up {{STAGE}} # {{AWS_PROFILE}}",

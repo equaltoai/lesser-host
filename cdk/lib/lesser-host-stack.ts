@@ -43,8 +43,22 @@ import {
 import { hostWebAclRules } from './web-acl-rules';
 export interface LesserHostStackProps extends cdk.StackProps {
 	stage: string;
+	/**
+	 * Absolute or cdk/working-directory-relative path to the gitignored
+	 * deployer-local domain config. Production wiring passes
+	 * ../app-theory/deploy.local.json from the CDK bin; tests pass a fixture.
+	 */
+	domainConfigPath?: string;
 }
 
+export interface WebDomainConfig {
+	rootDomain: string;
+	hostedZoneId: string;
+	hostedZoneName: string;
+}
+
+const deployLocalConfigRelativePath = 'app-theory/deploy.local.json';
+const deployLocalConfigExampleRelativePath = 'app-theory/deploy.local.json.example';
 const defaultManagedInstanceRoleName = 'OrganizationAccountAccessRole';
 const managedOrgVendingRoleArnPattern = /^arn:(aws|aws-us-gov|aws-cn):iam::\d{12}:role\/[\w+=,.@/-]+$/;
 const examplePlaceholderPattern = /<[^>]*YOUR[^>]*>|YOUR_[A-Z0-9_]+/i;
@@ -67,6 +81,99 @@ function sanitizedManagedOrgVendingRoleArn(rawValue: unknown): string {
 function sanitizedOptionalContextString(rawValue: unknown): string {
 	const value = typeof rawValue === 'string' ? rawValue.trim() : '';
 	return examplePlaceholderPattern.test(value) ? '' : value;
+}
+
+
+function defaultDomainConfigPath(): string {
+	return path.resolve(process.cwd(), '..', deployLocalConfigRelativePath);
+}
+
+function deployLocalConfigInstructions(stage: string, configPath: string): string {
+	return `Expected ${deployLocalConfigRelativePath} at ${configPath}. Copy ${deployLocalConfigExampleRelativePath} to ${deployLocalConfigRelativePath} and fill domain.${stage}.{rootDomain,hostedZoneId,hostedZoneName}. No fallback to cdk.json context, environment variables, Route53 lookup, or defaults is available.`;
+}
+
+function failDeployLocalDomainConfig(stage: string, configPath: string, message: string): never {
+	throw new Error(`Deploy domain config error: ${message}. ${deployLocalConfigInstructions(stage, configPath)}`);
+}
+
+function asConfigRecord(value: unknown): Record<string, unknown> | undefined {
+	return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+}
+
+function readRequiredDomainNameField(
+	stage: string,
+	configPath: string,
+	stageConfig: Record<string, unknown>,
+	fieldName: 'rootDomain' | 'hostedZoneName',
+): string {
+	const raw = stageConfig[fieldName];
+	const value = typeof raw === 'string' ? raw.trim().replace(/\.$/, '').toLowerCase() : '';
+	if (value === '' || examplePlaceholderPattern.test(value)) {
+		failDeployLocalDomainConfig(stage, configPath, `domain.${stage}.${fieldName} is required`);
+	}
+	if (
+		value.includes('/') ||
+		value.includes(':') ||
+		value.startsWith('*.') ||
+		!/^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$/.test(value) ||
+		!value.includes('.')
+	) {
+		failDeployLocalDomainConfig(stage, configPath, `domain.${stage}.${fieldName} must be a DNS name, got ${JSON.stringify(value)}`);
+	}
+	return value;
+}
+
+function readHostedZoneId(stage: string, configPath: string, stageConfig: Record<string, unknown>): string {
+	const raw = stageConfig.hostedZoneId;
+	const value = typeof raw === 'string' ? raw.trim() : '';
+	if (value === '' || examplePlaceholderPattern.test(value)) {
+		failDeployLocalDomainConfig(stage, configPath, `domain.${stage}.hostedZoneId is required`);
+	}
+	if (!/^Z[A-Z0-9]{4,32}$/.test(value)) {
+		failDeployLocalDomainConfig(stage, configPath, `domain.${stage}.hostedZoneId must be an AWS Route53 hosted zone id such as Z123EXAMPLE, got ${JSON.stringify(value)}`);
+	}
+	return value;
+}
+
+export function readWebDomainConfig(stage: string, configPath = defaultDomainConfigPath()): WebDomainConfig {
+	const stageKey = stage.trim().toLowerCase();
+	if (stageKey === '') {
+		failDeployLocalDomainConfig('lab', configPath, 'stage is required to select a deploy-local domain entry');
+	}
+
+	let raw: string;
+	try {
+		raw = fs.readFileSync(configPath, 'utf8');
+	} catch (err) {
+		const code = (err as NodeJS.ErrnoException).code;
+		if (code === 'ENOENT') {
+			failDeployLocalDomainConfig(stageKey, configPath, `missing ${deployLocalConfigRelativePath}`);
+		}
+		failDeployLocalDomainConfig(stageKey, configPath, `failed reading ${deployLocalConfigRelativePath}: ${String(err)}`);
+	}
+
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(raw);
+	} catch (err) {
+		failDeployLocalDomainConfig(stageKey, configPath, `invalid JSON in ${deployLocalConfigRelativePath}: ${String(err)}`);
+	}
+
+	const root = asConfigRecord(parsed);
+	const domain = asConfigRecord(root?.domain);
+	if (!domain) {
+		failDeployLocalDomainConfig(stageKey, configPath, 'missing domain map');
+	}
+	const stageConfig = asConfigRecord(domain[stageKey]);
+	if (!stageConfig) {
+		failDeployLocalDomainConfig(stageKey, configPath, `missing domain.${stageKey} entry`);
+	}
+
+	return {
+		rootDomain: readRequiredDomainNameField(stageKey, configPath, stageConfig, 'rootDomain'),
+		hostedZoneId: readHostedZoneId(stageKey, configPath, stageConfig),
+		hostedZoneName: readRequiredDomainNameField(stageKey, configPath, stageConfig, 'hostedZoneName'),
+	};
 }
 
 export class LesserHostStack extends cdk.Stack {
@@ -1204,10 +1311,8 @@ export class LesserHostStack extends cdk.Stack {
 			trustStage.defaultRouteSettings = apiThrottle;
 		}
 
-		const webRootDomain = (this.node.tryGetContext('webRootDomain') as string | undefined) ?? 'lesser.host';
-		const webHostedZoneId = sanitizedOptionalContextString(this.node.tryGetContext('webHostedZoneId'));
-		const webHostedZoneName = (this.node.tryGetContext('webHostedZoneName') as string | undefined) ?? webRootDomain;
-		const webDomainName = stage === 'live' ? webRootDomain : `${stage}.${webRootDomain}`;
+		const webDomain = readWebDomainConfig(stage, props.domainConfigPath);
+		const webDomainName = stage === 'live' ? webDomain.rootDomain : `${stage}.${webDomain.rootDomain}`;
 
 		const webBucket = new s3.Bucket(this, 'WebBucket', {
 			bucketName: `${namePrefix}-${cdk.Aws.ACCOUNT_ID}-${cdk.Aws.REGION}-web`,
@@ -1394,23 +1499,15 @@ export class LesserHostStack extends cdk.Stack {
 }`),
 		});
 
-		let webZone: route53.IHostedZone | undefined; let webCert: acm.ICertificate | undefined;
-		if (webHostedZoneId.trim()) {
-			webZone = route53.HostedZone.fromHostedZoneAttributes(this, 'WebHostedZone', {
-				hostedZoneId: webHostedZoneId.trim(),
-				zoneName: webHostedZoneName.trim() || webRootDomain,
-			});
-		} else if (stage === 'live') {
-			webZone = route53.HostedZone.fromLookup(this, 'WebHostedZone', { domainName: webHostedZoneName.trim() || webRootDomain, privateZone: false });
-		}
-
-		if (webZone) {
-			webCert = new acm.DnsValidatedCertificate(this, 'WebCertificate', {
-				domainName: webDomainName,
-				hostedZone: webZone,
-				region: 'us-east-1',
-			});
-		}
+		const webZone = route53.HostedZone.fromHostedZoneAttributes(this, 'WebHostedZone', {
+			hostedZoneId: webDomain.hostedZoneId,
+			zoneName: webDomain.hostedZoneName,
+		});
+		const webCert = new acm.DnsValidatedCertificate(this, 'WebCertificate', {
+			domainName: webDomainName,
+			hostedZone: webZone,
+			region: 'us-east-1',
+		});
 
 		const webOai = new cloudfront.OriginAccessIdentity(this, 'WebOAI');
 		webBucket.grantRead(webOai);
