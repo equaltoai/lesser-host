@@ -1,0 +1,9 @@
+{
+  "_comment": "P52 H1.5 lab E2E gate fixtures owned by the system (not operator env vars). These are NON-SECRET lab fixture identifiers used by scripts/hosted-genesis-microvm-e2e-gate.sh Phase 2 (the lab deploy gate). Secrets (the raw instance API key) are NEVER stored here — the raw key is provisioned out-of-band into a runtime secret file (scripts/.lab-e2e-instance-key, gitignored) by the principal who provisioned the lab instance, consistent with docs/hosted-genesis-microvm-lab-canary.md (raw bearer tokens stay out of git/logs/fixtures/CloudFormation outputs). Connection details (control-plane host) are sourced from the CDK outputs file (cdk deploy --outputs-file), not from this file.",
+  "registrationId": "reg_lab_e2e_hosted_genesis",
+  "agentIdHex": "0xlab_e2e_agent_id_hex",
+  "model": "anthropic:claude-sonnet-4-6",
+  "message": "Please draft my soul declaration. Take your time; this is a long reflection.",
+  "killArcMessage": "A second long reflection for the kill-VM recovery arc.",
+  "retryMessage": "Retry after kill-VM recovery."
+}

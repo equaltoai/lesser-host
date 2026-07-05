@@ -31,7 +31,7 @@ import * as apigwv2Integrations from 'aws-cdk-lib/aws-apigatewayv2-integrations'
 import * as wafv2 from 'aws-cdk-lib/aws-wafv2';
 import { renderProvisionRunnerBuildCommands, renderProvisionRunnerPreBuildCommands } from './provision-runner-buildspec';
 import { CostTelemetryWorker } from './cost-telemetry-worker-construct';
-import { configureHostedGenesisMicrovmLab } from './hosted-genesis-microvm';
+import { configureHostedGenesisMicrovm } from './hosted-genesis-microvm';
 import { INBOUND_EMAIL_RULE_SET_NAME } from './ses-inbound-rule-set-name';
 import { soulEmailInboundDomainFromContext } from './soul-email-inbound-domain';
 import {
@@ -41,8 +41,12 @@ import {
 	ensGatewayRootNameFromContext,
 } from './ens-gateway-config';
 import { hostWebAclRules } from './web-acl-rules';
+import { readWebDomainConfig } from './app-theory-deploy-config';
+export { readWebDomainConfig, type WebDomainConfig } from './app-theory-deploy-config';
 export interface LesserHostStackProps extends cdk.StackProps {
 	stage: string;
+	/** Path to app-theory/app.json; tests pass a fixture. */
+	appConfigPath?: string;
 }
 
 const defaultManagedInstanceRoleName = 'OrganizationAccountAccessRole';
@@ -688,7 +692,7 @@ export class LesserHostStack extends cdk.Stack {
 			{ memorySize: 512, timeoutSeconds: 30 },
 		);
 		const costTelemetry = new CostTelemetryWorker(this, 'CostTelemetry', { namePrefix, repoRoot, stage });
-		void configureHostedGenesisMicrovmLab(this, { stage, namePrefix, repoRoot, removalPolicy, stateTable });
+		void configureHostedGenesisMicrovm(this, { stage, namePrefix, repoRoot, removalPolicy, stateTable, controlPlaneFunction: controlPlaneFn });
 		stateTable.grantReadWriteData(controlPlaneFn);
 		stateTable.grantReadWriteData(trustFn);
 		stateTable.grantReadWriteData(renderWorkerFn);
@@ -1204,10 +1208,8 @@ export class LesserHostStack extends cdk.Stack {
 			trustStage.defaultRouteSettings = apiThrottle;
 		}
 
-		const webRootDomain = (this.node.tryGetContext('webRootDomain') as string | undefined) ?? 'lesser.host';
-		const webHostedZoneId = sanitizedOptionalContextString(this.node.tryGetContext('webHostedZoneId'));
-		const webHostedZoneName = (this.node.tryGetContext('webHostedZoneName') as string | undefined) ?? webRootDomain;
-		const webDomainName = stage === 'live' ? webRootDomain : `${stage}.${webRootDomain}`;
+		const webDomain = readWebDomainConfig(stage, props.appConfigPath);
+		const webDomainName = stage === 'live' ? webDomain.rootDomain : `${stage}.${webDomain.rootDomain}`;
 
 		const webBucket = new s3.Bucket(this, 'WebBucket', {
 			bucketName: `${namePrefix}-${cdk.Aws.ACCOUNT_ID}-${cdk.Aws.REGION}-web`,
@@ -1394,23 +1396,15 @@ export class LesserHostStack extends cdk.Stack {
 }`),
 		});
 
-		let webZone: route53.IHostedZone | undefined; let webCert: acm.ICertificate | undefined;
-		if (webHostedZoneId.trim()) {
-			webZone = route53.HostedZone.fromHostedZoneAttributes(this, 'WebHostedZone', {
-				hostedZoneId: webHostedZoneId.trim(),
-				zoneName: webHostedZoneName.trim() || webRootDomain,
-			});
-		} else if (stage === 'live') {
-			webZone = route53.HostedZone.fromLookup(this, 'WebHostedZone', { domainName: webHostedZoneName.trim() || webRootDomain, privateZone: false });
-		}
-
-		if (webZone) {
-			webCert = new acm.DnsValidatedCertificate(this, 'WebCertificate', {
-				domainName: webDomainName,
-				hostedZone: webZone,
-				region: 'us-east-1',
-			});
-		}
+		const webZone = route53.HostedZone.fromHostedZoneAttributes(this, 'WebHostedZone', {
+			hostedZoneId: webDomain.hostedZoneId,
+			zoneName: webDomain.hostedZoneName,
+		});
+		const webCert = new acm.DnsValidatedCertificate(this, 'WebCertificate', {
+			domainName: webDomainName,
+			hostedZone: webZone,
+			region: 'us-east-1',
+		});
 
 		const webOai = new cloudfront.OriginAccessIdentity(this, 'WebOAI');
 		webBucket.grantRead(webOai);

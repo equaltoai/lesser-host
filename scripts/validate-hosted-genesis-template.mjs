@@ -170,8 +170,27 @@ const microvmAuthorizer = lambdaEntries.find(([logicalId, resource]) =>
 if (microvmAuthorizer) {
 	const authorizerEnv = lambdaEnv(microvmAuthorizer);
 	const digest = authorizerEnv.APPTHEORY_MICROVM_AUTHORIZER_TOKEN_SHA256;
-	if (typeof digest !== 'string' || !/^sha256:[0-9a-f]{64}$/i.test(digest)) {
-		fail('hosted genesis MicroVM authorizer must receive only a sha256 token digest');
+	// P52 corrective #873: the authorizer bearer token is CDK-owned. The digest
+	// env is a CloudFormation Fn::GetAtt token from the custom resource (it
+	// resolves to "sha256:<hex>" at deploy time, not synth time), OR — for
+	// legacy/dev paths — a literal "sha256:<hex>" string. Either is acceptable;
+	// a raw token string (anything that is a string but not a sha256 digest) is
+	// rejected. A raw bearer token would be a credential leak into the template.
+	const isGetAttToken = typeof digest === 'object' && digest !== null &&
+		Array.isArray(digest['Fn::GetAtt']);
+	const isLiteralDigest = typeof digest === 'string' && /^sha256:[0-9a-f]{64}$/i.test(digest);
+	if (!isGetAttToken && !isLiteralDigest) {
+		fail('hosted genesis MicroVM authorizer must receive only a sha256 token digest (literal or CDK-owned custom-resource getAtt), never a raw token');
+	}
+	// Reject any string env value that looks like a raw bearer token (a
+	// non-digest string under a token-bearing key). Object/getAtt values are
+	// fine — they reference the custom resource, not a literal secret.
+	for (const key of Object.keys(authorizerEnv)) {
+		const normalized = key.toLowerCase();
+		const value = authorizerEnv[key];
+		if (normalized.includes('token') && !normalized.endsWith('sha256') && typeof value === 'string' && value.length > 0) {
+			fail(`hosted genesis MicroVM authorizer env ${key} looks token-bearing; only digests/non-secret refs are allowed`);
+		}
 	}
 }
 

@@ -31,6 +31,7 @@ const (
 	hostedGenesisFailureInvalidProducedDeclarations = "invalid_produced_declarations"
 	hostedGenesisFailureTenantBoundaryViolation     = "tenant_boundary_violation"
 	hostedGenesisFailureOperatorActionRequired      = "operator_action_required"
+	hostedGenesisFailureMicroVMUnavailable          = "microvm_unavailable"
 	hostedGenesisRecoveryRefreshState               = "refresh_state"
 	hostedGenesisRecoveryRetrySameStep              = "retry_same_step"
 	hostedGenesisRecoveryRestartSoulBootstrap       = "restart_soul_bootstrap"
@@ -421,7 +422,7 @@ func buildHostedGenesisProducedDeclarations(conv *models.SoulAgentMintConversati
 
 func hostedGenesisFailureFromReason(reason string) *hostedGenesisFailure {
 	code := normalizeHostedGenesisFailureCode(reason)
-	retryable := code == hostedGenesisFailureLLMUnavailable || code == hostedGenesisFailureAssistantTurnFailed || code == hostedGenesisFailureDeclarationExtractionFailed
+	retryable := code == hostedGenesisFailureLLMUnavailable || code == hostedGenesisFailureAssistantTurnFailed || code == hostedGenesisFailureDeclarationExtractionFailed || code == hostedGenesisFailureMicroVMUnavailable
 	recovery := hostedGenesisFailureRecovery{Action: hostedGenesisRecoveryRefreshState, Reason: code}
 	if retryable {
 		recovery.Action = hostedGenesisRecoveryRetrySameStep
@@ -451,7 +452,8 @@ func normalizeHostedGenesisFailureCode(reason string) string {
 		hostedGenesisFailureMissingProducedDeclarations,
 		hostedGenesisFailureInvalidProducedDeclarations,
 		hostedGenesisFailureTenantBoundaryViolation,
-		hostedGenesisFailureOperatorActionRequired:
+		hostedGenesisFailureOperatorActionRequired,
+		hostedGenesisFailureMicroVMUnavailable:
 		return strings.TrimSpace(reason)
 	default:
 		return hostedGenesisFailureAssistantTurnFailed
@@ -474,6 +476,8 @@ func hostedGenesisFailureMessage(code string) string {
 		return "Conversation failed instance boundary validation."
 	case hostedGenesisFailureOperatorActionRequired:
 		return "Operator action is required."
+	case hostedGenesisFailureMicroVMUnavailable:
+		return "MicroVM execution dispatch is unavailable."
 	default:
 		return "Assistant turn failed before declaration extraction."
 	}

@@ -19,6 +19,20 @@
       ]
     }
   },
+  "lesserHost": {
+    "webDomain": {
+      "lab": {
+        "rootDomain": "lesser.host",
+        "hostedZoneId": "Z0051991INEKM5CN2M42",
+        "hostedZoneName": "lesser.host"
+      },
+      "live": {
+        "rootDomain": "lesser.host",
+        "hostedZoneId": "Z0051991INEKM5CN2M42",
+        "hostedZoneName": "lesser.host"
+      }
+    }
+  },
   "cdk": {
     "dir": "cdk",
     "up": "exec ../scripts/app-theory-cdk.sh up {{STAGE}} # {{AWS_PROFILE}}",

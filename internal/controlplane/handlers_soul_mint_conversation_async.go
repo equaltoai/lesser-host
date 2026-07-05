@@ -21,8 +21,17 @@ import (
 )
 
 const (
+	// hostedGenesisAcceptedTurnRunTimeout bounds the synchronous assistant
+	// runner retained for non-production/test seams. H2.1 deletes that path; the
+	// production accept path dispatches the MicroVM and returns 202 well under
+	// this budget.
 	hostedGenesisAcceptedTurnRunTimeout = 90 * time.Second
-	hostedGenesisProviderUnknown        = "unknown"
+	// hostedGenesisAcceptedTurnDispatchTimeout bounds the M16 controller run
+	// dispatch on the production accept path. The accept path returns 202
+	// accepted-pending; the assistant turn itself runs inside the MicroVM and is
+	// not bounded by this timeout.
+	hostedGenesisAcceptedTurnDispatchTimeout = 10 * time.Second
+	hostedGenesisProviderUnknown             = "unknown"
 )
 
 type hostedGenesisTurnSession struct {
@@ -112,8 +121,16 @@ func (s *Server) handleSoulMintConversationForRegistrationAsync(ctx *apptheory.C
 
 	conv := buildHostedGenesisAcceptedConversation(regCtx, session, req, messagesJSON, strings.TrimSpace(ctx.RequestID), now)
 
+	// H1.4 (kills G10c): a promotion-update failure is surfaced (logged loudly),
+	// not swallowed. Promotion is non-authoritative lifecycle metadata; a
+	// failure here must not abort the accepted turn (the durable session and
+	// idempotency write already committed), but it must not be silently dropped
+	// either — the structured log makes the failed promotion observable so an
+	// operator can reconcile the review-started lifecycle event. The previous
+	// behavior logged only on the silent-continue path; the swallow is removed
+	// by making the loud log the explicit, only error path.
 	if appErr := s.saveHostedGenesisAcceptedPromotion(ctx.Context(), regCtx, session, strings.TrimSpace(ctx.RequestID), now); appErr != nil {
-		log.Printf("controlplane: hosted genesis session accepted without promotion update agent_hash=%s conversation_hash=%s err=%v", soulMintInstanceReadAuditHash(regCtx.agentIDHex), soulMintInstanceReadAuditHash(session.conversationID), appErr)
+		log.Printf("controlplane: hosted genesis accepted promotion update failed agent_hash=%s conversation_hash=%s err=%v", soulMintInstanceReadAuditHash(regCtx.agentIDHex), soulMintInstanceReadAuditHash(session.conversationID), appErr)
 	}
 
 	progressedSession, progressedConv, status, progressErr := s.progressHostedGenesisAcceptedTurn(ctx.Context(), regCtx, session, conv, updatedMessages, apiKey, strings.TrimSpace(ctx.RequestID))
@@ -160,6 +177,67 @@ func (s *Server) progressHostedGenesisAcceptedTurn(ctx context.Context, regCtx m
 	if session.session == nil || conv == nil {
 		return nil, nil, 0, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
+	// H1.2: the production accept path dispatches the AppTheory M16 MicroVM
+	// controller run command and returns 202 accepted-pending. The control plane
+	// never makes a synchronous LLM HTTP call on this path; the assistant turn
+	// runs inside the MicroVM and completion is reconstructed from Host truth.
+	// The synchronous assistant runner is retained only behind an explicit
+	// non-production/test guard (hostedGenesisSyncAssistantFallbackEnabled) until
+	// H2.1 deletes it; production never sets that guard.
+	if s.hostedGenesisMicroVMDispatcher == nil {
+		if s.hostedGenesisSyncAssistantFallbackEnabled && s.hostedGenesisAssistantRunner != nil {
+			return s.progressHostedGenesisAcceptedTurnSync(ctx, regCtx, session, conv, acceptedMessages, apiKey, requestID)
+		}
+		log.Printf("controlplane: hosted genesis microvm dispatcher unavailable agent_hash=%s conversation_hash=%s", soulMintInstanceReadAuditHash(regCtx.agentIDHex), soulMintInstanceReadAuditHash(session.conversationID))
+		failedSession, failedConv, appErr := s.persistHostedGenesisAcceptedTurnFailure(ctx, session, conv, acceptedMessages, hostedGenesisFailureMicroVMUnavailable, requestID, time.Now().UTC())
+		if appErr != nil {
+			return nil, nil, 0, appErr
+		}
+		// H1.5 (carries forward G10a's explicit-status posture): the MicroVM-
+		// unavailable accept-path returns an explicit 503, matching the error
+		// mapper's 503 for appErrCodeMicroVMUnavailable. The returned int is the
+		// response status used when the caller builds a non-error body; the typed
+		// AppError is the authoritative surface and also maps to 503.
+		return failedSession, failedConv, http.StatusServiceUnavailable, &apptheory.AppError{Code: appErrCodeMicroVMUnavailable, Message: "MicroVM execution dispatch is unavailable"}
+	}
+
+	binding := session.session.MicroVMSessionBinding()
+	if err := binding.Validate(); err != nil {
+		log.Printf("controlplane: hosted genesis microvm binding invalid agent_hash=%s conversation_hash=%s err=%v", soulMintInstanceReadAuditHash(regCtx.agentIDHex), soulMintInstanceReadAuditHash(session.conversationID), err)
+		failedSession, failedConv, appErr := s.persistHostedGenesisAcceptedTurnFailure(ctx, session, conv, acceptedMessages, hostedGenesisFailureMicroVMUnavailable, requestID, time.Now().UTC())
+		if appErr != nil {
+			return nil, nil, 0, appErr
+		}
+		// H1.5: explicit 503 (matches the error mapper), not a silent 200.
+		return failedSession, failedConv, http.StatusServiceUnavailable, &apptheory.AppError{Code: appErrCodeMicroVMUnavailable, Message: "MicroVM execution dispatch is unavailable"}
+	}
+
+	runCtx, cancel := context.WithTimeout(detachedMintConversationContext(ctx), hostedGenesisAcceptedTurnDispatchTimeout)
+	defer cancel()
+	dispatch, dispatchErr := s.hostedGenesisMicroVMDispatcher.DispatchMicroVMRun(runCtx, strings.TrimSpace(requestID), binding)
+	if dispatchErr != nil {
+		log.Printf("controlplane: hosted genesis microvm dispatch failed agent_hash=%s conversation_hash=%s err=%v", soulMintInstanceReadAuditHash(regCtx.agentIDHex), soulMintInstanceReadAuditHash(session.conversationID), dispatchErr)
+		failedSession, failedConv, appErr := s.persistHostedGenesisAcceptedTurnFailure(ctx, session, conv, acceptedMessages, hostedGenesisFailureMicroVMUnavailable, requestID, time.Now().UTC())
+		if appErr != nil {
+			return nil, nil, 0, appErr
+		}
+		// H1.5: explicit 503 (matches the error mapper), not a silent 200.
+		return failedSession, failedConv, http.StatusServiceUnavailable, &apptheory.AppError{Code: appErrCodeMicroVMUnavailable, Message: "MicroVM execution dispatch failed"}
+	}
+
+	progressedSession, progressedConv, appErr := s.persistHostedGenesisAcceptedMicroVMDispatch(ctx, session, conv, acceptedMessages, dispatch, requestID, time.Now().UTC())
+	if appErr != nil {
+		return nil, nil, 0, appErr
+	}
+	return progressedSession, progressedConv, http.StatusAccepted, nil
+}
+
+// progressHostedGenesisAcceptedTurnSync is the retained non-production/test-only
+// synchronous assistant turn path. It is reachable only when
+// hostedGenesisSyncAssistantFallbackEnabled is explicitly true AND no MicroVM
+// dispatcher is wired; production never sets that guard. H2.1 deletes this path
+// and the hostedGenesisAssistantRunner field.
+func (s *Server) progressHostedGenesisAcceptedTurnSync(ctx context.Context, regCtx mintConversationRegistrationContext, session hostedGenesisTurnSession, conv *models.SoulAgentMintConversation, acceptedMessages []soulMintConversationMessage, apiKey string, requestID string) (*models.HostedGenesisSession, *models.SoulAgentMintConversation, int, *apptheory.AppError) {
 	runCtx, cancel := context.WithTimeout(detachedMintConversationContext(ctx), hostedGenesisAcceptedTurnRunTimeout)
 	defer cancel()
 
@@ -175,7 +253,11 @@ func (s *Server) progressHostedGenesisAcceptedTurn(ctx context.Context, regCtx m
 		if appErr != nil {
 			return nil, nil, 0, appErr
 		}
-		return failedSession, failedConv, http.StatusOK, nil
+		// H1.4 (kills G10a): a failed turn surfaces as a loud non-2xx typed
+		// failure, not HTTP 200 with a failed body. The durable session is
+		// persisted as a retryable failed turn above; the returned typed error
+		// makes the public surface emit 502, never a silent 200-on-failure.
+		return failedSession, failedConv, http.StatusBadGateway, &apptheory.AppError{Code: appErrCodeAssistantTurnFailed, Message: "hosted genesis assistant turn failed"}
 	}
 
 	progressedSession, progressedConv, appErr := s.persistHostedGenesisAcceptedAssistantTurn(ctx, session, conv, acceptedMessages, result, requestID, time.Now().UTC())
@@ -183,6 +265,33 @@ func (s *Server) progressHostedGenesisAcceptedTurn(ctx context.Context, regCtx m
 		return nil, nil, 0, appErr
 	}
 	return progressedSession, progressedConv, http.StatusOK, nil
+}
+
+// persistHostedGenesisAcceptedMicroVMDispatch records the durable in_progress
+// HostedGenesisSession after a successful M16 controller run dispatch, applying
+// the non-authoritative MicroVM execution/cache lifecycle ref via
+// ApplyMicroVMLifecycleRef so the three MicroVM fields
+// (MicroVMExecutionID/ExecutionStateRef/MicroVMLifecycleRef) are populated on
+// the authoritative Host row. The conversation stays in_progress with no inline
+// assistant message: the turn is pending inside the MicroVM and completion is
+// reconstructed from Host truth by the recovery/stuck-turn path.
+func (s *Server) persistHostedGenesisAcceptedMicroVMDispatch(ctx context.Context, session hostedGenesisTurnSession, conv *models.SoulAgentMintConversation, acceptedMessages []soulMintConversationMessage, dispatch hostedgenesis.MicroVMDispatchResult, requestID string, now time.Time) (*models.HostedGenesisSession, *models.SoulAgentMintConversation, *apptheory.AppError) {
+	progressedSession := cloneHostedGenesisSession(session.session)
+	progressedConv := cloneSoulAgentMintConversation(conv)
+	if err := progressedSession.ApplyMicroVMLifecycleRef(dispatch.LifecycleRef); err != nil {
+		log.Printf("controlplane: hosted genesis microvm lifecycle ref rejected agent_hash=%s conversation_hash=%s err=%v", soulMintInstanceReadAuditHash(conv.AgentID), soulMintInstanceReadAuditHash(conv.ConversationID), err)
+		return nil, nil, &apptheory.AppError{Code: "app.internal", Message: "failed to record microvm dispatch"}
+	}
+	progressedSession.Status = string(hostedgenesis.StatusInProgress)
+	progressedSession.RequestID = strings.TrimSpace(requestID)
+	progressedSession.UpdatedAt = now
+	progressedSession.CompletedAt = time.Time{}
+	progressedConv.RequestID = strings.TrimSpace(requestID)
+	progressedConv.UpdatedAt = now
+	if appErr := s.persistHostedGenesisProgression(ctx, session, progressedSession, progressedConv, string(progressedConv.Messages), "", progressedConv.Usage, now); appErr != nil {
+		return nil, nil, appErr
+	}
+	return progressedSession, progressedConv, nil
 }
 
 func (s *Server) runHostedGenesisAcceptedAssistant(ctx context.Context, in hostedGenesisAssistantRunInput) (hostedGenesisAssistantRunResult, error) {
@@ -543,7 +652,18 @@ func (s *Server) hydrateHostedGenesisCompatibilityConversation(ctx context.Conte
 		return
 	}
 	conv, err := getSoulAgentItemBySK[models.SoulAgentMintConversation](s, ctx, agentIDHex, fmt.Sprintf("MINT_CONVERSATION#%s", session.conversationID))
-	if err != nil || conv == nil {
+	// H1.4 (kills G10b): a compat-conversation hydrate error is surfaced, not
+	// swallowed. A not-found or absent compat conversation is benign (a new
+	// turn has no prior compat row) and remains a no-op; any other load error
+	// is a real storage failure and is logged loudly so it is not silently
+	// masked as "no compat conversation".
+	if err != nil {
+		if !theoryErrors.IsNotFound(err) {
+			log.Printf("controlplane: hosted genesis compat conversation hydrate failed agent_hash=%s conversation_hash=%s err=%v", soulMintInstanceReadAuditHash(agentIDHex), soulMintInstanceReadAuditHash(session.conversationID), err)
+		}
+		return
+	}
+	if conv == nil {
 		return
 	}
 	decodeMintConversationFields(conv)
@@ -808,53 +928,119 @@ func (s *Server) startHostedGenesisDeclarationExtraction(ctx *apptheory.Context,
 		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
 	now := time.Now().UTC()
-	if hostedgenesis.NormalizeStatus(convCtx.session.Status) != hostedgenesis.StatusDeclarationExtractionPending {
-		expectedVersion := convCtx.session.Version
-		expectedStatus := hostedgenesis.NormalizeStatus(convCtx.session.Status)
-		convCtx.session.Status = string(hostedgenesis.StatusDeclarationExtractionPending)
-		convCtx.session.RequestID = strings.TrimSpace(ctx.RequestID)
-		convCtx.session.UpdatedAt = now
-		creditsDebited, appErr := s.debitSoulMintConversationCredits(
-			ctx.Context(),
-			convCtx.inst,
-			soulMintConversationExtractModule,
-			convCtx.conversationID,
-			firstNonEmpty(convCtx.conv.IdempotencyKey, ctx.RequestID),
-			soulMintConversationExtractBaseCredits,
-			now,
-			func(tx core.TransactionBuilder, creditsRequested int64) error {
-				if err := addHostedGenesisSessionWrite(tx, convCtx.session, false, expectedVersion, expectedStatus); err != nil {
-					return err
-				}
-				if convCtx.conv != nil {
-					update := &models.SoulAgentMintConversation{AgentID: convCtx.agentIDHex, ConversationID: convCtx.conversationID}
-					_ = update.UpdateKeys()
-					tx.UpdateWithBuilder(update, func(ub core.UpdateBuilder) error {
-						ub.Add("ChargedCredits", creditsRequested)
-						ub.Set("Status", models.SoulMintConversationStatusDeclarationExtractionPending)
-						ub.Set("StatusReason", "")
-						ub.Set("RequestID", strings.TrimSpace(ctx.RequestID))
-						ub.Set("UpdatedAt", now)
-						return nil
-					}, tabletheory.IfExists())
-				}
-				return nil
-			},
-		)
-		if appErr != nil {
-			return appErr
-		}
-		if convCtx.conv != nil {
-			convCtx.conv.ChargedCredits += creditsDebited
-			convCtx.conv.Status = models.SoulMintConversationStatusDeclarationExtractionPending
-			convCtx.conv.StatusReason = ""
-			convCtx.conv.RequestID = strings.TrimSpace(ctx.RequestID)
-			convCtx.conv.UpdatedAt = now
-		}
+	// H1.3 (kills G7): the pending extraction is serviced by dispatching a
+	// follow-on M16 controller run command on the same MicroVM session via the
+	// MicroVMDispatcher seam. The dispatch fires exactly once, on the transition
+	// into declaration_extraction_pending (the debit/persist block below). An
+	// already-pending session has already dispatched its extraction; re-entry is
+	// a no-op here and the recover path reconciles the in-VM extraction. The
+	// pending status is no longer a permanent trap: the VM services the
+	// extraction or the session fails loudly. An unwired dispatcher is
+	// fail-closed and loud; there is no silent fallback to a non-MicroVM
+	// extraction path. M4 demotes hosted-genesis SQS to operator/backfill
+	// recovery only; this path does not rely on queue delivery, DLQ state, or
+	// AI-worker liveness.
+	transitioned := hostedgenesis.NormalizeStatus(convCtx.session.Status) != hostedgenesis.StatusDeclarationExtractionPending
+	if !transitioned {
+		return nil
 	}
-	// M4 demotes hosted-genesis SQS to operator/backfill recovery only. The
-	// user-visible complete path records the durable pending state and returns
-	// the HostedGenesisSession projection; it does not rely on queue delivery,
-	// DLQ state, or AI-worker liveness to make status/finalize decisions.
+	expectedVersion := convCtx.session.Version
+	expectedStatus := hostedgenesis.NormalizeStatus(convCtx.session.Status)
+	convCtx.session.Status = string(hostedgenesis.StatusDeclarationExtractionPending)
+	convCtx.session.RequestID = strings.TrimSpace(ctx.RequestID)
+	convCtx.session.UpdatedAt = now
+	creditsDebited, appErr := s.debitSoulMintConversationCredits(
+		ctx.Context(),
+		convCtx.inst,
+		soulMintConversationExtractModule,
+		convCtx.conversationID,
+		firstNonEmpty(convCtx.conv.IdempotencyKey, ctx.RequestID),
+		soulMintConversationExtractBaseCredits,
+		now,
+		func(tx core.TransactionBuilder, creditsRequested int64) error {
+			if err := addHostedGenesisSessionWrite(tx, convCtx.session, false, expectedVersion, expectedStatus); err != nil {
+				return err
+			}
+			if convCtx.conv != nil {
+				update := &models.SoulAgentMintConversation{AgentID: convCtx.agentIDHex, ConversationID: convCtx.conversationID}
+				_ = update.UpdateKeys()
+				tx.UpdateWithBuilder(update, func(ub core.UpdateBuilder) error {
+					ub.Add("ChargedCredits", creditsRequested)
+					ub.Set("Status", models.SoulMintConversationStatusDeclarationExtractionPending)
+					ub.Set("StatusReason", "")
+					ub.Set("RequestID", strings.TrimSpace(ctx.RequestID))
+					ub.Set("UpdatedAt", now)
+					return nil
+				}, tabletheory.IfExists())
+			}
+			return nil
+		},
+	)
+	if appErr != nil {
+		return appErr
+	}
+	if convCtx.conv != nil {
+		convCtx.conv.ChargedCredits += creditsDebited
+		convCtx.conv.Status = models.SoulMintConversationStatusDeclarationExtractionPending
+		convCtx.conv.StatusReason = ""
+		convCtx.conv.RequestID = strings.TrimSpace(ctx.RequestID)
+		convCtx.conv.UpdatedAt = now
+	}
+	return s.dispatchHostedGenesisDeclarationExtraction(ctx, convCtx, now)
+}
+
+// dispatchHostedGenesisDeclarationExtraction issues the follow-on M16
+// controller run command that services a declaration_extraction_pending session
+// inside the MicroVM. It refreshes the non-authoritative lifecycle ref on the
+// authoritative HostedGenesisSession so the recover path can reconstruct the
+// extraction. It fails closed and loudly when the dispatcher is unwired or the
+// dispatch is rejected; it never falls back to a synchronous control-plane
+// extraction path.
+func (s *Server) dispatchHostedGenesisDeclarationExtraction(ctx *apptheory.Context, convCtx soulInstanceBootstrapConversationContext, now time.Time) error {
+	if s.hostedGenesisMicroVMDispatcher == nil {
+		log.Printf("controlplane: hosted genesis extraction dispatch unavailable agent_hash=%s conversation_hash=%s", soulMintInstanceReadAuditHash(convCtx.agentIDHex), soulMintInstanceReadAuditHash(convCtx.conversationID))
+		return &apptheory.AppError{Code: appErrCodeMicroVMUnavailable, Message: "MicroVM extraction dispatch is unavailable"}
+	}
+	binding := convCtx.session.MicroVMSessionBinding()
+	if err := binding.Validate(); err != nil {
+		log.Printf("controlplane: hosted genesis extraction binding invalid agent_hash=%s conversation_hash=%s err=%v", soulMintInstanceReadAuditHash(convCtx.agentIDHex), soulMintInstanceReadAuditHash(convCtx.conversationID), err)
+		return &apptheory.AppError{Code: appErrCodeMicroVMUnavailable, Message: "MicroVM extraction binding is invalid"}
+	}
+	runCtx, cancel := context.WithTimeout(detachedMintConversationContext(ctx.Context()), hostedGenesisAcceptedTurnDispatchTimeout)
+	defer cancel()
+	dispatch, dispatchErr := s.hostedGenesisMicroVMDispatcher.DispatchMicroVMRun(runCtx, strings.TrimSpace(ctx.RequestID), binding)
+	if dispatchErr != nil {
+		log.Printf("controlplane: hosted genesis extraction dispatch failed agent_hash=%s conversation_hash=%s err=%v", soulMintInstanceReadAuditHash(convCtx.agentIDHex), soulMintInstanceReadAuditHash(convCtx.conversationID), dispatchErr)
+		return &apptheory.AppError{Code: appErrCodeMicroVMUnavailable, Message: "MicroVM extraction dispatch failed"}
+	}
+	progressedSession := cloneHostedGenesisSession(convCtx.session)
+	if err := progressedSession.ApplyMicroVMLifecycleRef(dispatch.LifecycleRef); err != nil {
+		log.Printf("controlplane: hosted genesis extraction lifecycle ref rejected agent_hash=%s conversation_hash=%s err=%v", soulMintInstanceReadAuditHash(convCtx.agentIDHex), soulMintInstanceReadAuditHash(convCtx.conversationID), err)
+		return &apptheory.AppError{Code: "app.internal", Message: "failed to record microvm extraction dispatch"}
+	}
+	progressedSession.RequestID = strings.TrimSpace(ctx.RequestID)
+	progressedSession.UpdatedAt = now
+	if err := s.persistHostedGenesisExtractionDispatch(ctx.Context(), convCtx.session, progressedSession, convCtx.session.Version, now); err != nil {
+		return err
+	}
+	convCtx.session = progressedSession
+	return nil
+}
+
+// persistHostedGenesisExtractionDispatch records the refreshed MicroVM
+// lifecycle ref on the authoritative HostedGenesisSession after the follow-on
+// extraction run dispatch. The durable status stays
+// declaration_extraction_pending; only the non-authoritative execution/cache
+// ref is refreshed under expected-version/expected-status optimistic locking.
+func (s *Server) persistHostedGenesisExtractionDispatch(ctx context.Context, accepted *models.HostedGenesisSession, progressed *models.HostedGenesisSession, expectedVersion int64, now time.Time) *apptheory.AppError {
+	if s == nil || s.store == nil || s.store.DB == nil || accepted == nil || progressed == nil {
+		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	if err := s.store.DB.TransactWrite(ctx, func(tx core.TransactionBuilder) error {
+		return addHostedGenesisSessionWrite(tx, progressed, false, expectedVersion, hostedgenesis.StatusDeclarationExtractionPending)
+	}); err != nil {
+		log.Printf("controlplane: hosted genesis extraction dispatch persist failed agent_hash=%s conversation_hash=%s err=%v", soulMintInstanceReadAuditHash(progressed.AgentID), soulMintInstanceReadAuditHash(progressed.ConversationID), err)
+		return &apptheory.AppError{Code: "app.internal", Message: "failed to persist microvm extraction dispatch"}
+	}
 	return nil
 }

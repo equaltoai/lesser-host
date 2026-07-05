@@ -15,6 +15,7 @@ import (
 	"github.com/ethereum/go-ethereum/accounts"
 	"github.com/ethereum/go-ethereum/crypto"
 	apptheory "github.com/theory-cloud/apptheory/runtime"
+	runtimemicrovm "github.com/theory-cloud/apptheory/runtime/microvm"
 	"github.com/theory-cloud/tabletheory/pkg/core"
 	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
 	ttmocks "github.com/theory-cloud/tabletheory/pkg/mocks"
@@ -23,6 +24,7 @@ import (
 
 	"github.com/equaltoai/lesser-host/internal/ai/llm"
 	"github.com/equaltoai/lesser-host/internal/config"
+	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
 	"github.com/equaltoai/lesser-host/internal/soul"
 	"github.com/equaltoai/lesser-host/internal/store"
 	"github.com/equaltoai/lesser-host/internal/store/models"
@@ -212,6 +214,126 @@ func stubHostedGenesisAssistantRunner(t *testing.T, s *Server, response string, 
 			usage:        models.AIUsage{Provider: "test", Model: in.modelSet, InputTokens: 1, OutputTokens: 1, TotalTokens: 2},
 		}, runErr
 	}
+}
+
+// stubHostedGenesisMicroVMDispatcher wires a stub MicroVMDispatcher that records
+// the binding the accept path dispatched and returns a validated in_progress
+// lifecycle ref. It asserts the sync assistant runner is NOT invoked so the
+// accept path is proven dispatch-only.
+func stubHostedGenesisMicroVMDispatcher(t *testing.T, s *Server) *stubMicroVMDispatcher {
+	t.Helper()
+	dispatcher := &stubMicroVMDispatcher{t: t}
+	s.hostedGenesisMicroVMDispatcher = dispatcher
+	// Guard the synchronous runner seam: H1.2 makes the production accept path
+	// dispatch-only, so the sync assistant runner must never be reached.
+	s.hostedGenesisAssistantRunner = func(_ context.Context, _ hostedGenesisAssistantRunInput) (hostedGenesisAssistantRunResult, error) {
+		t.Fatalf("synchronous assistant runner must not be invoked on the dispatch-only accept path")
+		return hostedGenesisAssistantRunResult{}, nil
+	}
+	return dispatcher
+}
+
+type stubMicroVMDispatcher struct {
+	t              *testing.T
+	calls          int
+	reconcileCalls int
+	lastBinding    hostedgenesis.MicroVMSessionBinding
+	dispatchErr    error
+	reconcileErr   error
+	// observedState is the lifecycle state the stub reports from a controller
+	// get reconciliation (defaults to running/non-terminal).
+	observedState runtimemicrovm.LifecycleState
+	// expired forces the stub's reconcile to report an expired (dead) session:
+	// Terminal=true even when observedState is non-terminal, mirroring the
+	// production seam's ExpiresAt-in-the-past mapping. H1.4 covers dead/expired
+	// VM sessions, not only terminated/failed lifecycle states.
+	expired bool
+}
+
+func (d *stubMicroVMDispatcher) DispatchMicroVMRun(ctx context.Context, requestID string, binding hostedgenesis.MicroVMSessionBinding) (hostedgenesis.MicroVMDispatchResult, error) {
+	d.t.Helper()
+	d.calls++
+	d.lastBinding = binding
+	if d.dispatchErr != nil {
+		return hostedgenesis.MicroVMDispatchResult{}, d.dispatchErr
+	}
+	if err := binding.Validate(); err != nil {
+		d.t.Fatalf("stub dispatcher received invalid binding: %v", err)
+	}
+	if strings.TrimSpace(requestID) == "" {
+		d.t.Fatalf("stub dispatcher received empty request id")
+	}
+	resp := runtimemicrovm.ControllerResponse{
+		Command:           runtimemicrovm.CommandRun,
+		RequestID:         requestID,
+		TenantID:          binding.TenantID(),
+		Namespace:         hostedgenesis.MicroVMNamespace,
+		SessionID:         strings.TrimSpace(binding.ConversationID),
+		State:             runtimemicrovm.StateRunning,
+		DesiredState:      runtimemicrovm.StateRunning,
+		LifecycleState:    runtimemicrovm.StateRunning,
+		MicroVMID:         "mv-stub-" + strings.TrimSpace(binding.ConversationID),
+		ProviderMicroVMID: "mv-stub-" + strings.TrimSpace(binding.ConversationID),
+		LastAction:        runtimemicrovm.CommandRun,
+		LastTransition:    time.Now().UTC(),
+		RegistryVersion:   1,
+	}
+	ref, err := hostedgenesis.MicroVMLifecycleRefFromResponse(binding, resp, time.Now().UTC())
+	if err != nil {
+		d.t.Fatalf("stub dispatcher failed to build lifecycle ref: %v", err)
+	}
+	return hostedgenesis.MicroVMDispatchResult{LifecycleRef: ref, SessionID: resp.SessionID}, nil
+}
+
+// ReconcileMicroVM is the stub's controller get reconciliation. It mirrors the
+// production seam: it fails closed on a configured reconcileErr, otherwise it
+// reports the configured observedState (defaulting to running) and reconciles
+// the lifecycle ref via the canonical ReconcileMicroVMRegistryStatus so the
+// control-plane reconciliation path observes the same shape production does.
+func (d *stubMicroVMDispatcher) ReconcileMicroVM(ctx context.Context, requestID string, binding hostedgenesis.MicroVMSessionBinding, ref hostedgenesis.MicroVMLifecycleRef) (hostedgenesis.MicroVMReconcileResult, error) {
+	d.t.Helper()
+	d.reconcileCalls++
+	d.lastBinding = binding
+	if d.reconcileErr != nil {
+		return hostedgenesis.MicroVMReconcileResult{}, d.reconcileErr
+	}
+	if err := binding.Validate(); err != nil {
+		d.t.Fatalf("stub dispatcher received invalid binding: %v", err)
+	}
+	if strings.TrimSpace(requestID) == "" {
+		d.t.Fatalf("stub dispatcher received empty request id")
+	}
+	observed := d.observedState
+	if observed == "" {
+		observed = runtimemicrovm.StateRunning
+	}
+	status := runtimemicrovm.SessionStatus{
+		TenantID:        binding.TenantID(),
+		Namespace:       hostedgenesis.MicroVMNamespace,
+		SessionID:       strings.TrimSpace(binding.ConversationID),
+		State:           observed,
+		DesiredState:    observed,
+		LifecycleState:  observed,
+		MicroVMID:       ref.MicroVMID,
+		LastAction:      runtimemicrovm.CommandGet,
+		LastTransition:  time.Now().UTC(),
+		RegistryVersion: ref.RegistryVersion,
+	}
+	reconciled, err := hostedgenesis.ReconcileMicroVMRegistryStatus(binding, ref, status)
+	if err != nil {
+		d.t.Fatalf("stub dispatcher failed to reconcile lifecycle ref: %v", err)
+	}
+	terminal := runtimemicrovm.IsTerminalState(reconciled.LifecycleState)
+	if d.expired {
+		// Mirror the production seam: an expired session is terminal (dead) even
+		// when its observed lifecycle state is non-terminal.
+		terminal = true
+	}
+	return hostedgenesis.MicroVMReconcileResult{
+		LifecycleRef: reconciled,
+		SessionID:    strings.TrimSpace(binding.ConversationID),
+		Terminal:     terminal,
+	}, nil
 }
 
 func stubMintConversationRegistration(t *testing.T, tdb *mintConversationTestDB, reg models.SoulAgentRegistration) {
