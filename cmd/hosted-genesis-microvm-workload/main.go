@@ -29,7 +29,6 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -99,8 +98,12 @@ func run() error {
 		_ = httpSrv.Shutdown(ctx)
 	}()
 
-	slog.Info(serviceName+": serving M16 lifecycle hooks", slog.String("addr", addr))
-	if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	// Bind explicitly before serving so a successful bind is confirmed with a
+	// "listening" log line and a bind failure fails fast (clear error + non-zero
+	// exit) instead of surfacing as a ~120s build timeout. The prior
+	// "serving M16 lifecycle hooks" log was emitted BEFORE ListenAndServe, so it
+	// did not prove the app was actually listening on :8080.
+	if err := server.serveWithListener(httpSrv, addr); err != nil {
 		return err
 	}
 	return nil

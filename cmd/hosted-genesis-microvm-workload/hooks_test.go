@@ -74,14 +74,91 @@ func TestHookServer_NonRunHooksDriveAdapter(t *testing.T) {
 	}
 }
 
-// TestHookServer_UnknownHook404 proves an unknown hook path is rejected.
-func TestHookServer_UnknownHook404(t *testing.T) {
+// TestHookServer_CatchAllAcknowledgesUnmatched proves the catch-all on "/"
+// logs + returns HTTP 200 on an unmatched path, the diagnostic behavior added
+// to reveal whether the AWS service calls a path the workload does not register
+// (e.g. a different prefix or a short /<hook> path). The specific hook paths
+// still take precedence over the catch-all. This replaces the prior 404
+// behavior: during diagnosis an unmatched path is acknowledged (200) so the
+// service does not retry it into a build timeout, and the catch-all logs the
+// path + body preview so the mismatch is visible in the build log.
+func TestHookServer_CatchAllAcknowledgesUnmatched(t *testing.T) {
 	srv := newTestHookServer(t, nil)
 	req := httptest.NewRequest(http.MethodPost, "/bogus", bytes.NewReader([]byte(`{}`)))
 	rec := httptest.NewRecorder()
 	srv.routes().ServeHTTP(rec, req)
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("expected 404, got %d", rec.Code)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 from catch-all on unmatched path, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestHookServer_CatchAllDoesNotShadowHookPaths proves the specific hook paths
+// still take precedence over the "/" catch-all: a request to a registered hook
+// path reaches the hook handler (returns a LifecycleResult JSON body), not the
+// catch-all (which returns {"status":"unmatched"}). The /ready hook with an
+// empty body returns a failed LifecycleResult (the AppTheory envelope is
+// incomplete on an empty event), which is the existing fail-closed behavior —
+// the point here is that the catch-all did not intercept it.
+func TestHookServer_CatchAllDoesNotShadowHookPaths(t *testing.T) {
+	srv := newTestHookServer(t, nil)
+	req := httptest.NewRequest(http.MethodPost, hookPathPrefix+"/ready", nil)
+	rec := httptest.NewRecorder()
+	srv.routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 from /ready hook, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var result runtimemicrovm.LifecycleResult
+	if err := json.NewDecoder(rec.Body).Decode(&result); err != nil {
+		t.Fatalf("expected LifecycleResult body (not catch-all), decode error: %v", err)
+	}
+	if result.Hook != runtimemicrovm.HookReady {
+		t.Fatalf("expected hook=ready from /ready hook (not catch-all), got %q", result.Hook)
+	}
+}
+
+// TestRequestLoggingMiddleware_LogsRequest proves the request-logging middleware
+// logs every request before its handler runs and records the status after. It
+// uses a test handler so the middleware is exercised independently of the hook
+// handlers.
+func TestRequestLoggingMiddleware_LogsRequest(t *testing.T) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusTeapot, map[string]string{"status": "test"})
+	})
+	wrapped := requestLoggingMiddleware(handler)
+	req := httptest.NewRequest(http.MethodGet, "/test-path", nil)
+	rec := httptest.NewRecorder()
+	wrapped.ServeHTTP(rec, req)
+	if rec.Code != http.StatusTeapot {
+		t.Fatalf("expected 418 from test handler, got %d", rec.Code)
+	}
+}
+
+// TestRecoverMiddleware_RecoversPanic proves the panic-recovery middleware
+// recovers a panicking handler, writes 500, and does not propagate the panic.
+func TestRecoverMiddleware_RecoversPanic(t *testing.T) {
+	handler := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		panic("boom")
+	})
+	wrapped := recoverMiddleware(handler)
+	req := httptest.NewRequest(http.MethodGet, "/panic-path", nil)
+	rec := httptest.NewRecorder()
+	wrapped.ServeHTTP(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500 from recovered panic, got %d", rec.Code)
+	}
+}
+
+// TestReadBodyPreview_Capped proves readBodyPreview reads at most n bytes and
+// restores the body for downstream readers.
+func TestReadBodyPreview_Capped(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("hello world body"))
+	preview := readBodyPreview(req, 5)
+	if preview != "hello" {
+		t.Fatalf("expected first 5 bytes, got %q", preview)
+	}
+	rest, _ := io.ReadAll(req.Body)
+	if string(rest) != "hello" {
+		t.Fatalf("expected restored body to be the previewed bytes, got %q", string(rest))
 	}
 }
 
