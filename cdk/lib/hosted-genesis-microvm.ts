@@ -4,9 +4,8 @@ import * as path from "node:path";
 
 import {
   AppTheoryMicrovmController,
-  AppTheoryMicrovmHookMode,
-  AppTheoryMicrovmImage,
   AppTheoryMicrovmNetworkConnector,
+  type IAppTheoryMicrovmImage,
 } from "@theory-cloud/apptheory-cdk";
 import * as cdk from "aws-cdk-lib";
 import * as customresources from "aws-cdk-lib/custom-resources";
@@ -248,61 +247,86 @@ export function configureHostedGenesisMicrovm(
   // returned only {"imageVersion": "0"} for this image.
   const baseImageVersion = "0";
 
-  const microvmImage = new AppTheoryMicrovmImage(
-    scope,
-    "HostedGenesisMicrovmImage",
-    {
-      name: `${props.namePrefix}_hosted_genesis`,
-      description: "AppTheory MicroVM image for hosted-genesis dogfood",
-      baseImageArn,
-      baseImageVersion,
-      buildRoleArn: buildRole.roleArn,
-      codeArtifact: { uri: workloadArtifact.s3ObjectUrl },
-      egressNetworkConnectors: [egressConnector],
-      hooks: {
-        port: 8080,
-        // P52 H1: ENABLE the /ready image build hook; keep /validate DISABLED.
-        // The AWS Lambda MicroVM build service REQUIRES the /ready hook to be
-        // ENABLED when ANY runtime lifecycle hook (run, resume, suspend, or
-        // terminate) is enabled — lab deploy #12 failed with
-        // HostedGenesisMicrovmImage CREATE_FAILED: "The ready (/ready) MicroVM
-        // image hook must be enabled when any MicroVM lifecycle hook (run,
-        // resume, suspend, or terminate) is enabled." The /ready hook is the
-        // readiness signal the build service uses to know the app has finished
-        // initializing so the snapshot is taken in a ready state; the build
-        // service calls /ready on the configured port (8080) during the image
-        // build. (#884 disabled both ready + validate to work around an
-        // earlier "did not stabilize"; that disable is rejected by AWS now
-        // that the runtime hooks are enabled, so ready is re-enabled here.)
-        // /validate remains DISABLED — it is optional and not required by the
-        // AWS error. The readyTimeoutInSeconds (120) is kept. NOTE: deploy
-        // #10's listener-diagnostic (PR #882) showed the build service did
-        // NOT open a TCP connection to :8080 during the build — that is an
-        // AWS-side build-environment reach issue tracked separately, not a
-        // workload issue; the local Go tests prove the workload responds 200
-        // to /ready with an empty body. This PR re-enables /ready to satisfy
-        // the AWS config requirement; it does not change the hook port
-        // (8080), the hook handlers, the empty-body tolerance, fail-closed
-        // auth, or the runtime hooks (microvmHooks below, which run in the
-        // runtime environment with its own ingress connectors and are
-        // exercised at E2E, not at image-build time).
-        microvmImageHooks: {
-          ready: AppTheoryMicrovmHookMode.ENABLED,
-          readyTimeoutInSeconds: 120,
-          validate: AppTheoryMicrovmHookMode.DISABLED,
-          validateTimeoutInSeconds: 300,
+  // P52 H1 (endpoint-based architecture, 2026-07-05): build the
+  // AWS::Lambda::MicrovmImage with a raw cdk.CfnResource instead of the
+  // AppTheory v1.15.2 AppTheoryMicrovmImage construct. The construct's
+  // renderHooks guard (@theory-cloud/apptheory-cdk lib/microvm-image.js:234)
+  // THROWS "AppTheoryMicrovmImage requires props.hooks.microvmHooks or
+  // props.hooks.microvmImageHooks" when neither hook group is supplied — i.e.
+  // it REFUSES to render a no-hooks image (Hooks: { Port: 8080 } alone). The
+  // AppTheoryMicrovmImageHooks TypeScript fields being optional does NOT mean
+  // the runtime accepts their absence; verified by a local synth failure
+  // (2026-07-05, see the p52-h1-no-hooks-framework-guard memory).
+  //
+  // A no-hooks image is what the endpoint-based architecture requires: the AWS
+  // Lambda MicroVM BUILD environment does NOT route inbound HTTP to the
+  // container's :8080 hook port (proven across lab deploys #10/#11/#12 — the
+  // PR #882 loggingListener saw ZERO `connection accepted` events from the
+  // build service on :8080), so an image with /ready ENABLED cannot satisfy
+  // the readiness probe and the build hangs → CREATE_FAILED "did not
+  // stabilize". The AWS getting-started example
+  // (microvms-getting-started.html Step 3) builds an image with NO --hooks at
+  // all and it reaches CREATED. So the working shape is: no AWS-invoked hooks
+  // (Hooks: { Port: 8080 } with no MicrovmImageHooks + no MicrovmHooks); the
+  // image just builds + snapshots → CREATED. Turn execution is then via the
+  // controller POSTing to the MicroVM's RUNTIME endpoint (the runtime
+  // environment has its own ingress connectors and is exercised at E2E, not at
+  // image-build time) — a separate brief.
+  //
+  // This is a principal-approved framework-gap exception. The proper fix —
+  // relax AppTheory's renderHooks so Hooks: { Port: 8080 } with no hook
+  // enablements is a valid config (or add a `mode: "endpoint"` / "no-hooks"
+  // opt-in) plus first-class support for endpoint-invoked turns — is routed
+  // upstream to AppTheory via coordinate-framework-feedback, with the lab
+  // evidence (build-env-no-ingress proof + this synth path) attached. The raw
+  // CfnResource below is the host-side bypass that lets the image build while
+  // the framework evolves; it produces the SAME CloudFormation properties the
+  // construct produced EXCEPT it omits MicrovmImageHooks + MicrovmHooks (no
+  // AWS-invoked hooks). Property names + shapes match the synthesized reference
+  // from `cdk synth` with the prior construct (PascalCase CloudFormation shape;
+  // verified 2026-07-05).
+  //
+  // The workload's hookServer is UNCHANGED — it still serves /ready, /validate,
+  // and the runtime hooks on :8080; the only change is that AWS does not invoke
+  // the build-time hooks. Fail-closed controller auth is unchanged.
+  const microvmImage = new cdk.CfnResource(scope, "HostedGenesisMicrovmImage", {
+    type: "AWS::Lambda::MicrovmImage",
+    properties: {
+      Name: `${props.namePrefix}_hosted_genesis`,
+      Description: "AppTheory MicroVM image for hosted-genesis dogfood",
+      BaseImageArn: baseImageArn,
+      BaseImageVersion: baseImageVersion,
+      BuildRoleArn: buildRole.roleArn,
+      CodeArtifact: { Uri: workloadArtifact.s3ObjectUrl },
+      EgressNetworkConnectors: [egressConnector.networkConnectorArn],
+      EnvironmentVariables: [
+        {
+          Key: "HOSTED_GENESIS_MICROVM_NAMESPACE",
+          Value: HOSTED_GENESIS_MICROVM_NAMESPACE,
         },
-        microvmHooks: {
-          run: AppTheoryMicrovmHookMode.ENABLED,
-          runTimeoutInSeconds: 30,
-          suspend: AppTheoryMicrovmHookMode.ENABLED,
-          suspendTimeoutInSeconds: 30,
-          resume: AppTheoryMicrovmHookMode.ENABLED,
-          resumeTimeoutInSeconds: 30,
-          terminate: AppTheoryMicrovmHookMode.ENABLED,
-          terminateTimeoutInSeconds: 30,
+        {
+          Key: "HOSTED_GENESIS_MICROVM_SOURCE_OF_TRUTH",
+          Value: HOSTED_GENESIS_MICROVM_SOURCE_OF_TRUTH,
         },
-      },
+        // P52 H1.5 corrective (AppTheory v1.15.2): the in-VM workload resolves the
+        // Host state table via models.MainTableName() -> STATE_TABLE_NAME. The
+        // workload calls store.LambdaInit() to persist completion truth, so it must
+        // know the same table name the control plane writes. This is a non-secret
+        // table name (already a CfnOutput); the table ARN is granted to the
+        // host-owned MicroVM execution role below, not baked into the image.
+        {
+          Key: "STATE_TABLE_NAME",
+          Value: props.stateTable.tableName,
+        },
+        // AWS_REGION is reserved by the Lambda Microvms service (service-injected
+        // into the guest env); do NOT set it in EnvironmentVariables — the workload
+        // reads the service-provided AWS_REGION at runtime.
+      ],
+      // NO MicrovmImageHooks, NO MicrovmHooks — see the comment above. The
+      // build env does not reach :8080 for /ready, so no AWS-invoked build-time
+      // hooks. Port stays 8080 (the workload still serves hooks on it at
+      // runtime; AWS does not invoke them at build time).
+      Hooks: { Port: 8080 },
       // P52 H1: enable CloudWatch logging so a failing image build emits
       // diagnosable logs. The 2026-07-04 lab deploy failed with
       // HostedGenesisMicrovmImage CREATE_FAILED "did not stabilize" and the build
@@ -318,43 +342,33 @@ export function configureHostedGenesisMicrovm(
       // separate). The build role below carries the logs:CreateLogGroup /
       // logs:CreateLogStream / logs:PutLogEvents the build service needs to
       // write these logs (getting-started IAM example).
-      logging: {
-        cloudWatch: {
-          logGroup: `/aws/lambda/microvms/${props.namePrefix}_hosted_genesis`,
-          logStream: "build",
+      Logging: {
+        CloudWatch: {
+          LogGroup: `/aws/lambda/microvms/${props.namePrefix}_hosted_genesis`,
+          LogStream: "build",
         },
       },
-      resources: [{ minimumMemoryInMiB: 2048 }],
-      environmentVariables: [
-        {
-          key: "HOSTED_GENESIS_MICROVM_NAMESPACE",
-          value: HOSTED_GENESIS_MICROVM_NAMESPACE,
-        },
-        {
-          key: "HOSTED_GENESIS_MICROVM_SOURCE_OF_TRUTH",
-          value: HOSTED_GENESIS_MICROVM_SOURCE_OF_TRUTH,
-        },
-        // P52 H1.5 corrective (AppTheory v1.15.2): the in-VM workload resolves the
-        // Host state table via models.MainTableName() -> STATE_TABLE_NAME. The
-        // workload calls store.LambdaInit() to persist completion truth, so it must
-        // know the same table name the control plane writes. This is a non-secret
-        // table name (already a CfnOutput); the table ARN is granted to the
-        // host-owned MicroVM execution role below, not baked into the image.
-        {
-          key: "STATE_TABLE_NAME",
-          value: props.stateTable.tableName,
-        },
-        // AWS_REGION is reserved by the Lambda Microvms service (service-injected
-        // into the guest env); do NOT set it in environmentVariables — the workload
-        // reads the service-provided AWS_REGION at runtime.
+      Resources: [{ MinimumMemoryInMiB: 2048 }],
+      AdditionalOsCapabilities: ["ALL"],
+      CpuConfigurations: [{ Architecture: "ARM_64" }],
+      Tags: [
+        { Key: "Service", Value: "lesser-host" },
+        { Key: "Stage", Value: props.stage },
+        { Key: "Purpose", Value: "hosted-genesis-microvm-dogfood" },
       ],
-      tags: {
-        Service: "lesser-host",
-        Stage: props.stage,
-        Purpose: "hosted-genesis-microvm-dogfood",
-      },
     },
-  );
+  });
+
+  // The AppTheoryMicrovmController construct takes a typed IAppTheoryMicrovmImage
+  // and reads ONLY microvmImageArn from it (microvm-controller.js:91). A raw
+  // CfnResource does not expose that property, so build a minimal adapter
+  // satisfying the interface: the image ARN as Fn::GetAtt ImageArn (the same
+  // attribute the construct's microvmImageArn exposed — see the CfnOutputs
+  // below). The controller never reads microvmImageState/microvmImageName from
+  // this reference; those are read directly off the CfnResource below.
+  const microvmImageRef: IAppTheoryMicrovmImage = {
+    microvmImageArn: microvmImage.getAtt("ImageArn").toString(),
+  };
 
   const authorizer = new lambda.Function(
     scope,
@@ -437,7 +451,7 @@ export function configureHostedGenesisMicrovm(
       authorizerName: `${props.namePrefix}-hosted-genesis-microvm-authorizer`,
       authorizerHeaderName: "Authorization",
       authorizerCacheTtl: cdk.Duration.seconds(0),
-      microvmImage,
+      microvmImage: microvmImageRef,
       ingressNetworkConnectors: [ingressConnector],
       egressNetworkConnectors: [egressConnector],
       shellIngressNetworkConnector: shellIngressConnector,
@@ -489,7 +503,7 @@ export function configureHostedGenesisMicrovm(
       scope,
       props.controlPlaneFunction,
       controller.endpoint,
-      microvmImage.microvmImageArn,
+      microvmImage.getAtt("ImageArn").toString(),
       [ingressConnector.networkConnectorArn],
       [egressConnector.networkConnectorArn],
       authTokenSSMParam,
@@ -511,20 +525,21 @@ export function configureHostedGenesisMicrovm(
   // can verify a real deploy produced an ACTIVE image. Both are Fn::GetAtt tokens
   // on the AWS::Lambda::MicrovmImage resource (ImageArn + State — see
   // AWSCloudFormation UserGuide aws-resource-lambda-microvmimage.html return
-  // values), surfaced by AppTheoryMicrovmImage as microvmImageArn /
-  // microvmImageState (microvm-image.ts:329,334). They resolve only after
-  // CloudFormation creates the image and its asynchronous build transitions
-  // CREATING -> CREATED (State=ACTIVE), so `cdk deploy` / describe-stacks is the
-  // F1 verification surface. This step does NOT deploy; the principal deploys
-  // and factory reads these outputs to confirm State=ACTIVE — the F1 deploy
-  // proof.
+  // values), read directly off the raw CfnResource below (the prior
+  // AppTheoryMicrovmImage construct surfaced the same attrs as
+  // microvmImageArn / microvmImageState — microvm-image.ts:329,334). They resolve
+  // only after CloudFormation creates the image and its asynchronous build
+  // transitions CREATING -> CREATED (State=ACTIVE), so `cdk deploy` /
+  // describe-stacks is the F1 verification surface. This step does NOT deploy;
+  // the principal deploys and factory reads these outputs to confirm
+  // State=ACTIVE — the F1 deploy proof.
   new cdk.CfnOutput(scope, "HostedGenesisMicrovmImageArn", {
-    value: microvmImage.microvmImageArn,
+    value: microvmImage.getAtt("ImageArn").toString(),
     description:
       "ARN of the hosted-genesis AWS::Lambda::MicrovmImage (Fn::GetAtt ImageArn); resolves post-deploy.",
   });
   new cdk.CfnOutput(scope, "HostedGenesisMicrovmImageState", {
-    value: microvmImage.microvmImageState,
+    value: microvmImage.getAtt("State").toString(),
     description:
       "State of the hosted-genesis AWS::Lambda::MicrovmImage (Fn::GetAtt State); factory verifies State=ACTIVE after a real deploy.",
   });

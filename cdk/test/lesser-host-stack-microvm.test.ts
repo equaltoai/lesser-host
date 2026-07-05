@@ -120,32 +120,34 @@ test('hosted genesis AppTheory MicroVM deployed-stage wiring uses AppTheory cons
 		'expected AWS-managed INTERNET_EGRESS egress connector ref',
 	);
 
-	// P52 H1: AWS REQUIRES the /ready image build hook to be ENABLED when any
-	// runtime lifecycle hook (run, resume, suspend, terminate) is enabled — lab
-	// deploy #12 failed with HostedGenesisMicrovmImage CREATE_FAILED: "The ready
-	// (/ready) MicroVM image hook must be enabled when any MicroVM lifecycle hook
-	// (run, resume, suspend, or terminate) is enabled." #884 disabled ready +
-	// validate; that disable is rejected by AWS now that the runtime hooks are
-	// enabled, so ready is re-enabled. /validate stays DISABLED (optional, not
-	// required by the AWS error). The runtime hooks (run/suspend/resume/terminate)
-	// stay ENABLED. The framework renders the image-build hooks and runtime hooks
-	// nested under Properties.Hooks (Hooks.MicrovmImageHooks.{Ready,Validate} and
-	// Hooks.MicrovmHooks.{Run,Suspend,Resume,Terminate}) with the ENABLED/DISABLED
-	// string mode and Hooks.Port as the integer port (see @theory-cloud/
-	// apptheory-cdk microvm-image.js renderHooks + setHookMode).
+	// P52 H1 (endpoint-based architecture, 2026-07-05): the MicroVM image is
+	// built with a raw cdk.CfnResource (AWS::Lambda::MicrovmImage) carrying
+	// Hooks: { Port: 8080 } and NO MicrovmImageHooks + NO MicrovmHooks — i.e. NO
+	// AWS-invoked build-time hooks. This bypasses the AppTheory v1.15.2
+	// AppTheoryMicrovmImage construct's renderHooks guard
+	// (microvm-image.js:234: "AppTheoryMicrovmImage requires props.hooks.
+	// microvmHooks or props.hooks.microvmImageHooks"), which refuses to render a
+	// no-hooks image. The AWS Lambda MicroVM BUILD environment does not route
+	// inbound HTTP to the container's :8080 hook port (proven across lab deploys
+	// #10/#11/#12 — PR #882's loggingListener saw zero `connection accepted`
+	// events from the build service), so an image with /ready ENABLED cannot
+	// satisfy the readiness probe and the build hangs → CREATE_FAILED "did not
+	// stabilize". The AWS getting-started example builds with NO --hooks and
+	// reaches CREATED, so the working shape is no AWS-invoked hooks. The workload
+	// still serves /ready + /validate + the runtime hooks on :8080 (unchanged);
+	// AWS simply does not invoke them at build time. Turn execution is via the
+	// controller POSTing to the runtime endpoint (separate brief). The proper
+	// fix (relax renderHooks + support endpoint invocation) is routed upstream
+	// to AppTheory — this is a principal-approved framework-gap exception.
 	const hooks = imageProps.Hooks as {
 		MicrovmImageHooks?: { Ready?: string; Validate?: string };
 		MicrovmHooks?: { Run?: string; Suspend?: string; Resume?: string; Terminate?: string };
 		Port?: number;
 	} | undefined;
 	assert.ok(hooks, 'expected the MicroVM image to carry a Hooks config');
-	assert.equal(hooks?.MicrovmImageHooks?.Ready, 'ENABLED', 'expected /ready image build hook ENABLED (AWS requires it when runtime hooks are enabled)');
-	assert.equal(hooks?.MicrovmImageHooks?.Validate, 'DISABLED', 'expected /validate image build hook DISABLED (optional, not required by AWS)');
-	assert.equal(hooks?.MicrovmHooks?.Run, 'ENABLED', 'expected run runtime hook ENABLED');
-	assert.equal(hooks?.MicrovmHooks?.Suspend, 'ENABLED', 'expected suspend runtime hook ENABLED');
-	assert.equal(hooks?.MicrovmHooks?.Resume, 'ENABLED', 'expected resume runtime hook ENABLED');
-	assert.equal(hooks?.MicrovmHooks?.Terminate, 'ENABLED', 'expected terminate runtime hook ENABLED');
 	assert.equal(hooks?.Port, 8080, 'expected MicroVM image hook port 8080');
+	assert.equal(hooks?.MicrovmImageHooks, undefined, 'expected NO MicrovmImageHooks on the no-hooks image (build env cannot reach :8080 for /ready)');
+	assert.equal(hooks?.MicrovmHooks, undefined, 'expected NO MicrovmHooks on the no-hooks image (endpoint-based architecture; controller POSTs to the runtime endpoint)');
 
 	// P52 H1: CloudWatch logging must be ENABLED (not disabled) so a failing
 	// image build emits diagnosable logs. The 2026-07-04 lab deploy failed
