@@ -120,6 +120,33 @@ test('hosted genesis AppTheory MicroVM deployed-stage wiring uses AppTheory cons
 		'expected AWS-managed INTERNET_EGRESS egress connector ref',
 	);
 
+	// P52 H1: AWS REQUIRES the /ready image build hook to be ENABLED when any
+	// runtime lifecycle hook (run, resume, suspend, terminate) is enabled — lab
+	// deploy #12 failed with HostedGenesisMicrovmImage CREATE_FAILED: "The ready
+	// (/ready) MicroVM image hook must be enabled when any MicroVM lifecycle hook
+	// (run, resume, suspend, or terminate) is enabled." #884 disabled ready +
+	// validate; that disable is rejected by AWS now that the runtime hooks are
+	// enabled, so ready is re-enabled. /validate stays DISABLED (optional, not
+	// required by the AWS error). The runtime hooks (run/suspend/resume/terminate)
+	// stay ENABLED. The framework renders the image-build hooks and runtime hooks
+	// nested under Properties.Hooks (Hooks.MicrovmImageHooks.{Ready,Validate} and
+	// Hooks.MicrovmHooks.{Run,Suspend,Resume,Terminate}) with the ENABLED/DISABLED
+	// string mode and Hooks.Port as the integer port (see @theory-cloud/
+	// apptheory-cdk microvm-image.js renderHooks + setHookMode).
+	const hooks = imageProps.Hooks as {
+		MicrovmImageHooks?: { Ready?: string; Validate?: string };
+		MicrovmHooks?: { Run?: string; Suspend?: string; Resume?: string; Terminate?: string };
+		Port?: number;
+	} | undefined;
+	assert.ok(hooks, 'expected the MicroVM image to carry a Hooks config');
+	assert.equal(hooks?.MicrovmImageHooks?.Ready, 'ENABLED', 'expected /ready image build hook ENABLED (AWS requires it when runtime hooks are enabled)');
+	assert.equal(hooks?.MicrovmImageHooks?.Validate, 'DISABLED', 'expected /validate image build hook DISABLED (optional, not required by AWS)');
+	assert.equal(hooks?.MicrovmHooks?.Run, 'ENABLED', 'expected run runtime hook ENABLED');
+	assert.equal(hooks?.MicrovmHooks?.Suspend, 'ENABLED', 'expected suspend runtime hook ENABLED');
+	assert.equal(hooks?.MicrovmHooks?.Resume, 'ENABLED', 'expected resume runtime hook ENABLED');
+	assert.equal(hooks?.MicrovmHooks?.Terminate, 'ENABLED', 'expected terminate runtime hook ENABLED');
+	assert.equal(hooks?.Port, 8080, 'expected MicroVM image hook port 8080');
+
 	// P52 H1: CloudWatch logging must be ENABLED (not disabled) so a failing
 	// image build emits diagnosable logs. The 2026-07-04 lab deploy failed
 	// undiagnosably because logging was { disabled: true }. The AWS Lambda
