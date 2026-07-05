@@ -261,10 +261,40 @@ export function configureHostedGenesisMicrovm(
       egressNetworkConnectors: [egressConnector],
       hooks: {
         port: 8080,
+        // P52 H1: DISABLE the build hooks (ready, validate). The AWS Lambda
+        // MicroVM build environment has NO ingress routing to the container's
+        // hook port — the listener-diagnostic (PR #882) showed the app logging
+        // `listening addr=:8080` + `alive` every 10s but ZERO `connection
+        // accepted` events during the build, proving the AWS build service
+        // never opens a TCP connection to :8080. With ready/validate ENABLED,
+        // the build service retries the /ready call against an unreachable port
+        // for 120s → HostedGenesisMicrovmImage CREATE_FAILED "did not stabilize"
+        // (lab deploys #10 + #11, al2023-minimal AND alpine bases — the base
+        // image was NOT the issue). The build hooks (ready/validate) are
+        // OPTIONAL: the AWS getting-started example calls create-microvm-image
+        // with NO --hooks flag (microvms-getting-started.html Step 3 — the
+        // command is `--name`, `--code-artifact`, `--base-image-arn`,
+        // `--build-role-arn` only; the doc cross-references the "MicroVM Images"
+        // page for "image build hooks" as an optional feature). Disabling them
+        // lets the build proceed the getting-started way — the build service
+        // runs the Dockerfile/CMD, waits, and snapshots the initialized state
+        // with NO HTTP readiness signal required. The readyTimeoutInSeconds /
+        // validateTimeoutInSeconds are kept (the framework accepts them as
+        // independent optional integers regardless of mode — see
+        // @theory-cloud/apptheory-cdk microvm-image.ts setHookMode +
+        // setOptionalInteger) so the tuned timeouts are preserved for a future
+        // re-enable if the build environment ever gains ingress routing. The
+        // RUNTIME hooks (run/suspend/resume/terminate in microvmHooks below)
+        // are SEPARATE — they run in the runtime environment, which DOES have
+        // ingress network connectors (allIngress above), and are exercised at
+        // E2E, not at image-build time. Disabling build hooks does not affect
+        // the runtime hooks, the hook port (8080), the hook handlers, the
+        // empty-body tolerance, fail-closed auth, or the image the build
+        // produces.
         microvmImageHooks: {
-          ready: AppTheoryMicrovmHookMode.ENABLED,
+          ready: AppTheoryMicrovmHookMode.DISABLED,
           readyTimeoutInSeconds: 120,
-          validate: AppTheoryMicrovmHookMode.ENABLED,
+          validate: AppTheoryMicrovmHookMode.DISABLED,
           validateTimeoutInSeconds: 300,
         },
         microvmHooks: {
