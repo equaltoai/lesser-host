@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
@@ -40,6 +41,24 @@ type MicroVMControllerRuntime struct {
 	// extraction). Zero/positive-only; a non-positive value lets the AppTheory
 	// provider default apply. It is set on the run request envelope only.
 	maximumDurationSeconds int32
+
+	// endpointClient is the raw lambda-microvms SDK client used by
+	// RunTurnViaEndpoint for get-microvm + create-microvm-auth-token. It bypasses
+	// the framework's safe envelope (which suppresses the Endpoint and discards
+	// the auth token value) — the principal-approved P52 H1 framework-gap
+	// bridge. Nil disables the endpoint-POST turn path (fail-closed).
+	endpointClient microvmEndpointAPI
+	// endpointHTTPClient POSTs the M16 LifecycleEvent to the MicroVM endpoint.
+	endpointHTTPClient *http.Client
+	// endpointReadyTimeout / endpointPollInterval bound the get-microvm RUNNING
+	// poll; <=0 falls back to the package defaults.
+	endpointReadyTimeout time.Duration
+	endpointPollInterval time.Duration
+	// endpointTurnTimeout caps the endpoint POST; <=0 falls back to the default.
+	endpointTurnTimeout time.Duration
+	// endpointNow is the injectable clock for RunTurnViaEndpoint (tests); nil
+	// uses time.Now.
+	endpointNow func() time.Time
 }
 
 // MicroVMControllerRuntimeConfig configures the AppTheory M16 controller
@@ -63,6 +82,16 @@ type MicroVMControllerRuntimeConfig struct {
 	// sized for the longest LLM turn plus in-VM declaration extraction (P52 H1.5
 	// decision 7). Non-positive leaves the AppTheory provider default in place.
 	MaximumDurationSeconds int32
+
+	// EndpointTurnClient configures the P52 H1 endpoint-POST turn path
+	// (RunTurnViaEndpoint). The SDKClient makes the raw get-microvm +
+	// create-auth-token calls the framework does not surface; the HTTPClient
+	// POSTs the LifecycleEvent to the MicroVM endpoint. Nil SDKClient disables
+	// the endpoint-POST path (fail-closed — the controller refuses run-via-
+	// endpoint instead of falling back to a synchronous LLM path). Timeouts
+	// <=0 fall back to package defaults. This is the principal-approved
+	// framework-gap bridge, not a fork.
+	EndpointTurnClient EndpointTurnClient
 }
 
 // NewMicroVMControllerRuntime creates the AppTheory M16 real controller Host
@@ -109,6 +138,12 @@ func NewMicroVMControllerRuntime(cfg MicroVMControllerRuntimeConfig) (*MicroVMCo
 		ingressNetworkConnectorRefs: normalizeStringSlice(cfg.IngressNetworkConnectorRefs),
 		egressNetworkConnectorRefs:  normalizeStringSlice(cfg.EgressNetworkConnectorRefs),
 		maximumDurationSeconds:      cfg.MaximumDurationSeconds,
+		endpointClient:              cfg.EndpointTurnClient.SDKClient,
+		endpointHTTPClient:          cfg.EndpointTurnClient.HTTPClient,
+		endpointReadyTimeout:        cfg.EndpointTurnClient.ReadyTimeout,
+		endpointPollInterval:        cfg.EndpointTurnClient.PollInterval,
+		endpointTurnTimeout:         cfg.EndpointTurnClient.TurnTimeout,
+		endpointNow:                 cfg.EndpointTurnClient.now,
 	}, nil
 }
 

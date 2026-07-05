@@ -5,12 +5,17 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/aws/aws-lambda-go/events"
+	"github.com/aws/aws-sdk-go-v2/service/lambdamicrovms"
+	lambdatypes "github.com/aws/aws-sdk-go-v2/service/lambdamicrovms/types"
 	runtimemicrovm "github.com/theory-cloud/apptheory/runtime/microvm"
 	microvmtestkit "github.com/theory-cloud/apptheory/testkit/microvm"
 
@@ -92,6 +97,11 @@ func TestControllerAppRegistersAppTheoryM16Routes(t *testing.T) {
 		t.Fatalf("expected missing auth to fail closed with 401, got %d body=%s", unauthorized.StatusCode, unauthorized.Body)
 	}
 
+	// P52 H1: POST /microvms now executes the turn via the MicroVM endpoint
+	// (RunTurnViaEndpoint) instead of only starting the MicroVM. The fake SDK
+	// client + test HTTP server in testControllerApp simulate the workload's
+	// run hook, so the run response still carries the run command, the session
+	// id, and the running state.
 	run := invokeOK(t, app, "POST", "/microvms", runBody("conv_123"))
 	if run.Command != runtimemicrovm.CommandRun || run.SessionID != "conv_123" || run.State != runtimemicrovm.StateRunning {
 		t.Fatalf("unexpected run response: %#v", run)
@@ -175,6 +185,7 @@ func testControllerApp(t *testing.T) interface {
 	ServeAPIGatewayV2(context.Context, events.APIGatewayV2HTTPRequest) events.APIGatewayV2HTTPResponse
 } {
 	t.Helper()
+	endpoint := newEndpointTurnTestServer(t)
 	runtime, err := hostedgenesis.NewMicroVMControllerRuntime(hostedgenesis.MicroVMControllerRuntimeConfig{
 		Provider:            microvmtestkit.NewFakeProviderWithTime(time.Date(2026, 6, 25, 20, 0, 0, 0, time.UTC)),
 		Registry:            runtimemicrovm.NewMemorySessionRegistry(),
@@ -184,11 +195,15 @@ func testControllerApp(t *testing.T) interface {
 			"ingress-ref",
 		},
 		EgressNetworkConnectorRefs: []string{"egress-ref"},
+		EndpointTurnClient: hostedgenesis.EndpointTurnClient{
+			SDKClient:  &fakeEndpointSDK{endpoint: endpoint},
+			HTTPClient: &http.Client{},
+		},
 	})
 	if err != nil {
 		t.Fatalf("NewMicroVMControllerRuntime: %v", err)
 	}
-	app, err := newControllerApp(runtime.Controller(), func(key string) string {
+	app, err := newControllerApp(runtime, func(key string) string {
 		if key == "HOSTED_GENESIS_MICROVM_AUTH_TOKEN_SHA256" {
 			return "sha256:" + tokenHash("lab-token")
 		}
@@ -199,6 +214,68 @@ func testControllerApp(t *testing.T) interface {
 	}
 	return app
 }
+
+// fakeEndpointSDK is the test lambda-microvms SDK client. It returns a RUNNING
+// MicroVM at the test HTTP server's endpoint (so RunTurnViaEndpoint's
+// get-microvm poll resolves immediately) and a fixed X-aws-proxy-auth token.
+// It is the framework-gap bridge test double: the real SDK client loads the
+// controller Lambda's execution-role AWS config.
+type fakeEndpointSDK struct {
+	endpoint string
+	getCalls atomic.Int32
+}
+
+func (f *fakeEndpointSDK) GetMicrovm(_ context.Context, _ *lambdamicrovms.GetMicrovmInput, _ ...func(*lambdamicrovms.Options)) (*lambdamicrovms.GetMicrovmOutput, error) {
+	f.getCalls.Add(1)
+	return &lambdamicrovms.GetMicrovmOutput{
+		Endpoint:  ptrString(f.endpoint),
+		State:     lambdatypes.MicrovmStateRunning,
+		MicrovmId: ptrString("microvm-000001"),
+	}, nil
+}
+
+func (f *fakeEndpointSDK) CreateMicrovmAuthToken(_ context.Context, _ *lambdamicrovms.CreateMicrovmAuthTokenInput, _ ...func(*lambdamicrovms.Options)) (*lambdamicrovms.CreateMicrovmAuthTokenOutput, error) {
+	return &lambdamicrovms.CreateMicrovmAuthTokenOutput{
+		AuthToken: map[string]string{"X-aws-proxy-auth": "test-proxy-token"},
+	}, nil
+}
+
+// newEndpointTurnTestServer stands up the workload's run hook in-process for
+// the endpoint-POST turn tests. It asserts the proxy-auth + proxy-port headers
+// arrive and returns a running LifecycleResult.
+func newEndpointTurnTestServer(t *testing.T) string {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/aws/lambda-microvms/runtime/v1/run" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if r.Header.Get("X-aws-proxy-auth") != "test-proxy-token" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		if r.Header.Get("X-aws-proxy-port") != "8080" {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		var event runtimemicrovm.LifecycleEvent
+		_ = json.NewDecoder(r.Body).Decode(&event)
+		w.Header().Set("content-type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(runtimemicrovm.LifecycleResult{
+			RequestID: event.RequestID,
+			TenantID:  event.TenantID,
+			Namespace: event.Namespace,
+			SessionID: event.SessionID,
+			Hook:      runtimemicrovm.HookRun,
+			State:     runtimemicrovm.StateRunning,
+		})
+	}))
+	t.Cleanup(srv.Close)
+	return srv.URL
+}
+
+func ptrString(s string) *string { return &s }
 
 func invokeOK(t *testing.T, app interface {
 	ServeAPIGatewayV2(context.Context, events.APIGatewayV2HTTPRequest) events.APIGatewayV2HTTPResponse
@@ -247,7 +324,7 @@ func invoke(t *testing.T, app interface {
 }
 
 func runBody(sessionID string) string {
-	return `{"session_id":"` + sessionID + `","image_ref":"image-ref","network_connector_ref":"egress-ref","ingress_network_connector_refs":["ingress-ref"],"egress_network_connector_refs":["egress-ref"],"session_spec":{"metadata":{"source_of_truth":"host-dynamodb-hosted-genesis-session","registration_id":"reg_123","agent_id":"agent_123","conversation_id":"` + sessionID + `"}}}`
+	return `{"session_id":"` + sessionID + `","image_ref":"image-ref","network_connector_ref":"egress-ref","ingress_network_connector_refs":["ingress-ref"],"egress_network_connector_refs":["egress-ref"],"session_spec":{"metadata":{"source_of_truth":"host-dynamodb-hosted-genesis-session","registration_id":"reg_123","agent_id":"agent_123","conversation_id":"` + sessionID + `","turn_id":"turn_123"}}}`
 }
 
 func tokenHash(token string) string {
