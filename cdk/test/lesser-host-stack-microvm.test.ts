@@ -121,9 +121,9 @@ test('hosted genesis AppTheory MicroVM deployed-stage wiring uses AppTheory cons
 	);
 
 	// P52 H1 (endpoint-based architecture, 2026-07-05): the MicroVM image is
-	// built with a raw cdk.CfnResource (AWS::Lambda::MicrovmImage) carrying
-	// Hooks: { Port: 8080 } and NO MicrovmImageHooks + NO MicrovmHooks — i.e. NO
-	// AWS-invoked build-time hooks. This bypasses the AppTheory v1.15.2
+	// built with a raw cdk.CfnResource (AWS::Lambda::MicrovmImage) carrying an
+	// EMPTY Hooks config — NO Port, NO MicrovmImageHooks, NO MicrovmHooks — i.e.
+	// NO AWS-invoked build-time hooks. This bypasses the AppTheory v1.15.2
 	// AppTheoryMicrovmImage construct's renderHooks guard
 	// (microvm-image.js:234: "AppTheoryMicrovmImage requires props.hooks.
 	// microvmHooks or props.hooks.microvmImageHooks"), which refuses to render a
@@ -132,20 +132,26 @@ test('hosted genesis AppTheory MicroVM deployed-stage wiring uses AppTheory cons
 	// #10/#11/#12 — PR #882's loggingListener saw zero `connection accepted`
 	// events from the build service), so an image with /ready ENABLED cannot
 	// satisfy the readiness probe and the build hangs → CREATE_FAILED "did not
-	// stabilize". The AWS getting-started example builds with NO --hooks and
-	// reaches CREATED, so the working shape is no AWS-invoked hooks. The workload
-	// still serves /ready + /validate + the runtime hooks on :8080 (unchanged);
-	// AWS simply does not invoke them at build time. Turn execution is via the
-	// controller POSTing to the runtime endpoint (separate brief). The proper
-	// fix (relax renderHooks + support endpoint invocation) is routed upstream
-	// to AppTheory — this is a principal-approved framework-gap exception.
+	// stabilize". A prior attempt set Hooks: { Port: 8080 } with no hook groups;
+	// AWS rejects that ("At least one MicroVM hook or MicroVM image hook must be
+	// enabled when the hooks port is specified"), so the working shape is an
+	// empty Hooks config — no Port, no hooks. With no Port specified, Lambda
+	// routes inbound runtime traffic to the default port 8080 (AWS docs: "By
+	// default, Lambda routes inbound traffic to port 8080"), so the workload on
+	// :8080 stays reachable via the runtime endpoint, matching the
+	// getting-started example (no --hooks → CREATED). The workload still serves
+	// /ready + /validate + the runtime hooks on :8080 (unchanged); AWS simply
+	// does not invoke them at build time. Turn execution is via the controller
+	// POSTing to the runtime endpoint (separate brief). The proper fix (relax
+	// renderHooks + support endpoint invocation) is routed upstream to
+	// AppTheory — this is a principal-approved framework-gap exception.
 	const hooks = imageProps.Hooks as {
 		MicrovmImageHooks?: { Ready?: string; Validate?: string };
 		MicrovmHooks?: { Run?: string; Suspend?: string; Resume?: string; Terminate?: string };
 		Port?: number;
 	} | undefined;
 	assert.ok(hooks, 'expected the MicroVM image to carry a Hooks config');
-	assert.equal(hooks?.Port, 8080, 'expected MicroVM image hook port 8080');
+	assert.equal(hooks?.Port, undefined, 'expected NO Port on the no-hooks image (AWS rejects a Port with no hook groups; default port 8080 applies at runtime)');
 	assert.equal(hooks?.MicrovmImageHooks, undefined, 'expected NO MicrovmImageHooks on the no-hooks image (build env cannot reach :8080 for /ready)');
 	assert.equal(hooks?.MicrovmHooks, undefined, 'expected NO MicrovmHooks on the no-hooks image (endpoint-based architecture; controller POSTs to the runtime endpoint)');
 
