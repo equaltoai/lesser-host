@@ -41,12 +41,12 @@ import {
 	ensGatewayRootNameFromContext,
 } from './ens-gateway-config';
 import { hostWebAclRules } from './web-acl-rules';
-import { readWebDomainConfig } from './deploy-local-domain-config';
-export { readWebDomainConfig, type WebDomainConfig } from './deploy-local-domain-config';
+import { readWebDomainConfig } from './app-theory-deploy-config';
+export { readWebDomainConfig, type WebDomainConfig } from './app-theory-deploy-config';
 export interface LesserHostStackProps extends cdk.StackProps {
 	stage: string;
-	/** Path to the gitignored deployer-local domain config; tests pass a fixture. */
-	domainConfigPath?: string;
+	/** Path to app-theory/app.json; tests pass a fixture. */
+	appConfigPath?: string;
 }
 
 const defaultManagedInstanceRoleName = 'OrganizationAccountAccessRole';
@@ -1208,7 +1208,7 @@ export class LesserHostStack extends cdk.Stack {
 			trustStage.defaultRouteSettings = apiThrottle;
 		}
 
-		const webDomain = readWebDomainConfig(stage, props.domainConfigPath);
+		const webDomain = readWebDomainConfig(stage, props.appConfigPath);
 		const webDomainName = stage === 'live' ? webDomain.rootDomain : `${stage}.${webDomain.rootDomain}`;
 
 		const webBucket = new s3.Bucket(this, 'WebBucket', {

@@ -26,7 +26,7 @@ export const testWebHostedZoneId = 'ZTESTLOCALDOMAIN0001';
 export const webLookupContext = {};
 export const webStackEnv = { account: webLookupAccount, region: webLookupRegion };
 
-export function writeTestDeployLocalConfig(
+export function writeTestAppTheoryConfig(
 	configPath: string,
 	overrides: Partial<{ rootDomain: string; hostedZoneId: string; hostedZoneName: string }> = {},
 ): void {
@@ -34,9 +34,17 @@ export function writeTestDeployLocalConfig(
 	const hostedZoneId = overrides.hostedZoneId ?? testWebHostedZoneId;
 	const hostedZoneName = overrides.hostedZoneName ?? rootDomain;
 	writeFileSync(configPath, `${JSON.stringify({
-		domain: {
-			lab: { rootDomain, hostedZoneId, hostedZoneName },
-			live: { rootDomain, hostedZoneId, hostedZoneName },
+		schema: 1,
+		lesserHost: {
+			webDomain: {
+				lab: { rootDomain, hostedZoneId, hostedZoneName },
+				live: { rootDomain, hostedZoneId, hostedZoneName },
+			},
+		},
+		cdk: {
+			dir: 'cdk',
+			up: 'exec ../scripts/app-theory-cdk.sh up {{STAGE}} # {{AWS_PROFILE}}',
+			down: 'exec ../scripts/app-theory-cdk.sh down {{STAGE}} # {{AWS_PROFILE}}',
 		},
 	}, null, 2)}\n`);
 }
@@ -71,12 +79,12 @@ export function synthesizeTemplate(
 	// copied web/CDK asset directories and exhaust hosted runner disk.
 	const outdir = mkdtempSync(join(tmpdir(), 'lesser-host-cdk-test-'));
 	try {
-		const domainConfigPath = props.domainConfigPath ?? join(outdir, 'deploy.local.json');
-		if (!props.domainConfigPath) {
-			writeTestDeployLocalConfig(domainConfigPath);
+		const appConfigPath = props.appConfigPath ?? join(outdir, 'app.json');
+		if (!props.appConfigPath) {
+			writeTestAppTheoryConfig(appConfigPath);
 		}
 		const app = new cdk.App({ context, outdir });
-		const stack = new LesserHostStack(app, stackId, { stage, ...props, domainConfigPath });
+		const stack = new LesserHostStack(app, stackId, { stage, ...props, appConfigPath });
 		const assembly = app.synth();
 		const artifact = assembly.getStackArtifact(stack.artifactId);
 		return JSON.parse(readFileSync(artifact.templateFullPath, 'utf8')) as SynthesizedTemplate;

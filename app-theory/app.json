@@ -1,5 +1,38 @@
 {
   "schema": 1,
+  "frameworks": {
+    "apptheory": {
+      "module": "github.com/theory-cloud/apptheory",
+      "version": "v1.7.0",
+      "docs": [
+        "docs/getting-started.md",
+        "docs/migration/from-lift.md"
+      ]
+    },
+    "tabletheory": {
+      "module": "github.com/theory-cloud/tabletheory",
+      "version": "v1.8.3",
+      "docs": [
+        "docs/getting-started.md",
+        "docs/api-reference.md",
+        "docs/migration-guide.md"
+      ]
+    }
+  },
+  "lesserHost": {
+    "webDomain": {
+      "lab": {
+        "rootDomain": "lesser.host",
+        "hostedZoneId": "Z0051991INEKM5CN2M42",
+        "hostedZoneName": "lesser.host"
+      },
+      "live": {
+        "rootDomain": "lesser.host",
+        "hostedZoneId": "Z0051991INEKM5CN2M42",
+        "hostedZoneName": "lesser.host"
+      }
+    }
+  },
   "cdk": {
     "dir": "cdk",
     "up": "exec ../scripts/app-theory-cdk.sh up {{STAGE}} # {{AWS_PROFILE}}",

@@ -74,7 +74,7 @@ case "$action" in
     }
     trap cleanup EXIT
 
-    ./node_modules/.bin/cdk synth --all -c "stage=$stage" --output "$synth_out"
+    ./node_modules/.bin/cdk synth -c "stage=$stage" --output "$synth_out" --quiet
     template_path="$synth_out/lesser-host-$stage.template.json"
     if [ ! -f "$template_path" ]; then
       template_count="$(find "$synth_out" -maxdepth 1 -type f -name '*.template.json' | wc -l | tr -d ' ')"
