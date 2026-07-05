@@ -153,16 +153,17 @@ test('hosted genesis AppTheory MicroVM deployed-stage wiring uses AppTheory cons
 	// buildHostedGenesisMicrovmWorkloadAsset which writes the Dockerfile into the
 	// asset buildDir (cdk/.build/HostedGenesisMicrovmWorkloadArtifact) alongside
 	// the binary, so s3assets.Asset packages binary + Dockerfile. Assert the
-	// generated Dockerfile exists, FROM the AWS-documented Lambda MicroVMs AL2023
-	// minimal container base image, and CMD launches the workload binary.
+	// generated Dockerfile exists, FROM a plain container base (alpine:3.20)
+	// matching the AWS getting-started's working plain-base pattern
+	// (node:24-alpine), and CMD launches the workload binary.
 	const workloadDockerfile = path.join(
 		process.cwd(), '.build', 'HostedGenesisMicrovmWorkloadArtifact', 'Dockerfile',
 	);
 	assert.ok(fs.existsSync(workloadDockerfile), 'expected the hosted-genesis MicroVM workload asset buildDir to contain a generated Dockerfile');
 	const dockerfileContent = fs.readFileSync(workloadDockerfile, 'utf8');
 	assert.ok(
-		dockerfileContent.includes('FROM public.ecr.aws/lambda/microvms:al2023-minimal'),
-		'expected the workload Dockerfile FROM the AWS-documented Lambda MicroVMs AL2023 minimal container base image',
+		dockerfileContent.includes('FROM alpine:3.20'),
+		'expected the workload Dockerfile FROM a plain container base (alpine:3.20) matching the AWS getting-started plain-base pattern',
 	);
 	assert.ok(
 		dockerfileContent.includes('CMD ["/app/hosted-genesis-microvm-workload"]'),
