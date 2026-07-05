@@ -51,6 +51,8 @@ jobs:
         working-directory: cdk
       - run: npm test
         working-directory: cdk
+      - name: Provision CI deploy-local domain fixture
+        run: bash scripts/ci-deploy-local-fixture.sh
       - run: npm run synth -- -c stage=lab
         working-directory: cdk
 
@@ -152,6 +154,8 @@ jobs:
             cdk/package-lock.json
             contracts/package-lock.json
       - run: pip install slither-analyzer
+      - name: Provision CI deploy-local domain fixture
+        run: bash scripts/ci-deploy-local-fixture.sh
       - run: bash gov-infra/verifiers/gov-verify-rubric.sh
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
