@@ -322,11 +322,17 @@ export function configureHostedGenesisMicrovm(
         // into the guest env); do NOT set it in EnvironmentVariables — the workload
         // reads the service-provided AWS_REGION at runtime.
       ],
-      // NO MicrovmImageHooks, NO MicrovmHooks — see the comment above. The
-      // build env does not reach :8080 for /ready, so no AWS-invoked build-time
-      // hooks. Port stays 8080 (the workload still serves hooks on it at
-      // runtime; AWS does not invoke them at build time).
-      Hooks: { Port: 8080 },
+      // NO MicrovmImageHooks, NO MicrovmHooks, and NO Hooks.Port — see the
+      // comment above. The build env does not reach :8080 for /ready, so no
+      // AWS-invoked build-time hooks. AWS rejects a Hooks config that carries a
+      // Port but no hook groups ("At least one MicroVM hook or MicroVM image
+      // hook must be enabled when the hooks port is specified"), so Hooks is
+      // empty. With no Port specified, Lambda routes inbound runtime traffic to
+      // the default port 8080 (AWS docs: "By default, Lambda routes inbound
+      // traffic to port 8080"), so the workload on :8080 stays reachable via the
+      // runtime endpoint. This matches the getting-started example (no --hooks
+      // → CREATED).
+      Hooks: {},
       // P52 H1: enable CloudWatch logging so a failing image build emits
       // diagnosable logs. The 2026-07-04 lab deploy failed with
       // HostedGenesisMicrovmImage CREATE_FAILED "did not stabilize" and the build
