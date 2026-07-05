@@ -467,6 +467,35 @@ func (s *hookServer) httpServer(addr string) *http.Server {
 // logs the registered hook paths at startup so the build log shows what the app
 // is serving. The *http.Server is provided so graceful Shutdown still drains
 // in-flight requests.
+//
+// Diagnostic instrumentation (deploy #9): the build log showed "listening
+// addr=:8080" + "registered routes prefix=/aws/lambda-microvms/runtime/v1" in
+// BOTH the ready and validate phases, but ZERO "request received" / "unmatched
+// path" / "handler panic" lines — i.e. no inbound HTTP request ever reached the
+// request-logging middleware, in either phase, even though the build progressed
+// from ready to validate. The HTTP middleware only logs PARSED requests: a raw
+// TCP connection that fails HTTP parsing (e.g. a TLS mismatch — the build
+// service calling HTTPS on a plain-HTTP server — or any protocol error)
+// connects but never reaches the handler, so it produces no "request received"
+// line. Equally, if srv.Serve returns silently (a non-ErrServerClosed error is
+// currently returned WITHOUT logging), the app exits, the port closes, the
+// service retries into a timeout, and the log goes quiet after "listening" with
+// no clue why. Three listener-layer diagnostics close that gap:
+//
+//  1. loggingListener wraps the net.Listener so every Accept() logs the remote
+//     address BEFORE the connection is handed to srv.Serve — this is below the
+//     HTTP layer, so even a TLS-mismatch / protocol-error connection is logged.
+//     Accept errors are logged too. Only remote addresses are logged here (no
+//     payloads); payloads are already logged by the catch-all up to logBodyCap.
+//  2. A keepalive goroutine logs "alive" every keepaliveInterval until Serve
+//     returns, proving the app is still running after "listening" (vs. having
+//     exited silently). The ticker is stopped when Serve returns.
+//  3. srv.Serve's return is logged (error string or "<nil>") BEFORE serveWithListener
+//     returns, so a silent Serve exit (and its cause) is visible in the build log.
+//
+// The hook handlers, paths, empty-body tolerance, request-logging middleware,
+// catch-all, and panic recovery are unchanged; this is listener/keepalive/
+// Serve-return logging only.
 func (s *hookServer) serveWithListener(srv *http.Server, addr string) error {
 	logRegisteredRoutes()
 	listener, err := net.Listen("tcp", addr)
@@ -475,10 +504,73 @@ func (s *hookServer) serveWithListener(srv *http.Server, addr string) error {
 		return fmt.Errorf("listen %s: %w", addr, err)
 	}
 	slog.Info(serviceName+": listening", slog.String("addr", addr)) //nolint:gosec // G706: addr is a structured slog attribute (JSON-encoded key/value), not a log format string.
-	if err := srv.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		return err
+
+	// Keepalive heartbeat: prove the app is still alive after "listening". A
+	// silent srv.Serve exit (or a process hang) would otherwise leave the log
+	// quiet with no signal that the app stopped serving. When Serve returns, the
+	// ticker is stopped AND the stop signal is closed, then the goroutine is
+	// awaited so shutdown does not leak it. Note time.Ticker.Stop does NOT close
+	// the ticker's channel, so the goroutine selects on a separate stop signal
+	// (closed by the main path) rather than the ticker channel — closing the
+	// stop signal is what unblocks the goroutine, and the goroutine acknowledges
+	// via keepAliveDone so the main path does not return before it has exited.
+	keepAlive := time.NewTicker(keepaliveInterval)
+	stop := make(chan struct{})
+	keepAliveDone := make(chan struct{})
+	go func() {
+		defer close(keepAliveDone)
+		for {
+			select {
+			case <-keepAlive.C:
+				slog.Info(serviceName + ": alive")
+			case <-stop:
+				return
+			}
+		}
+	}()
+
+	serveErr := srv.Serve(&loggingListener{Listener: listener})
+	keepAlive.Stop()
+	close(stop)
+	<-keepAliveDone
+
+	errString := "<nil>"
+	if serveErr != nil {
+		errString = serveErr.Error()
+	}
+	slog.Info(serviceName+": serve returned", slog.String("error", errString)) //nolint:gosec // G706: errString is a structured slog attribute (JSON-encoded key/value), not a log format string.
+	if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
+		return serveErr
 	}
 	return nil
+}
+
+// keepaliveInterval is the period between "alive" heartbeat log lines. It is
+// short enough that a silent Serve exit (or a process hang) is visible within a
+// fraction of the build's ~120s readyTimeoutInSeconds, and long enough that it
+// does not flood the build log over a full image creation.
+const keepaliveInterval = 10 * time.Second
+
+// loggingListener wraps a net.Listener so every Accept logs the remote address
+// of the inbound TCP connection BEFORE the connection is handed to the HTTP
+// server. This is below the HTTP layer: a connection that fails HTTP parsing
+// (e.g. a TLS mismatch — the build service calling HTTPS on a plain-HTTP server
+// — or any protocol error) still reaches Accept and is logged here, even though
+// it would never produce a "request received" line from the request-logging
+// middleware. Accept errors are logged too. Only remote addresses are logged
+// (no payloads); payloads are already logged by the catch-all up to logBodyCap.
+type loggingListener struct {
+	net.Listener
+}
+
+func (l *loggingListener) Accept() (net.Conn, error) {
+	conn, err := l.Listener.Accept()
+	if err != nil {
+		slog.Error(serviceName+": accept error", slog.String("error", err.Error())) //nolint:gosec // G706: error is a structured slog attribute (JSON-encoded key/value), not a log format string.
+		return nil, err
+	}
+	slog.Info(serviceName+": connection accepted", slog.String("remote", conn.RemoteAddr().String())) //nolint:gosec // G706: remote is a structured slog attribute (JSON-encoded key/value), not a log format string.
+	return conn, nil
 }
 
 // logRegisteredRoutes logs the hook path prefix + the registered hook paths at
