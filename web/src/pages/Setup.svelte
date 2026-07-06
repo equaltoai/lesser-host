@@ -16,6 +16,12 @@
 	import { getChainId, getEthereumProvider, personalSign, requestAccounts } from 'src/lib/wallet/ethereum';
 	import type { Eip1193Provider } from 'src/lib/wallet/ethereum';
 	import {
+		webAuthnCredentials,
+		webAuthnRegisterBegin,
+		webAuthnRegisterFinish,
+	} from 'src/lib/api/webauthn';
+	import { serializeCredentialCreation, toPublicKeyCreationOptions } from 'src/lib/webauthn/client';
+	import {
 		Alert,
 		Button,
 		Card,
@@ -41,6 +47,7 @@
 	let walletAddress = $state<string>('');
 	let walletChainId = $state<number>(Number.parseInt(import.meta.env.VITE_WALLET_CHAIN_ID || '1', 10) || 1);
 	let walletError = $state<string | null>(null);
+	let walletNotice = $state<string | null>(null);
 
 	let setupSessionToken = $state<string>(sessionStorage.getItem(SETUP_SESSION_KEY) || '');
 
@@ -53,6 +60,13 @@
 	let adminLoading = $state(false);
 	let adminError = $state<string | null>(null);
 	let adminChallenge = $state<WalletChallengeResponse | null>(null);
+	let adminSessionToken = $state('');
+	let adminSessionUsername = $state('');
+
+	let passkeyName = $state('Primary admin setup passkey');
+	let passkeyLoading = $state(false);
+	let passkeyError = $state<string | null>(null);
+	let passkeyRegistered = $state(false);
 
 	let finalizeLoading = $state(false);
 	let finalizeError = $state<string | null>(null);
@@ -70,11 +84,43 @@
 		return String(err);
 	}
 
+	function normalizeAddress(addr: string | undefined | null): string {
+		return (addr || '').trim().toLowerCase();
+	}
+
+	function connectedBootstrapWalletMessage(): string | null {
+		const bootstrap = normalizeAddress(status?.bootstrap_wallet_address);
+		const connected = normalizeAddress(walletAddress);
+		if (!bootstrap || !connected || bootstrap !== connected) return null;
+		return 'The bootstrap wallet is one-time setup authority and cannot be the primary admin wallet. Step 2 needs the real primary admin credential.';
+	}
+
+	function clearConnectedWallet(notice: string | null = null) {
+		provider = null;
+		walletAddress = '';
+		walletError = null;
+		walletNotice = notice;
+		bootstrapChallenge = null;
+		adminChallenge = null;
+		adminSessionToken = '';
+		adminSessionUsername = '';
+	}
+
+	function clearAdminSession() {
+		adminSessionToken = '';
+		adminSessionUsername = '';
+		adminChallenge = null;
+	}
+
 	async function refreshStatus() {
 		statusLoading = true;
 		statusError = null;
 		try {
 			status = await getSetupStatus();
+			if (status && !status.locked) {
+				setupSessionToken = '';
+				sessionStorage.removeItem(SETUP_SESSION_KEY);
+			}
 		} catch (err) {
 			statusError = formatError(err);
 		} finally {
@@ -84,6 +130,7 @@
 
 	async function connectWallet() {
 		walletError = null;
+		walletNotice = null;
 
 		const p = getEthereumProvider();
 		if (!p) {
@@ -94,7 +141,11 @@
 		try {
 			provider = p;
 			const accounts = await requestAccounts(p);
-			walletAddress = accounts[0] ? String(accounts[0]) : '';
+			const nextAddress = accounts[0] ? String(accounts[0]) : '';
+			if (normalizeAddress(nextAddress) !== normalizeAddress(walletAddress)) {
+				clearAdminSession();
+			}
+			walletAddress = nextAddress;
 			walletChainId = await getChainId(p);
 		} catch (err) {
 			walletError = formatError(err);
@@ -155,7 +206,9 @@
 			});
 			setupSessionToken = verified.token;
 			sessionStorage.setItem(SETUP_SESSION_KEY, verified.token);
-			bootstrapChallenge = null;
+			clearConnectedWallet(
+				'Bootstrap wallet cleared. Reconnect the real primary admin credential before Step 2.',
+			);
 		} catch (err) {
 			bootstrapError = formatError(err);
 		} finally {
@@ -174,6 +227,11 @@
 		}
 		if (!walletAddress) {
 			adminError = 'Connect the admin wallet first.';
+			return;
+		}
+		const bootstrapMessage = connectedBootstrapWalletMessage();
+		if (bootstrapMessage) {
+			adminError = bootstrapMessage;
 			return;
 		}
 		const username = adminUsername.trim();
@@ -211,6 +269,16 @@
 			adminError = 'Wallet address missing.';
 			return;
 		}
+		const bootstrapMessage = connectedBootstrapWalletMessage();
+		if (bootstrapMessage) {
+			adminError = bootstrapMessage;
+			return;
+		}
+		if (normalizeAddress(adminChallenge.address) !== normalizeAddress(walletAddress)) {
+			adminError = 'Connected wallet changed after the admin challenge was created. Create a new challenge.';
+			adminChallenge = null;
+			return;
+		}
 
 		const username = adminUsername.trim();
 		if (!username) {
@@ -232,11 +300,111 @@
 				},
 			});
 			adminChallenge = null;
+			clearAdminSession();
+			passkeyRegistered = false;
 		} catch (err) {
 			adminError = formatError(err);
 		} finally {
 			adminLoading = false;
 			await refreshStatus();
+		}
+	}
+
+	async function ensureAdminSessionToken(): Promise<string> {
+		if (!status?.primary_admin_set) {
+			throw new Error('Primary admin is not configured yet.');
+		}
+		const username = (status.primary_admin_username || adminUsername).trim();
+		if (!username) {
+			throw new Error('Primary admin username missing.');
+		}
+		if (!provider || !walletAddress) {
+			throw new Error('Connect the primary admin wallet first.');
+		}
+		const bootstrapMessage = connectedBootstrapWalletMessage();
+		if (bootstrapMessage) {
+			throw new Error(bootstrapMessage);
+		}
+		if (adminSessionToken && adminSessionUsername === username) {
+			return adminSessionToken;
+		}
+
+		const challenge = await walletChallenge({ username, address: walletAddress, chainId: walletChainId });
+		const signature = await personalSign(provider, challenge.message, walletAddress);
+		const session = await walletLogin({
+			challengeId: challenge.id,
+			address: walletAddress,
+			signature,
+			message: challenge.message,
+		});
+		if (session.username !== username || session.role !== 'admin') {
+			throw new Error('Primary admin wallet did not return an admin session.');
+		}
+
+		adminSessionToken = session.token;
+		adminSessionUsername = session.username;
+		return session.token;
+	}
+
+	async function refreshPasskeyStatus() {
+		passkeyError = null;
+
+		passkeyLoading = true;
+		try {
+			const token = await ensureAdminSessionToken();
+			const res = await webAuthnCredentials(token);
+			passkeyRegistered = res.credentials.length > 0;
+			if (!passkeyRegistered) {
+				passkeyError = 'No primary admin passkey is registered yet.';
+			}
+		} catch (err) {
+			passkeyError = formatError(err);
+			adminSessionToken = '';
+			adminSessionUsername = '';
+		} finally {
+			passkeyLoading = false;
+		}
+	}
+
+	async function registerPasskey() {
+		passkeyError = null;
+
+		if (!window.PublicKeyCredential || !navigator.credentials) {
+			passkeyError = 'Passkeys are not supported in this browser.';
+			return;
+		}
+
+		passkeyLoading = true;
+		try {
+			const token = await ensureAdminSessionToken();
+			const begin = await webAuthnRegisterBegin(token);
+			const options = toPublicKeyCreationOptions(begin.publicKey);
+			const credential = (await navigator.credentials.create({
+				publicKey: options,
+			})) as Credential | null;
+
+			if (!credential) {
+				passkeyError = 'No credential returned.';
+				return;
+			}
+			if (!(credential instanceof PublicKeyCredential)) {
+				passkeyError = 'Unexpected credential type.';
+				return;
+			}
+
+			const response = serializeCredentialCreation(credential);
+			await webAuthnRegisterFinish(token, {
+				challenge: begin.challenge,
+				response,
+				credential_name: passkeyName.trim() || 'Primary admin setup passkey',
+			});
+			passkeyRegistered = true;
+		} catch (err) {
+			passkeyError = formatError(err);
+			adminSessionToken = '';
+			adminSessionUsername = '';
+		} finally {
+			passkeyLoading = false;
 		}
 	}
 
@@ -251,8 +419,17 @@
 			finalizeError = 'Primary admin is not configured yet.';
 			return;
 		}
+		if (!passkeyRegistered) {
+			finalizeError = 'Register the primary admin passkey in Step 3 before finalizing.';
+			return;
+		}
 		if (!provider || !walletAddress) {
 			finalizeError = 'Connect the primary admin wallet first.';
+			return;
+		}
+		const bootstrapMessage = connectedBootstrapWalletMessage();
+		if (bootstrapMessage) {
+			finalizeError = bootstrapMessage;
 			return;
 		}
 		if (!finalizeAckLock || !finalizeAckBackup || finalizeConfirm.trim().toUpperCase() !== 'FINALIZE') {
@@ -268,18 +445,14 @@
 
 		finalizeLoading = true;
 		try {
-			const challenge = await walletChallenge({ username, address: walletAddress, chainId: walletChainId });
-			const signature = await personalSign(provider, challenge.message, walletAddress);
-			const session = await walletLogin({
-				challengeId: challenge.id,
-				address: walletAddress,
-				signature,
-				message: challenge.message,
-			});
-
-			await setupFinalize(session.token);
+			const token = await ensureAdminSessionToken();
+			await setupFinalize(token);
+			setupSessionToken = '';
+			sessionStorage.removeItem(SETUP_SESSION_KEY);
 		} catch (err) {
 			finalizeError = formatError(err);
+			adminSessionToken = '';
+			adminSessionUsername = '';
 		} finally {
 			finalizeLoading = false;
 			await refreshStatus();
@@ -288,15 +461,18 @@
 
 	const step1Complete = $derived(Boolean(setupSessionToken));
 	const step2Complete = $derived(Boolean(status?.primary_admin_set));
-	const step3Complete = $derived(Boolean(status && !status.locked));
+	const step3Complete = $derived(passkeyRegistered);
+	const step4Complete = $derived(Boolean(status && !status.locked));
 
 	const statusLocked = $derived.by(() => Boolean(status?.locked));
+	const connectedWalletIsBootstrap = $derived.by(() => Boolean(connectedBootstrapWalletMessage()));
 
 	const activeStep = $derived.by(() => {
-		if (step3Complete) return 0;
+		if (step4Complete) return 0;
 		if (!step1Complete) return 1;
 		if (!step2Complete) return 2;
-		return 3;
+		if (!step3Complete) return 3;
+		return 4;
 	});
 
 	onMount(() => {
@@ -382,6 +558,17 @@
 						{#if walletError}
 							<Alert variant="error" title="Wallet error">{walletError}</Alert>
 						{/if}
+						{#if walletNotice}
+							<Alert variant="info" title="Wallet reconnect required">{walletNotice}</Alert>
+						{/if}
+						{#if connectedWalletIsBootstrap && step1Complete}
+							<Alert variant="warning" title="Bootstrap wallet cannot be admin">
+								<Text size="sm">
+									The bootstrap wallet is one-time setup authority. Step 2 needs the real primary admin
+									credential; reconnect that wallet before creating the admin.
+								</Text>
+							</Alert>
+						{/if}
 
 						<DefinitionList>
 							<DefinitionItem label="Connected address" monospace>{walletAddress || '—'}</DefinitionItem>
@@ -407,8 +594,13 @@
 						/>
 						<StepIndicator
 							number={3}
-							label="Finalize"
+							label="Register passkey"
 							state={step3Complete ? 'completed' : activeStep === 3 ? 'active' : 'pending'}
+						/>
+						<StepIndicator
+							number={4}
+							label="Finalize"
+							state={step4Complete ? 'completed' : activeStep === 4 ? 'active' : 'pending'}
 						/>
 					</div>
 
@@ -418,7 +610,8 @@
 						{/snippet}
 
 						<Text size="sm" color="secondary">
-							This verifies the configured bootstrap wallet and creates a short-lived setup session.
+							This verifies the configured bootstrap wallet and creates a short-lived setup session. The
+							bootstrap wallet is one-time setup authority only; it cannot become the primary admin wallet.
 						</Text>
 
 						<div class="setup__row">
@@ -444,7 +637,10 @@
 
 						{#if step1Complete}
 							<Alert variant="success" title="Setup session created">
-								<Text size="sm">Setup session token stored in sessionStorage for this tab.</Text>
+								<Text size="sm">
+									Setup session token stored in sessionStorage for this tab. Reconnect the real primary
+									admin credential for Step 2.
+								</Text>
 							</Alert>
 						{:else if bootstrapChallenge}
 							<Alert variant="info" title="Signature required">
@@ -465,8 +661,18 @@
 							</Alert>
 						{:else}
 							<Text size="sm" color="secondary">
-								This creates the primary admin operator user and links the connected wallet.
+								This creates the primary admin operator user and links the connected wallet. Use the real
+								primary admin credential here, not the one-time bootstrap wallet.
 							</Text>
+
+							{#if connectedWalletIsBootstrap}
+								<Alert variant="warning" title="Reconnect primary admin credential">
+									<Text size="sm">
+										The connected wallet is the bootstrap wallet. It is one-time setup authority and cannot
+										be linked as the primary admin wallet.
+									</Text>
+								</Alert>
+							{/if}
 
 							<div class="setup__form">
 								<TextField label="Username" bind:value={adminUsername} required />
@@ -477,14 +683,14 @@
 								<Button
 									variant="outline"
 									onclick={() => void beginAdminChallenge()}
-									disabled={adminLoading || !step1Complete}
+									disabled={adminLoading || !step1Complete || connectedWalletIsBootstrap}
 								>
 									Create challenge
 								</Button>
 								<Button
 									variant="solid"
 									onclick={() => void createAdmin()}
-									disabled={adminLoading || !step1Complete || !adminChallenge}
+									disabled={adminLoading || !step1Complete || connectedWalletIsBootstrap || !adminChallenge}
 								>
 									Sign & create admin
 								</Button>
@@ -507,7 +713,71 @@
 
 					<Card variant="outlined" padding="lg">
 						{#snippet header()}
-							<Heading level={2} size="xl">Step 3 — Finalize</Heading>
+							<Heading level={2} size="xl">Step 3 — Register primary admin passkey</Heading>
+						{/snippet}
+
+						{#if !status.primary_admin_set}
+							<Alert variant="info" title="Create admin first">
+								<Text size="sm">Create the primary admin in Step 2 before registering a passkey.</Text>
+							</Alert>
+						{:else}
+							<Text size="sm" color="secondary">
+								Register an explicit passkey for the primary admin before finalize. The existing WebAuthn
+								APIs require signing in as the primary admin wallet, so keep the real admin wallet connected.
+							</Text>
+
+							{#if connectedWalletIsBootstrap}
+								<Alert variant="warning" title="Reconnect primary admin credential">
+									<Text size="sm">
+										The bootstrap wallet is one-time setup authority. Reconnect the real primary admin
+										credential before checking or registering passkeys.
+									</Text>
+								</Alert>
+							{/if}
+
+							<div class="setup__form">
+								<TextField label="Passkey name" bind:value={passkeyName} />
+							</div>
+
+							<div class="setup__row">
+								<Button
+									variant="outline"
+									onclick={() => void refreshPasskeyStatus()}
+									disabled={passkeyLoading || !status.primary_admin_set || connectedWalletIsBootstrap}
+								>
+									Check passkeys
+								</Button>
+								<Button
+									variant="solid"
+									onclick={() => void registerPasskey()}
+									disabled={passkeyLoading || !status.primary_admin_set || connectedWalletIsBootstrap}
+								>
+									Register passkey
+								</Button>
+							</div>
+
+							{#if passkeyLoading}
+								<div class="setup__loading">
+									<Spinner size="sm" />
+									<Text size="sm">Waiting for passkey…</Text>
+								</div>
+							{/if}
+
+							{#if passkeyError}
+								<Alert variant="error" title="Passkey setup failed">{passkeyError}</Alert>
+							{/if}
+
+							{#if passkeyRegistered}
+								<Alert variant="success" title="Primary admin passkey ready">
+									<Text size="sm">Finalize is now available for the primary admin.</Text>
+								</Alert>
+							{/if}
+						{/if}
+					</Card>
+
+					<Card variant="outlined" padding="lg">
+						{#snippet header()}
+							<Heading level={2} size="xl">Step 4 — Finalize</Heading>
 						{/snippet}
 
 						<Text size="sm" color="secondary">
@@ -534,7 +804,7 @@
 							<Button
 								variant="solid"
 								onclick={() => void finalizeSetup()}
-								disabled={finalizeLoading || !status.primary_admin_set}
+								disabled={finalizeLoading || !status.primary_admin_set || !step3Complete || connectedWalletIsBootstrap}
 							>
 								Sign in & finalize
 							</Button>

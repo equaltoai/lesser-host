@@ -57,8 +57,20 @@ aws ssm get-parameter \
   --output text | jq -r '.private_key'
 ```
 
-After importing the key, open `/setup`, sign the bootstrap challenge once, create the primary admin,
-and finalize setup. The bootstrap wallet is not a long-term operator identity.
+After importing the key, open `/setup` and sign the bootstrap challenge once. The UI clears the
+connected bootstrap wallet after that verification. Reconnect the real primary admin credential,
+create the primary admin, register a primary admin passkey, and then finalize setup.
+
+The bootstrap wallet is one-time setup authority only. It must not be reused as the primary admin
+wallet, and `/setup/admin` rejects attempts to link the configured bootstrap wallet as the primary
+admin credential.
+
+If a lab environment was already finalized with the bootstrap wallet as the primary admin, treat that
+environment as mis-bootstrapped: do not promote it to live. Use the existing admin session to add a
+real admin credential/passkey if possible, then rotate ownership away from the bootstrap wallet; if
+that cannot be proven cleanly, rebuild the lab control-plane state and rerun setup with a separate
+primary admin wallet. Do not reuse or publish the SSM-stored bootstrap private key as an operator
+credential.
 
 ## Manual override
 
