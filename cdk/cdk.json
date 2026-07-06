@@ -2,23 +2,15 @@
   "app": "node dist/bin/lesser-host.js",
   "context": {
     "@aws-cdk/core:newStyleStackSynthesis": true,
-
-    "webRootDomain": "lesser.host",
-    "webHostedZoneId": "",
-    "webHostedZoneName": "lesser.host",
-
     "bootstrapWalletAddress": "<YOUR_BOOTSTRAP_WALLET_ADDRESS>",
-
     "tipEnabledLab": "true",
     "tipChainIdLab": "11155111",
     "tipContractAddressLab": "<YOUR_TIP_CONTRACT_ADDRESS_LAB>",
     "tipRpcUrlSsmParamLab": "/lesser-host/api/infura/sepolia",
-
     "tipEnabledLive": "false",
     "tipChainIdLive": "1",
     "tipContractAddressLive": "",
     "tipRpcUrlSsmParamLive": "/lesser-host/api/infura/mainnet",
-
     "soulEnabledLab": "true",
     "soulChainIdLab": "11155111",
     "soulRegistryContractAddressLab": "<YOUR_SOUL_REGISTRY_CONTRACT_ADDRESS_LAB>",
@@ -26,35 +18,28 @@
     "soulValidationAttestationContractAddressLab": "<YOUR_SOUL_VALIDATION_ATTESTATION_CONTRACT_ADDRESS_LAB>",
     "soulRpcUrlSsmParamLab": "/lesser-host/api/infura/sepolia",
     "soulEmailInboundDomainLab": "lab.lessersoul.ai",
-
     "soulEnabledLive": "true",
     "soulChainIdLive": "8453",
     "soulRegistryContractAddressLive": "",
     "soulRpcUrlSsmParamLive": "",
     "soulEmailInboundDomainLive": "inbound.lessersoul.ai",
-
     "soulMintSignerKeySsmParamLab": "/lesser-host/soul/lab/mint-signer-key",
     "soulMintSignerKeySsmParamLive": "/lesser-host/soul/live/mint-signer-key",
-
     "ensGatewayEnabledLab": "true",
     "ensGatewayEnabledLive": "false",
     "ensGatewayRootName": "lessersoul.eth",
     "ensGatewayResolverAddressLab": "<YOUR_SEPOLIA_ENS_GATEWAY_RESOLVER_ADDRESS_LAB>",
     "ensGatewayResolverAddressLive": "<YOUR_MAINNET_ENS_GATEWAY_RESOLVER_ADDRESS_LIVE>",
     "ensGatewayTtlSeconds": "300",
-
     "soulAdminSafeAddress": "<YOUR_SOUL_ADMIN_SAFE_ADDRESS>",
     "soulTxMode": "safe",
     "soulSupportedCapabilities": "social,commerce",
-
     "tipAdminSafeAddress": "<YOUR_TIP_ADMIN_SAFE_ADDRESS>",
     "tipDefaultHostWalletAddress": "<YOUR_TIP_DEFAULT_HOST_WALLET_ADDRESS>",
     "tipDefaultHostFeeBps": "500",
     "tipTxMode": "safe",
-
     "webauthnRpId": "lesser.host",
     "webauthnOrigins": "https://lab.lesser.host,https://lesser.host",
-
     "managedProvisioningEnabled": "true",
     "managedOrgVendingRoleArn": "",
     "managedOrgVendingRoleName": "lesser-host-org-vending",

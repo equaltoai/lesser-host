@@ -95,12 +95,22 @@ If you change:
 `theory app up` and `theory app down` read the file:
 - `app-theory/app.json`
 
-That contract defines:
+The theory-cli schema-1 deployment fields remain:
 - `schema`: contract version
-- `frameworks`: pinned destination details (AppTheory + TableTheory)
 - `cdk.dir`: repo-relative CDK directory
 - `cdk.up`: deploy command (expects stage and AWS profile at runtime)
 - `cdk.down`: destroy command (expects stage and AWS profile at runtime)
+
+lesser-host also reads its repo-specific deploy config from the same file, under:
+- `lesserHost.webDomain.<stage>.rootDomain`
+- `lesserHost.webDomain.<stage>.hostedZoneId`
+- `lesserHost.webDomain.<stage>.hostedZoneName`
+
+The theory CLI ignores unknown top-level schema-1 keys, but the host CDK app treats `lesserHost.webDomain` as the
+AppTheory app-up source of truth for web custom-domain config. Do not move these values to `cdk/cdk.json`,
+`cdk/cdk.context.local.json`, environment variables, CLI context overrides, or untracked sidecar files. Missing,
+invalid, or placeholder-like active-stage domain config fails closed during synth before any CloudFormation mutation. The
+pinned framework docs remain in this bootstrap plan, not in the deploy contract.
 
 ### Using the contract with `theory app up/down`
 
@@ -119,6 +129,6 @@ That contract defines:
 Copy/paste examples:
 
 ```bash
-theory app up --aws-profile my-profile --stage lab
-AWS_PROFILE=my-profile theory app down --stage live
+theory app up --aws-profile my-profile --stage lab --execute
+AWS_PROFILE=my-profile theory app down --stage live --execute
 ```

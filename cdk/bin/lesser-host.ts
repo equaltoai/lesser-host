@@ -116,4 +116,8 @@ const region =
 	undefined;
 const env = account || region ? { account, region } : undefined;
 
-new LesserHostStack(app, `lesser-host-${stage}`, { stage, env });
+new LesserHostStack(app, `lesser-host-${stage}`, {
+	stage,
+	env,
+	appConfigPath: path.join(cdkDir(), '..', 'app-theory', 'app.json'),
+});

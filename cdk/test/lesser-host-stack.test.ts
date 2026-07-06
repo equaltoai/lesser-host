@@ -7,7 +7,7 @@ import test from 'node:test';
 
 import * as cdk from 'aws-cdk-lib';
 
-import { LesserHostStack, shouldUseLocalWebBundling } from '../lib/lesser-host-stack';
+import { shouldUseLocalWebBundling } from '../lib/lesser-host-stack';
 import {
 	LAB_ENS_GATEWAY_CHAIN_ID,
 	LAB_ENS_GATEWAY_CHAIN_NAME,
@@ -38,9 +38,13 @@ import {
 	lambdaEnvironment,
 	runDependencyCycleValidator,
 	synthTemplate,
+	synthesizeTemplate,
 	synthTemplateForStage,
 	synthTemplateForStageWithCdkJsonContext,
 	synthTemplateWithContext,
+	testWebHostedZoneId,
+	webStackEnv,
+	writeTestAppTheoryConfig,
 } from './_lesser-host-test-helpers';
 
 process.env.GOTOOLCHAIN = process.env.GOTOOLCHAIN || 'auto';
@@ -733,7 +737,6 @@ test('deploy template placeholder guard accepts sanitized synthesized templates'
 	const fixture = writeTemplateGuardFixture(synthTemplateWithContext({
 		managedOrgVendingRoleArn: 'arn:aws:iam::<YOUR_ORG_ACCOUNT_ID>:role/lesser-host-org-vending',
 		managedParentHostedZoneId: '<YOUR_MANAGED_PARENT_HOSTED_ZONE_ID>',
-		webHostedZoneId: '<YOUR_HOSTED_ZONE_ID>',
 	}));
 	try {
 		const result = runDeployTemplatePlaceholderGuard(fixture.path);
@@ -766,7 +769,7 @@ test('deploy template placeholder guard rejects placeholder org vending env wiri
 	}
 });
 
-test('live synthesizes lesser.host by default without local webHostedZoneId context', () => {
+test('live synthesizes lesser.host from AppTheory app.json web-domain config', () => {
 	const template = synthTemplateForStage('live');
 	const config = distributionConfig(template) as DistributionConfig & { Aliases?: unknown; ViewerCertificate?: Record<string, unknown> };
 	assert.deepEqual(config.Aliases, ['lesser.host']);
@@ -790,6 +793,48 @@ test('live synthesizes lesser.host by default without local webHostedZoneId cont
 		assert.match(result.stderr, /preserves lesser\.host CloudFront alias/);
 	} finally {
 		fixture.cleanup();
+	}
+});
+
+test('AppTheory app.json web-domain config fails closed when file or active stage config is missing', () => {
+	const dir = mkdtempSync(join(tmpdir(), 'lesser-host-domain-config-'));
+	try {
+		const missingPath = join(dir, 'app.json');
+		assert.throws(
+			() => synthesizeTemplate('lab', {}, 'TestMissingAppTheoryWebDomain', { env: webStackEnv, appConfigPath: missingPath }),
+			/error: missing app-theory\/app\.json.*lesserHost\.webDomain\.lab\.\{rootDomain,hostedZoneId,hostedZoneName\}.*AppTheory app-up source of truth.*no fallback/s,
+		);
+
+		const noLabStagePath = join(dir, 'app.no-lab.json');
+		writeFileSync(noLabStagePath, `${JSON.stringify({
+			schema: 1,
+			lesserHost: {
+				webDomain: {
+					live: { rootDomain: 'lesser.host', hostedZoneId: testWebHostedZoneId, hostedZoneName: 'lesser.host' },
+				},
+			},
+			cdk: { dir: 'cdk', up: 'exec ../scripts/app-theory-cdk.sh up {{STAGE}} # {{AWS_PROFILE}}', down: 'exec ../scripts/app-theory-cdk.sh down {{STAGE}} # {{AWS_PROFILE}}' },
+		}, null, 2)}\n`);
+		assert.throws(
+			() => synthesizeTemplate('lab', {}, 'TestMissingStageAppTheoryWebDomain', { env: webStackEnv, appConfigPath: noLabStagePath }),
+			/missing lesserHost\.webDomain\.lab entry.*app-theory\/app\.json/s,
+		);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test('AppTheory app.json web-domain config rejects empty hosted-zone id', () => {
+	const dir = mkdtempSync(join(tmpdir(), 'lesser-host-domain-config-'));
+	try {
+		const invalidPath = join(dir, 'app.invalid.json');
+		writeTestAppTheoryConfig(invalidPath, { hostedZoneId: '' });
+		assert.throws(
+			() => synthesizeTemplate('lab', {}, 'TestInvalidAppTheoryWebDomain', { env: webStackEnv, appConfigPath: invalidPath }),
+			/lesserHost\.webDomain\.lab\.hostedZoneId is required.*no fallback/s,
+		);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
 	}
 });
 
@@ -824,7 +869,7 @@ test('live custom-domain deploy guard remains a backstop for broken domain resol
 		const result = runLiveDomainTemplateGuard('live', fixture.path);
 		assert.notEqual(result.status, 0, 'expected broken live template to fail live custom-domain guard');
 		assert.doesNotMatch(result.stderr, /cdk\/cdk\.context\.local\.json/);
-		assert.match(result.stderr, /domain resolution is broken or AWS hosted-zone lookup\/profile access is unavailable/);
+		assert.match(result.stderr, /domain resolution is broken or AppTheory app\.json web-domain config is invalid or unavailable/);
 		assert.match(result.stderr, /missing Aliases entry lesser\.host/);
 		assert.match(result.stderr, /missing Route53 apex A record/);
 		assert.match(result.stderr, /PUBLIC_BASE_URL/);
@@ -834,12 +879,12 @@ test('live custom-domain deploy guard remains a backstop for broken domain resol
 	}
 });
 
-test('live custom-domain deploy guard accepts explicit diagnostic hosted-zone context', () => {
-	const template = synthTemplateForStage('live', {
-		webHostedZoneId: 'ZEXPLICITLESSERHOST',
-		webHostedZoneName: 'lesser.host',
-	});
-	assert.ok(findResources(template, 'AWS::Route53::RecordSet').some((record) => record.HostedZoneId === 'ZEXPLICITLESSERHOST'));
+test('live custom-domain deploy guard accepts the AppTheory app.json hosted zone', () => {
+	const template = synthTemplateForStage('live');
+	assert.ok(
+		findResources(template, 'AWS::Route53::RecordSet').some((record) => record.HostedZoneId === testWebHostedZoneId),
+		'expected Route53 records to bind to the AppTheory app.json hosted zone fixture',
+	);
 	const fixture = writeTemplateGuardFixture(template);
 	try {
 		const result = runLiveDomainTemplateGuard('live', fixture.path);

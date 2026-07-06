@@ -15,18 +15,39 @@ import { join } from 'node:path';
 
 import * as cdk from 'aws-cdk-lib';
 
-import { LesserHostStack } from '../lib/lesser-host-stack';
+import { LesserHostStack, type LesserHostStackProps } from '../lib/lesser-host-stack';
 
 process.env.GOTOOLCHAIN = process.env.GOTOOLCHAIN || 'auto';
 
 const webLookupAccount = '123456789012';
 const webLookupRegion = 'us-east-1';
-const webLookupHostedZoneId = 'ZEXAMPLELESSERHOST';
-const webLookupContextKey = `hosted-zone:account=${webLookupAccount}:domainName=lesser.host:privateZone=false:region=${webLookupRegion}`;
-export const webLookupContext = {
-	[webLookupContextKey]: { Id: `/hostedzone/${webLookupHostedZoneId}`, Name: 'lesser.host.' },
-};
+export const testWebRootDomain = 'lesser.host';
+export const testWebHostedZoneId = 'ZTESTLOCALDOMAIN0001';
+export const webLookupContext = {};
 export const webStackEnv = { account: webLookupAccount, region: webLookupRegion };
+
+export function writeTestAppTheoryConfig(
+	configPath: string,
+	overrides: Partial<{ rootDomain: string; hostedZoneId: string; hostedZoneName: string }> = {},
+): void {
+	const rootDomain = overrides.rootDomain ?? testWebRootDomain;
+	const hostedZoneId = overrides.hostedZoneId ?? testWebHostedZoneId;
+	const hostedZoneName = overrides.hostedZoneName ?? rootDomain;
+	writeFileSync(configPath, `${JSON.stringify({
+		schema: 1,
+		lesserHost: {
+			webDomain: {
+				lab: { rootDomain, hostedZoneId, hostedZoneName },
+				live: { rootDomain, hostedZoneId, hostedZoneName },
+			},
+		},
+		cdk: {
+			dir: 'cdk',
+			up: 'exec ../scripts/app-theory-cdk.sh up {{STAGE}} # {{AWS_PROFILE}}',
+			down: 'exec ../scripts/app-theory-cdk.sh down {{STAGE}} # {{AWS_PROFILE}}',
+		},
+	}, null, 2)}\n`);
+}
 
 export function hostedGenesisMicrovmContext(_stage = 'lab'): Record<string, string> {
 	// P52 H1 step 2 (F1): the hosted-genesis MicroVM path takes NO caller-supplied
@@ -47,14 +68,23 @@ export type SynthesizedTemplate = {
 
 let synthesizedTemplate: SynthesizedTemplate | undefined;
 
-export function synthesizeTemplate(stage: string, context: Record<string, unknown>, stackId: string, props: cdk.StackProps = {}): SynthesizedTemplate {
+export function synthesizeTemplate(
+	stage: string,
+	context: Record<string, unknown>,
+	stackId: string,
+	props: Omit<LesserHostStackProps, 'stage'> = {},
+): SynthesizedTemplate {
 	// Full LesserHostStack synthesis stages web assets. Keep each test synth in
 	// its own short-lived outdir so repeated assertions cannot accumulate
 	// copied web/CDK asset directories and exhaust hosted runner disk.
 	const outdir = mkdtempSync(join(tmpdir(), 'lesser-host-cdk-test-'));
 	try {
+		const appConfigPath = props.appConfigPath ?? join(outdir, 'app.json');
+		if (!props.appConfigPath) {
+			writeTestAppTheoryConfig(appConfigPath);
+		}
 		const app = new cdk.App({ context, outdir });
-		const stack = new LesserHostStack(app, stackId, { stage, ...props });
+		const stack = new LesserHostStack(app, stackId, { stage, ...props, appConfigPath });
 		const assembly = app.synth();
 		const artifact = assembly.getStackArtifact(stack.artifactId);
 		return JSON.parse(readFileSync(artifact.templateFullPath, 'utf8')) as SynthesizedTemplate;
