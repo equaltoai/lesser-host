@@ -51,7 +51,7 @@ jobs:
         working-directory: cdk
       - run: npm test
         working-directory: cdk
-      - run: npm run synth -- -c stage=lab
+      - run: npm run synth -- -c stage=lab --quiet
         working-directory: cdk
 
   contracts-compile:

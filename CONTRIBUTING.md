@@ -15,15 +15,26 @@ Git branch `staging` is not a deploy stage. Deploy stages remain `lab -> live` t
 - CDK: `cd cdk && npm ci && npm run synth`
 - Contracts: `cd contracts && npm ci && npm test`
 
-## Operational values (CDK context)
+## Operator-local deploy configuration
 
-Operational deployment values (account IDs, hosted zone IDs, contract addresses, etc) are intentionally not tracked in
-git.
+Use the AppTheory deploy contract for deploys. `app-theory/app.json` is the source of truth for the standard
+lesser-host web custom-domain binding used by `theory app up/down`; CDK reads
+`lesserHost.webDomain.<stage>.{rootDomain,hostedZoneId,hostedZoneName}` from that file and fails closed if the active
+stage entry is missing, placeholder-like, or invalid. Do not move web domain values into `cdk/cdk.json`,
+`cdk/cdk.context.local.json`, environment variables, CLI context overrides, or a sidecar file.
+
+`cdk/cdk.context.local.json` remains the operator-local home for non-domain CDK context overrides such as contract
+addresses, managed provisioning account/bootstrap values, and local operator placeholders:
 
 - Copy `cdk/cdk.context.local.json.example` to `cdk/cdk.context.local.json`
-- Fill in your real values locally
+- Fill in your real non-domain values locally
 
-The CDK apps will automatically merge values from `cdk/cdk.context.local.json` at synth time.
+The CDK app automatically merges values from `cdk/cdk.context.local.json` at synth time for those non-domain settings.
+After local non-domain context is prepared, deploy through the AppTheory contract:
+
+```bash
+theory app up --aws-profile my-profile --stage lab --execute
+```
 
 ## Secrets
 

@@ -2,7 +2,6 @@
   "context": {
     "managedOrgVendingRoleArn": "",
     "orgBootstrapControlPlaneAccountId": "<YOUR_CONTROL_PLANE_ACCOUNT_ID>",
-    "webHostedZoneId": "",
     "managedParentHostedZoneId": "",
     "managedAccountEmailTemplateLab": "<YOUR_EMAIL>+lab-{slug}@<YOUR_DOMAIN>",
     "managedAccountEmailTemplateLive": "<YOUR_EMAIL>+{slug}@<YOUR_DOMAIN>",

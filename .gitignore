@@ -20,6 +20,7 @@ contracts/artifacts/
 contracts/cache/
 cdk/cdk.out/
 cdk/cdk.context.local.json
+cdk/*-outputs.json
 cdk/dist/
 cdk/.build/
 cdk/**/.build/
@@ -45,6 +46,7 @@ gov-infra/evidence/gov-rubric-report.json
 # git/logs/fixtures/CloudFormation outputs). Read by the lab gate as a credential,
 # not system config; system config comes from the CDK outputs file.
 scripts/.lab-e2e-instance-key
+
 
 # Deployment manifests and operational logs (environment-specific)
 docs/deployments/*

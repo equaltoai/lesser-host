@@ -13,16 +13,22 @@ Preparation steps before making the repository public. Organized by priority.
 
 ---
 
-## 1. Extract operational values from cdk/cdk.json
+## 1. Keep deployment config in the correct tracked/local surfaces
 
-`cdk/cdk.json` contains real AWS account IDs, Route53 zone IDs, wallet addresses, and personal email templates that are used for deployment but should not be in a public repo.
+Tracked CDK defaults must not contain real AWS account IDs, wallet addresses, personal email templates, or Route53 web
+domain fallbacks. The standard lesser-host web custom-domain binding is intentionally sourced from
+`app-theory/app.json` (`lesserHost.webDomain.<stage>.{rootDomain,hostedZoneId,hostedZoneName}`) because `theory app
+up/down` is the deploy contract. Do not duplicate those values in `cdk/cdk.json`, `cdk/cdk.context.local.json`,
+environment variables, CLI context overrides, or sidecar files.
 
 ### Steps
 
-1. Create `cdk/cdk.context.local.json` with the operational values extracted from `cdk/cdk.json`:
+1. Keep the web domain source of truth in `app-theory/app.json` and verify the active stage entries are valid and
+   non-placeholder-like.
+
+2. Create `cdk/cdk.context.local.json` with the non-domain operational values extracted from `cdk/cdk.json`:
    - `managedOrgVendingRoleArn` (contains org account ID)
    - `orgBootstrapControlPlaneAccountId` (`<CONTROL_PLANE_ACCOUNT_ID>`)
-   - `webHostedZoneId` (`<HOSTED_ZONE_ID>`)
    - `managedParentHostedZoneId` (`<MANAGED_PARENT_HOSTED_ZONE_ID>`)
    - `managedAccountEmailTemplateLab` (contains `<YOUR_EMAIL>`)
    - `managedAccountEmailTemplateLive` (contains `<YOUR_EMAIL>`)
@@ -35,23 +41,25 @@ Preparation steps before making the repository public. Organized by priority.
    - `tipAdminSafeAddress`
    - `tipDefaultHostWalletAddress`
 
-2. Add `cdk/cdk.context.local.json` to `.gitignore`
+3. Add `cdk/cdk.context.local.json` to `.gitignore`.
 
-3. Update CDK stack to merge values from `cdk.context.local.json` at synth time (or use environment variables)
+4. Update CDK stack to merge non-domain values from `cdk.context.local.json` at synth time and read web domain values
+   only from `app-theory/app.json`.
 
-4. Replace extracted values in `cdk/cdk.json` with descriptive placeholders:
+5. Replace extracted non-domain values in `cdk/cdk.json` with descriptive placeholders:
    ```json
    "orgBootstrapControlPlaneAccountId": "<YOUR_CONTROL_PLANE_ACCOUNT_ID>",
    "managedOrgVendingRoleArn": "arn:aws:iam::<YOUR_ORG_ACCOUNT_ID>:role/lesser-host-org-vending",
-   "webHostedZoneId": "<YOUR_HOSTED_ZONE_ID>",
    "managedAccountEmailTemplateLab": "<YOUR_EMAIL>+lab-{slug}@<YOUR_DOMAIN>",
    ```
 
-5. Create `cdk/cdk.context.local.json.example` with the same keys and placeholder values for reference
+6. Create `cdk/cdk.context.local.json.example` with placeholder values for reference.
 
 ### Verification
-- `cdk synth` still works with local config present
-- `cdk/cdk.json` contains no real account IDs, zone IDs, or personal emails
+- `theory app up/down` remains the deploy path; do not require direct CDK deploy commands
+- `cdk synth` still works with app.json domain config and local non-domain context present
+- `cdk/cdk.json` contains no real account IDs, web hosted-zone values, wallet addresses, or personal emails
+- `app-theory/app.json` owns web domain config; no sidecar file is required
 - `cdk/cdk.context.local.json` is gitignored
 
 ---
