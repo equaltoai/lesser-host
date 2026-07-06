@@ -601,8 +601,8 @@ func (s *Server) handleSetupCreateAdmin(ctx *apptheory.Context) (*apptheory.Resp
 		return nil, appErr
 	}
 
-	if appErr := s.rejectBootstrapWalletAsSetupAdmin(req.Wallet.Address); appErr != nil {
-		return nil, appErr
+	if bootstrapAdminErr := s.rejectBootstrapWalletAsSetupAdmin(req.Wallet.Address); bootstrapAdminErr != nil {
+		return nil, bootstrapAdminErr
 	}
 
 	adminWalletAddr, chainID, appErr := s.verifySetupCreateAdminWallet(ctx, req.Username, req.Wallet)
