@@ -66,6 +66,14 @@ func TestHandleCreateGeneratesAndOverwritesStackOwnedParameter(t *testing.T) {
 		t.Fatalf("handle(Create) error = %v", err)
 	}
 
+	input := requireStackOwnedCreatePut(t, ssmClient, handler.paramName)
+	payload := requireStoredWalletPayload(t, input)
+	assertCreateResponse(t, resp, handler.paramName, input, payload)
+}
+
+func requireStackOwnedCreatePut(t *testing.T, ssmClient *fakeSSM, paramName string) *ssm.PutParameterInput {
+	t.Helper()
+
 	if len(ssmClient.getInputs) != 0 {
 		t.Fatalf("Create must not read/reuse a stale SSM value")
 	}
@@ -73,7 +81,7 @@ func TestHandleCreateGeneratesAndOverwritesStackOwnedParameter(t *testing.T) {
 		t.Fatalf("PutParameter calls = %d, want 1", len(ssmClient.putInputs))
 	}
 	input := ssmClient.putInputs[0]
-	if input.Name == nil || *input.Name != handler.paramName {
+	if input.Name == nil || *input.Name != paramName {
 		t.Fatalf("PutParameter name = %v", input.Name)
 	}
 	if input.Type != types.ParameterTypeSecureString {
@@ -85,17 +93,35 @@ func TestHandleCreateGeneratesAndOverwritesStackOwnedParameter(t *testing.T) {
 	if input.Value == nil || strings.TrimSpace(*input.Value) == "" {
 		t.Fatalf("PutParameter value missing")
 	}
+	return input
+}
+
+func requireStoredWalletPayload(t *testing.T, input *ssm.PutParameterInput) walletPayload {
+	t.Helper()
 
 	var payload walletPayload
-	if err := json.Unmarshal([]byte(*input.Value), &payload); err != nil {
-		t.Fatalf("stored payload is not JSON: %v", err)
+	if unmarshalErr := json.Unmarshal([]byte(*input.Value), &payload); unmarshalErr != nil {
+		t.Fatalf("stored payload is not JSON: %v", unmarshalErr)
 	}
-	if payload.PrivateKey == "" || payload.Address == "" {
+	if payload.privateKey == "" || payload.address == "" {
 		t.Fatalf("stored payload missing private key or address")
 	}
-	if !common.IsHexAddress(payload.Address) {
-		t.Fatalf("stored address %q is not an EVM address", payload.Address)
+	if !common.IsHexAddress(payload.address) {
+		t.Fatalf("stored address %q is not an EVM address", payload.address)
 	}
+	derived, err := addressFromPayload([]byte(*input.Value))
+	if err != nil {
+		t.Fatalf("addressFromPayload(stored) error = %v", err)
+	}
+	if derived != payload.address {
+		t.Fatalf("derived address = %s, want %s", derived, payload.address)
+	}
+	return payload
+}
+
+func assertCreateResponse(t *testing.T, resp customResourceResponse, paramName string, input *ssm.PutParameterInput, payload walletPayload) {
+	t.Helper()
+
 	derived, err := addressFromPayload([]byte(*input.Value))
 	if err != nil {
 		t.Fatalf("addressFromPayload(stored) error = %v", err)
@@ -103,10 +129,10 @@ func TestHandleCreateGeneratesAndOverwritesStackOwnedParameter(t *testing.T) {
 	if resp.Data[dataBootstrapWalletAddress] != derived {
 		t.Fatalf("response address = %s, want %s", resp.Data[dataBootstrapWalletAddress], derived)
 	}
-	if resp.Data[dataBootstrapWalletSSMParamName] != handler.paramName {
-		t.Fatalf("response param = %s, want %s", resp.Data[dataBootstrapWalletSSMParamName], handler.paramName)
+	if resp.Data[dataBootstrapWalletSSMParamName] != paramName {
+		t.Fatalf("response param = %s, want %s", resp.Data[dataBootstrapWalletSSMParamName], paramName)
 	}
-	if strings.Contains(fmt.Sprintf("%#v", resp), payload.PrivateKey) {
+	if strings.Contains(fmt.Sprintf("%#v", resp), payload.privateKey) {
 		t.Fatalf("response leaked private key")
 	}
 }
@@ -145,8 +171,8 @@ func TestHandleUpdateRetainsExistingStackOwnedParameter(t *testing.T) {
 	if len(ssmClient.putInputs) != 0 {
 		t.Fatalf("Update must not rotate an existing setup wallet")
 	}
-	if resp.Data[dataBootstrapWalletAddress] != payload.Address {
-		t.Fatalf("response address = %s, want %s", resp.Data[dataBootstrapWalletAddress], payload.Address)
+	if resp.Data[dataBootstrapWalletAddress] != payload.address {
+		t.Fatalf("response address = %s, want %s", resp.Data[dataBootstrapWalletAddress], payload.address)
 	}
 }
 

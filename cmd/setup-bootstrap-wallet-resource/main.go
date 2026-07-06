@@ -45,8 +45,8 @@ type customResourceResponse struct {
 }
 
 type walletPayload struct {
-	PrivateKey string `json:"private_key"`
-	Address    string `json:"address"`
+	privateKey string
+	address    string
 }
 
 type ssmAPI interface {
@@ -185,7 +185,7 @@ func (h *resourceHandler) generateAndStore(ctx context.Context) (string, error) 
 	if err != nil {
 		return "", fmt.Errorf("store bootstrap wallet SecureString: %w", err)
 	}
-	return payload.Address, nil
+	return payload.address, nil
 }
 
 func (h *resourceHandler) addressFromStoredParameter(ctx context.Context) (string, error) {
@@ -231,8 +231,8 @@ func generateWalletPayload() (walletPayload, error) {
 
 func payloadFromPrivateKey(key *ecdsa.PrivateKey) walletPayload {
 	return walletPayload{
-		PrivateKey: "0x" + hex.EncodeToString(crypto.FromECDSA(key)),
-		Address:    crypto.PubkeyToAddress(key.PublicKey).Hex(),
+		privateKey: "0x" + hex.EncodeToString(crypto.FromECDSA(key)),
+		address:    crypto.PubkeyToAddress(key.PublicKey).Hex(),
 	}
 }
 
@@ -241,14 +241,31 @@ func addressFromPayload(raw []byte) (string, error) {
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		return "", fmt.Errorf("parse bootstrap wallet payload JSON: %w", err)
 	}
-	privateKey := strings.TrimSpace(payload.PrivateKey)
+	privateKey := strings.TrimSpace(payload.privateKey)
 	if privateKey != "" {
-		return addressFromPrivateKeyPayload(privateKey, payload.Address)
+		return addressFromPrivateKeyPayload(privateKey, payload.address)
 	}
-	if strings.TrimSpace(payload.Address) != "" {
-		return normalizeAddress(payload.Address)
+	if strings.TrimSpace(payload.address) != "" {
+		return normalizeAddress(payload.address)
 	}
 	return "", errors.New("bootstrap wallet payload must include private_key or address")
+}
+
+func (p walletPayload) MarshalJSON() ([]byte, error) {
+	return json.Marshal(map[string]string{
+		"private_key": p.privateKey,
+		"address":     p.address,
+	})
+}
+
+func (p *walletPayload) UnmarshalJSON(raw []byte) error {
+	fields := map[string]string{}
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return err
+	}
+	p.privateKey = fields["private_key"]
+	p.address = fields["address"]
+	return nil
 }
 
 func addressFromPrivateKeyPayload(privateKey string, storedAddress string) (string, error) {
