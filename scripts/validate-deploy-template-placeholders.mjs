@@ -50,6 +50,10 @@ try {
 
 const resources = asRecord(template.Resources);
 const hits = [];
+const deployCriticalLambdaEnvKeys = new Set([
+	'BOOTSTRAP_WALLET_ADDRESS',
+	'MANAGED_ORG_VENDING_ROLE_ARN',
+]);
 
 for (const [logicalId, resource] of Object.entries(resources)) {
 	const typedResource = asRecord(resource);
@@ -60,12 +64,14 @@ for (const [logicalId, resource] of Object.entries(resources)) {
 	}
 	if (type === 'AWS::Lambda::Function') {
 		const variables = asRecord(asRecord(properties.Environment).Variables);
-		if (Object.prototype.hasOwnProperty.call(variables, 'MANAGED_ORG_VENDING_ROLE_ARN')) {
-			visit(
-				variables.MANAGED_ORG_VENDING_ROLE_ARN,
-				`Resources.${logicalId}.Properties.Environment.Variables.MANAGED_ORG_VENDING_ROLE_ARN`,
-				hits,
-			);
+		for (const key of deployCriticalLambdaEnvKeys) {
+			if (Object.prototype.hasOwnProperty.call(variables, key)) {
+				visit(
+					variables[key],
+					`Resources.${logicalId}.Properties.Environment.Variables.${key}`,
+					hits,
+				);
+			}
 		}
 	}
 }
@@ -75,5 +81,5 @@ if (hits.length > 0) {
 }
 
 console.error(
-	`deploy template placeholder guard: OK ${templatePath} has no placeholder tokens in IAM resources or managed org vending env wiring`,
+	`deploy template placeholder guard: OK ${templatePath} has no placeholder tokens in IAM resources or managed org vending env wiring (including bootstrap-wallet deploy-critical Lambda env wiring)`,
 );
