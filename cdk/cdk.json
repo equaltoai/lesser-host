@@ -2,7 +2,6 @@
   "app": "node dist/bin/lesser-host.js",
   "context": {
     "@aws-cdk/core:newStyleStackSynthesis": true,
-    "bootstrapWalletAddress": "<YOUR_BOOTSTRAP_WALLET_ADDRESS>",
     "tipEnabledLab": "true",
     "tipChainIdLab": "11155111",
     "tipContractAddressLab": "<YOUR_TIP_CONTRACT_ADDRESS_LAB>",

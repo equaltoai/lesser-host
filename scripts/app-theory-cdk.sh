@@ -32,128 +32,27 @@ esac
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 repo_root="$(cd "$script_dir/.." && pwd -P)"
 cdk_dir="$repo_root/cdk"
-bootstrap_wallet_ssm_param="/lesser-host/$stage/setup/bootstrap-wallet-private-key"
-tmp_files=()
-
-cleanup_tmp_files() {
-  if [ "${#tmp_files[@]}" -gt 0 ]; then
-    rm -f "${tmp_files[@]}"
-  fi
-}
-trap cleanup_tmp_files EXIT
-
-make_secret_tmp_file() {
-  local result_var="$1"
-  local tmp_file
-  tmp_file="$(mktemp "${TMPDIR:-/tmp}/lesser-host-bootstrap-wallet.XXXXXX")"
-  chmod 600 "$tmp_file"
-  tmp_files+=("$tmp_file")
-  printf -v "$result_var" '%s' "$tmp_file"
-}
 
 bootstrap_wallet_helper() {
   (cd "$repo_root" && go run ./scripts/bootstrap-wallet "$@")
 }
 
-aws_ssm_get_bootstrap_wallet() {
-  local output_file="$1"
-  local error_file="$2"
-  aws ssm get-parameter \
-    --name "$bootstrap_wallet_ssm_param" \
-    --with-decryption \
-    --query 'Parameter.Value' \
-    --output text >"$output_file" 2>"$error_file"
-}
-
-aws_ssm_put_bootstrap_wallet() {
-  local payload_file="$1"
-  local request_file
-  make_secret_tmp_file request_file
-  bootstrap_wallet_helper put-parameter-input \
-    --name "$bootstrap_wallet_ssm_param" \
-    --description "lesser-host $stage one-time setup bootstrap wallet private key" \
-    <"$payload_file" >"$request_file"
-  aws ssm put-parameter --cli-input-json "file://$request_file"
-}
-
-address_from_payload_file() {
-  local payload_file="$1"
-  bootstrap_wallet_helper address <"$payload_file"
-}
-
-resolve_bootstrap_wallet_address() {
+resolve_bootstrap_wallet_override() {
   local configured_address="${BOOTSTRAP_WALLET_ADDRESS:-}"
   local normalized_address
 
-  if [ -n "$configured_address" ]; then
-    if ! normalized_address="$(bootstrap_wallet_helper normalize-address "$configured_address")"; then
-      echo "invalid BOOTSTRAP_WALLET_ADDRESS: expected a real EVM 0x address; placeholders are not accepted" >&2
-      exit 2
-    fi
-    echo "bootstrap wallet: using BOOTSTRAP_WALLET_ADDRESS override ($normalized_address)" >&2
-    printf '%s\n' "$normalized_address"
-    return 0
-  fi
-
-  if [ "${LESSER_HOST_CDK_DRY_RUN:-}" = "1" ] && [ "$action" = "down" ]; then
-    echo "bootstrap wallet: dry-run destroy will not create credentials or read SSM" >&2
+  if [ -z "$configured_address" ]; then
+    echo "bootstrap wallet: CDK custom resource will generate/store the one-time setup wallet during stack creation" >&2
     printf '\n'
     return 0
   fi
 
-  if [ "${LESSER_HOST_CDK_DRY_RUN:-}" = "1" ]; then
-    local dry_payload_file
-    make_secret_tmp_file dry_payload_file
-    bootstrap_wallet_helper generate >"$dry_payload_file"
-    normalized_address="$(address_from_payload_file "$dry_payload_file")"
-    echo "bootstrap wallet: dry run generated non-persistent setup address ($normalized_address); no SSM read/write" >&2
-    printf '%s\n' "$normalized_address"
-    return 0
+  if ! normalized_address="$(bootstrap_wallet_helper normalize-address "$configured_address")"; then
+    echo "invalid BOOTSTRAP_WALLET_ADDRESS override: expected a real EVM 0x address; placeholders are not accepted" >&2
+    exit 2
   fi
-
-  local payload_file error_file
-  make_secret_tmp_file payload_file
-  make_secret_tmp_file error_file
-
-  if aws_ssm_get_bootstrap_wallet "$payload_file" "$error_file"; then
-    normalized_address="$(address_from_payload_file "$payload_file")"
-    echo "bootstrap wallet: using SSM SecureString $bootstrap_wallet_ssm_param ($normalized_address)" >&2
-    printf '%s\n' "$normalized_address"
-    return 0
-  fi
-
-  if ! grep -q 'ParameterNotFound' "$error_file"; then
-    echo "bootstrap wallet: failed reading SSM SecureString $bootstrap_wallet_ssm_param" >&2
-    cat "$error_file" >&2
-    exit 1
-  fi
-
-  if [ "$action" = "down" ]; then
-    echo "bootstrap wallet: no BOOTSTRAP_WALLET_ADDRESS override and no SSM SecureString $bootstrap_wallet_ssm_param; destroy will not create credentials" >&2
-    printf '\n'
-    return 0
-  fi
-
-  bootstrap_wallet_helper generate >"$payload_file"
-  normalized_address="$(address_from_payload_file "$payload_file")"
-  if aws_ssm_put_bootstrap_wallet "$payload_file" > /dev/null 2>"$error_file"; then
-    echo "bootstrap wallet: created SSM SecureString $bootstrap_wallet_ssm_param ($normalized_address)" >&2
-    printf '%s\n' "$normalized_address"
-    return 0
-  fi
-
-  if grep -q 'ParameterAlreadyExists' "$error_file"; then
-    if aws_ssm_get_bootstrap_wallet "$payload_file" "$error_file"; then
-      normalized_address="$(address_from_payload_file "$payload_file")"
-      echo "bootstrap wallet: using concurrently-created SSM SecureString $bootstrap_wallet_ssm_param ($normalized_address)" >&2
-      printf '%s\n' "$normalized_address"
-      return 0
-    fi
-  fi
-
-  echo "bootstrap wallet: failed creating SSM SecureString $bootstrap_wallet_ssm_param" >&2
-  cat "$error_file" >&2
-  exit 1
+  echo "bootstrap wallet: using BOOTSTRAP_WALLET_ADDRESS emergency override ($normalized_address); CDK will not manage an SSM private key for this deploy" >&2
+  printf '%s\n' "$normalized_address"
 }
 
 "$repo_root/scripts/validate-deploy-provenance.sh" "$repo_root"
@@ -189,15 +88,17 @@ cd "$cdk_dir"
 npm ci
 npm run build
 
-bootstrap_wallet_address="$(resolve_bootstrap_wallet_address)"
-cdk_context_args=(-c "stage=$stage" -c "bootstrapWalletAddress=$bootstrap_wallet_address")
+cdk_context_args=(-c "stage=$stage")
+bootstrap_wallet_address="$(resolve_bootstrap_wallet_override)"
+if [ -n "$bootstrap_wallet_address" ]; then
+  cdk_context_args+=(-c "bootstrapWalletAddress=$bootstrap_wallet_address")
+fi
 
 case "$action" in
   up)
     synth_out="$(mktemp -d "${TMPDIR:-/tmp}/lesser-host-cdk-synth.XXXXXX")"
     cleanup() {
       rm -rf "$synth_out"
-      cleanup_tmp_files
     }
     trap cleanup EXIT
 

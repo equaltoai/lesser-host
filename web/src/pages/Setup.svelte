@@ -49,7 +49,7 @@
 	let walletError = $state<string | null>(null);
 	let walletNotice = $state<string | null>(null);
 
-	let setupSessionToken = $state<string>(sessionStorage.getItem(SETUP_SESSION_KEY) || '');
+	let setupSessionToken = $state<string>('');
 
 	let bootstrapLoading = $state(false);
 	let bootstrapError = $state<string | null>(null);
@@ -205,7 +205,7 @@
 				message: bootstrapChallenge.message,
 			});
 			setupSessionToken = verified.token;
-			sessionStorage.setItem(SETUP_SESSION_KEY, verified.token);
+			sessionStorage.removeItem(SETUP_SESSION_KEY);
 			clearConnectedWallet(
 				'Bootstrap wallet cleared. Reconnect the real primary admin credential before Step 2.',
 			);
@@ -476,6 +476,7 @@
 	});
 
 	onMount(() => {
+		sessionStorage.removeItem(SETUP_SESSION_KEY);
 		void refreshStatus();
 	});
 </script>
@@ -638,8 +639,8 @@
 						{#if step1Complete}
 							<Alert variant="success" title="Setup session created">
 								<Text size="sm">
-									Setup session token stored in sessionStorage for this tab. Reconnect the real primary
-									admin credential for Step 2.
+									Setup session token is held in memory for this page only. Reconnect the real primary
+									admin credential for Step 2; refreshing the page requires signing Step 1 again.
 								</Text>
 							</Alert>
 						{:else if bootstrapChallenge}

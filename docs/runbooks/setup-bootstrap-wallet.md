@@ -1,8 +1,10 @@
 # One-time setup bootstrap wallet
 
 `lesser-host` setup is gated by `BOOTSTRAP_WALLET_ADDRESS` while the Control plane is locked.
-For AppTheory deploys, `scripts/app-theory-cdk.sh` resolves that address at deploy time so no real bootstrap wallet address is committed to
-`cdk/cdk.json`, and no private key is stored in CloudFormation, Lambda environment variables,
+For AppTheory deploys, the bootstrap wallet is now owned by the CDK/CloudFormation stack lifecycle:
+CloudFormation creates the one-time EVM wallet during stack creation, stores the private key payload in
+SSM Parameter Store as a `SecureString`, and passes only the derived address to the Control plane Lambda
+environment. No private key is stored in CloudFormation templates, Lambda environment variables, git,
 logs, or PR text.
 
 ## Deploy behavior
@@ -13,26 +15,38 @@ Use the AppTheory deploy contract:
 AWS_PROFILE=Lesser AWS_REGION=us-east-1 theory app up --stage lab --execute
 ```
 
-For `up`, the wrapper resolves the bootstrap wallet in this order:
+For `up`, `scripts/app-theory-cdk.sh` validates deploy provenance, builds/synthesizes CDK, and then:
 
-1. If `BOOTSTRAP_WALLET_ADDRESS` is set to a valid EVM `0x` address, pass that address to CDK.
-   Placeholder values such as `<YOUR_BOOTSTRAP_WALLET_ADDRESS>` are rejected.
-2. Otherwise, read `/lesser-host/<stage>/setup/bootstrap-wallet-private-key` from SSM Parameter
-   Store as a `SecureString` and derive the address from the stored JSON payload.
-3. If the SSM parameter is missing, generate a one-time EVM wallet, store JSON containing
-   `private_key` and `address` in that `SecureString`, and pass only the address to CDK.
+1. If `BOOTSTRAP_WALLET_ADDRESS` is set to a valid EVM `0x` address, it passes that address to CDK as an
+   **emergency override**. Placeholder values such as `<YOUR_BOOTSTRAP_WALLET_ADDRESS>` are rejected.
+   In override mode CDK does not generate or store a bootstrap private key.
+2. Otherwise, CDK creates a stack-owned custom resource. On CloudFormation `Create`, that resource
+   generates a fresh one-time EVM wallet, writes JSON containing `private_key` and `address` to
+   `/lesser-host/<stage>/setup/bootstrap-wallet-private-key` as a `SecureString`, and returns only the
+   address to the template for `BOOTSTRAP_WALLET_ADDRESS`.
+3. On CloudFormation `Update`, the resource re-reads the existing stack-owned SecureString and returns
+   the same address; ordinary updates do not rotate the bootstrap wallet.
+4. On lab stack deletion (`RemovalPolicy.DESTROY`), the resource deletes the SecureString. A genuinely new
+   lab stack creation writes a fresh key and overwrites any stale pre-fix value at the same path instead
+   of silently reusing it.
 
-The deploy output prints only the SSM parameter name and the non-secret address. It never prints
-the private key.
+The AppTheory wrapper no longer reads or writes the generated bootstrap private key itself. That prevents
+a stale, long-lived stage-scoped SSM parameter created outside CloudFormation from becoming authoritative
+for future deployments.
 
-For `down`, the wrapper never creates a wallet. It uses a valid `BOOTSTRAP_WALLET_ADDRESS` override
-when present, otherwise reads the SSM address if the parameter exists, otherwise destroys with an
-empty bootstrap-wallet context override.
+For `down`, use the same AppTheory contract:
+
+```bash
+AWS_PROFILE=Lesser AWS_REGION=us-east-1 theory app down --stage lab --execute
+```
+
+Do not set a timeout on deploy/destroy commands. Let CloudFormation finish or roll back and capture the
+complete output.
 
 ## Retrieve the private key for first setup
 
-Only retrieve the private key when an operator is ready to import it into a wallet and finish setup.
-The command below prints a secret to your terminal and shell history may capture it depending on your
+Only retrieve the private key when an operator is ready to import it into a wallet and finish setup. The
+command below prints a secret to your terminal and shell history may capture it depending on your
 environment.
 
 ```bash
@@ -57,28 +71,55 @@ aws ssm get-parameter \
   --output text | jq -r '.private_key'
 ```
 
-After importing the key, open `/setup` and sign the bootstrap challenge once. The UI clears the
-connected bootstrap wallet after that verification. Reconnect the real primary admin credential,
-create the primary admin, register a primary admin passkey, and then finalize setup.
+After importing the key, open `/setup` and sign the bootstrap challenge once. The setup session token is
+memory-only in the page: it is not initialized from `sessionStorage`, and refreshing the page requires
+signing Step 1 again. After Step 1, the UI clears the connected bootstrap wallet. Reconnect the real
+primary admin credential, create the primary admin, register a primary admin passkey, and then finalize
+setup.
 
-The bootstrap wallet is one-time setup authority only. It must not be reused as the primary admin
-wallet, and `/setup/admin` rejects attempts to link the configured bootstrap wallet as the primary
-admin credential.
-
-If a lab environment was already finalized with the bootstrap wallet as the primary admin, treat that
-environment as mis-bootstrapped: do not promote it to live. Use the existing admin session to add a
-real admin credential/passkey if possible, then rotate ownership away from the bootstrap wallet; if
-that cannot be proven cleanly, rebuild the lab control-plane state and rerun setup with a separate
-primary admin wallet. Do not reuse or publish the SSM-stored bootstrap private key as an operator
-credential.
+The bootstrap wallet is one-time setup authority only. It must not be reused as the primary admin wallet,
+and `/setup/admin` rejects attempts to link the configured bootstrap wallet as the primary admin
+credential. `/setup/finalize` requires the primary admin session and at least one registered WebAuthn
+passkey.
 
 ## Manual override
 
-To use an operator-supplied one-time bootstrap wallet instead of SSM generation:
+To use an operator-supplied one-time bootstrap wallet instead of CloudFormation generation:
 
 ```bash
 BOOTSTRAP_WALLET_ADDRESS=0x0123456789abcdef0123456789abcdef01234567 \
   AWS_PROFILE=Lesser AWS_REGION=us-east-1 theory app up --stage lab --execute
 ```
 
-Use a real wallet address; the example address above is not suitable for an actual deploy.
+Use a real wallet address; the example address above is not suitable for an actual deploy. Treat override
+mode as emergency/manual operation: the operator owns private-key storage and retrieval, and CDK will not
+manage the SSM SecureString for that deploy.
+
+## Recovery for the mis-bootstrapped lab from #893/#894
+
+If a brand new lab deployment after #894 reused the same bootstrap key or `/setup` Step 1 appeared
+complete immediately, assume two stale states may exist: browser `sessionStorage` and the pre-fix
+stage-scoped SSM SecureString.
+
+1. **Clear browser state first.** In every browser/profile used for setup, clear
+   `sessionStorage['lesser-host:setupSessionToken']` for the lab origin, or open a fresh private window.
+   The fixed UI removes that legacy key on page load and no longer uses it to complete Step 1.
+2. **Deploy this fix to lab through AppTheory.** Do not manually write SSM. On stack create, the new
+   CloudFormation custom resource will generate the key and overwrite any stale pre-fix value at
+   `/lesser-host/lab/setup/bootstrap-wallet-private-key`.
+3. **If the bad lab stack is still present and locked,** a normal `theory app up --stage lab --execute`
+   updates code and the custom resource. Retrieve the current SecureString after the update and verify
+   the address shown on `/setup/status` matches the stored payload's `address` before signing.
+4. **If the bad lab stack was destroyed before this fix,** ensure the next lab rebuild uses this fix. The
+   new stack creation overwrites the stale pre-fix SSM value rather than reusing it. Do not import or use
+   an old key retrieved before the fixed stack creation.
+5. **If lab was finalized with the bootstrap wallet as admin,** treat it as mis-bootstrapped. Do not
+   promote it. If a real admin credential/passkey can be added and ownership rotated away from the
+   bootstrap wallet with audit evidence, do that; otherwise rebuild lab control-plane state and rerun
+   setup using a separate primary admin wallet.
+6. **Rebuild lab state when in doubt.** Rebuild if `/setup/status` reports an unexpected bootstrap
+   address, if a stale browser session can still affect the flow, if the primary admin is the bootstrap
+   wallet, or if you cannot prove the generated key came from the CloudFormation-owned resource.
+
+Do not delete or mutate live SSM parameters, DynamoDB tables, stacks, or retained resources as part of lab
+recovery without explicit operator authorization.
