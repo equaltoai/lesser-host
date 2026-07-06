@@ -12,6 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
 	"github.com/aws/aws-sdk-go-v2/service/ssm/types"
 	"github.com/ethereum/go-ethereum/common"
+	apptheory "github.com/theory-cloud/apptheory/runtime"
 )
 
 type fakeSSM struct {
@@ -245,6 +246,69 @@ func TestHandleRejectsParamPropertyMismatch(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "does not match") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestHandleEmitsLifecycleObservabilityWithoutSecrets(t *testing.T) {
+	t.Parallel()
+
+	var records []apptheory.LogRecord
+	ssmClient := &fakeSSM{}
+	handler := &resourceHandler{
+		ssm:       ssmClient,
+		paramName: "/lesser-host/lab/setup/bootstrap-wallet-private-key",
+		obs: apptheory.ObservabilityHooks{
+			Log: func(rec apptheory.LogRecord) {
+				records = append(records, rec)
+			},
+		},
+	}
+
+	if _, err := handler.handle(context.Background(), customResourceEvent{RequestType: requestCreate}); err != nil {
+		t.Fatalf("handle(Create) error = %v", err)
+	}
+	if _, err := handler.handle(context.Background(), customResourceEvent{RequestType: requestDelete}); err != nil {
+		t.Fatalf("handle(Delete) error = %v", err)
+	}
+
+	requireLifecycleRecords(t, records, handler.paramName)
+	requireNoPrivateKeyInRecords(t, ssmClient, records)
+}
+
+func requireLifecycleRecords(t *testing.T, records []apptheory.LogRecord, paramName string) {
+	t.Helper()
+
+	if len(records) != 2 {
+		t.Fatalf("lifecycle log records = %d, want 2", len(records))
+	}
+	created, deleted := records[0], records[1]
+	if created.Event != "setup_bootstrap_wallet.created" || created.Method != requestCreate {
+		t.Fatalf("create record = %+v", created)
+	}
+	if deleted.Event != "setup_bootstrap_wallet.deleted" || deleted.Method != requestDelete {
+		t.Fatalf("delete record = %+v", deleted)
+	}
+	for _, rec := range records {
+		if rec.Level != "info" || rec.Status != 200 || rec.Path != paramName {
+			t.Fatalf("unexpected record shape: %+v", rec)
+		}
+	}
+}
+
+func requireNoPrivateKeyInRecords(t *testing.T, ssmClient *fakeSSM, records []apptheory.LogRecord) {
+	t.Helper()
+
+	if len(ssmClient.putInputs) != 1 {
+		t.Fatalf("PutParameter calls = %d, want 1", len(ssmClient.putInputs))
+	}
+	var payload walletPayload
+	if err := json.Unmarshal([]byte(*ssmClient.putInputs[0].Value), &payload); err != nil {
+		t.Fatalf("stored payload is not JSON: %v", err)
+	}
+	for _, rec := range records {
+		if strings.Contains(fmt.Sprintf("%+v", rec), payload.privateKey) {
+			t.Fatalf("lifecycle log leaked private key")
+		}
 	}
 }
 

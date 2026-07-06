@@ -7,11 +7,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"os"
 	"strings"
 
 	"github.com/aws/aws-lambda-go/lambda"
+	"github.com/aws/aws-lambda-go/lambdacontext"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
@@ -19,9 +19,14 @@ import (
 	"github.com/aws/smithy-go"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
+	apptheory "github.com/theory-cloud/apptheory/runtime"
+
+	"github.com/equaltoai/lesser-host/internal/observability"
 )
 
 const (
+	serviceName = "setup-bootstrap-wallet-resource"
+
 	paramNameEnv = "BOOTSTRAP_WALLET_SSM_PARAM_NAME"
 
 	requestCreate = "Create"
@@ -58,11 +63,22 @@ type ssmAPI interface {
 type resourceHandler struct {
 	ssm       ssmAPI
 	paramName string
+	obs       apptheory.ObservabilityHooks
 }
 
 func main() {
+	obsHooks := observability.New(serviceName)
+	// AppTheory does not yet natively dispatch CloudFormation custom-resource
+	// events, but we still instantiate the standard observability hook set so
+	// this Lambda follows the same entrypoint contract as the rest of the
+	// control plane.
+	obsApp := apptheory.New(
+		apptheory.WithObservability(observability.New(serviceName)),
+	)
+	_ = obsApp
+
 	lambda.Start(func(ctx context.Context, event customResourceEvent) (customResourceResponse, error) {
-		handler, err := newDefaultHandler(ctx)
+		handler, err := newDefaultHandler(ctx, obsHooks)
 		if err != nil {
 			return customResourceResponse{}, err
 		}
@@ -70,7 +86,7 @@ func main() {
 	})
 }
 
-func newDefaultHandler(ctx context.Context) (*resourceHandler, error) {
+func newDefaultHandler(ctx context.Context, obs apptheory.ObservabilityHooks) (*resourceHandler, error) {
 	paramName := strings.TrimSpace(os.Getenv(paramNameEnv))
 	if paramName == "" {
 		return nil, fmt.Errorf("%s is required", paramNameEnv)
@@ -82,6 +98,7 @@ func newDefaultHandler(ctx context.Context) (*resourceHandler, error) {
 	return &resourceHandler{
 		ssm:       ssm.NewFromConfig(cfg),
 		paramName: paramName,
+		obs:       obs,
 	}, nil
 }
 
@@ -107,30 +124,52 @@ func (h *resourceHandler) handle(ctx context.Context, event customResourceEvent)
 		if err != nil {
 			return customResourceResponse{}, err
 		}
-		log.Printf("setup bootstrap wallet created param=%s address=%s", h.paramName, address)
+		h.logLifecycle(ctx, requestCreate, "setup_bootstrap_wallet.created")
 		return h.response(physicalID, address), nil
 	case requestUpdate:
 		address, err := h.addressFromStoredParameter(ctx)
 		if isParameterNotFound(err) {
 			address, err = h.generateAndStore(ctx)
 			if err == nil {
-				log.Printf("setup bootstrap wallet regenerated missing parameter on update param=%s address=%s", h.paramName, address)
+				h.logLifecycle(ctx, requestUpdate, "setup_bootstrap_wallet.regenerated")
 			}
 		}
 		if err != nil {
 			return customResourceResponse{}, err
 		}
-		log.Printf("setup bootstrap wallet retained param=%s address=%s", h.paramName, address)
+		h.logLifecycle(ctx, requestUpdate, "setup_bootstrap_wallet.retained")
 		return h.response(physicalID, address), nil
 	case requestDelete:
 		if err := h.deleteParameter(ctx); err != nil {
 			return customResourceResponse{}, err
 		}
-		log.Printf("setup bootstrap wallet deleted param=%s", h.paramName)
+		h.logLifecycle(ctx, requestDelete, "setup_bootstrap_wallet.deleted")
 		return h.response(physicalID, ""), nil
 	default:
 		return customResourceResponse{}, fmt.Errorf("unsupported RequestType %q", event.RequestType)
 	}
+}
+
+// logLifecycle emits the custom-resource lifecycle outcome through the
+// standard apptheory observability hooks. The derived wallet address is
+// intentionally not logged; it is surfaced through the CloudFormation
+// response data instead.
+func (h *resourceHandler) logLifecycle(ctx context.Context, requestType string, event string) {
+	if h.obs.Log == nil {
+		return
+	}
+	requestID := ""
+	if lc, ok := lambdacontext.FromContext(ctx); ok {
+		requestID = strings.TrimSpace(lc.AwsRequestID)
+	}
+	h.obs.Log(apptheory.LogRecord{
+		Level:     "info",
+		Event:     event,
+		RequestID: requestID,
+		Method:    requestType,
+		Path:      h.paramName,
+		Status:    200,
+	})
 }
 
 func (h *resourceHandler) requireMatchingParamProperty(properties map[string]interface{}) error {
