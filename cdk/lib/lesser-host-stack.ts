@@ -42,6 +42,7 @@ import {
 } from './ens-gateway-config';
 import { hostWebAclRules } from './web-acl-rules';
 import { readWebDomainConfig } from './app-theory-deploy-config';
+import { provisionSetupBootstrapWallet } from './setup-bootstrap-wallet';
 export { readWebDomainConfig, type WebDomainConfig } from './app-theory-deploy-config';
 export interface LesserHostStackProps extends cdk.StackProps {
 	stage: string;
@@ -306,8 +307,13 @@ export class LesserHostStack extends cdk.Stack {
 				tier: ssm.ParameterTier.STANDARD,
 			});
 
-		const bootstrapWalletAddress =
-			(this.node.tryGetContext('bootstrapWalletAddress') as string | undefined) ?? '';
+		const setupBootstrapWallet = provisionSetupBootstrapWallet(this, 'SetupBootstrapWallet', {
+			stage,
+			namePrefix,
+			removalPolicy,
+			overrideAddress: this.node.tryGetContext('bootstrapWalletAddress'),
+		});
+		const bootstrapWalletAddress = setupBootstrapWallet.address;
 			const webAuthnRPID = (this.node.tryGetContext('webauthnRpId') as string | undefined) ?? '';
 			const webAuthnOrigins = (this.node.tryGetContext('webauthnOrigins') as string | undefined) ?? '';
 			const ensGatewayChain = ensGatewayChainConfigForStage(stage);
