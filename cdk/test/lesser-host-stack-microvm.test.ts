@@ -297,6 +297,14 @@ test('hosted genesis AppTheory MicroVM deployed-stage wiring uses AppTheory cons
 	);
 	assert.ok(controllerEnv.APPTHEORY_MICROVM_SESSION_REGISTRY_TABLE, 'expected AppTheory registry table env');
 	assert.ok(controllerEnv.APPTHEORY_MICROVM_INGRESS_NETWORK_CONNECTOR_REFS, 'expected ingress connector refs env');
+	assert.ok(
+		JSON.stringify(controllerEnv.APPTHEORY_MICROVM_INGRESS_NETWORK_CONNECTOR_REFS).includes('aws-network-connector:HTTP_INGRESS'),
+		'expected HTTP_INGRESS, not ALL_INGRESS, for endpoint auth-token compatibility with shell ingress',
+	);
+	assert.ok(
+		!JSON.stringify(controllerEnv.APPTHEORY_MICROVM_INGRESS_NETWORK_CONNECTOR_REFS).includes('aws-network-connector:ALL_INGRESS'),
+		'ALL_INGRESS must not be combined with shell ingress',
+	);
 	assert.ok(controllerEnv.APPTHEORY_MICROVM_EGRESS_NETWORK_CONNECTOR_REFS, 'expected egress connector refs env');
 	assert.ok(controllerEnv.APPTHEORY_MICROVM_SHELL_INGRESS_NETWORK_CONNECTOR_REF, 'expected shell ingress connector ref env');
 	assert.ok(
@@ -646,6 +654,14 @@ test('P52 H1.5: control-plane Lambda receives HTTP dispatch env + SSM auth-token
 	);
 	assert.ok(controlPlaneEnv.APPTHEORY_MICROVM_IMAGE_REF, 'expected APPTHEORY_MICROVM_IMAGE_REF on control-plane Lambda');
 	assert.ok(controlPlaneEnv.APPTHEORY_MICROVM_INGRESS_NETWORK_CONNECTOR_REFS, 'expected ingress connector refs on control-plane Lambda');
+	assert.ok(
+		JSON.stringify(controlPlaneEnv.APPTHEORY_MICROVM_INGRESS_NETWORK_CONNECTOR_REFS).includes('aws-network-connector:HTTP_INGRESS'),
+		'expected control-plane dispatch to use HTTP_INGRESS for endpoint auth-token compatibility',
+	);
+	assert.ok(
+		!JSON.stringify(controlPlaneEnv.APPTHEORY_MICROVM_INGRESS_NETWORK_CONNECTOR_REFS).includes('aws-network-connector:ALL_INGRESS'),
+		'control-plane dispatch must not use ALL_INGRESS with shell ingress enabled',
+	);
 	assert.ok(controlPlaneEnv.APPTHEORY_MICROVM_EGRESS_NETWORK_CONNECTOR_REFS, 'expected egress connector refs on control-plane Lambda');
 	// The control plane must NOT receive session-registry table env: it does
 	// not touch the registry directly (the controller Lambda owns it).

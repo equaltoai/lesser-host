@@ -26,7 +26,7 @@ func TestNoRunHookProviderStartsMicroVMWithoutRunHookPayload(t *testing.T) {
 			StartedAt:                aws.Time(startedAt),
 			State:                    lambdatypes.MicrovmStateRunning,
 			EgressNetworkConnectors:  []string{"INTERNET_EGRESS"},
-			IngressNetworkConnectors: []string{"ALL_INGRESS"},
+			IngressNetworkConnectors: []string{"HTTP_INGRESS"},
 			ExecutionRoleArn:         aws.String("arn:aws:iam::123456789012:role/lesser-host-lab-hosted-genesis-microvm-execution"),
 			MaximumDurationInSeconds: aws.Int32(300),
 		},
@@ -43,7 +43,7 @@ func TestNoRunHookProviderStartsMicroVMWithoutRunHookPayload(t *testing.T) {
 	require.Equal(t, "req-run", aws.ToString(api.runInput.ClientToken))
 	require.Equal(t, "arn:aws:iam::123456789012:role/lesser-host-lab-hosted-genesis-microvm-execution", aws.ToString(api.runInput.ExecutionRoleArn))
 	require.Equal(t, int32(300), aws.ToInt32(api.runInput.MaximumDurationInSeconds))
-	require.Equal(t, []string{"ALL_INGRESS"}, api.runInput.IngressNetworkConnectors)
+	require.Equal(t, []string{"HTTP_INGRESS"}, api.runInput.IngressNetworkConnectors)
 	require.Equal(t, []string{"INTERNET_EGRESS"}, api.runInput.EgressNetworkConnectors)
 
 	require.Equal(t, "slug:pan", session.TenantID)
@@ -67,7 +67,7 @@ func TestNoRunHookProviderDoesNotDuplicateLegacyEgressConnector(t *testing.T) {
 			StartedAt:                aws.Time(time.Date(2026, 7, 7, 19, 30, 0, 0, time.UTC)),
 			State:                    lambdatypes.MicrovmStateRunning,
 			EgressNetworkConnectors:  []string{"INTERNET_EGRESS"},
-			IngressNetworkConnectors: []string{"ALL_INGRESS"},
+			IngressNetworkConnectors: []string{"HTTP_INGRESS"},
 			ExecutionRoleArn:         aws.String("arn:aws:iam::123456789012:role/lesser-host-lab-hosted-genesis-microvm-execution"),
 		},
 	}
@@ -94,7 +94,7 @@ func TestNoRunHookProviderFallsBackToLegacyEgressConnector(t *testing.T) {
 			StartedAt:                aws.Time(time.Date(2026, 7, 7, 19, 31, 0, 0, time.UTC)),
 			State:                    lambdatypes.MicrovmStateRunning,
 			EgressNetworkConnectors:  []string{"INTERNET_EGRESS"},
-			IngressNetworkConnectors: []string{"ALL_INGRESS"},
+			IngressNetworkConnectors: []string{"HTTP_INGRESS"},
 			ExecutionRoleArn:         aws.String("arn:aws:iam::123456789012:role/lesser-host-lab-hosted-genesis-microvm-execution"),
 		},
 	}
@@ -152,7 +152,7 @@ func validNoRunHookProviderRunInput() runtimemicrovm.ProviderRunInput {
 		AuthContext: runtimemicrovm.AuthContext{Subject: MicroVMControllerID, TenantID: "slug:pan", Namespace: MicroVMNamespace},
 		ImageRef:    "arn:aws:lambda:us-east-1:123456789012:microvm-image:lesser-host-lab_hosted_genesis",
 		IngressNetworkConnectorRefs: []string{
-			"ALL_INGRESS",
+			"HTTP_INGRESS",
 		},
 		EgressNetworkConnectorRefs: []string{
 			"INTERNET_EGRESS",
