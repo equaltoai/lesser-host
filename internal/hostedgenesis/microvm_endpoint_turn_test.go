@@ -143,6 +143,32 @@ const (
 	endpointTurnTestProxyToken = "proxy-token-value"
 )
 
+func TestNormalizeMicroVMEndpointURLPrefixesBareAWSHost(t *testing.T) {
+	t.Parallel()
+	got, err := normalizeMicroVMEndpointURL(" 0ccf9f2b-f186-fbdf-0768-f47712b635d4.lambda-microvm.us-east-1.on.aws/ ")
+	requireNoError(t, err)
+	if got != "https://0ccf9f2b-f186-fbdf-0768-f47712b635d4.lambda-microvm.us-east-1.on.aws" {
+		t.Fatalf("expected AWS MicroVM endpoint host to gain https scheme, got %q", got)
+	}
+}
+
+func TestNormalizeMicroVMEndpointURLPreservesExplicitHTTPTestEndpoint(t *testing.T) {
+	t.Parallel()
+	got, err := normalizeMicroVMEndpointURL("http://127.0.0.1:8080/")
+	requireNoError(t, err)
+	if got != "http://127.0.0.1:8080" {
+		t.Fatalf("expected explicit httptest endpoint to be preserved, got %q", got)
+	}
+}
+
+func TestNormalizeMicroVMEndpointURLRejectsUnsupportedScheme(t *testing.T) {
+	t.Parallel()
+	_, err := normalizeMicroVMEndpointURL("ftp://lambda-microvm.example")
+	if !errors.Is(err, ErrMicroVMEndpointMissing) {
+		t.Fatalf("expected ErrMicroVMEndpointMissing, got %v", err)
+	}
+}
+
 func TestRunTurnViaEndpointHappyPath(t *testing.T) {
 	t.Parallel()
 	result, _, _ := runTurnViaEndpointHappy(t)
