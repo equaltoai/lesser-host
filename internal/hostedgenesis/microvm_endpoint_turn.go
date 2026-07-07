@@ -36,11 +36,15 @@ import (
 // (providerTokenMetadata returns metadata only; ProviderToken has no
 // token-value field by design). So host must call the lambda-microvms API
 // directly to obtain (a) the Endpoint via get-microvm and (b) the auth token
-// value via create-microvm-auth-token. The framework's Run IS reused (it starts
-// the MicroVM and records the session). The M16 LifecycleEvent + the workload's
-// runHook are reused. The gap (surface Endpoint on ProviderSession + add a
-// scoped way to receive the auth token value) is routed upstream to AppTheory
-// with evidence; this file is the host-side framework-gap bridge, not a fork.
+// value via create-microvm-auth-token. Host still reuses AppTheory's Controller
+// run envelope and registry recording, but the controller is wired with a
+// Host-owned Provider.Run shim that omits RunHookPayload because this image has
+// no AWS image-level run hook enabled; the turn payload is delivered by the
+// explicit endpoint POST below. The M16 LifecycleEvent + the workload's runHook
+// handler are reused. The gap (surface Endpoint on ProviderSession + add a
+// scoped way to receive the auth token value, and support no-hooks endpoint
+// starts) is routed upstream to AppTheory with evidence; this file is the
+// host-side framework-gap bridge, not a fork.
 
 var (
 	// ErrMicroVMEndpointTurnUnavailable is the fail-closed error for the
@@ -151,7 +155,8 @@ type EndpointTurnResult struct {
 //
 // Flow:
 //  1. Reuse r.Handle(CommandRun) to start the MicroVM + record the session
-//     (framework's safe envelope; returns the microvm_id).
+//     (framework's safe envelope; provider Run omits RunHookPayload for this
+//     no-hooks endpoint image; returns the microvm_id).
 //  2. Raw get-microvm poll until state=RUNNING (or terminal), extracting the
 //     HTTPS endpoint URL the framework does not surface.
 //  3. Raw create-microvm-auth-token (allPorts) to obtain the X-aws-proxy-auth

@@ -127,7 +127,7 @@ func newRuntimeController(ctx context.Context, getenv getenvFunc) (*hostedgenesi
 	if err != nil {
 		return nil, err
 	}
-	provider, err := runtimemicrovm.NewAWSLambdaMicroVMProvider(ctx)
+	provider, err := newMicroVMProvider(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -160,6 +160,18 @@ func newRuntimeController(ctx context.Context, getenv getenvFunc) (*hostedgenesi
 		EndpointTurnClient:       newEndpointTurnClient(ctx),
 	}
 	return hostedgenesis.NewMicroVMControllerRuntime(cfg)
+}
+
+func newMicroVMProvider(ctx context.Context) (runtimemicrovm.Provider, error) {
+	delegate, err := runtimemicrovm.NewAWSLambdaMicroVMProvider(ctx)
+	if err != nil {
+		return nil, err
+	}
+	awsCfg, err := awsconfig.LoadDefaultConfig(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return hostedgenesis.NewNoRunHookAWSLambdaMicroVMProvider(lambdamicrovms.NewFromConfig(awsCfg), delegate)
 }
 
 // newEndpointTurnClient builds the raw lambda-microvms SDK client + HTTP client
