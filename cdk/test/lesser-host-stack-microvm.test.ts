@@ -366,6 +366,36 @@ test('hosted genesis AppTheory MicroVM deployed-stage wiring uses AppTheory cons
 	]) {
 		assert.ok(controllerPolicyJson.includes(action), `expected controller IAM to include ${action}`);
 	}
+	const wildcardMicrovmActions = [
+		'lambda:CreateMicrovmAuthToken',
+		'lambda:CreateMicrovmShellAuthToken',
+		'lambda:GetMicrovm',
+		'lambda:ResumeMicrovm',
+		'lambda:RunMicrovm',
+		'lambda:SuspendMicrovm',
+		'lambda:TerminateMicrovm',
+	];
+	const hasWildcardMicrovmControlGrant = controllerPolicies.some(([, policy]) => {
+		const statements = policy.Properties?.PolicyDocument as { Statement?: unknown[] } | undefined;
+		if (!Array.isArray(statements?.Statement)) {
+			return false;
+		}
+		return statements.Statement.some((statement) => {
+			const typed = statement as { Action?: unknown; Resource?: unknown };
+			const actions = typeof typed.Action === 'string'
+				? [typed.Action]
+				: Array.isArray(typed.Action) ? typed.Action.filter((action): action is string => typeof action === 'string') : [];
+			const resources = typeof typed.Resource === 'string'
+				? [typed.Resource]
+				: Array.isArray(typed.Resource) ? typed.Resource.filter((resource): resource is string => typeof resource === 'string') : [];
+			return resources.some((resource) => resource === '*') &&
+				wildcardMicrovmActions.every((action) => actions.some((candidate) => candidate === action));
+		});
+	});
+	assert.ok(
+		hasWildcardMicrovmControlGrant,
+		'expected controller IAM to include an action-scoped Resource "*" supplement for Lambda MicroVM control actions',
+	);
 
 	// P52 H1.5: the controller Lambda must carry provisioned concurrency so the
 	// governed HTTP API is warm and the control plane's accept-path dispatch

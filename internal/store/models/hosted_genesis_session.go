@@ -96,10 +96,16 @@ func (s *HostedGenesisSession) UpdateKeys() error {
 	s.Status = string(hostedgenesis.NormalizeStatus(s.Status))
 	s.Model = strings.TrimSpace(s.Model)
 	s.LatestTurnID = strings.TrimSpace(s.LatestTurnID)
-	s.InputCheckpointRef = strings.TrimSpace(s.InputCheckpointRef)
-	s.AssistantCheckpointRef = strings.TrimSpace(s.AssistantCheckpointRef)
+	s.InputCheckpointRef = hostedgenesis.NormalizeCheckpointRef(s.InputCheckpointRef)
+	s.AssistantCheckpointRef = hostedgenesis.NormalizeCheckpointRef(s.AssistantCheckpointRef)
 	s.ExecutionStateRef = strings.TrimSpace(s.ExecutionStateRef)
 	s.MicroVMExecutionID = strings.TrimSpace(s.MicroVMExecutionID)
+	for i := range s.TurnLedger {
+		s.TurnLedger[i] = s.TurnLedger[i].Normalize()
+	}
+	if s.DeclarationCheckpoint != nil {
+		s.DeclarationCheckpoint.CheckpointRef = hostedgenesis.NormalizeCheckpointRef(s.DeclarationCheckpoint.CheckpointRef)
+	}
 	if s.MicroVMLifecycleRef != nil {
 		binding := s.MicroVMSessionBinding()
 		if err := s.MicroVMLifecycleRef.Validate(binding); err != nil {

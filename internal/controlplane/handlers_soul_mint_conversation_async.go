@@ -330,7 +330,7 @@ func (s *Server) persistHostedGenesisAcceptedAssistantTurn(ctx context.Context, 
 	usage := addAIUsage(session.existingUsage, result.usage)
 	progressedSession.Status = string(hostedgenesis.StatusAssistantTurnReady)
 	progressedSession.MessageCount = hostedGenesisMaxInt(progressedSession.MessageCount, len(updatedMessages))
-	progressedSession.AssistantCheckpointRef = fmt.Sprintf("checkpoint://hosted-genesis/%s/assistant/%s", progressedSession.ConversationID, session.turnID)
+	progressedSession.AssistantCheckpointRef = hostedgenesis.CheckpointRef("assistant", progressedSession.ConversationID, session.turnID)
 	progressedSession.Failure = nil
 	progressedSession.RequestID = strings.TrimSpace(requestID)
 	progressedSession.UpdatedAt = now
@@ -711,7 +711,7 @@ func applyHostedGenesisAcceptedTurnToSession(session hostedGenesisTurnSession, r
 		TurnID:             strings.TrimSpace(session.turnID),
 		IdempotencyKey:     strings.TrimSpace(req.IdempotencyKey),
 		RequestHash:        strings.TrimSpace(reqHash),
-		InputCheckpointRef: fmt.Sprintf("checkpoint://hosted-genesis/%s/input/%s", session.conversationID, session.turnID),
+		InputCheckpointRef: hostedgenesis.CheckpointRef("input", session.conversationID, session.turnID),
 		BillingLedgerRef:   fmt.Sprintf("usage://hosted-genesis/%s/%s", session.conversationID, session.turnID),
 		ChargedCredits:     soulMintConversationStreamBaseCredits,
 		MessageCount:       session.session.MessageCount + 1,

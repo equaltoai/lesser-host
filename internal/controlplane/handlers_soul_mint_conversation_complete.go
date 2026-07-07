@@ -130,7 +130,7 @@ func hostedGenesisDeclarationCheckpointForCompletion(regCtx mintConversationRegi
 	checkpoint := &hostedgenesis.DeclarationCheckpoint{
 		DeclarationID:   "decl_" + strings.TrimPrefix(hash, "sha256:")[:16],
 		DeclarationHash: hash,
-		CheckpointRef:   "checkpoint://hosted-genesis/" + strings.TrimSpace(session.ConversationID) + "/declaration/" + strings.TrimPrefix(hash, "sha256:")[:16],
+		CheckpointRef:   hostedgenesis.CheckpointRef("declaration", session.ConversationID, strings.TrimPrefix(hash, "sha256:")[:16]),
 		ProducedAt:      now.UTC(),
 		RegistrationID:  strings.TrimSpace(regCtx.reg.ID),
 		ConversationID:  strings.TrimSpace(session.ConversationID),
