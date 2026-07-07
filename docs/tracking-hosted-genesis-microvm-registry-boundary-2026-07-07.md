@@ -212,6 +212,11 @@ Validation notes:
 - QUA-3 coverage passed at 80.1% after removing generated `web/node_modules` from the local Go package view. No verifier
   threshold was weakened.
 - SEC-14 evidence was emitted for the hosted-genesis MicroVM registry boundary.
+- Lab deploy follow-up on 2026-07-07 surfaced a separate controller routing failure: the control plane correctly wired
+  the deployed controller endpoint `.../lab/microvms`, but API Gateway v2 passed `/lab/microvms` through to the
+  controller Lambda and AppTheory routes are registered at `/microvms`, producing `app.not_found` and the user-visible
+  `MicroVM execution dispatch failed`. The corrective patch normalizes the exact deployed stage path segment before
+  AppTheory routing and adds controller tests for deployed HTTP API stage paths.
 
 ### 9. Lab rollout and soak
 

@@ -135,6 +135,37 @@ func TestControllerAppRegistersAppTheoryM16Routes(t *testing.T) {
 	}
 }
 
+func TestControllerStagePathNormalizationSupportsDeployedHTTPAPIStages(t *testing.T) {
+	t.Parallel()
+	app := testControllerApp(t)
+
+	event := controllerRequestEvent("POST", "/lab/microvms", runBody("conv_stage"), true)
+	event = normalizeControllerStagePath(event, "lab")
+	if event.RawPath != "/microvms" || event.RequestContext.HTTP.Path != "/microvms" || event.RouteKey != "POST /microvms" {
+		t.Fatalf("stage normalization mismatch: route=%q raw=%q path=%q", event.RouteKey, event.RawPath, event.RequestContext.HTTP.Path)
+	}
+	response := app.ServeAPIGatewayV2(context.Background(), event)
+	if response.StatusCode != 200 {
+		t.Fatalf("expected normalized deployed-stage path to route, got %d body=%s", response.StatusCode, response.Body)
+	}
+	var payload runtimemicrovm.ControllerResponse
+	if err := json.Unmarshal([]byte(response.Body), &payload); err != nil {
+		t.Fatalf("invalid JSON response: %v body=%s", err, response.Body)
+	}
+	if payload.Command != runtimemicrovm.CommandRun || payload.SessionID != "conv_stage" {
+		t.Fatalf("unexpected normalized run response: %#v", payload)
+	}
+
+	unchanged := normalizeControllerStagePath(controllerRequestEvent("GET", "/labyrinth/microvms", "", true), "lab")
+	if unchanged.RawPath != "/labyrinth/microvms" || unchanged.RequestContext.HTTP.Path != "/labyrinth/microvms" {
+		t.Fatalf("stage normalization stripped a non-stage segment: raw=%q path=%q", unchanged.RawPath, unchanged.RequestContext.HTTP.Path)
+	}
+	root := normalizeControllerStagePath(controllerRequestEvent("GET", "/lab", "", true), "lab")
+	if root.RawPath != "/" || root.RequestContext.HTTP.Path != "/" {
+		t.Fatalf("stage root normalization mismatch: raw=%q path=%q", root.RawPath, root.RequestContext.HTTP.Path)
+	}
+}
+
 func TestControllerRunTurnRouteFailsClosedForMalformedOrIncompleteBinding(t *testing.T) {
 	t.Parallel()
 	app := testControllerApp(t)
@@ -402,6 +433,10 @@ func invoke(t *testing.T, app interface {
 	ServeAPIGatewayV2(context.Context, events.APIGatewayV2HTTPRequest) events.APIGatewayV2HTTPResponse
 }, method string, path string, body string, authorized bool) events.APIGatewayV2HTTPResponse {
 	t.Helper()
+	return app.ServeAPIGatewayV2(context.Background(), controllerRequestEvent(method, path, body, authorized))
+}
+
+func controllerRequestEvent(method string, path string, body string, authorized bool) events.APIGatewayV2HTTPRequest {
 	headers := map[string]string{
 		"content-type":   "application/json",
 		"x-request-id":   "req-route",
@@ -411,7 +446,7 @@ func invoke(t *testing.T, app interface {
 	if authorized {
 		headers["authorization"] = "Bearer lab-token"
 	}
-	return app.ServeAPIGatewayV2(context.Background(), events.APIGatewayV2HTTPRequest{
+	return events.APIGatewayV2HTTPRequest{
 		RouteKey: method + " " + path,
 		RawPath:  path,
 		RequestContext: events.APIGatewayV2HTTPRequestContext{
@@ -423,7 +458,7 @@ func invoke(t *testing.T, app interface {
 		},
 		Headers: headers,
 		Body:    body,
-	})
+	}
 }
 
 func runBody(sessionID string) string {
