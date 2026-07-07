@@ -516,6 +516,42 @@ export function configureHostedGenesisMicrovm(
     );
   }
 
+  // P52 H1.5: provisioned concurrency on the controller Lambda keeps the
+  // governed HTTP API warm so the control plane's accept-path dispatch
+  // (POST /microvms) meets the <2s budget without a controller cold-start hit.
+  // currentVersionOptions alone does not publish a version/alias at synth time
+  // (CDK only materializes them when currentVersion is referenced), so publish
+  // an explicit alias carrying provisioned concurrency. The controller Lambda
+  // itself is created by the AppTheoryMicrovmController construct from the
+  // caller-supplied FunctionProps; this alias is the CDK-supported way to add
+  // provisioned concurrency to a Function constructed elsewhere.
+  const controllerVersion = controller.controllerFunction.currentVersion;
+  new lambda.Alias(scope, "HostedGenesisMicrovmControllerAlias", {
+    aliasName: "provisioned",
+    version: controllerVersion,
+    provisionedConcurrentExecutions: 1,
+  });
+
+  // P52 H1.5: grant the control-plane Lambda ssm:GetParameter on the authorizer
+  // bearer-token SecureString + inject the controller endpoint + auth-token SSM
+  // param name + image/network-connector refs env vars so controlplane.NewServer
+  // can construct the HTTPControllerDispatcher. The control plane never receives
+  // MicroVM IAM or session-registry access — it only speaks HTTP to the
+  // governed controller API with the authorizer bearer token (loaded from SSM
+  // at runtime, never committed or logged). Fail-closed auth on the controller
+  // routes is unaffected.
+  if (props.controlPlaneFunction) {
+    grantControlPlaneMicroVMDispatch(
+      scope,
+      props.controlPlaneFunction,
+      controller.endpoint,
+      microvmImage.getAtt("ImageArn").toString(),
+      [ingressConnector.networkConnectorArn],
+      [egressConnector.networkConnectorArn],
+      authTokenSSMParam,
+    );
+  }
+
   new cdk.CfnOutput(scope, "HostedGenesisMicrovmControllerEndpoint", {
     value: controller.endpoint,
     description:
