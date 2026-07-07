@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -88,6 +89,25 @@ func TestControllerEventGateNoLongerLabOnly(t *testing.T) {
 	}
 }
 
+func TestRuntimeControllerUsesHostOwnedMicroVMRegistry(t *testing.T) {
+	t.Parallel()
+	src := mustReadControllerSource(t, "main.go")
+	if strings.Contains(src, "tabletheory.LambdaInit(&runtimemicrovm.SessionRegistryRecord{})") ||
+		strings.Contains(src, "NewTableTheorySessionRegistry") ||
+		strings.Contains(src, "runtimemicrovm.NewMemorySessionRegistry()") {
+		t.Fatalf("hosted-genesis controller must use Host's cache adapter, not the generic AppTheory TableTheory or in-memory registry")
+	}
+	if strings.Contains(src, "github.com/theory-cloud/tabletheory") {
+		t.Fatalf("hosted-genesis controller must not import TableTheory directly; store owns the TableTheory boundary")
+	}
+	if !strings.Contains(src, "store.NewHostedGenesisMicroVMRegistry") {
+		t.Fatalf("expected controller to use the Host-owned MicroVM registry adapter")
+	}
+	if !strings.Contains(src, "HostedGenesisMicroVMReconstructionHook") {
+		t.Fatalf("expected missing/stale MicroVM registry cache to reconstruct from Host HostedGenesisSession truth")
+	}
+}
+
 func TestControllerAppRegistersAppTheoryM16Routes(t *testing.T) {
 	t.Parallel()
 	app := testControllerApp(t)
@@ -113,6 +133,23 @@ func TestControllerAppRegistersAppTheoryM16Routes(t *testing.T) {
 			assertControllerRoute(t, app, route)
 		})
 	}
+}
+
+func TestControllerRunTurnRouteFailsClosedForMalformedOrIncompleteBinding(t *testing.T) {
+	t.Parallel()
+	app := testControllerApp(t)
+
+	malformed := invoke(t, app, "POST", "/microvms", "{", true)
+	if malformed.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected malformed run-turn request to fail with 400, got %d body=%s", malformed.StatusCode, malformed.Body)
+	}
+	assertControllerSafeError(t, malformed, runtimemicrovm.ErrorCodeInvalidControllerRequest)
+
+	incomplete := invoke(t, app, "POST", "/microvms", `{}`, true)
+	if incomplete.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected incomplete run-turn binding to fail with 400, got %d body=%s", incomplete.StatusCode, incomplete.Body)
+	}
+	assertControllerSafeError(t, incomplete, runtimemicrovm.ErrorCodeInvalidControllerRequest)
 }
 
 type microVMRouteCase struct {
@@ -162,6 +199,17 @@ func assertTokenResponseSanitized(t *testing.T, got runtimemicrovm.ControllerRes
 	}
 }
 
+func assertControllerSafeError(t *testing.T, response events.APIGatewayV2HTTPResponse, code string) {
+	t.Helper()
+	var payload runtimemicrovm.ControllerResponse
+	if err := json.Unmarshal([]byte(response.Body), &payload); err != nil {
+		t.Fatalf("invalid JSON response: %v body=%s", err, response.Body)
+	}
+	if payload.Error == nil || payload.Error.Code != code {
+		t.Fatalf("expected safe error %q, got %#v", code, payload.Error)
+	}
+}
+
 func TestControllerAuthHookRequiresHashedBearerAndTenantHeaders(t *testing.T) {
 	t.Parallel()
 	getenv := func(key string) string {
@@ -178,6 +226,61 @@ func TestControllerAuthHookRequiresHashedBearerAndTenantHeaders(t *testing.T) {
 	}
 	if bearerMatchesHash("lab-token", getenv("HOSTED_GENESIS_MICROVM_AUTH_TOKEN_SHA256")) {
 		t.Fatal("expected missing bearer prefix to fail")
+	}
+}
+
+func TestControllerCSVAndFirstStringNormalize(t *testing.T) {
+	t.Parallel()
+
+	if got := firstString([]string{"", "  ", " egress-ref ", "other"}); got != "egress-ref" {
+		t.Fatalf("firstString trimmed first non-empty value incorrectly: %q", got)
+	}
+	if got := firstString(nil); got != "" {
+		t.Fatalf("firstString nil = %q, want empty", got)
+	}
+	if got := csv(" ingress-ref, ,egress-ref "); len(got) != 2 || got[0] != "ingress-ref" || got[1] != "egress-ref" {
+		t.Fatalf("csv normalization mismatch: %#v", got)
+	}
+	if got := csv(""); len(got) != 0 {
+		t.Fatalf("csv empty = %#v, want none", got)
+	}
+}
+
+func TestControllerHTTPStatusMapping(t *testing.T) {
+	t.Parallel()
+
+	requireStatus := func(code string, want int) {
+		t.Helper()
+		if got := controllerHTTPStatus(&runtimemicrovm.SafeError{Code: code}); got != want {
+			t.Fatalf("controllerHTTPStatus(%q) = %d, want %d", code, got, want)
+		}
+	}
+	if got := controllerHTTPStatus(nil); got != http.StatusOK {
+		t.Fatalf("nil safe error status = %d, want 200", got)
+	}
+	requireStatus(runtimemicrovm.ErrorCodeUnauthenticatedController, http.StatusUnauthorized)
+	requireStatus(runtimemicrovm.ErrorCodeTenantBindingViolation, http.StatusForbidden)
+	requireStatus(runtimemicrovm.ErrorCodeSessionRegistryIncomplete, http.StatusNotFound)
+	requireStatus(runtimemicrovm.ErrorCodeControllerIncomplete, http.StatusInternalServerError)
+	requireStatus(runtimemicrovm.ErrorCodeControllerCommandFailed, http.StatusBadGateway)
+	requireStatus(runtimemicrovm.ErrorCodeProviderOperationFailed, http.StatusBadGateway)
+	requireStatus("other", http.StatusBadRequest)
+}
+
+func TestControllerRunTurnSafeErrorHelpers(t *testing.T) {
+	t.Parallel()
+
+	safe := runTurnSafeError(errors.New(" provider failed "), " req-123 ")
+	if safe.Code != runtimemicrovm.ErrorCodeControllerCommandFailed || safe.RequestID != "req-123" || safe.Message != "provider failed" {
+		t.Fatalf("unexpected run-turn safe error: %#v", safe)
+	}
+	resp := runTurnErrorResponse(" req-123 ", safe)
+	if resp.Command != runtimemicrovm.CommandRun || resp.RequestID != "req-123" || resp.Error != safe {
+		t.Fatalf("unexpected run-turn error response: %#v", resp)
+	}
+	microvmErr := safeErrorMicrovm(" code ", " message ")
+	if microvmErr.Code != " code " || microvmErr.Message != " message " {
+		t.Fatalf("safeErrorMicrovm should preserve exact framework code/message: %#v", microvmErr)
 	}
 }
 

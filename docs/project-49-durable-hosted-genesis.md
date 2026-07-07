@@ -44,6 +44,25 @@ introduced. The Lesser instance-key hosted-genesis route family now treats the H
 The M0 AppTheory MicroVM decision is preserved: no raw-AWS MicroVM substitute or local framework fork is introduced in
 this milestone.
 
+### Hosted-genesis MicroVM registry boundary (2026-07-07 corrective)
+
+The deployed controller uses a Host-owned operational cache model, `HostedGenesisMicroVMExecution`, behind
+`store.NewHostedGenesisMicroVMRegistry`. The adapter implements AppTheory's `SessionRegistry` and
+`SessionRegistryLister` interfaces while keeping TableTheory keys derived inside Host's store/model boundary.
+
+`HostedGenesisSession` remains source truth. The registry adapter stores only safe AppTheory `SessionRecord` fields
+needed for MicroVM lifecycle operations; it never stores raw bearer tokens, provider secrets, raw Instance API keys,
+wallet signatures, SSM values, AWS credentials, or raw transcripts. When a cache row is absent or stale,
+`microvm.NewReconstructingSessionRegistry` invokes Host's `HostedGenesisMicroVMReconstructionHook` to reconstruct the
+execution/cache envelope from `HostedGenesisSession` and writes the reconstructed record back through Host's cache
+adapter.
+
+The rejected pattern is initializing TableTheory with AppTheory's generic `runtimemicrovm.SessionRegistryRecord` or
+calling `NewTableTheorySessionRegistry` in deployed Host code. That framework-generic model uses snake_case attribute
+shape and exposes table-row concerns that do not belong at Host's controller/domain boundary. Controller list/delete
+routes remain fully implemented through the Host adapter; deleting a registry row removes only operational cache and
+does not delete `HostedGenesisSession` truth.
+
 ### Worker and retry model (M4 demoted)
 
 Hosted-genesis SQS may remain available for operator/backfill/janitor recovery, but the control plane no longer receives

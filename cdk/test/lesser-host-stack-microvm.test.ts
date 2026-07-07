@@ -360,6 +360,9 @@ test('hosted genesis AppTheory MicroVM deployed-stage wiring uses AppTheory cons
 		'lambda:PassNetworkConnector',
 		'dynamodb:GetItem',
 		'dynamodb:Query',
+		'dynamodb:PutItem',
+		'dynamodb:UpdateItem',
+		'dynamodb:DeleteItem',
 	]) {
 		assert.ok(controllerPolicyJson.includes(action), `expected controller IAM to include ${action}`);
 	}
