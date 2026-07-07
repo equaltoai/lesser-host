@@ -3,12 +3,15 @@ package hostedgenesis
 import (
 	"context"
 	"errors"
+	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/lambdamicrovms"
 	lambdatypes "github.com/aws/aws-sdk-go-v2/service/lambdamicrovms/types"
+	"github.com/aws/smithy-go"
 	runtimemicrovm "github.com/theory-cloud/apptheory/runtime/microvm"
 )
 
@@ -68,7 +71,7 @@ func (p *noRunHookAWSLambdaMicroVMProvider) Run(ctx context.Context, input runti
 		MaximumDurationInSeconds: optionalInt32(input.MaximumDurationSeconds),
 	})
 	if err != nil {
-		return runtimemicrovm.ProviderSession{}, providerOperationFailed(input.RequestID)
+		return runtimemicrovm.ProviderSession{}, providerOperationFailedFromError(input.RequestID, err)
 	}
 	return noRunHookSessionFromRunOutput(input, out)
 }
@@ -235,6 +238,26 @@ func providerOperationFailed(requestID string) runtimemicrovm.SafeError {
 		Message:   "apptheory: microvm provider operation failed",
 		RequestID: strings.TrimSpace(requestID),
 	}
+}
+
+func providerOperationFailedFromError(requestID string, err error) runtimemicrovm.SafeError {
+	requestID = strings.TrimSpace(requestID)
+	attrs := []any{slog.String("request_id", requestID)}
+	var apiErr smithy.APIError
+	if errors.As(err, &apiErr) {
+		attrs = append(attrs,
+			slog.String("aws_error_code", strings.TrimSpace(apiErr.ErrorCode())),
+			slog.String("aws_error_message", strings.TrimSpace(apiErr.ErrorMessage())),
+			slog.String("aws_error_fault", fmt.Sprint(apiErr.ErrorFault())),
+		)
+	} else if err != nil {
+		attrs = append(attrs,
+			slog.String("error_type", fmt.Sprintf("%T", err)),
+			slog.String("error", strings.TrimSpace(err.Error())),
+		)
+	}
+	slog.Error("hosted genesis microvm provider run failed", attrs...)
+	return providerOperationFailed(requestID)
 }
 
 func withSafeRequestID(err error, requestID string) error {
