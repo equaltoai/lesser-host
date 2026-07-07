@@ -172,7 +172,7 @@ func persistHostedGenesisAssistantResponse(ctx context.Context, st hostedGenesis
 	}
 	session.Status = string(hostedgenesis.StatusAssistantTurnReady)
 	session.MessageCount = maxInt(session.MessageCount, messageCount)
-	session.AssistantCheckpointRef = fmt.Sprintf("checkpoint://hosted-genesis/%s/assistant/%s", session.ConversationID, msg.TurnID)
+	session.AssistantCheckpointRef = hostedgenesis.CheckpointRef("assistant", session.ConversationID, msg.TurnID)
 	session.RequestID = conv.RequestID
 	session.UpdatedAt = now
 	return st.UpdateHostedGenesisSession(ctx, session, session.Version, hostedgenesis.StatusInProgress)
@@ -453,7 +453,7 @@ func hostedGenesisDeclarationCheckpointFromWorker(session *models.HostedGenesisS
 	return hostedgenesis.DeclarationCheckpoint{
 		DeclarationID:   "decl_" + hashHex[:16],
 		DeclarationHash: "sha256:" + hashHex,
-		CheckpointRef:   "checkpoint://hosted-genesis/" + strings.TrimSpace(conv.ConversationID) + "/declaration/" + hashHex[:16],
+		CheckpointRef:   hostedgenesis.CheckpointRef("declaration", conv.ConversationID, hashHex[:16]),
 		ProducedAt:      now.UTC(),
 		RegistrationID:  strings.TrimSpace(registrationID),
 		ConversationID:  strings.TrimSpace(conv.ConversationID),

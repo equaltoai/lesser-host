@@ -205,7 +205,7 @@ func (r *turnRunner) buildDeclarationCheckpoint(turn completion.CompletionTurn, 
 	return hostedgenesis.DeclarationCheckpoint{
 		DeclarationID:   declarationID,
 		DeclarationHash: declarationHash,
-		CheckpointRef:   fmt.Sprintf("checkpoint://hosted-genesis/%s/declaration/%s", in.session.ConversationID, turn.TurnID),
+		CheckpointRef:   hostedgenesis.CheckpointRef("declaration", in.session.ConversationID, turn.TurnID),
 		ProducedAt:      now,
 		RegistrationID:  in.session.RegistrationID,
 		ConversationID:  in.session.ConversationID,

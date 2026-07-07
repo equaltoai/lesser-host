@@ -479,6 +479,9 @@ export function configureHostedGenesisMicrovm(
     },
   );
   props.stateTable.grantReadWriteData(controller.controllerFunction);
+  grantHostedGenesisMicrovmControllerRunPermissions(
+    controller.controllerFunction,
+  );
 
   // P52 H1.5: provisioned concurrency on the controller Lambda keeps the
   // governed HTTP API warm so the control plane's accept-path dispatch
@@ -551,6 +554,36 @@ export function configureHostedGenesisMicrovm(
   });
 
   return { enabled: true, controller };
+}
+
+function grantHostedGenesisMicrovmControllerRunPermissions(
+  fn: lambda.Function,
+): void {
+  // 2026-07-07 lab evidence: AppTheory v1.15.2 grants these Lambda MicroVM
+  // control-plane actions on `arn:...:microvm:*`, but IAM policy simulation for
+  // the deployed lab controller role evaluates `lambda:RunMicrovm` as
+  // implicitDeny for that resource shape. The Lambda MicroVM service currently
+  // behaves like permission-only control actions here, so Host adds a narrowly
+  // action-scoped wildcard-resource supplement until the framework grant can be
+  // corrected upstream. This does NOT widen iam:PassRole (still scoped by the
+  // AppTheory construct to the host-owned execution role) and does NOT give the
+  // browser/control plane MicroVM IAM; only the fail-closed controller Lambda can
+  // use these actions.
+  fn.addToRolePolicy(
+    new iam.PolicyStatement({
+      sid: "HostedGenesisMicrovmControlPlaneWildcard",
+      actions: [
+        "lambda:CreateMicrovmAuthToken",
+        "lambda:CreateMicrovmShellAuthToken",
+        "lambda:GetMicrovm",
+        "lambda:ResumeMicrovm",
+        "lambda:RunMicrovm",
+        "lambda:SuspendMicrovm",
+        "lambda:TerminateMicrovm",
+      ],
+      resources: ["*"],
+    }),
+  );
 }
 
 // grantControlPlaneMicroVMDispatch grants the control-plane Lambda the

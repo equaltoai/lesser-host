@@ -139,7 +139,7 @@ func (w *CompletionWriter) RecordAssistantTurnReady(ctx context.Context, turn Co
 	progressed := cloneSessionForCompletion(session)
 	progressed.Status = string(hostedgenesis.StatusAssistantTurnReady)
 	progressed.MessageCount = maxInt(progressed.MessageCount, completion.MessageCount)
-	progressed.AssistantCheckpointRef = fmt.Sprintf("checkpoint://hosted-genesis/%s/assistant/%s", progressed.ConversationID, turn.TurnID)
+	progressed.AssistantCheckpointRef = hostedgenesis.CheckpointRef("assistant", progressed.ConversationID, turn.TurnID)
 	progressed.Failure = nil
 	progressed.RequestID = strings.TrimSpace(turn.RequestID)
 	progressed.UpdatedAt = now
