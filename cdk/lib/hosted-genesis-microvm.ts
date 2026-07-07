@@ -478,7 +478,7 @@ export function configureHostedGenesisMicrovm(
       },
     },
   );
-  props.stateTable.grantReadData(controller.controllerFunction);
+  props.stateTable.grantReadWriteData(controller.controllerFunction);
 
   // P52 H1.5: provisioned concurrency on the controller Lambda keeps the
   // governed HTTP API warm so the control plane's accept-path dispatch

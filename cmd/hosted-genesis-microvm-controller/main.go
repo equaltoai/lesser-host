@@ -18,7 +18,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/lambdamicrovms"
 	apptheory "github.com/theory-cloud/apptheory/runtime"
 	runtimemicrovm "github.com/theory-cloud/apptheory/runtime/microvm"
-	"github.com/theory-cloud/tabletheory"
 
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
 	"github.com/equaltoai/lesser-host/internal/observability"
@@ -76,15 +75,18 @@ func newRuntimeController(ctx context.Context, getenv getenvFunc) (*hostedgenesi
 	if getenv == nil {
 		getenv = os.Getenv
 	}
-	registryDB, err := tabletheory.LambdaInit(&runtimemicrovm.SessionRegistryRecord{})
-	if err != nil {
-		return nil, err
-	}
-	registry, err := runtimemicrovm.NewTableTheorySessionRegistry(registryDB)
-	if err != nil {
-		return nil, err
-	}
+	// Host's durable business truth for hosted genesis is
+	// models.HostedGenesisSession in the Host state table. The AppTheory
+	// controller registry is only operational cache for the MicroVM lifecycle
+	// envelope. Persist that cache through Host's repo-owned, camelCase
+	// HostedGenesisMicroVMExecution model and adapter; missing/stale cache is
+	// reconstructed from HostedGenesisSession truth below.
 	stateDB, err := store.LambdaInit()
+	if err != nil {
+		return nil, err
+	}
+	stateStore := store.New(stateDB)
+	registry, err := store.NewHostedGenesisMicroVMRegistry(stateStore)
 	if err != nil {
 		return nil, err
 	}
@@ -107,7 +109,7 @@ func newRuntimeController(ctx context.Context, getenv getenvFunc) (*hostedgenesi
 			getenv("APPTHEORY_MICROVM_INGRESS_NETWORK_CONNECTOR_REFS"),
 		),
 		EgressNetworkConnectorRefs: egressRefs,
-		ReconstructionHook: store.New(stateDB).HostedGenesisMicroVMReconstructionHook(store.HostedGenesisMicroVMReconstructionConfig{
+		ReconstructionHook: stateStore.HostedGenesisMicroVMReconstructionHook(store.HostedGenesisMicroVMReconstructionConfig{
 			ImageRef:                    imageRef,
 			NetworkConnectorRef:         networkConnectorRef,
 			IngressNetworkConnectorRefs: csv(getenv("APPTHEORY_MICROVM_INGRESS_NETWORK_CONNECTOR_REFS")),

@@ -60,7 +60,7 @@ This PR does **not** deploy, run a cloud canary, mutate SSM/Secrets, sign transa
 
 ## Truth layering
 
-`HostedGenesisSession` remains Host business/source truth for user-visible status, idempotency, billing, declaration checkpoints, recovery, and publish/finalize gates. The AppTheory MicroVM session registry and `MicroVMLifecycleRef` are execution/cache state only and can be reconstructed from Host state through `microvm.SessionReconstructionHook` / `microvm.NewReconstructingSessionRegistry`.
+`HostedGenesisSession` remains Host business/source truth for user-visible status, idempotency, billing, declaration checkpoints, recovery, and publish/finalize gates. The MicroVM registry surface is operational cache only: Host stores it in the repo-owned `HostedGenesisMicroVMExecution` TableTheory model through `store.NewHostedGenesisMicroVMRegistry`, and `MicroVMLifecycleRef` remains the compact execution/cache reference on the source-truth session. Missing or stale cache is reconstructed from `HostedGenesisSession` through `microvm.SessionReconstructionHook` / `microvm.NewReconstructingSessionRegistry`, then written back through the Host-owned cache adapter. Host deployed code must not persist AppTheory's generic `runtimemicrovm.SessionRegistryRecord`, call `NewTableTheorySessionRegistry`, or expose direct `PK`/`SK` table-key mapping at the controller boundary.
 
 ## Framework adoption status
 

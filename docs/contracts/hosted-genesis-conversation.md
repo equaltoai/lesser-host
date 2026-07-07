@@ -37,8 +37,10 @@ the Lesser instance-key path.
 ## Host-owned source-of-truth row
 
 Milestone A introduces `HostedGenesisSession` as the Host DynamoDB/TableTheory business record for hosted/off-chain
-genesis. AppTheory MicroVM session registry, memory, disk, and lifecycle data are execution/cache state only; they are
-reconstructible from the Host row and never become the user-visible source of truth.
+genesis. MicroVM session registry, memory, disk, and lifecycle data are execution/cache state only; they are
+reconstructible from the Host row and never become the user-visible source of truth. Host persists registry cache through
+the repo-owned `HostedGenesisMicroVMExecution` model and `store.NewHostedGenesisMicroVMRegistry` adapter, not through
+AppTheory's generic `runtimemicrovm.SessionRegistryRecord` TableTheory model.
 
 Key shape and tenancy rules:
 
@@ -67,10 +69,10 @@ same request hash replays the existing turn and must not append another user tur
 `latest_turn_id`, enqueue duplicate user-visible work, or debit credits again. A retry with the same idempotency key and
 a different request hash fails closed as an idempotency conflict.
 
-SQS, AppTheory MicroVM registry/cache state, AI-worker delivery, and HTTP/SSE transport state are reconstructible
+SQS, Host-owned MicroVM registry/cache state, AI-worker delivery, and HTTP/SSE transport state are reconstructible
 execution details. They do not determine user-visible progress, retry, finalize readiness, or billing state. If queue
-delivery is missing or stale, status remains the compact `HostedGenesisSession` projection and retry/finalize decisions
-continue to fail closed from that Host row.
+delivery or MicroVM cache is missing or stale, status remains the compact `HostedGenesisSession` projection and
+retry/finalize decisions continue to fail closed from that Host row.
 
 ## HostConversation envelope
 

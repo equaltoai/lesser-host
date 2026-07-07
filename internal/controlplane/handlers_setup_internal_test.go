@@ -88,14 +88,15 @@ func TestParseSetupCreateAdminRequestInput_RejectsUnsafeManagedUsernames(t *test
 }
 
 type setupTestDB struct {
-	db           *ttmocks.MockExtendedDB
-	qCP          *ttmocks.MockQuery
-	qSetup       *ttmocks.MockQuery
-	qWallet      *ttmocks.MockQuery
-	qWalletIndex *ttmocks.MockQuery
-	qUser        *ttmocks.MockQuery
-	qCred        *ttmocks.MockQuery
-	qAudit       *ttmocks.MockQuery
+	db            *ttmocks.MockExtendedDB
+	qCP           *ttmocks.MockQuery
+	qSetup        *ttmocks.MockQuery
+	qWallet       *ttmocks.MockQuery
+	qWalletIndex  *ttmocks.MockQuery
+	qUser         *ttmocks.MockQuery
+	qCred         *ttmocks.MockQuery
+	qWebAuthnCred *ttmocks.MockQuery
+	qAudit        *ttmocks.MockQuery
 }
 
 func newSetupTestDB() setupTestDB {
@@ -106,6 +107,7 @@ func newSetupTestDB() setupTestDB {
 	qWalletIndex := new(ttmocks.MockQuery)
 	qUser := new(ttmocks.MockQuery)
 	qCred := new(ttmocks.MockQuery)
+	qWebAuthnCred := new(ttmocks.MockQuery)
 	qAudit := new(ttmocks.MockQuery)
 
 	db.On("WithContext", mock.Anything).Return(db).Maybe()
@@ -115,9 +117,10 @@ func newSetupTestDB() setupTestDB {
 	db.On("Model", mock.AnythingOfType("*models.WalletIndex")).Return(qWalletIndex).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.User")).Return(qUser).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.WalletCredential")).Return(qCred).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.WebAuthnCredential")).Return(qWebAuthnCred).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.AuditLogEntry")).Return(qAudit).Maybe()
 
-	for _, q := range []*ttmocks.MockQuery{qCP, qSetup, qWallet, qWalletIndex, qUser, qCred, qAudit} {
+	for _, q := range []*ttmocks.MockQuery{qCP, qSetup, qWallet, qWalletIndex, qUser, qCred, qWebAuthnCred, qAudit} {
 		q.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(q).Maybe()
 		q.On("Limit", mock.Anything).Return(q).Maybe()
 		q.On("IfNotExists").Return(q).Maybe()
@@ -131,14 +134,15 @@ func newSetupTestDB() setupTestDB {
 	}
 
 	return setupTestDB{
-		db:           db,
-		qCP:          qCP,
-		qSetup:       qSetup,
-		qWallet:      qWallet,
-		qWalletIndex: qWalletIndex,
-		qUser:        qUser,
-		qCred:        qCred,
-		qAudit:       qAudit,
+		db:            db,
+		qCP:           qCP,
+		qSetup:        qSetup,
+		qWallet:       qWallet,
+		qWalletIndex:  qWalletIndex,
+		qUser:         qUser,
+		qCred:         qCred,
+		qWebAuthnCred: qWebAuthnCred,
+		qAudit:        qAudit,
 	}
 }
 
@@ -417,6 +421,10 @@ func TestHandleSetupCreateAdmin_AndFinalize_Success(t *testing.T) {
 	}).Once()
 	tdb.qCP.On("CreateOrUpdate").Return(nil).Once()
 	tdb.qAudit.On("Create").Return(nil).Once()
+	tdb.qWebAuthnCred.On("All", mock.AnythingOfType("*[]*models.WebAuthnCredential")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.WebAuthnCredential](t, args, 0)
+		*dest = []*models.WebAuthnCredential{{ID: "cred1", UserID: testUsernameAlice}}
+	}).Once()
 
 	ctx2 := &apptheory.Context{AuthIdentity: testUsernameAlice, RequestID: "rid2"}
 	ctx2.Set(ctxKeyOperatorRole, models.RoleAdmin)
@@ -427,6 +435,54 @@ func TestHandleSetupCreateAdmin_AndFinalize_Success(t *testing.T) {
 	if resp.Status != 200 {
 		t.Fatalf("expected 200, got %d", resp.Status)
 	}
+}
+
+func TestHandleSetupCreateAdmin_RejectsBootstrapWalletAsPrimaryAdmin(t *testing.T) {
+	t.Parallel()
+
+	tdb := newSetupTestDB()
+	_, bootstrapAddr := generateWalletKey(t)
+	s := &Server{cfg: config.Config{BootstrapWalletAddress: strings.ToUpper(bootstrapAddr)}, store: store.New(tdb.db)}
+
+	tdb.qCP.On("First", mock.AnythingOfType("*models.ControlPlaneConfig")).Return(theoryErrors.ErrItemNotFound).Once()
+	tdb.qSetup.On("First", mock.AnythingOfType("*models.SetupSession")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SetupSession](t, args, 0)
+		*dest = models.SetupSession{
+			ID:         "setup-token",
+			Purpose:    setupPurposeBootstrap,
+			WalletAddr: strings.ToLower(bootstrapAddr),
+			IssuedAt:   time.Now().UTC(),
+			ExpiresAt:  time.Now().UTC().Add(1 * time.Hour),
+		}
+		_ = dest.UpdateKeys()
+	}).Once()
+
+	body, _ := json.Marshal(setupCreateAdminRequest{
+		Username:    testUsernameAlice,
+		DisplayName: "Alice",
+		Wallet: walletVerifyRequest{
+			ChallengeID: "wc1",
+			Address:     strings.ToLower(bootstrapAddr),
+			Signature:   "sig",
+			Message:     "msg",
+		},
+	})
+
+	resp, err := s.handleSetupCreateAdmin(&apptheory.Context{
+		Request: apptheory.Request{Body: body, Headers: map[string][]string{"authorization": {"Bearer setup-token"}}},
+	})
+	if resp != nil {
+		t.Fatalf("expected no response, got %#v", resp)
+	}
+	appErr, ok := err.(*apptheory.AppError)
+	if !ok {
+		t.Fatalf("expected *apptheory.AppError, got %T: %v", err, err)
+	}
+	if appErr.Code != appErrCodeForbidden || !strings.Contains(appErr.Message, "one-time setup authority") {
+		t.Fatalf("expected explicit forbidden bootstrap wallet error, got %#v", appErr)
+	}
+	tdb.qWallet.AssertNotCalled(t, "First", mock.Anything)
+	tdb.qUser.AssertNotCalled(t, "Create")
 }
 
 func TestValidateSetupCreateAdminState_ConflictsAndUnauthorized(t *testing.T) {
@@ -560,6 +616,37 @@ func TestHandleSetupFinalize_ForbiddenForNonAdminAndNonPrimary(t *testing.T) {
 	ctx2.Set(ctxKeyOperatorRole, models.RoleAdmin)
 	if _, err := s.handleSetupFinalize(ctx2); err == nil {
 		t.Fatalf("expected forbidden for non-primary admin")
+	}
+}
+
+func TestHandleSetupFinalize_RequiresPrimaryAdminPasskey(t *testing.T) {
+	t.Parallel()
+
+	tdb := newSetupTestDB()
+	s := &Server{store: store.New(tdb.db)}
+
+	tdb.qCP.On("First", mock.AnythingOfType("*models.ControlPlaneConfig")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.ControlPlaneConfig](t, args, 0)
+		*dest = models.ControlPlaneConfig{PrimaryAdminUsername: testUsernameAlice}
+		_ = dest.UpdateKeys()
+	}).Once()
+	tdb.qWebAuthnCred.On("All", mock.AnythingOfType("*[]*models.WebAuthnCredential")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.WebAuthnCredential](t, args, 0)
+		*dest = nil
+	}).Once()
+
+	ctx := &apptheory.Context{AuthIdentity: testUsernameAlice, RequestID: "rid"}
+	ctx.Set(ctxKeyOperatorRole, models.RoleAdmin)
+	resp, err := s.handleSetupFinalize(ctx)
+	if resp != nil {
+		t.Fatalf("expected no response, got %#v", resp)
+	}
+	appErr, ok := err.(*apptheory.AppError)
+	if !ok {
+		t.Fatalf("expected *apptheory.AppError, got %T: %v", err, err)
+	}
+	if appErr.Code != appErrCodeConflict || !strings.Contains(appErr.Message, "passkey is required") {
+		t.Fatalf("expected passkey conflict, got %#v", appErr)
 	}
 }
 

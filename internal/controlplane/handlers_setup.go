@@ -521,6 +521,18 @@ func (s *Server) verifySetupCreateAdminWallet(ctx *apptheory.Context, username s
 	return adminWalletAddr, challenge.ChainID, nil
 }
 
+func (s *Server) rejectBootstrapWalletAsSetupAdmin(walletAddr string) *apptheory.AppError {
+	bootstrapWallet := strings.ToLower(strings.TrimSpace(s.cfg.BootstrapWalletAddress))
+	adminWallet := strings.ToLower(strings.TrimSpace(walletAddr))
+	if bootstrapWallet == "" || adminWallet == "" || adminWallet != bootstrapWallet {
+		return nil
+	}
+	return &apptheory.AppError{
+		Code:    "app.forbidden",
+		Message: "bootstrap wallet is one-time setup authority and cannot be the primary admin wallet",
+	}
+}
+
 func (s *Server) createSetupAdminUser(ctx *apptheory.Context, username string, displayName string, now time.Time) *apptheory.AppError {
 	user := &models.User{
 		Username:       strings.TrimSpace(username),
@@ -589,6 +601,10 @@ func (s *Server) handleSetupCreateAdmin(ctx *apptheory.Context) (*apptheory.Resp
 		return nil, appErr
 	}
 
+	if bootstrapAdminErr := s.rejectBootstrapWalletAsSetupAdmin(req.Wallet.Address); bootstrapAdminErr != nil {
+		return nil, bootstrapAdminErr
+	}
+
 	adminWalletAddr, chainID, appErr := s.verifySetupCreateAdminWallet(ctx, req.Username, req.Wallet)
 	if appErr != nil {
 		return nil, appErr
@@ -622,6 +638,20 @@ func (s *Server) handleSetupCreateAdmin(ctx *apptheory.Context) (*apptheory.Resp
 	return apptheory.JSON(http.StatusCreated, setupCreateAdminResponse{Username: req.Username})
 }
 
+func (s *Server) requirePrimaryAdminPasskey(ctx *apptheory.Context, username string) *apptheory.AppError {
+	creds, err := s.listUserWebAuthnCredentials(ctx, username)
+	if err != nil {
+		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	if len(creds) == 0 {
+		return &apptheory.AppError{
+			Code:    "app.conflict",
+			Message: "primary admin passkey is required before finalize",
+		}
+	}
+	return nil
+}
+
 func (s *Server) handleSetupFinalize(ctx *apptheory.Context) (*apptheory.Response, error) {
 	locked, cfg, err := s.controlPlaneLocked(ctx)
 	if err != nil {
@@ -644,6 +674,9 @@ func (s *Server) handleSetupFinalize(ctx *apptheory.Context) (*apptheory.Respons
 	}
 	if username != strings.TrimSpace(cfg.PrimaryAdminUsername) {
 		return nil, &apptheory.AppError{Code: "app.forbidden", Message: "only the primary admin can finalize"}
+	}
+	if appErr := s.requirePrimaryAdminPasskey(ctx, username); appErr != nil {
+		return nil, appErr
 	}
 
 	now := time.Now().UTC()

@@ -27,6 +27,7 @@ func LambdaInit() (DB, error) {
 		&models.Domain{},
 		&models.ExternalInstanceRegistration{},
 		&models.HostedGenesisSession{},
+		&models.HostedGenesisMicroVMExecution{},
 		&models.SetupSession{},
 		&models.TipHostRegistration{},
 		&models.TipHostState{},

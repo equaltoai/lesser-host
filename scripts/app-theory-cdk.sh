@@ -33,6 +33,28 @@ script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 repo_root="$(cd "$script_dir/.." && pwd -P)"
 cdk_dir="$repo_root/cdk"
 
+bootstrap_wallet_helper() {
+  (cd "$repo_root" && go run ./scripts/bootstrap-wallet "$@")
+}
+
+resolve_bootstrap_wallet_override() {
+  local configured_address="${BOOTSTRAP_WALLET_ADDRESS:-}"
+  local normalized_address
+
+  if [ -z "$configured_address" ]; then
+    echo "bootstrap wallet: CDK custom resource will generate/store the one-time setup wallet during stack creation" >&2
+    printf '\n'
+    return 0
+  fi
+
+  if ! normalized_address="$(bootstrap_wallet_helper normalize-address "$configured_address")"; then
+    echo "invalid BOOTSTRAP_WALLET_ADDRESS override: expected a real EVM 0x address; placeholders are not accepted" >&2
+    exit 2
+  fi
+  echo "bootstrap wallet: using BOOTSTRAP_WALLET_ADDRESS emergency override ($normalized_address); CDK will not manage an SSM private key for this deploy" >&2
+  printf '%s\n' "$normalized_address"
+}
+
 "$repo_root/scripts/validate-deploy-provenance.sh" "$repo_root"
 
 aws_profile="${AWS_PROFILE:-}"
@@ -66,6 +88,12 @@ cd "$cdk_dir"
 npm ci
 npm run build
 
+cdk_context_args=(-c "stage=$stage")
+bootstrap_wallet_address="$(resolve_bootstrap_wallet_override)"
+if [ -n "$bootstrap_wallet_address" ]; then
+  cdk_context_args+=(-c "bootstrapWalletAddress=$bootstrap_wallet_address")
+fi
+
 case "$action" in
   up)
     synth_out="$(mktemp -d "${TMPDIR:-/tmp}/lesser-host-cdk-synth.XXXXXX")"
@@ -74,7 +102,7 @@ case "$action" in
     }
     trap cleanup EXIT
 
-    ./node_modules/.bin/cdk synth -c "stage=$stage" --output "$synth_out" --quiet
+    ./node_modules/.bin/cdk synth "${cdk_context_args[@]}" --output "$synth_out" --quiet
     template_path="$synth_out/lesser-host-$stage.template.json"
     if [ ! -f "$template_path" ]; then
       template_count="$(find "$synth_out" -maxdepth 1 -type f -name '*.template.json' | wc -l | tr -d ' ')"
@@ -103,6 +131,6 @@ case "$action" in
       exit 0
     fi
 
-    ./node_modules/.bin/cdk destroy --all -c "stage=$stage" --force
+    ./node_modules/.bin/cdk destroy --all "${cdk_context_args[@]}" --force
     ;;
 esac

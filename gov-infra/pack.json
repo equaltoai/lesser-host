@@ -1,14 +1,14 @@
 {
   "$schema": "https://gov.pai.dev/schemas/pack.schema.json",
   "schemaVersion": 1,
-  "packVersion": "2026.06.11-mainnet-contracts.0",
-  "packDigest": "cea3d437b2af4bb3d911d15aa4c49eed2ee704db82a332688d33301c7f05f875",
+  "packVersion": "2026.07.07-microvm-registry-boundary.0",
+  "packDigest": "3d869548fd97f89ea7fd7ea61da7b41bcbbca9a5fe18c1c4a4ee60e30d0f777d",
   "domain": "custom",
   "projectSlug": "lesser-host",
-  "generatedAt": "2026-06-11T21:55:00Z",
+  "generatedAt": "2026-07-07T14:50:09Z",
   "source": {
-    "commitSha": "6596fb8b519331c266b879d61d7044b37b2f1cbe",
-    "branch": "codex/ens-resolve-no-user-agent-waf"
+    "commitSha": "d7d2ff3943fa63aebfba3a1e0a7c25a441145c48",
+    "branch": "theorymcp/equaltoai/host/hosted-genesis-microvm-registry-boundary"
   },
   "artifacts": {
     "planning": [
@@ -40,7 +40,8 @@
       "gov-infra/verifiers/sec/portal-stack-state-tenant-scoping.sh",
       "gov-infra/verifiers/sec/operator-drift-auth-gate.sh",
       "gov-infra/verifiers/mai/wire-all-idempotency.sh",
-      "gov-infra/verifiers/sec/cost-telemetry-redaction.sh"
+      "gov-infra/verifiers/sec/cost-telemetry-redaction.sh",
+      "gov-infra/verifiers/sec/hosted-genesis-microvm-registry-boundary.sh"
     ],
     "evidence": [
       "gov-infra/evidence/gov-rubric-report.json",
@@ -55,7 +56,8 @@
       "gov-infra/evidence/SEC-11-output.log",
       "gov-infra/evidence/SEC-12-output.log",
       "gov-infra/evidence/MAI-5-output.log",
-      "gov-infra/evidence/SEC-13-output.log"
+      "gov-infra/evidence/SEC-13-output.log",
+      "gov-infra/evidence/SEC-14-output.log"
     ]
   }
 }

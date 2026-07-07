@@ -1,4 +1,4 @@
-# lesser-host: Evidence Plan (Rubric v0.1.5)
+# lesser-host: Evidence Plan (Rubric v0.1.8)
 
 This document defines the **evidence surface** for the lesser-host governance rubric.
 
@@ -60,6 +60,7 @@ Legend:
 | Security | SEC-2 | Dependency vulnerability scan runs with pinned tooling | `gov-infra/evidence/SEC-2-output.log` |
 | Security | SEC-3 | Supply-chain verification gates run (full-SHA Actions pinning with syntax self-tests + dependency lifecycle scan) | `gov-infra/evidence/SEC-3-output.log` |
 | Security | SEC-4 | Domain-specific P0 security regression tests run, including scoped x402 grant minimization/authority invariants | `gov-infra/evidence/SEC-4-output.log` |
+| Security | SEC-14 | Hosted-genesis MicroVM registry boundary stays Host-owned, TableTheory-friendly, and reconstruction-backed | `gov-infra/evidence/SEC-14-output.log` |
 | Compliance readiness | CMP-1 | Controls matrix exists and is readable | (presence check) + `gov-infra/evidence/CMP-1-output.log` |
 | Compliance readiness | CMP-2 | Evidence plan exists and is readable | (presence check) + `gov-infra/evidence/CMP-2-output.log` |
 | Compliance readiness | CMP-3 | Threat model exists and is readable | (presence check) + `gov-infra/evidence/CMP-3-output.log` |
