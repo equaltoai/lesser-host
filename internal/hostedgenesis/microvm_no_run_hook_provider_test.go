@@ -56,6 +56,60 @@ func TestNoRunHookProviderStartsMicroVMWithoutRunHookPayload(t *testing.T) {
 	require.Equal(t, startedAt, session.StartedAt)
 }
 
+func TestNoRunHookProviderDoesNotDuplicateLegacyEgressConnector(t *testing.T) {
+	t.Parallel()
+
+	api := &fakeNoRunHookAPI{
+		runOutput: &lambdamicrovms.RunMicrovmOutput{
+			ImageArn:                 aws.String("arn:aws:lambda:us-east-1:123456789012:microvm-image:lesser-host-lab_hosted_genesis"),
+			ImageVersion:             aws.String("3.0"),
+			MicrovmId:                aws.String("microvm-123"),
+			StartedAt:                aws.Time(time.Date(2026, 7, 7, 19, 30, 0, 0, time.UTC)),
+			State:                    lambdatypes.MicrovmStateRunning,
+			EgressNetworkConnectors:  []string{"INTERNET_EGRESS"},
+			IngressNetworkConnectors: []string{"ALL_INGRESS"},
+			ExecutionRoleArn:         aws.String("arn:aws:iam::123456789012:role/lesser-host-lab-hosted-genesis-microvm-execution"),
+		},
+	}
+	provider, err := NewNoRunHookAWSLambdaMicroVMProvider(api, microvmtestkit.NewFakeProvider())
+	require.NoError(t, err)
+
+	input := validNoRunHookProviderRunInput()
+	input.NetworkConnectorRef = "INTERNET_EGRESS"
+	input.EgressNetworkConnectorRefs = []string{" INTERNET_EGRESS ", "INTERNET_EGRESS"}
+
+	_, err = provider.Run(context.Background(), input)
+	require.NoError(t, err)
+	require.Equal(t, []string{"INTERNET_EGRESS"}, api.runInput.EgressNetworkConnectors)
+}
+
+func TestNoRunHookProviderFallsBackToLegacyEgressConnector(t *testing.T) {
+	t.Parallel()
+
+	api := &fakeNoRunHookAPI{
+		runOutput: &lambdamicrovms.RunMicrovmOutput{
+			ImageArn:                 aws.String("arn:aws:lambda:us-east-1:123456789012:microvm-image:lesser-host-lab_hosted_genesis"),
+			ImageVersion:             aws.String("3.0"),
+			MicrovmId:                aws.String("microvm-123"),
+			StartedAt:                aws.Time(time.Date(2026, 7, 7, 19, 31, 0, 0, time.UTC)),
+			State:                    lambdatypes.MicrovmStateRunning,
+			EgressNetworkConnectors:  []string{"INTERNET_EGRESS"},
+			IngressNetworkConnectors: []string{"ALL_INGRESS"},
+			ExecutionRoleArn:         aws.String("arn:aws:iam::123456789012:role/lesser-host-lab-hosted-genesis-microvm-execution"),
+		},
+	}
+	provider, err := NewNoRunHookAWSLambdaMicroVMProvider(api, microvmtestkit.NewFakeProvider())
+	require.NoError(t, err)
+
+	input := validNoRunHookProviderRunInput()
+	input.NetworkConnectorRef = " INTERNET_EGRESS "
+	input.EgressNetworkConnectorRefs = nil
+
+	_, err = provider.Run(context.Background(), input)
+	require.NoError(t, err)
+	require.Equal(t, []string{"INTERNET_EGRESS"}, api.runInput.EgressNetworkConnectors)
+}
+
 func TestNoRunHookProviderSanitizesRunErrors(t *testing.T) {
 	t.Parallel()
 

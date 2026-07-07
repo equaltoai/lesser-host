@@ -185,11 +185,29 @@ func noRunHookSessionFromRunOutput(input runtimemicrovm.ProviderRunInput, out *l
 }
 
 func noRunHookEgressConnectors(input runtimemicrovm.ProviderRunInput) []string {
-	connectors := append([]string{}, input.EgressNetworkConnectorRefs...)
-	if input.NetworkConnectorRef != "" {
-		connectors = append(connectors, input.NetworkConnectorRef)
+	// AppTheory's controller envelope still requires NetworkConnectorRef for the
+	// run command, but Host also passes the typed egress connector list used by
+	// current AWS RunMicrovm. Treat NetworkConnectorRef as the legacy fallback,
+	// not an additional egress connector, otherwise a single configured egress ref
+	// is submitted twice and AWS rejects the run request.
+	connectors := normalizeStringSlice(input.EgressNetworkConnectorRefs)
+	if len(connectors) == 0 && strings.TrimSpace(input.NetworkConnectorRef) != "" {
+		connectors = []string{strings.TrimSpace(input.NetworkConnectorRef)}
 	}
-	return normalizeStringSlice(connectors)
+	return uniqueStringSlice(connectors)
+}
+
+func uniqueStringSlice(values []string) []string {
+	out := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range normalizeStringSlice(values) {
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
 }
 
 func noRunHookIdlePolicy(policy *runtimemicrovm.ProviderIdlePolicy) *lambdatypes.IdlePolicy {
