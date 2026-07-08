@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -21,9 +22,10 @@ import (
 // Endpoint-POST turn execution (P52 H1, endpoint-based architecture).
 //
 // The P52 H1 architecture runs a hosted-genesis turn by POSTing an M16
-// LifecycleEvent to the MicroVM's runtime endpoint, which the workload's
-// existing runHook handler (cmd/hosted-genesis-microvm-workload) serves at
-// /aws/lambda-microvms/runtime/v1/run on :8080. The controller Lambda owns this
+// LifecycleEvent to the MicroVM's application endpoint, which the workload
+// serves at MicroVMTurnEndpointPath on :8080. The AWS lifecycle /run path is
+// reserved for image/service lifecycle hooks and is not reused as Host's
+// externally proxied application turn endpoint. The controller Lambda owns this
 // flow: it starts the MicroVM through the framework's safe envelope, then makes
 // two raw lambda-microvms API calls the framework deliberately does not surface,
 // then POSTs the turn.
@@ -65,14 +67,10 @@ var (
 )
 
 const (
-	// microvmRunHookPort is the workload port the run hook serves
-	// (/aws/lambda-microvms/runtime/v1/run). The X-aws-proxy-port header routes
-	// the controller's POST through the MicroVM's ingress connector to :8080.
-	microvmRunHookPort = 8080
-
-	// microvmRunHookPath is the runtime hook path the workload registers for
-	// the run hook under the /aws/lambda-microvms/runtime/v1 prefix.
-	microvmRunHookPath = "/aws/lambda-microvms/runtime/v1/run"
+	// microvmTurnPort is the workload port the turn endpoint serves. The
+	// X-aws-proxy-port header routes the controller's POST through the MicroVM's
+	// ingress connector to :8080.
+	microvmTurnPort = 8080
 
 	// microvmAuthTokenHeader is the response map key (and request header name)
 	// for the proxy auth token. create-microvm-auth-token returns it in a map
@@ -84,10 +82,15 @@ const (
 	// port the endpoint routes the POST to.
 	microvmProxyPortHeader = "X-aws-proxy-port"
 
-	// microvmEndpointTurnTimeout caps the full endpoint POST (the LLM turn +
-	// in-VM declaration extraction + persistence). It is sized for the longest
-	// LLM turn plus extraction (P52 H1.5 decision 7 sizing carried forward).
-	microvmEndpointTurnTimeout = 120 * time.Second
+	// MicroVMTurnEndpointPath is Host's application-level MicroVM turn endpoint.
+	// It deliberately does not use the AWS-reserved lifecycle /run hook path.
+	MicroVMTurnEndpointPath = "/hosted-genesis/turn"
+
+	// microvmEndpointTurnTimeout caps the endpoint POST that hands the turn to
+	// the workload. The workload returns after accepting durable in-VM execution;
+	// the long-running LLM turn + declaration extraction continues inside the
+	// MicroVM under MaximumDurationSeconds and is observed by polling Host truth.
+	microvmEndpointTurnTimeout = 10 * time.Second
 
 	// microvmEndpointReadyTimeout bounds how long the controller waits for the
 	// MicroVM to reach RUNNING before declaring a loud failure. The MicroVM
@@ -139,7 +142,8 @@ type EndpointTurnClient struct {
 
 // EndpointTurnResult is the outcome of RunTurnViaEndpoint: the run-command
 // lifecycle ref Host records as non-authoritative execution/cache state, plus
-// the M16 LifecycleResult the workload's runHook returned (the turn outcome).
+// the M16 LifecycleResult the workload returned to acknowledge accepting the
+// turn for in-VM execution.
 // It deliberately excludes the endpoint URL, the auth token value, and the raw
 // LifecycleEvent body — those are ephemeral and secret.
 type EndpointTurnResult struct {
@@ -161,10 +165,10 @@ type EndpointTurnResult struct {
 //     HTTPS endpoint URL the framework does not surface.
 //  3. Raw create-microvm-auth-token (allPorts) to obtain the X-aws-proxy-auth
 //     token value the framework deliberately discards.
-//  4. HTTP POST the M16 LifecycleEvent to <endpoint>/aws/lambda-microvms/
-//     runtime/v1/run with the proxy-auth + proxy-port headers; the workload's
-//     runHook executes the LLM turn + declaration extraction + persistence.
-//  5. Return the run-command lifecycle ref + the LifecycleResult.
+//  4. HTTP POST the M16 LifecycleEvent to <endpoint>/hosted-genesis/turn
+//     with the proxy-auth + proxy-port headers; the workload validates the
+//     request, starts durable in-VM execution, and returns a run acknowledgment.
+//  5. Return the run-command lifecycle ref + the acknowledgment LifecycleResult.
 //
 // Fail-closed: every failure (run failure, missing endpoint, never-RUNNING,
 // token failure, HTTP failure, non-2xx response) is a loud typed error. There
@@ -229,9 +233,10 @@ func (r *MicroVMControllerRuntime) RunTurnViaEndpoint(ctx context.Context, reque
 
 // executeMicrovmTurn runs the framework-gap bridge steps after the MicroVM is
 // started: poll get-microvm until RUNNING + extract the endpoint, create the
-// scoped auth token, POST the M16 LifecycleEvent to the workload's run hook.
-// It returns the LifecycleResult the workload's runHook produced. Every failure
-// is a loud fail-closed error.
+// scoped auth token, POST the M16 LifecycleEvent to the workload's turn
+// endpoint.
+// It returns the LifecycleResult the workload produced to acknowledge the turn.
+// Every failure is a loud fail-closed error.
 func executeMicrovmTurn(ctx context.Context, deps resolvedEndpointTurnDeps, microvmID, requestID string, binding MicroVMSessionBinding) (runtimemicrovm.LifecycleResult, error) {
 	endpoint, err := waitForMicroVMRunning(ctx, deps.sdk, microvmID, requestID, deps.readyTimeout, deps.pollInterval)
 	if err != nil {
@@ -240,6 +245,10 @@ func executeMicrovmTurn(ctx context.Context, deps resolvedEndpointTurnDeps, micr
 	endpoint = strings.TrimSpace(endpoint)
 	if endpoint == "" {
 		return runtimemicrovm.LifecycleResult{}, ErrMicroVMEndpointMissing
+	}
+	endpoint, err = normalizeMicroVMEndpointURL(endpoint)
+	if err != nil {
+		return runtimemicrovm.LifecycleResult{}, err
 	}
 	token, err := createMicrovmAuthToken(ctx, deps.sdk, microvmID, requestID)
 	if err != nil {
@@ -389,12 +398,42 @@ func createMicrovmAuthToken(ctx context.Context, sdk microvmEndpointAPI, microvm
 	return out.AuthToken[microvmAuthTokenHeader], nil
 }
 
-// postTurnToEndpoint POSTs the M16 LifecycleEvent to the workload's run hook at
-// <endpoint>/aws/lambda-microvms/runtime/v1/run. The X-aws-proxy-auth header
-// presents the scoped token; X-aws-proxy-port routes the POST to the workload's
-// :8080 listener. The body carries only HostedGenesisSession ids (slug boundary
-// tenant_id + conversation_id/turn_id/agent_id metadata) — no raw credentials.
-// A non-2xx response or decode failure is a loud fail-closed error.
+// normalizeMicroVMEndpointURL accepts the lambda-microvms Endpoint value from
+// GetMicrovm and returns a request-ready base URL. The AWS response can be a
+// bare HTTPS host name (for example, <id>.lambda-microvm.<region>.on.aws)
+// instead of a fully-qualified URL; the controller must not pass that directly
+// to net/http or it fails with "unsupported protocol scheme". Tests use http
+// httptest URLs, so http is accepted only as an already-explicit scheme.
+func normalizeMicroVMEndpointURL(endpoint string) (string, error) {
+	endpoint = strings.TrimSpace(endpoint)
+	if endpoint == "" {
+		return "", ErrMicroVMEndpointMissing
+	}
+	if !strings.Contains(endpoint, "://") {
+		endpoint = "https://" + strings.TrimLeft(endpoint, "/")
+	}
+	parsed, err := url.Parse(endpoint)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return "", fmt.Errorf("%w: invalid endpoint URL", ErrMicroVMEndpointMissing)
+	}
+	if parsed.Scheme != "https" && parsed.Scheme != "http" {
+		return "", fmt.Errorf("%w: unsupported endpoint scheme", ErrMicroVMEndpointMissing)
+	}
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+	return strings.TrimRight(parsed.String(), "/"), nil
+}
+
+// postTurnToEndpoint POSTs the M16 LifecycleEvent to Host's application-level
+// workload turn endpoint at <endpoint>/hosted-genesis/turn. The AWS lifecycle
+// /run path is reserved for service hooks; using a separate application endpoint
+// gives Host a real proof that external ingress reached the workload. The
+// X-aws-proxy-auth header presents the scoped token; X-aws-proxy-port routes the
+// POST to the workload's :8080 listener. The body carries only
+// HostedGenesisSession ids (slug boundary tenant_id + conversation_id/turn_id/
+// agent_id metadata) — no raw credentials. A non-2xx response, decode failure,
+// or incomplete/failed LifecycleResult acknowledgment is a loud fail-closed
+// error.
 func postTurnToEndpoint(ctx context.Context, httpClient *http.Client, endpoint, token, requestID string, binding MicroVMSessionBinding, turnTimeout time.Duration) (runtimemicrovm.LifecycleResult, error) {
 	event := runtimemicrovm.LifecycleEvent{
 		RequestID: requestID,
@@ -411,13 +450,13 @@ func postTurnToEndpoint(ctx context.Context, httpClient *http.Client, endpoint, 
 	}
 	postCtx, cancel := context.WithTimeout(ctx, turnTimeout)
 	defer cancel()
-	url := strings.TrimRight(endpoint, "/") + microvmRunHookPath
+	url := strings.TrimRight(endpoint, "/") + MicroVMTurnEndpointPath
 	req, err := http.NewRequestWithContext(postCtx, http.MethodPost, url, bytes.NewReader(encoded))
 	if err != nil {
 		return runtimemicrovm.LifecycleResult{}, fmt.Errorf("hosted genesis microvm endpoint turn: build turn request: %w", err)
 	}
 	req.Header.Set(microvmAuthTokenHeader, token)
-	req.Header.Set(microvmProxyPortHeader, fmt.Sprintf("%d", microvmRunHookPort))
+	req.Header.Set(microvmProxyPortHeader, fmt.Sprintf("%d", microvmTurnPort))
 	req.Header.Set("content-type", "application/json")
 	req.Header.Set("accept", "application/json")
 
@@ -442,5 +481,29 @@ func postTurnToEndpoint(ctx context.Context, httpClient *http.Client, endpoint, 
 		}
 		return result, fmt.Errorf("hosted genesis microvm endpoint turn: workload returned status %d", httpResp.StatusCode)
 	}
+	if err := validateEndpointTurnResult(result, requestID, binding); err != nil {
+		return result, err
+	}
 	return result, nil
+}
+
+// validateEndpointTurnResult makes the endpoint POST prove actual workload
+// execution. A controller 200 with an empty body, catch-all response, wrong
+// tenant/session, or failed lifecycle result must not be treated as a successful
+// MicroVM turn; that is the bug shape that leaves hosted genesis stuck at
+// in_progress with no assistant output.
+func validateEndpointTurnResult(result runtimemicrovm.LifecycleResult, requestID string, binding MicroVMSessionBinding) error {
+	if result.Error != nil && result.Error.Code != "" {
+		return fmt.Errorf("hosted genesis microvm endpoint turn: workload failed: %w", result.Error)
+	}
+	if strings.TrimSpace(result.RequestID) != strings.TrimSpace(requestID) {
+		return fmt.Errorf("hosted genesis microvm endpoint turn: workload result request binding mismatch")
+	}
+	if strings.TrimSpace(result.TenantID) != binding.TenantID() || strings.TrimSpace(result.Namespace) != MicroVMNamespace || strings.TrimSpace(result.SessionID) != strings.TrimSpace(binding.ConversationID) {
+		return fmt.Errorf("hosted genesis microvm endpoint turn: workload result session binding mismatch")
+	}
+	if result.Hook != runtimemicrovm.HookRun || result.State != runtimemicrovm.StateRunning {
+		return fmt.Errorf("hosted genesis microvm endpoint turn: workload result did not confirm turn acceptance")
+	}
+	return nil
 }

@@ -380,7 +380,7 @@ func (f *fakeEndpointSDK) CreateMicrovmAuthToken(_ context.Context, _ *lambdamic
 func newEndpointTurnTestServer(t *testing.T) string {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/aws/lambda-microvms/runtime/v1/run" {
+		if r.URL.Path != hostedgenesis.MicroVMTurnEndpointPath {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}

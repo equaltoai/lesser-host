@@ -71,7 +71,7 @@ func newEndpointTurnTestServer(t *testing.T, status int, result *runtimemicrovm.
 	t.Helper()
 	state := &endpointTurnServerState{}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/aws/lambda-microvms/runtime/v1/run", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc(MicroVMTurnEndpointPath, func(w http.ResponseWriter, r *http.Request) {
 		state.authHeader = r.Header.Get("X-aws-proxy-auth")
 		state.portHeader = r.Header.Get("X-aws-proxy-port")
 		state.contentType = r.Header.Get("content-type")
@@ -115,7 +115,7 @@ func newEndpointTurnRuntime(t *testing.T, sdk microvmEndpointAPI, httpClient *ht
 		Registry:                    runtimemicrovm.NewMemorySessionRegistry(),
 		ImageRef:                    "arn:aws:lambda:us-east-1:123456789012:microvm-image/hosted-genesis:1",
 		NetworkConnectorRef:         "arn:aws:lambda:us-east-1:123456789012:network-connector/hosted-genesis-egress",
-		IngressNetworkConnectorRefs: []string{"ALL_INGRESS"},
+		IngressNetworkConnectorRefs: []string{"HTTP_INGRESS"},
 		EgressNetworkConnectorRefs:  []string{"arn:aws:lambda:us-east-1:123456789012:network-connector/hosted-genesis-egress"},
 		EndpointTurnClient: EndpointTurnClient{
 			SDKClient:    sdk,
@@ -142,6 +142,32 @@ const (
 	endpointTurnTestSessionID  = "conv_123"
 	endpointTurnTestProxyToken = "proxy-token-value"
 )
+
+func TestNormalizeMicroVMEndpointURLPrefixesBareAWSHost(t *testing.T) {
+	t.Parallel()
+	got, err := normalizeMicroVMEndpointURL(" 0ccf9f2b-f186-fbdf-0768-f47712b635d4.lambda-microvm.us-east-1.on.aws/ ")
+	requireNoError(t, err)
+	if got != "https://0ccf9f2b-f186-fbdf-0768-f47712b635d4.lambda-microvm.us-east-1.on.aws" {
+		t.Fatalf("expected AWS MicroVM endpoint host to gain https scheme, got %q", got)
+	}
+}
+
+func TestNormalizeMicroVMEndpointURLPreservesExplicitHTTPTestEndpoint(t *testing.T) {
+	t.Parallel()
+	got, err := normalizeMicroVMEndpointURL("http://127.0.0.1:8080/")
+	requireNoError(t, err)
+	if got != "http://127.0.0.1:8080" {
+		t.Fatalf("expected explicit httptest endpoint to be preserved, got %q", got)
+	}
+}
+
+func TestNormalizeMicroVMEndpointURLRejectsUnsupportedScheme(t *testing.T) {
+	t.Parallel()
+	_, err := normalizeMicroVMEndpointURL("ftp://lambda-microvm.example")
+	if !errors.Is(err, ErrMicroVMEndpointMissing) {
+		t.Fatalf("expected ErrMicroVMEndpointMissing, got %v", err)
+	}
+}
 
 func TestRunTurnViaEndpointHappyPath(t *testing.T) {
 	t.Parallel()
@@ -397,29 +423,57 @@ func TestRunTurnViaEndpointFailClosedOnUnreachableEndpoint(t *testing.T) {
 	}
 }
 
-func TestRunTurnViaEndpointSurfacesWorkloadSafeError(t *testing.T) {
+func TestRunTurnViaEndpointFailClosedOnWorkloadSafeError(t *testing.T) {
 	t.Parallel()
 	result := &runtimemicrovm.LifecycleResult{
-		Hook:  runtimemicrovm.HookRun,
-		State: runtimemicrovm.StateFailed,
-		Error: &runtimemicrovm.SafeError{Code: "m15.microvm.lifecycle_hook_failed", Message: "workload turn failed"},
+		RequestID: "req-ep-14",
+		TenantID:  "slug:demo",
+		Namespace: MicroVMNamespace,
+		SessionID: endpointTurnTestSessionID,
+		Hook:      runtimemicrovm.HookRun,
+		State:     runtimemicrovm.StateFailed,
+		Error:     &runtimemicrovm.SafeError{Code: "m15.microvm.lifecycle_hook_failed", Message: "workload turn failed"},
 	}
 	srv, _ := newEndpointTurnTestServer(t, http.StatusOK, result)
 	sdk := &fakeEndpointSDK{endpoint: srv.URL, state: lambdatypes.MicrovmStateRunning}
 	runtime := newEndpointTurnRuntime(t, sdk, srv.Client())
 
-	got, err := runtime.RunTurnViaEndpoint(context.Background(), "req-ep-14", testMicroVMBinding(), EndpointTurnClient{})
-	// A 2xx response carrying a SafeError is still decoded and returned; the
-	// caller observes the failed turn result (the workload persisted the
-	// failure). The HTTP-layer error path is for non-2xx responses.
-	if err != nil {
-		t.Fatalf("expected no transport error for 2xx, got %v", err)
+	_, err := runtime.RunTurnViaEndpoint(context.Background(), "req-ep-14", testMicroVMBinding(), EndpointTurnClient{})
+	if err == nil || !strings.Contains(err.Error(), "workload failed") {
+		t.Fatalf("expected workload SafeError to fail closed, got %v", err)
 	}
-	if got.TurnResult.Error == nil || got.TurnResult.Error.Code != "m15.microvm.lifecycle_hook_failed" {
-		t.Fatalf("expected workload SafeError surfaced, got %#v", got.TurnResult.Error)
+}
+
+func TestRunTurnViaEndpointFailClosedOnEmptySuccessResult(t *testing.T) {
+	t.Parallel()
+	result := &runtimemicrovm.LifecycleResult{}
+	srv, _ := newEndpointTurnTestServer(t, http.StatusOK, result)
+	sdk := &fakeEndpointSDK{endpoint: srv.URL, state: lambdatypes.MicrovmStateRunning}
+	runtime := newEndpointTurnRuntime(t, sdk, srv.Client())
+
+	_, err := runtime.RunTurnViaEndpoint(context.Background(), "req-ep-empty", testMicroVMBinding(), EndpointTurnClient{})
+	if err == nil || !strings.Contains(err.Error(), "request binding mismatch") {
+		t.Fatalf("expected empty result to fail closed, got %v", err)
 	}
-	if got.TurnResult.State != runtimemicrovm.StateFailed {
-		t.Fatalf("expected turn state failed, got %q", got.TurnResult.State)
+}
+
+func TestRunTurnViaEndpointFailClosedOnWrongSessionResult(t *testing.T) {
+	t.Parallel()
+	result := &runtimemicrovm.LifecycleResult{
+		RequestID: "req-ep-wrong",
+		TenantID:  "slug:demo",
+		Namespace: MicroVMNamespace,
+		SessionID: "other-session",
+		Hook:      runtimemicrovm.HookRun,
+		State:     runtimemicrovm.StateRunning,
+	}
+	srv, _ := newEndpointTurnTestServer(t, http.StatusOK, result)
+	sdk := &fakeEndpointSDK{endpoint: srv.URL, state: lambdatypes.MicrovmStateRunning}
+	runtime := newEndpointTurnRuntime(t, sdk, srv.Client())
+
+	_, err := runtime.RunTurnViaEndpoint(context.Background(), "req-ep-wrong", testMicroVMBinding(), EndpointTurnClient{})
+	if err == nil || !strings.Contains(err.Error(), "session binding mismatch") {
+		t.Fatalf("expected wrong session result to fail closed, got %v", err)
 	}
 }
 

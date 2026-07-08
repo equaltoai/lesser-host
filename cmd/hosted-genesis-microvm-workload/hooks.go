@@ -14,6 +14,7 @@ import (
 
 	runtimemicrovm "github.com/theory-cloud/apptheory/runtime/microvm"
 
+	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis/completion"
 )
 
@@ -137,6 +138,7 @@ func (s *hookServer) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc(hookPathPrefix+"/validate", s.handleHook(runtimemicrovm.HookValidate))
 	mux.HandleFunc(hookPathPrefix+"/run", s.handleRunHook)
+	mux.HandleFunc(hostedgenesis.MicroVMTurnEndpointPath, s.handleTurnEndpoint)
 	mux.HandleFunc(hookPathPrefix+"/ready", s.handleHook(runtimemicrovm.HookReady))
 	mux.HandleFunc(hookPathPrefix+"/suspend", s.handleHook(runtimemicrovm.HookSuspend))
 	mux.HandleFunc(hookPathPrefix+"/resume", s.handleHook(runtimemicrovm.HookResume))
@@ -280,11 +282,10 @@ func (s *hookServer) handleHook(hook runtimemicrovm.LifecycleHook) http.HandlerF
 	}
 }
 
-// handleRunHook drives the run lifecycle hook. The contract records the running
-// state; the workload's run handler then executes the assistant turn +
-// declaration extraction and durably records completion. A workload execution
-// failure is recorded as a typed completion failure and surfaced via a failed
-// lifecycle result so the controller observes a failed session.
+// handleRunHook drives the AWS lifecycle /run hook synchronously through the
+// lifecycle adapter. Host does not currently enable an AWS image-level run hook,
+// but keeping this route strict preserves the lifecycle contract if the hook is
+// enabled later.
 func (s *hookServer) handleRunHook(w http.ResponseWriter, r *http.Request) {
 	event, err := decodeLifecycleEvent(r)
 	if err != nil {
@@ -296,6 +297,103 @@ func (s *hookServer) handleRunHook(w http.ResponseWriter, r *http.Request) {
 	result := s.drive(r.Context(), event)
 	writeJSON(w, http.StatusOK, result)
 	logHookRequest(r.URL.Path, http.StatusOK, string(result.State))
+}
+
+// handleTurnEndpoint is Host's application-level MicroVM turn endpoint. It
+// validates the M16 run envelope, starts durable assistant/declaration work in
+// the MicroVM, and returns running immediately so the controller stays a
+// lifecycle/dispatch surface (<10s) instead of becoming the long-running LLM
+// worker. Completion is written asynchronously to HostedGenesisSession truth by
+// the in-VM runner and observed by the normal API polling/recovery path.
+func (s *hookServer) handleTurnEndpoint(w http.ResponseWriter, r *http.Request) {
+	event, err := decodeLifecycleEvent(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, incompleteEventError("", err))
+		logHookRequest(r.URL.Path, http.StatusBadRequest, "")
+		return
+	}
+	event.Hook = runtimemicrovm.HookRun
+	result := s.acceptTurnEndpoint(event)
+	writeJSON(w, http.StatusOK, result)
+	logHookRequest(r.URL.Path, http.StatusOK, string(result.State))
+}
+
+func (s *hookServer) acceptTurnEndpoint(event runtimemicrovm.LifecycleEvent) runtimemicrovm.LifecycleResult {
+	result := runtimemicrovm.LifecycleResult{
+		RequestID:     strings.TrimSpace(event.RequestID),
+		TenantID:      strings.TrimSpace(event.TenantID),
+		Namespace:     strings.TrimSpace(event.Namespace),
+		SessionID:     strings.TrimSpace(event.SessionID),
+		Hook:          runtimemicrovm.HookRun,
+		PreviousState: event.State,
+		State:         runtimemicrovm.StateRunning,
+		Metadata:      cloneStringMap(event.Metadata),
+	}
+	binding, err := s.validateTurnEndpointEvent(event)
+	if err != nil {
+		result.State = runtimemicrovm.StateFailed
+		result.Error = &runtimemicrovm.SafeError{Code: hookErrorCode, Message: err.Error(), RequestID: strings.TrimSpace(event.RequestID)}
+		return result
+	}
+	s.runTurnDetached(binding.completionTurn())
+	return result
+}
+
+func (s *hookServer) validateTurnEndpointEvent(event runtimemicrovm.LifecycleEvent) (hookBinding, error) {
+	if s == nil || s.runner == nil {
+		return hookBinding{}, errors.New("workload runner is not configured")
+	}
+	if strings.TrimSpace(event.RequestID) == "" || strings.TrimSpace(event.SessionID) == "" {
+		return hookBinding{}, errors.New("lifecycle event request/session binding is incomplete")
+	}
+	if s.namespace != "" && strings.TrimSpace(event.Namespace) != s.namespace {
+		return hookBinding{}, fmt.Errorf("lifecycle event namespace %q is not %s", event.Namespace, s.namespace)
+	}
+	if event.State != runtimemicrovm.StateRunning && event.State != runtimemicrovm.StateValidated {
+		return hookBinding{}, fmt.Errorf("lifecycle event state %q cannot accept a turn", event.State)
+	}
+	return hookBinding{}.fromEvent(event)
+}
+
+func (s *hookServer) runTurnDetached(turn completion.CompletionTurn) {
+	runner := s.runner
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+		slog.Info(serviceName+": turn execution started", //nolint:gosec // G706: ids are structured slog attrs, not a format string.
+			slog.String("instance_slug", turn.InstanceSlug),
+			slog.String("conversation_id", turn.ConversationID),
+			slog.String("turn_id", turn.TurnID),
+			slog.String("request_id", turn.RequestID),
+		)
+		if err := runner.runTurnAndPersist(ctx, turn); err != nil {
+			slog.Error(serviceName+": turn execution failed", //nolint:gosec // G706: ids/error are structured slog attrs, not a format string.
+				slog.String("instance_slug", turn.InstanceSlug),
+				slog.String("conversation_id", turn.ConversationID),
+				slog.String("turn_id", turn.TurnID),
+				slog.String("request_id", turn.RequestID),
+				slog.String("error", err.Error()),
+			)
+			return
+		}
+		slog.Info(serviceName+": turn execution completed", //nolint:gosec // G706: ids are structured slog attrs, not a format string.
+			slog.String("instance_slug", turn.InstanceSlug),
+			slog.String("conversation_id", turn.ConversationID),
+			slog.String("turn_id", turn.TurnID),
+			slog.String("request_id", turn.RequestID),
+		)
+	}()
+}
+
+func cloneStringMap(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
 }
 
 // logHookRequest emits one structured log line per lifecycle hook request with

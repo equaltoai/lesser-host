@@ -5,6 +5,7 @@ import * as path from "node:path";
 import {
   AppTheoryMicrovmController,
   AppTheoryMicrovmNetworkConnector,
+  AppTheoryMicrovmNetworkConnectorKind,
   type IAppTheoryMicrovmImage,
 } from "@theory-cloud/apptheory-cdk";
 import * as cdk from "aws-cdk-lib";
@@ -156,10 +157,19 @@ export function configureHostedGenesisMicrovm(
     scope,
     "HostedGenesisMicrovmEgressConnector",
   );
-  const ingressConnector = AppTheoryMicrovmNetworkConnector.allIngress(
-    scope,
-    "HostedGenesisMicrovmIngressConnector",
-  );
+  // AWS rejects CreateMicrovmAuthToken when ALL_INGRESS is combined with any
+  // other ingress connector. Host also wires SHELL_INGRESS for governed shell
+  // token support, so the workload endpoint must use HTTP_INGRESS explicitly.
+  // AppTheory v1.15.1 has helpers for ALL/NO/SHELL/INTERNET only; import the
+  // documented AWS-managed HTTP_INGRESS connector by ARN while preserving the
+  // framework's typed INGRESS boundary.
+  const ingressConnector =
+    AppTheoryMicrovmNetworkConnector.fromNetworkConnectorArn(
+      scope,
+      "HostedGenesisMicrovmHttpIngressConnector",
+      awsManagedMicroVMNetworkConnectorArn(scope, "HTTP_INGRESS"),
+      AppTheoryMicrovmNetworkConnectorKind.INGRESS,
+    );
   const shellIngressConnector = AppTheoryMicrovmNetworkConnector.shellIngress(
     scope,
     "HostedGenesisMicrovmShellIngressConnector",
@@ -188,6 +198,30 @@ export function configureHostedGenesisMicrovm(
     props.namePrefix,
     props.stage,
     workloadArtifact,
+  );
+
+  // P52 H1.6 runtime-credentials corrective: AWS GetMicrovm reports the
+  // RunMicrovm ExecutionRoleArn, but lab evidence showed the in-guest AWS SDK
+  // credential chain was still backed by the image BuildRoleArn. Host keeps the
+  // explicit execution role as the least-privilege runtime authority and lets
+  // the workload assume it at process start. The role ARN is non-secret and is
+  // written into the MicroVM image env; temporary credentials are resolved only
+  // in the VM process and are never logged or persisted. The build role is
+  // granted sts:AssumeRole only to this execution role (not broad STS).
+  const executionRole = createHostedGenesisMicrovmExecutionRole(
+    scope,
+    "HostedGenesisMicrovmExecutionRole",
+    props.namePrefix,
+    props.stage,
+    props.stateTable,
+    buildRole,
+  );
+  buildRole.addToPolicy(
+    new iam.PolicyStatement({
+      sid: "AssumeHostedGenesisMicrovmExecutionRole",
+      actions: ["sts:AssumeRole"],
+      resources: [executionRole.roleArn],
+    }),
   );
 
   // P52 H1 step 2 (F1): the base image ARN is the AWS-managed MicroVM base
@@ -308,6 +342,10 @@ export function configureHostedGenesisMicrovm(
           Key: "HOSTED_GENESIS_MICROVM_SOURCE_OF_TRUTH",
           Value: HOSTED_GENESIS_MICROVM_SOURCE_OF_TRUTH,
         },
+        {
+          Key: "HOSTED_GENESIS_MICROVM_EXECUTION_ROLE_ARN",
+          Value: executionRole.roleArn,
+        },
         // P52 H1.5 corrective (AppTheory v1.15.2): the in-VM workload resolves the
         // Host state table via models.MainTableName() -> STATE_TABLE_NAME. The
         // workload calls store.LambdaInit() to persist completion truth, so it must
@@ -417,14 +455,6 @@ export function configureHostedGenesisMicrovm(
   // /lesser-host/api/claude), and X-Ray/CloudWatch emission for the in-VM
   // process. No wildcard DynamoDB, no broader SSM, no PassRole, no IAM. Raw
   // secrets never enter the image env or CloudFormation — only param NAMES.
-  const executionRole = createHostedGenesisMicrovmExecutionRole(
-    scope,
-    "HostedGenesisMicrovmExecutionRole",
-    props.namePrefix,
-    props.stage,
-    props.stateTable,
-  );
-
   const controller = new AppTheoryMicrovmController(
     scope,
     "HostedGenesisMicrovmController",
@@ -595,6 +625,19 @@ function grantHostedGenesisMicrovmControllerRunPermissions(
 // MicroVM IAM (RunMicrovm/GetMicrovm/...) or session-registry access — the
 // controller Lambda is the single governed surface; the control plane only
 // speaks HTTP to the controller endpoint with the authorizer bearer token.
+function awsManagedMicroVMNetworkConnectorArn(
+  scope: Construct,
+  connectorName: string,
+): string {
+  return cdk.Stack.of(scope).formatArn({
+    service: "lambda",
+    account: "aws",
+    resource: "network-connector",
+    resourceName: `aws-network-connector:${connectorName}`,
+    arnFormat: cdk.ArnFormat.COLON_RESOURCE_NAME,
+  });
+}
+
 function grantControlPlaneMicroVMDispatch(
   scope: Construct,
   fn: lambda.Function,
@@ -620,7 +663,9 @@ function grantControlPlaneMicroVMDispatch(
       actions: ["kms:Decrypt"],
       resources: ["*"],
       conditions: {
-        StringEquals: { "kms:ViaService": `ssm.${cdk.Aws.REGION}.amazonaws.com` },
+        StringEquals: {
+          "kms:ViaService": `ssm.${cdk.Aws.REGION}.amazonaws.com`,
+        },
       },
     }),
   );
@@ -632,7 +677,10 @@ function grantControlPlaneMicroVMDispatch(
   // run body. addEnvironment is the CDK-supported way to append env vars to a
   // Function constructed elsewhere.
   fn.addEnvironment("HOSTED_GENESIS_MICROVM_ENABLED", "true");
-  fn.addEnvironment("APPTHEORY_MICROVM_CONTROLLER_ENDPOINT", controllerEndpoint);
+  fn.addEnvironment(
+    "APPTHEORY_MICROVM_CONTROLLER_ENDPOINT",
+    controllerEndpoint,
+  );
   fn.addEnvironment(
     "HOSTED_GENESIS_MICROVM_AUTH_TOKEN_SSM_PARAM",
     authTokenSSMParamName,
@@ -784,7 +832,11 @@ interface HostedGenesisMicrovmAuthTokenProvisioning {
 function provisionHostedGenesisMicrovmAuthToken(
   scope: Construct,
   id: string,
-  props: { readonly stage: string; readonly paramName: string; readonly removalPolicy: cdk.RemovalPolicy },
+  props: {
+    readonly stage: string;
+    readonly paramName: string;
+    readonly removalPolicy: cdk.RemovalPolicy;
+  },
 ): HostedGenesisMicrovmAuthTokenProvisioning {
   const paramArn = ssmParamArn(scope, props.paramName);
 
@@ -825,7 +877,9 @@ function provisionHostedGenesisMicrovmAuthToken(
       actions: ["kms:Decrypt"],
       resources: ["*"],
       conditions: {
-        StringEquals: { "kms:ViaService": `ssm.${cdk.Aws.REGION}.amazonaws.com` },
+        StringEquals: {
+          "kms:ViaService": `ssm.${cdk.Aws.REGION}.amazonaws.com`,
+        },
       },
     }),
   );
@@ -994,6 +1048,7 @@ function createHostedGenesisMicrovmExecutionRole(
   namePrefix: string,
   stage: string,
   stateTable: dynamodb.ITable,
+  imageBuildRole: iam.IRole,
 ): iam.Role {
   const role = new iam.Role(scope, id, {
     roleName: `${namePrefix}-hosted-genesis-microvm-execution`,
@@ -1002,7 +1057,10 @@ function createHostedGenesisMicrovmExecutionRole(
     // AWS Lambda MicroVMs assume this role via lambda.amazonaws.com trust
     // (microvms.lambda.amazonaws.com is rejected by IAM as an invalid
     // principal — see the build role comment above).
-    assumedBy: new iam.ServicePrincipal("lambda.amazonaws.com"),
+    assumedBy: new iam.CompositePrincipal(
+      new iam.ServicePrincipal("lambda.amazonaws.com"),
+      new iam.ArnPrincipal(imageBuildRole.roleArn),
+    ),
   });
 
   // DynamoDB read/write on the Host state table only. The workload reads
@@ -1035,7 +1093,9 @@ function createHostedGenesisMicrovmExecutionRole(
       actions: ["kms:Decrypt"],
       resources: ["*"],
       conditions: {
-        StringEquals: { "kms:ViaService": `ssm.${cdk.Aws.REGION}.amazonaws.com` },
+        StringEquals: {
+          "kms:ViaService": `ssm.${cdk.Aws.REGION}.amazonaws.com`,
+        },
       },
     }),
   );
@@ -1044,7 +1104,9 @@ function createHostedGenesisMicrovmExecutionRole(
   // (the workload wires apptheory observability hooks). Scoped managed policies
   // only — no administrative actions.
   role.addManagedPolicy(
-    iam.ManagedPolicy.fromAwsManagedPolicyName("service-role/AWSLambdaBasicExecutionRole"),
+    iam.ManagedPolicy.fromAwsManagedPolicyName(
+      "service-role/AWSLambdaBasicExecutionRole",
+    ),
   );
 
   cdk.Tags.of(role).add("Service", "lesser-host");
@@ -1182,9 +1244,13 @@ function buildHostedGenesisMicrovmWorkloadAsset(
     "WORKDIR /app",
     "COPY hosted-genesis-microvm-workload /app/hosted-genesis-microvm-workload",
     "EXPOSE 8080",
-    "CMD [\"/app/hosted-genesis-microvm-workload\"]",
+    'CMD ["/app/hosted-genesis-microvm-workload"]',
     "",
   ].join("\n");
-  fs.writeFileSync(path.join(buildDir, "Dockerfile"), dockerfileContent, "utf8");
+  fs.writeFileSync(
+    path.join(buildDir, "Dockerfile"),
+    dockerfileContent,
+    "utf8",
+  );
   return new s3assets.Asset(scope, id, { path: buildDir });
 }
