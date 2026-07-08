@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/httpx"
 	"github.com/equaltoai/lesser-host/internal/store/models"
@@ -21,10 +21,10 @@ const (
 // InstanceAuthHook authenticates instance requests using an instance API key bearer token.
 func (s *Server) InstanceAuthHook(ctx *apptheory.Context) (string, error) {
 	if s == nil || s.store == nil || s.store.DB == nil {
-		return "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return "", newAppTheoryError("app.internal", "internal error")
 	}
 	if ctx == nil {
-		return "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return "", newAppTheoryError("app.internal", "internal error")
 	}
 	httpx.SetTrustedSource(ctx)
 
@@ -46,7 +46,7 @@ func (s *Server) InstanceAuthHook(ctx *apptheory.Context) (string, error) {
 		return "", nil
 	}
 	if err != nil {
-		return "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return "", newAppTheoryError("app.internal", "internal error")
 	}
 	if !key.RevokedAt.IsZero() {
 		return "", nil

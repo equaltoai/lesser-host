@@ -13,8 +13,8 @@ import (
 	"github.com/ethereum/go-ethereum/accounts"
 	"github.com/ethereum/go-ethereum/crypto"
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	"github.com/theory-cloud/tabletheory/pkg/core"
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
+	"github.com/theory-cloud/tabletheory/v2/pkg/core"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
 
 	"github.com/stretchr/testify/mock"
 
@@ -27,9 +27,9 @@ import (
 func requireBoundaryAppErrorCode(t *testing.T, err error, want string) {
 	t.Helper()
 
-	appErr, ok := err.(*apptheory.AppError)
+	appErr, ok := err.(*apptheory.AppTheoryError)
 	if !ok {
-		t.Fatalf("expected *apptheory.AppError, got %T: %v", err, err)
+		t.Fatalf("expected *apptheory.AppTheoryError, got %T: %v", err, err)
 	}
 	if appErr.Code != want {
 		t.Fatalf("expected app error %q, got %q", want, appErr.Code)

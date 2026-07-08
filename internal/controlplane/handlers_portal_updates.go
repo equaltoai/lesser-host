@@ -8,9 +8,9 @@ import (
 	"time"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	"github.com/theory-cloud/tabletheory"
-	"github.com/theory-cloud/tabletheory/pkg/core"
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
+	"github.com/theory-cloud/tabletheory/v2"
+	"github.com/theory-cloud/tabletheory/v2/pkg/core"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/httpx"
 	"github.com/equaltoai/lesser-host/internal/provisioning"
@@ -279,7 +279,7 @@ func sameManagedUpdateRequest(job *models.UpdateJob, req createUpdateJobRequest,
 	}
 }
 
-func managedUpdateConflictError(activeJob *models.UpdateJob, req createUpdateJobRequest, lesserVersion string, lesserBodyVersion string) *apptheory.AppError {
+func managedUpdateConflictError(activeJob *models.UpdateJob, req createUpdateJobRequest, lesserVersion string, lesserBodyVersion string) *apptheory.AppTheoryError {
 	requestDesc := describeManagedUpdateRequest(req, lesserVersion, lesserBodyVersion)
 	activeDesc := describeManagedUpdateJob(activeJob)
 	jobID := ""
@@ -290,13 +290,13 @@ func managedUpdateConflictError(activeJob *models.UpdateJob, req createUpdateJob
 	if jobID != "" {
 		message += " (job " + jobID + ")"
 	}
-	return &apptheory.AppError{Code: "app.conflict", Message: message}
+	return newAppTheoryError("app.conflict", message)
 }
 
 func parseCreateUpdateJobRequest(ctx *apptheory.Context) (createUpdateJobRequest, error) {
 	var req createUpdateJobRequest
 	if ctx == nil {
-		return req, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return req, newAppTheoryError("app.internal", "internal error")
 	}
 	if len(ctx.Request.Body) == 0 {
 		return req, nil
@@ -507,44 +507,44 @@ func markStaleManagedUpdateMarker(
 	ub.Set(statusField, models.UpdateJobStatusError)
 }
 
-func validateCreateUpdateJobRequest(ctx *apptheory.Context, req createUpdateJobRequest) *apptheory.AppError {
+func validateCreateUpdateJobRequest(ctx *apptheory.Context, req createUpdateJobRequest) *apptheory.AppTheoryError {
 	if req.BodyOnly && req.MCPOnly {
-		return &apptheory.AppError{Code: "app.bad_request", Message: "choose either body_only or mcp_only, not both"}
+		return newAppTheoryError("app.bad_request", "choose either body_only or mcp_only, not both")
 	}
 	if (req.BodyOnly || req.MCPOnly) && strings.TrimSpace(req.LesserVersion) != "" {
-		return &apptheory.AppError{Code: "app.bad_request", Message: "lesser_version is only supported for core Lesser updates"}
+		return newAppTheoryError("app.bad_request", "lesser_version is only supported for core Lesser updates")
 	}
 	if (req.BodyOnly || req.MCPOnly) && req.RotateInstanceKey {
-		return &apptheory.AppError{Code: "app.bad_request", Message: "body_only and mcp_only updates cannot rotate the instance key"}
+		return newAppTheoryError("app.bad_request", "body_only and mcp_only updates cannot rotate the instance key")
 	}
 	if req.BodyTemplateCertify {
 		if !req.BodyOnly {
-			return &apptheory.AppError{Code: "app.bad_request", Message: "body_template_certify is only supported for body_only updates"}
+			return newAppTheoryError("app.bad_request", "body_template_certify is only supported for body_only updates")
 		}
 		if ctx == nil || !isOperator(ctx) {
-			return &apptheory.AppError{Code: "app.forbidden", Message: "forbidden"}
+			return newAppTheoryError("app.forbidden", "forbidden")
 		}
 	}
 	return nil
 }
 
-func validateManagedUpdateTipConfig(inst *models.Instance) *apptheory.AppError {
+func validateManagedUpdateTipConfig(inst *models.Instance) *apptheory.AppTheoryError {
 	if inst == nil || !effectiveTipEnabled(inst.TipEnabled) {
 		return nil
 	}
 	if inst.TipChainID <= 0 || strings.TrimSpace(inst.TipContractAddress) == "" {
-		return &apptheory.AppError{Code: "app.conflict", Message: "tip configuration is incomplete for managed update"}
+		return newAppTheoryError("app.conflict", "tip configuration is incomplete for managed update")
 	}
 	return nil
 }
 
-func parseAndValidateManagedUpdateCreateRequest(ctx *apptheory.Context) (createUpdateJobRequest, *apptheory.AppError) {
+func parseAndValidateManagedUpdateCreateRequest(ctx *apptheory.Context) (createUpdateJobRequest, *apptheory.AppTheoryError) {
 	req, err := parseCreateUpdateJobRequest(ctx)
 	if err != nil {
-		if appErr, ok := err.(*apptheory.AppError); ok {
+		if appErr, ok := err.(*apptheory.AppTheoryError); ok {
 			return createUpdateJobRequest{}, appErr
 		}
-		return createUpdateJobRequest{}, &apptheory.AppError{Code: "app.internal", Message: "failed to parse update request"}
+		return createUpdateJobRequest{}, newAppTheoryError("app.internal", "failed to parse update request")
 	}
 	if appErr := validateCreateUpdateJobRequest(ctx, req); appErr != nil {
 		return createUpdateJobRequest{}, appErr
@@ -559,10 +559,10 @@ func (s *Server) findExistingManagedUpdateJob(
 	req createUpdateJobRequest,
 	lesserVersion string,
 	lesserBodyVersion string,
-) (*models.UpdateJob, *apptheory.AppError) {
+) (*models.UpdateJob, *apptheory.AppTheoryError) {
 	now := time.Now().UTC()
 	if activeJobs, activeErr := s.findActiveUpdateJobsByInstance(ctx.Context(), slug); activeErr != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to inspect active update jobs"}
+		return nil, newAppTheoryError("app.internal", "failed to inspect active update jobs")
 	} else if len(activeJobs) > 0 {
 		var sameKindActive *models.UpdateJob
 		for _, activeJob := range activeJobs {
@@ -592,7 +592,7 @@ func (s *Server) findExistingManagedUpdateJob(
 
 	repairErr := s.repairStaleInstanceUpdateMarker(ctx.Context(), inst)
 	if repairErr != nil && !theoryErrors.IsConditionFailed(repairErr) {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to repair stale update state"}
+		return nil, newAppTheoryError("app.internal", "failed to repair stale update state")
 	}
 	return nil, nil
 }
@@ -605,10 +605,10 @@ func (s *Server) newManagedUpdateJob(
 	now time.Time,
 	lesserVersion string,
 	lesserBodyVersion string,
-) (*models.UpdateJob, *apptheory.AppError) {
+) (*models.UpdateJob, *apptheory.AppTheoryError) {
 	id, tokenErr := newToken(16)
 	if tokenErr != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to create update job"}
+		return nil, newAppTheoryError("app.internal", "failed to create update job")
 	}
 
 	baseURL := strings.TrimSpace(s.publicBaseURL())
@@ -646,10 +646,10 @@ func (s *Server) rejectActiveManagedUpdateBeforeLatestResolution(
 	ctx *apptheory.Context,
 	slug string,
 	req createUpdateJobRequest,
-) (*apptheory.Response, *apptheory.AppError) {
+) (*apptheory.Response, *apptheory.AppTheoryError) {
 	activeJobs, err := s.findActiveUpdateJobsByInstance(ctx.Context(), slug)
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to inspect active update jobs"}
+		return nil, newAppTheoryError("app.internal", "failed to inspect active update jobs")
 	}
 	if len(activeJobs) == 0 {
 		return nil, nil
@@ -682,7 +682,7 @@ func (s *Server) handleManagedUpdateCreateConflict(
 		}
 		return nil, managedUpdateConflictError(activeJobs[0], req, lesserVersion, lesserBodyVersion)
 	}
-	return nil, &apptheory.AppError{Code: "app.conflict", Message: "an update is already in progress for this instance"}
+	return nil, newAppTheoryError("app.conflict", "an update is already in progress for this instance")
 }
 
 func (s *Server) handlePortalCreateInstanceUpdateJob(ctx *apptheory.Context) (*apptheory.Response, error) {
@@ -755,7 +755,7 @@ func (s *Server) handlePortalCreateInstanceUpdateJob(ctx *apptheory.Context) (*a
 		if theoryErrors.IsConditionFailed(err) {
 			return s.handleManagedUpdateCreateConflict(ctx, slug, req, lesserVersion, lesserBodyVersion)
 		}
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to create update job"}
+		return nil, newAppTheoryError("app.internal", "failed to create update job")
 	}
 
 	s.enqueueUpdateJobBestEffort(ctx, job.ID)
@@ -772,7 +772,7 @@ func (s *Server) handlePortalListInstanceUpdateJobs(ctx *apptheory.Context) (*ap
 
 	items, err := s.store.ListUpdateJobsByInstance(ctx.Context(), strings.TrimSpace(inst.Slug), limit)
 	if err != nil && !theoryErrors.IsNotFound(err) {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to list update jobs"}
+		return nil, newAppTheoryError("app.internal", "failed to list update jobs")
 	}
 
 	s.nudgeActiveUpdateJobIfNeeded(ctx, inst, items)
@@ -785,53 +785,53 @@ func (s *Server) handlePortalListInstanceUpdateJobs(ctx *apptheory.Context) (*ap
 	return apptheory.JSON(http.StatusOK, listUpdateJobsResponse{Jobs: out, Count: len(out)})
 }
 
-func requireManagedUpdateInstance(inst *models.Instance) *apptheory.AppError {
+func requireManagedUpdateInstance(inst *models.Instance) *apptheory.AppTheoryError {
 	if inst == nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return newAppTheoryError("app.internal", "internal error")
 	}
 	if strings.TrimSpace(inst.HostedAccountID) == "" ||
 		strings.TrimSpace(inst.HostedRegion) == "" ||
 		strings.TrimSpace(inst.HostedBaseDomain) == "" {
-		return &apptheory.AppError{Code: "app.conflict", Message: "instance is not a managed provisioned instance"}
+		return newAppTheoryError("app.conflict", "instance is not a managed provisioned instance")
 	}
 	return nil
 }
 
-func (s *Server) resolveManagedLesserUpdateVersion(ctx context.Context, inst *models.Instance, req createUpdateJobRequest) (string, *apptheory.AppError) {
+func (s *Server) resolveManagedLesserUpdateVersion(ctx context.Context, inst *models.Instance, req createUpdateJobRequest) (string, *apptheory.AppTheoryError) {
 	lesserVersion := strings.TrimSpace(req.LesserVersion)
 	if lesserVersion == "" {
 		lesserVersion = strings.TrimSpace(inst.LesserVersion)
 	}
 	if lesserVersion == "" {
-		return "", &apptheory.AppError{Code: "app.bad_request", Message: "lesser_version is required"}
+		return "", newAppTheoryError("app.bad_request", "lesser_version is required")
 	}
 	resolvedVersion, appErr := s.resolveManagedReleaseVersion(ctx, lesserVersion, "lesser_version", s.cfg.ManagedLesserGitHubOwner, s.cfg.ManagedLesserGitHubRepo, "failed to resolve latest Lesser release")
 	if appErr != nil {
 		return "", appErr
 	}
 	if err := provisionworker.ValidateManagedLesserReleaseVersionSupported(resolvedVersion); err != nil {
-		return "", &apptheory.AppError{Code: "app.bad_request", Message: err.Error()}
+		return "", newAppTheoryError("app.bad_request", err.Error())
 	}
 	return resolvedVersion, nil
 }
 
-func (s *Server) resolveManagedBodyUpdateVersion(ctx context.Context, inst *models.Instance, req createUpdateJobRequest) (string, *apptheory.AppError) {
+func (s *Server) resolveManagedBodyUpdateVersion(ctx context.Context, inst *models.Instance, req createUpdateJobRequest) (string, *apptheory.AppTheoryError) {
 	lesserBodyVersion := strings.TrimSpace(req.LesserBodyVersion)
 	if !req.BodyOnly && !req.MCPOnly {
 		if lesserBodyVersion != "" {
-			return "", &apptheory.AppError{Code: "app.bad_request", Message: "use body_only for lesser-body updates"}
+			return "", newAppTheoryError("app.bad_request", "use body_only for lesser-body updates")
 		}
 		return "", nil
 	}
 	if !effectiveBodyEnabled(inst.BodyEnabled) {
-		return "", &apptheory.AppError{Code: "app.conflict", Message: "lesser-body updates are disabled for this instance"}
+		return "", newAppTheoryError("app.conflict", "lesser-body updates are disabled for this instance")
 	}
 	if req.BodyOnly {
 		if lesserBodyVersion == "" {
 			lesserBodyVersion = strings.TrimSpace(s.cfg.ManagedLesserBodyDefaultVersion)
 		}
 		if lesserBodyVersion == "" {
-			return "", &apptheory.AppError{Code: "app.bad_request", Message: "lesser_body_version is required for body_only updates when no default lesser-body version is configured"}
+			return "", newAppTheoryError("app.bad_request", "lesser_body_version is required for body_only updates when no default lesser-body version is configured")
 		}
 	} else if req.MCPOnly && lesserBodyVersion == "" {
 		lesserBodyVersion = strings.TrimSpace(inst.LesserBodyVersion)
@@ -842,7 +842,7 @@ func (s *Server) resolveManagedBodyUpdateVersion(ctx context.Context, inst *mode
 	return s.resolveManagedReleaseVersion(ctx, lesserBodyVersion, "lesser_body_version", s.cfg.ManagedLesserBodyGitHubOwner, s.cfg.ManagedLesserBodyGitHubRepo, "failed to resolve latest lesser-body release")
 }
 
-func (s *Server) resolveManagedUpdateVersions(ctx context.Context, inst *models.Instance, req createUpdateJobRequest) (string, string, *apptheory.AppError) {
+func (s *Server) resolveManagedUpdateVersions(ctx context.Context, inst *models.Instance, req createUpdateJobRequest) (string, string, *apptheory.AppTheoryError) {
 	lesserVersion, appErr := s.resolveManagedLesserUpdateVersion(ctx, inst, req)
 	if appErr != nil {
 		return "", "", appErr
@@ -854,7 +854,7 @@ func (s *Server) resolveManagedUpdateVersions(ctx context.Context, inst *models.
 	return lesserVersion, lesserBodyVersion, nil
 }
 
-func (s *Server) resolveManagedReleaseVersion(ctx context.Context, version string, field string, owner string, repo string, failureMessage string) (string, *apptheory.AppError) {
+func (s *Server) resolveManagedReleaseVersion(ctx context.Context, version string, field string, owner string, repo string, failureMessage string) (string, *apptheory.AppTheoryError) {
 	version = strings.TrimSpace(version)
 	if appErr := validateManagedReleaseVersion(version, field); appErr != nil {
 		return "", appErr
@@ -864,7 +864,7 @@ func (s *Server) resolveManagedReleaseVersion(ctx context.Context, version strin
 	}
 	tag, err := resolveLatestGitHubReleaseTag(ctx, owner, repo)
 	if err != nil {
-		return "", &apptheory.AppError{Code: "app.internal", Message: failureMessage}
+		return "", newAppTheoryError("app.internal", failureMessage)
 	}
 	return tag, nil
 }

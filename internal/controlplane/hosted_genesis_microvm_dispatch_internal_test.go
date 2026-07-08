@@ -316,10 +316,10 @@ func TestH1_5_MicroVMUnavailableAcceptPathReturnsExplicit503(t *testing.T) {
 	asyncSrc := mustReadControlplaneSource(t, "handlers_soul_mint_conversation_async.go")
 
 	// The three MicroVM-unavailable returns must reference 503, not 200.
-	if strings.Contains(asyncSrc, "return failedSession, failedConv, http.StatusOK, &apptheory.AppError{Code: appErrCodeMicroVMUnavailable") {
+	if strings.Contains(asyncSrc, "return failedSession, failedConv, http.StatusOK, newAppTheoryError(appErrCodeMicroVMUnavailable") {
 		t.Fatalf("H1.5 regression: a MicroVM-unavailable accept-path return still uses http.StatusOK (silent 200-on-failure), expected http.StatusServiceUnavailable")
 	}
-	explicit503Count := strings.Count(asyncSrc, "return failedSession, failedConv, http.StatusServiceUnavailable, &apptheory.AppError{Code: appErrCodeMicroVMUnavailable")
+	explicit503Count := strings.Count(asyncSrc, "return failedSession, failedConv, http.StatusServiceUnavailable, newAppTheoryError(appErrCodeMicroVMUnavailable")
 	if explicit503Count != 3 {
 		t.Fatalf("expected exactly three explicit 503 MicroVM-unavailable accept-path returns, got %d", explicit503Count)
 	}

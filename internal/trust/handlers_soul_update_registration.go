@@ -9,16 +9,16 @@ import (
 
 func (s *Server) handleSoulAgentUpdateRegistration(ctx *apptheory.Context) (*apptheory.Response, error) {
 	if s == nil || ctx == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	instanceSlug := strings.TrimSpace(ctx.AuthIdentity)
 	if instanceSlug == "" {
-		return nil, &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
+		return nil, newAppTheoryError("app.unauthorized", "unauthorized")
 	}
 
 	if s.soul == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	result, appErr := s.soul.UpdateSoulAgentRegistrationForInstance(

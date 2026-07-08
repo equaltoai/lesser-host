@@ -7,9 +7,9 @@ import (
 	"time"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	"github.com/theory-cloud/tabletheory"
-	"github.com/theory-cloud/tabletheory/pkg/core"
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
+	"github.com/theory-cloud/tabletheory/v2"
+	"github.com/theory-cloud/tabletheory/v2/pkg/core"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
@@ -49,7 +49,7 @@ func portalUserApprovalFromModel(u models.User) portalUserApproval {
 	}
 }
 
-func normalizeApprovalStatus(status string) (string, *apptheory.AppError) {
+func normalizeApprovalStatus(status string) (string, *apptheory.AppTheoryError) {
 	status = strings.ToLower(strings.TrimSpace(status))
 	if status == "" {
 		return models.UserApprovalStatusPending, nil
@@ -58,7 +58,7 @@ func normalizeApprovalStatus(status string) (string, *apptheory.AppError) {
 	case models.UserApprovalStatusPending, models.UserApprovalStatusApproved, models.UserApprovalStatusRejected:
 		return status, nil
 	default:
-		return "", &apptheory.AppError{Code: "app.bad_request", Message: "invalid approval status"}
+		return "", newAppTheoryError("app.bad_request", "invalid approval status")
 	}
 }
 
@@ -90,7 +90,7 @@ func (s *Server) handleListPortalUserApprovals(ctx *apptheory.Context) (*apptheo
 		200,
 	)
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to list users"}
+		return nil, newAppTheoryError("app.internal", "failed to list users")
 	}
 
 	out := make([]portalUserApproval, 0, len(items))
@@ -122,7 +122,7 @@ func (s *Server) handlePortalUserApprovalAction(ctx *apptheory.Context, status s
 
 	username := strings.TrimSpace(ctx.Param("username"))
 	if username == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "username is required"}
+		return nil, newAppTheoryError("app.bad_request", "username is required")
 	}
 
 	var user models.User
@@ -132,14 +132,14 @@ func (s *Server) handlePortalUserApprovalAction(ctx *apptheory.Context, status s
 		Where("SK", "=", models.SKProfile).
 		First(&user)
 	if theoryErrors.IsNotFound(err) {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "user not found"}
+		return nil, newAppTheoryError("app.not_found", "user not found")
 	}
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	if strings.TrimSpace(user.Role) != models.RoleCustomer {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "user is not a portal customer"}
+		return nil, newAppTheoryError("app.conflict", "user is not a portal customer")
 	}
 
 	currentStatus := strings.ToLower(strings.TrimSpace(user.ApprovalStatus))
@@ -192,7 +192,7 @@ func (s *Server) handlePortalUserApprovalAction(ctx *apptheory.Context, status s
 		if theoryErrors.IsConditionFailed(err) {
 			return apptheory.JSON(http.StatusOK, portalUserApprovalFromModel(user))
 		}
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to update user"}
+		return nil, newAppTheoryError("app.internal", "failed to update user")
 	}
 
 	user.Approved = status == models.UserApprovalStatusApproved

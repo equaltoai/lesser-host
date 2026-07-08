@@ -64,7 +64,7 @@ func (s *Server) handleOperatorReleases(ctx *apptheory.Context) (*apptheory.Resp
 }
 
 // listActiveInstances scans the Instance table for active instances.
-func (s *Server) listActiveInstances(ctx *apptheory.Context) ([]*models.Instance, *apptheory.AppError) {
+func (s *Server) listActiveInstances(ctx *apptheory.Context) ([]*models.Instance, *apptheory.AppTheoryError) {
 	var items []*models.Instance
 	err := s.store.DB.WithContext(ctx.Context()).
 		Model(&models.Instance{}).
@@ -72,7 +72,7 @@ func (s *Server) listActiveInstances(ctx *apptheory.Context) ([]*models.Instance
 		Limit(500).
 		All(&items)
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to list instances"}
+		return nil, newAppTheoryError("app.internal", "failed to list instances")
 	}
 
 	active := make([]*models.Instance, 0, len(items))

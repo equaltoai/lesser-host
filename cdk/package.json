@@ -14,7 +14,7 @@
     "destroy": "npm run build && cdk destroy --all"
   },
   "dependencies": {
-    "@theory-cloud/apptheory-cdk": "https://github.com/theory-cloud/AppTheory/releases/download/v1.15.2/theory-cloud-apptheory-cdk-1.15.2.tgz",
+    "@theory-cloud/apptheory-cdk": "https://github.com/theory-cloud/AppTheory/releases/download/v1.16.1/theory-cloud-apptheory-cdk-1.16.1.tgz",
     "aws-cdk-lib": "2.257.0",
     "constructs": "10.6.0"
   },

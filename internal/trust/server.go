@@ -21,7 +21,7 @@ type soulRegistrationUpdater interface {
 		requestID string,
 		agentID string,
 		body []byte,
-	) (*controlplane.SoulAgentUpdateRegistrationResult, *apptheory.AppError)
+	) (*controlplane.SoulAgentUpdateRegistrationResult, *apptheory.AppTheoryError)
 }
 
 // Server implements the trust API.

@@ -17,7 +17,7 @@ func TestHandleTipRegistryConfig_NotFoundWhenNotConfigured(t *testing.T) {
 	s := &Server{cfg: config.Config{}}
 	if _, err := s.handleTipRegistryConfig(&apptheory.Context{}); err == nil {
 		t.Fatalf("expected not_found")
-	} else if appErr, ok := err.(*apptheory.AppError); !ok || appErr.Code != "app.not_found" {
+	} else if appErr, ok := err.(*apptheory.AppTheoryError); !ok || appErr.Code != "app.not_found" {
 		t.Fatalf("expected app.not_found, got %#v", err)
 	}
 }

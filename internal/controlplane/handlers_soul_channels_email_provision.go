@@ -13,7 +13,7 @@ import (
 	"time"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/domains"
 	"github.com/equaltoai/lesser-host/internal/httpx"
@@ -142,7 +142,7 @@ func (s *Server) handleSoulProvisionEmailChannel(ctx *apptheory.Context) (*appth
 		return resp, err
 	}
 	if expectedVersion != identity.SelfDescriptionVersion {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "version conflict; reload and try again"}
+		return nil, newAppTheoryError("app.conflict", "version conflict; reload and try again")
 	}
 
 	emailAddress, appErr := s.resolveSoulProvisionEmailAddress(ctx.Context(), identity, req.LocalPart)
@@ -175,17 +175,17 @@ func (s *Server) handleSoulProvisionEmailChannel(ctx *apptheory.Context) (*appth
 	}
 
 	if verifyErr := verifyEthereumSignatureBytes(identity.Wallet, digest, selfSig); verifyErr != nil {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid registration signature"}
+		return nil, newAppTheoryError("app.bad_request", "invalid registration signature")
 	}
 	return s.finalizeSoulProvisionEmailChannel(ctx, agentIDHex, identity, expectedVersion, emailAddress.ProviderLocalPart, emailAddress.Address, regMap, regV3, selfSig)
 }
 
-func parseSoulProvisionConfirm(expectedVersion *int, issuedAtRaw string, selfAttestation string) (int, time.Time, string, *apptheory.AppError) {
+func parseSoulProvisionConfirm(expectedVersion *int, issuedAtRaw string, selfAttestation string) (int, time.Time, string, *apptheory.AppTheoryError) {
 	if expectedVersion == nil {
-		return 0, time.Time{}, "", &apptheory.AppError{Code: "app.bad_request", Message: "expected_version is required"}
+		return 0, time.Time{}, "", newAppTheoryError("app.bad_request", "expected_version is required")
 	}
 	if *expectedVersion < 0 {
-		return 0, time.Time{}, "", &apptheory.AppError{Code: "app.bad_request", Message: "expected_version is invalid"}
+		return 0, time.Time{}, "", newAppTheoryError("app.bad_request", "expected_version is invalid")
 	}
 	issuedAt, issuedAtErr := parseSoulProvisionIssuedAt(issuedAtRaw)
 	if issuedAtErr != nil {
@@ -193,7 +193,7 @@ func parseSoulProvisionConfirm(expectedVersion *int, issuedAtRaw string, selfAtt
 	}
 	selfSig := strings.TrimSpace(selfAttestation)
 	if selfSig == "" {
-		return 0, time.Time{}, "", &apptheory.AppError{Code: "app.bad_request", Message: "self_attestation is required"}
+		return 0, time.Time{}, "", newAppTheoryError("app.bad_request", "self_attestation is required")
 	}
 	return *expectedVersion, issuedAt, selfSig, nil
 }
@@ -210,7 +210,7 @@ func (s *Server) maybeRespondWithExistingEmailProvision(ctx *apptheory.Context, 
 		})
 		return resp, true, err
 	}
-	return nil, true, &apptheory.AppError{Code: "app.conflict", Message: "version conflict; reload and try again"}
+	return nil, true, newAppTheoryError("app.conflict", "version conflict; reload and try again")
 }
 
 func (s *Server) finalizeSoulProvisionEmailChannel(
@@ -226,7 +226,7 @@ func (s *Server) finalizeSoulProvisionEmailChannel(
 ) (*apptheory.Response, error) {
 	forwardingAddress := soulEmailInboundForwardingAddress(localNorm, s.cfg.SoulEmailInboundDomain)
 	if forwardingAddress == "" {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "email inbound bridge is not configured"}
+		return nil, newAppTheoryError("app.conflict", "email inbound bridge is not configured")
 	}
 
 	caps := extractCapabilityNames(regMap)
@@ -238,14 +238,14 @@ func (s *Server) finalizeSoulProvisionEmailChannel(
 		return nil, passErr
 	}
 	if s.migaduCreateEmail == nil {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "email provider is not configured"}
+		return nil, newAppTheoryError("app.conflict", "email provider is not configured")
 	}
 	if s.migaduForwarding == nil {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "email provider forwarding is not configured"}
+		return nil, newAppTheoryError("app.conflict", "email provider forwarding is not configured")
 	}
 	if provisionErr := s.migaduCreateEmail(ctx.Context(), localNorm, identity.LocalID, password); provisionErr != nil {
 		log.Printf("controlplane: soul email provision failed agent=%s address=%s: %v", agentIDHex, address, provisionErr)
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to provision email"}
+		return nil, newAppTheoryError("app.internal", "failed to provision email")
 	}
 	if forwardErr := s.migaduForwarding(ctx.Context(), localNorm, forwardingAddress); forwardErr != nil {
 		if s.migaduDeleteEmail != nil {
@@ -254,7 +254,7 @@ func (s *Server) finalizeSoulProvisionEmailChannel(
 			}
 		}
 		log.Printf("controlplane: soul email forwarding provision failed agent=%s address=%s: %v", agentIDHex, address, forwardErr)
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to provision email"}
+		return nil, newAppTheoryError("app.internal", "failed to provision email")
 	}
 
 	regBytes, regSHA256, claimLevels, changeSummary, appErr := buildProvisionRegistrationPayload(regMap)
@@ -297,16 +297,16 @@ func soulEmailInboundForwardingAddress(localPart string, inboundDomain string) s
 	return localPart + "@" + inboundDomain
 }
 
-func buildProvisionRegistrationPayload(regMap map[string]any) ([]byte, string, map[string]string, string, *apptheory.AppError) {
+func buildProvisionRegistrationPayload(regMap map[string]any) ([]byte, string, map[string]string, string, *apptheory.AppTheoryError) {
 	regBytes, err := json.Marshal(regMap)
 	if err != nil {
-		return nil, "", nil, "", &apptheory.AppError{Code: "app.bad_request", Message: "invalid registration JSON"}
+		return nil, "", nil, "", newAppTheoryError("app.bad_request", "invalid registration JSON")
 	}
 	sum := sha256.Sum256(regBytes)
 	return regBytes, hex.EncodeToString(sum[:]), extractCapabilityClaimLevels(regMap), extractStringField(regMap, "changeSummary"), nil
 }
 
-func upsertProvisionedEmailChannel(ctx context.Context, s *Server, agentIDHex string, address string, passParamName string, now time.Time) *apptheory.AppError {
+func upsertProvisionedEmailChannel(ctx context.Context, s *Server, agentIDHex string, address string, passParamName string, now time.Time) *apptheory.AppTheoryError {
 	channel := &models.SoulAgentChannel{
 		AgentID:       agentIDHex,
 		ChannelType:   models.SoulChannelTypeEmail,
@@ -323,7 +323,7 @@ func upsertProvisionedEmailChannel(ctx context.Context, s *Server, agentIDHex st
 	}
 	_ = channel.UpdateKeys()
 	if createErr := s.store.DB.WithContext(ctx).Model(channel).CreateOrUpdate(); createErr != nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "failed to record email channel"}
+		return newAppTheoryError("app.internal", "failed to record email channel")
 	}
 	return s.ensureSoulEmailAgentIndex(ctx, &models.SoulEmailAgentIndex{Email: address, AgentID: agentIDHex})
 }
@@ -338,10 +338,10 @@ type soulProvisionEmailBuildInput struct {
 	SelfAttestationHex string
 }
 
-func (s *Server) buildSoulProvisionEmailRegistration(ctx context.Context, base map[string]any, baseVersion string, agentIDHex string, identity *models.SoulAgentIdentity, input soulProvisionEmailBuildInput) (reg map[string]any, regV3 *soul.RegistrationFileV3, digest []byte, appErr *apptheory.AppError) {
+func (s *Server) buildSoulProvisionEmailRegistration(ctx context.Context, base map[string]any, baseVersion string, agentIDHex string, identity *models.SoulAgentIdentity, input soulProvisionEmailBuildInput) (reg map[string]any, regV3 *soul.RegistrationFileV3, digest []byte, appErr *apptheory.AppTheoryError) {
 	_ = ctx
 	if s == nil || identity == nil {
-		return nil, nil, nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, nil, nil, newAppTheoryError("app.internal", "internal error")
 	}
 	reg, appErr = prepareSoulProvisionRegistrationBase(s, base, baseVersion, agentIDHex, input.ExpectedPrev, input.NextVersion)
 	if appErr != nil {
@@ -373,16 +373,16 @@ func (s *Server) buildSoulProvisionEmailRegistration(ctx context.Context, base m
 	return reg, regV3, digest, nil
 }
 
-func prepareSoulProvisionRegistrationBase(s *Server, base map[string]any, baseVersion string, agentIDHex string, expectedPrev int, nextVersion int) (map[string]any, *apptheory.AppError) {
+func prepareSoulProvisionRegistrationBase(s *Server, base map[string]any, baseVersion string, agentIDHex string, expectedPrev int, nextVersion int) (map[string]any, *apptheory.AppTheoryError) {
 	if base == nil || s == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	baseVersion = strings.TrimSpace(baseVersion)
 	if baseVersion != "2" && baseVersion != "3" {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "registration version is unsupported; update registration first"}
+		return nil, newAppTheoryError("app.conflict", "registration version is unsupported; update registration first")
 	}
 	if expectedPrev < 0 || nextVersion <= 0 || nextVersion != expectedPrev+1 {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid expected_version"}
+		return nil, newAppTheoryError("app.bad_request", "invalid expected_version")
 	}
 
 	reg := make(map[string]any, len(base))
@@ -507,25 +507,25 @@ func isLegacyBareManagedProvisionENSName(existingName string, desiredName string
 	return strings.EqualFold(strings.TrimSpace(existingName), legacy)
 }
 
-func parseSoulProvisionRegistrationV3(reg map[string]any) (*soul.RegistrationFileV3, *apptheory.AppError) {
+func parseSoulProvisionRegistrationV3(reg map[string]any) (*soul.RegistrationFileV3, *apptheory.AppTheoryError) {
 	regBytes, err := json.Marshal(reg)
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid registration JSON"}
+		return nil, newAppTheoryError("app.bad_request", "invalid registration JSON")
 	}
 	parsed, err := soul.ParseRegistrationFileV3(regBytes)
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid v3 registration schema"}
+		return nil, newAppTheoryError("app.bad_request", "invalid v3 registration schema")
 	}
 	if err := parsed.Validate(); err != nil {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: err.Error()}
+		return nil, newAppTheoryError("app.bad_request", err.Error())
 	}
 	return parsed, nil
 }
 
-func parseSoulProvisionIssuedAt(raw string) (time.Time, *apptheory.AppError) {
+func parseSoulProvisionIssuedAt(raw string) (time.Time, *apptheory.AppTheoryError) {
 	issuedAtRaw := strings.TrimSpace(raw)
 	if issuedAtRaw == "" {
-		return time.Time{}, &apptheory.AppError{Code: "app.bad_request", Message: "issued_at is required"}
+		return time.Time{}, newAppTheoryError("app.bad_request", "issued_at is required")
 	}
 	issuedAt, err := time.Parse(time.RFC3339Nano, issuedAtRaw)
 	if err == nil {
@@ -533,7 +533,7 @@ func parseSoulProvisionIssuedAt(raw string) (time.Time, *apptheory.AppError) {
 	}
 	issuedAt, err = time.Parse(time.RFC3339, issuedAtRaw)
 	if err != nil {
-		return time.Time{}, &apptheory.AppError{Code: "app.bad_request", Message: "issued_at must be an RFC3339 timestamp"}
+		return time.Time{}, newAppTheoryError("app.bad_request", "issued_at must be an RFC3339 timestamp")
 	}
 	return issuedAt, nil
 }
@@ -546,7 +546,7 @@ func lookupProvisionedChannelIdentifier(ctx context.Context, s *Server, agentIDH
 	return strings.TrimSpace(channel.Identifier)
 }
 
-func (s *Server) requireSoulProvisionIdentity(ctx *apptheory.Context) (string, *models.SoulAgentIdentity, *apptheory.AppError) {
+func (s *Server) requireSoulProvisionIdentity(ctx *apptheory.Context) (string, *models.SoulAgentIdentity, *apptheory.AppTheoryError) {
 	if appErr := s.requireSoulRegistryConfigured(); appErr != nil {
 		return "", nil, appErr
 	}
@@ -557,7 +557,7 @@ func (s *Server) requireSoulProvisionIdentity(ctx *apptheory.Context) (string, *
 		return "", nil, appErr
 	}
 	if s == nil || s.soulPacks == nil || strings.TrimSpace(s.cfg.SoulPackBucketName) == "" {
-		return "", nil, &apptheory.AppError{Code: "app.conflict", Message: "soul registry bucket is not configured"}
+		return "", nil, newAppTheoryError("app.conflict", "soul registry bucket is not configured")
 	}
 
 	agentIDHex, _, appErr := parseSoulAgentIDHex(ctx.Param("agentId"))
@@ -569,7 +569,7 @@ func (s *Server) requireSoulProvisionIdentity(ctx *apptheory.Context) (string, *
 		return "", nil, appErr
 	}
 	if identity.SelfDescriptionVersion <= 0 {
-		return "", nil, &apptheory.AppError{Code: "app.conflict", Message: "registration is not yet published; update registration first"}
+		return "", nil, newAppTheoryError("app.conflict", "registration is not yet published; update registration first")
 	}
 	return agentIDHex, identity, nil
 }
@@ -582,13 +582,13 @@ type soulProvisionManagedEmailAddress struct {
 	ENSName           string
 }
 
-func (s *Server) resolveSoulProvisionEmailAddress(ctx context.Context, identity *models.SoulAgentIdentity, requestedLocalPart string) (soulProvisionManagedEmailAddress, *apptheory.AppError) {
+func (s *Server) resolveSoulProvisionEmailAddress(ctx context.Context, identity *models.SoulAgentIdentity, requestedLocalPart string) (soulProvisionManagedEmailAddress, *apptheory.AppTheoryError) {
 	if identity == nil {
-		return soulProvisionManagedEmailAddress{}, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return soulProvisionManagedEmailAddress{}, newAppTheoryError("app.internal", "internal error")
 	}
 	canonicalLocal, err := soul.ValidateManagedHandle(identity.LocalID)
 	if err != nil || canonicalLocal == "" {
-		return soulProvisionManagedEmailAddress{}, &apptheory.AppError{Code: "app.conflict", Message: "agent local id is invalid"}
+		return soulProvisionManagedEmailAddress{}, newAppTheoryError("app.conflict", "agent local id is invalid")
 	}
 	instanceSlug, appErr := s.resolveSoulProvisionEmailInstanceSlug(ctx, identity)
 	if appErr != nil {
@@ -597,17 +597,17 @@ func (s *Server) resolveSoulProvisionEmailAddress(ctx context.Context, identity 
 	return buildSoulProvisionManagedEmailAddress(canonicalLocal, instanceSlug, requestedLocalPart)
 }
 
-func (s *Server) resolveSoulProvisionEmailInstanceSlug(ctx context.Context, identity *models.SoulAgentIdentity) (string, *apptheory.AppError) {
+func (s *Server) resolveSoulProvisionEmailInstanceSlug(ctx context.Context, identity *models.SoulAgentIdentity) (string, *apptheory.AppTheoryError) {
 	return s.resolveSoulManagedIdentityInstanceSlug(ctx, identity, "managed email")
 }
 
-func (s *Server) resolveSoulProvisionENSName(ctx context.Context, identity *models.SoulAgentIdentity) (string, *apptheory.AppError) {
+func (s *Server) resolveSoulProvisionENSName(ctx context.Context, identity *models.SoulAgentIdentity) (string, *apptheory.AppTheoryError) {
 	if identity == nil {
-		return "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return "", newAppTheoryError("app.internal", "internal error")
 	}
 	canonicalLocal, err := soul.ValidateManagedHandle(identity.LocalID)
 	if err != nil || canonicalLocal == "" {
-		return "", &apptheory.AppError{Code: "app.conflict", Message: "agent local id is invalid"}
+		return "", newAppTheoryError("app.conflict", "agent local id is invalid")
 	}
 	instanceSlug, appErr := s.resolveSoulManagedIdentityInstanceSlug(ctx, identity, "managed identity")
 	if appErr != nil {
@@ -615,14 +615,14 @@ func (s *Server) resolveSoulProvisionENSName(ctx context.Context, identity *mode
 	}
 	ensName, err := soul.ManagedENSName(canonicalLocal, instanceSlug)
 	if err != nil {
-		return "", &apptheory.AppError{Code: "app.conflict", Message: "managed ens name is invalid"}
+		return "", newAppTheoryError("app.conflict", "managed ens name is invalid")
 	}
 	return ensName, nil
 }
 
-func (s *Server) resolveSoulManagedIdentityInstanceSlug(ctx context.Context, identity *models.SoulAgentIdentity, surface string) (string, *apptheory.AppError) {
+func (s *Server) resolveSoulManagedIdentityInstanceSlug(ctx context.Context, identity *models.SoulAgentIdentity, surface string) (string, *apptheory.AppTheoryError) {
 	if s == nil || identity == nil {
-		return "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return "", newAppTheoryError("app.internal", "internal error")
 	}
 	surface = strings.TrimSpace(surface)
 	if surface == "" {
@@ -630,54 +630,54 @@ func (s *Server) resolveSoulManagedIdentityInstanceSlug(ctx context.Context, ide
 	}
 	normalizedDomain, err := domains.NormalizeDomain(identity.Domain)
 	if err != nil {
-		return "", &apptheory.AppError{Code: "app.conflict", Message: "agent domain is invalid"}
+		return "", newAppTheoryError("app.conflict", "agent domain is invalid")
 	}
 
 	domain, loadErr := s.loadManagedStageAwareDomain(ctx, normalizedDomain)
 	if theoryErrors.IsNotFound(loadErr) {
-		return "", &apptheory.AppError{Code: "app.conflict", Message: "agent domain is not registered for " + surface}
+		return "", newAppTheoryError("app.conflict", "agent domain is not registered for "+surface)
 	}
 	if loadErr != nil {
-		return "", &apptheory.AppError{Code: "app.internal", Message: "failed to load agent domain"}
+		return "", newAppTheoryError("app.internal", "failed to load agent domain")
 	}
 	if domain == nil || !domainIsVerifiedOrActive(domain.Status) {
-		return "", &apptheory.AppError{Code: "app.conflict", Message: "agent domain is not verified for " + surface}
+		return "", newAppTheoryError("app.conflict", "agent domain is not verified for "+surface)
 	}
 
 	instanceSlug, err := soul.ValidateManagedInstanceSlug(domain.InstanceSlug)
 	if err != nil {
-		return "", &apptheory.AppError{Code: "app.conflict", Message: "agent domain instance slug is invalid"}
+		return "", newAppTheoryError("app.conflict", "agent domain instance slug is invalid")
 	}
 	return instanceSlug, nil
 }
 
-func buildSoulProvisionManagedEmailAddress(agentLocalID string, instanceSlug string, requestedLocalPart string) (soulProvisionManagedEmailAddress, *apptheory.AppError) {
+func buildSoulProvisionManagedEmailAddress(agentLocalID string, instanceSlug string, requestedLocalPart string) (soulProvisionManagedEmailAddress, *apptheory.AppTheoryError) {
 	canonicalLocal, err := soul.ValidateManagedHandle(agentLocalID)
 	if err != nil || canonicalLocal == "" {
-		return soulProvisionManagedEmailAddress{}, &apptheory.AppError{Code: "app.conflict", Message: "agent local id is invalid"}
+		return soulProvisionManagedEmailAddress{}, newAppTheoryError("app.conflict", "agent local id is invalid")
 	}
 	slug, err := soul.ValidateManagedInstanceSlug(instanceSlug)
 	if err != nil {
-		return soulProvisionManagedEmailAddress{}, &apptheory.AppError{Code: "app.conflict", Message: "agent domain instance slug is invalid"}
+		return soulProvisionManagedEmailAddress{}, newAppTheoryError("app.conflict", "agent domain instance slug is invalid")
 	}
 
 	providerLocalPart := canonicalLocal + "." + slug
 	if len(providerLocalPart) > soulEmailSMTPLocalPartMax {
-		return soulProvisionManagedEmailAddress{}, &apptheory.AppError{Code: "app.conflict", Message: "email local_part exceeds 64-octet SMTP limit"}
+		return soulProvisionManagedEmailAddress{}, newAppTheoryError("app.conflict", "email local_part exceeds 64-octet SMTP limit")
 	}
 
 	if requestedLocalPart != strings.TrimSpace(requestedLocalPart) {
-		return soulProvisionManagedEmailAddress{}, &apptheory.AppError{Code: "app.bad_request", Message: "local_part is invalid"}
+		return soulProvisionManagedEmailAddress{}, newAppTheoryError("app.bad_request", "local_part is invalid")
 	}
 	if requested := requestedLocalPart; requested != "" {
 		if requested != providerLocalPart {
-			return soulProvisionManagedEmailAddress{}, &apptheory.AppError{Code: "app.conflict", Message: soulEmailProvisionErrDerivedLocalPartReq}
+			return soulProvisionManagedEmailAddress{}, newAppTheoryError("app.conflict", soulEmailProvisionErrDerivedLocalPartReq)
 		}
 	}
 
 	ensName, err := soul.ManagedENSName(canonicalLocal, slug)
 	if err != nil {
-		return soulProvisionManagedEmailAddress{}, &apptheory.AppError{Code: "app.conflict", Message: "managed ens name is invalid"}
+		return soulProvisionManagedEmailAddress{}, newAppTheoryError("app.conflict", "managed ens name is invalid")
 	}
 
 	return soulProvisionManagedEmailAddress{
@@ -689,7 +689,7 @@ func buildSoulProvisionManagedEmailAddress(agentLocalID string, instanceSlug str
 	}, nil
 }
 
-func (s *Server) validateSoulProvisionEmailAddressAvailability(ctx context.Context, agentIDHex string, address string) *apptheory.AppError {
+func (s *Server) validateSoulProvisionEmailAddressAvailability(ctx context.Context, agentIDHex string, address string) *apptheory.AppTheoryError {
 	emailIdx := &models.SoulEmailAgentIndex{Email: address}
 	_ = emailIdx.UpdateKeys()
 	return s.validateSoulProvisionIndexAvailability(ctx, &models.SoulEmailAgentIndex{}, emailIdx.PK, emailIdx.SK, agentIDHex, soulEmailProvisionErrAddressTaken, "failed to validate email mapping", func() any {
@@ -712,7 +712,7 @@ func (s *Server) validateSoulProvisionIndexAvailability(
 	internalMessage string,
 	newExisting func() any,
 	owner func(any) string,
-) *apptheory.AppError {
+) *apptheory.AppTheoryError {
 	existing := newExisting()
 	lookupErr := s.store.DB.WithContext(ctx).
 		Model(model).
@@ -722,12 +722,12 @@ func (s *Server) validateSoulProvisionIndexAvailability(
 	if lookupErr == nil {
 		existingAgentID := strings.TrimSpace(owner(existing))
 		if existingAgentID != "" && !strings.EqualFold(existingAgentID, agentIDHex) {
-			return &apptheory.AppError{Code: "app.conflict", Message: conflictMessage}
+			return newAppTheoryError("app.conflict", conflictMessage)
 		}
 		return nil
 	}
 	if !theoryErrors.IsNotFound(lookupErr) {
-		return &apptheory.AppError{Code: "app.internal", Message: internalMessage}
+		return newAppTheoryError("app.internal", internalMessage)
 	}
 	return nil
 }
@@ -742,12 +742,12 @@ func (s *Server) soulAgentEmailPasswordSSMParam(agentIDHex string) string {
 	return fmt.Sprintf("/lesser-host/soul/%s/agents/%s/channels/email/migadu_password", stage, agentIDHex)
 }
 
-func (s *Server) ensureSoulAgentEmailPassword(ctx context.Context, paramName string) (string, *apptheory.AppError) {
+func (s *Server) ensureSoulAgentEmailPassword(ctx context.Context, paramName string) (string, *apptheory.AppTheoryError) {
 	if strings.TrimSpace(paramName) == "" {
-		return "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return "", newAppTheoryError("app.internal", "internal error")
 	}
 	if s == nil || s.ssmPutSecureValue == nil || s.ssmGetParameter == nil {
-		return "", &apptheory.AppError{Code: "app.conflict", Message: "ssm is not configured"}
+		return "", newAppTheoryError("app.conflict", "ssm is not configured")
 	}
 
 	// If it already exists, reuse it.
@@ -757,7 +757,7 @@ func (s *Server) ensureSoulAgentEmailPassword(ctx context.Context, paramName str
 
 	pw, err := generateRandomSecret(24)
 	if err != nil {
-		return "", &apptheory.AppError{Code: "app.internal", Message: "failed to generate password"}
+		return "", newAppTheoryError("app.internal", "failed to generate password")
 	}
 	if err := s.ssmPutSecureValue(ctx, paramName, pw, false); err != nil {
 		if secrets.IsSSMParameterAlreadyExists(err) {
@@ -765,7 +765,7 @@ func (s *Server) ensureSoulAgentEmailPassword(ctx context.Context, paramName str
 				return strings.TrimSpace(existing), nil
 			}
 		}
-		return "", &apptheory.AppError{Code: "app.internal", Message: "failed to store password"}
+		return "", newAppTheoryError("app.internal", "failed to store password")
 	}
 	return pw, nil
 }

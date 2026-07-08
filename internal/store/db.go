@@ -3,7 +3,7 @@ package store
 import (
 	"time"
 
-	"github.com/theory-cloud/tabletheory"
+	"github.com/theory-cloud/tabletheory/v2"
 
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )

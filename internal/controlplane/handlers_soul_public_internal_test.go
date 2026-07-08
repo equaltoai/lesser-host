@@ -19,9 +19,9 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	"github.com/theory-cloud/tabletheory/pkg/core"
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
-	ttmocks "github.com/theory-cloud/tabletheory/pkg/mocks"
+	"github.com/theory-cloud/tabletheory/v2/pkg/core"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
+	ttmocks "github.com/theory-cloud/tabletheory/v2/pkg/mocks"
 
 	"github.com/stretchr/testify/mock"
 
@@ -283,7 +283,7 @@ func TestHandleSoulPublicSearch_StageAndBaseDomainsConflict(t *testing.T) {
 	}}}
 
 	_, err := s.handleSoulPublicSearch(ctx)
-	appErr, ok := err.(*apptheory.AppError)
+	appErr, ok := err.(*apptheory.AppTheoryError)
 	if !ok || appErr.Code != appErrCodeBadRequest || appErr.Message != "q domain does not match domain parameter" {
 		t.Fatalf("unexpected err: %#v", err)
 	}

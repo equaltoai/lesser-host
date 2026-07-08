@@ -6,8 +6,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	r53types "github.com/aws/aws-sdk-go-v2/service/route53/types"
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
-	ttmocks "github.com/theory-cloud/tabletheory/pkg/mocks"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
+	ttmocks "github.com/theory-cloud/tabletheory/v2/pkg/mocks"
 
 	"github.com/stretchr/testify/mock"
 
@@ -114,7 +114,7 @@ func TestHandlePortalUpsertDomainVerificationRoute53_ForbiddenWhenNotOwner(t *te
 	}
 	if _, err := s.handlePortalUpsertDomainVerificationRoute53(ctx); err == nil {
 		t.Fatalf("expected forbidden")
-	} else if appErr, ok := err.(*apptheory.AppError); !ok || appErr.Code != appErrCodeForbidden {
+	} else if appErr, ok := err.(*apptheory.AppTheoryError); !ok || appErr.Code != appErrCodeForbidden {
 		t.Fatalf("expected %s, got %#v", appErrCodeForbidden, err)
 	}
 }
@@ -140,7 +140,7 @@ func TestHandlePortalUpsertDomainVerificationRoute53_NotFoundWhenDomainMissing(t
 	}
 	if _, err := s.handlePortalUpsertDomainVerificationRoute53(ctx); err == nil {
 		t.Fatalf("expected not_found")
-	} else if appErr, ok := err.(*apptheory.AppError); !ok || appErr.Code != appErrCodeNotFound {
+	} else if appErr, ok := err.(*apptheory.AppTheoryError); !ok || appErr.Code != appErrCodeNotFound {
 		t.Fatalf("expected %s, got %#v", appErrCodeNotFound, err)
 	}
 }
@@ -170,7 +170,7 @@ func TestHandlePortalUpsertDomainVerificationRoute53_ConflictWhenNotEligible(t *
 	}
 	if _, err := s.handlePortalUpsertDomainVerificationRoute53(ctx); err == nil {
 		t.Fatalf("expected conflict")
-	} else if appErr, ok := err.(*apptheory.AppError); !ok || appErr.Code != appErrCodeConflict {
+	} else if appErr, ok := err.(*apptheory.AppTheoryError); !ok || appErr.Code != appErrCodeConflict {
 		t.Fatalf("expected app.conflict, got %#v", err)
 	}
 }
@@ -205,7 +205,7 @@ func TestHandlePortalUpsertDomainVerificationRoute53_ConflictWhenRoute53ClientMi
 	}
 	if _, err := s.handlePortalUpsertDomainVerificationRoute53(ctx); err == nil {
 		t.Fatalf("expected conflict")
-	} else if appErr, ok := err.(*apptheory.AppError); !ok || appErr.Code != appErrCodeConflict {
+	} else if appErr, ok := err.(*apptheory.AppTheoryError); !ok || appErr.Code != appErrCodeConflict {
 		t.Fatalf("expected app.conflict, got %#v", err)
 	}
 }

@@ -12,9 +12,9 @@ import (
 	"time"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	"github.com/theory-cloud/tabletheory"
-	"github.com/theory-cloud/tabletheory/pkg/core"
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
+	"github.com/theory-cloud/tabletheory/v2"
+	"github.com/theory-cloud/tabletheory/v2/pkg/core"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/billing"
 	"github.com/equaltoai/lesser-host/internal/httpx"
@@ -53,17 +53,17 @@ type linkPreviewResponse struct {
 	ExpiresAt time.Time `json:"expires_at,omitempty"`
 }
 
-func requireLinkPreviewAuth(s *Server, ctx *apptheory.Context) (string, *apptheory.AppError) {
+func requireLinkPreviewAuth(s *Server, ctx *apptheory.Context) (string, *apptheory.AppTheoryError) {
 	if s == nil || s.store == nil || s.store.DB == nil {
-		return "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return "", newAppTheoryError("app.internal", "internal error")
 	}
 	if ctx == nil {
-		return "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return "", newAppTheoryError("app.internal", "internal error")
 	}
 
 	instanceSlug := strings.TrimSpace(ctx.AuthIdentity)
 	if instanceSlug == "" {
-		return "", &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
+		return "", newAppTheoryError("app.unauthorized", "unauthorized")
 	}
 	return instanceSlug, nil
 }
@@ -76,16 +76,16 @@ func parseLinkPreviewRequestInput(ctx *apptheory.Context) (linkPreviewRequest, e
 	return req, nil
 }
 
-func parseLinkPreviewNormalizedURL(raw string) (string, *apptheory.AppError) {
+func parseLinkPreviewNormalizedURL(raw string) (string, *apptheory.AppTheoryError) {
 	normalized, _, err := normalizeLinkURL(raw)
 	if err == nil {
 		return normalized, nil
 	}
 
-	if appErr, ok := linkPreviewBadRequestError(err).(*apptheory.AppError); ok {
+	if appErr, ok := linkPreviewBadRequestError(err).(*apptheory.AppTheoryError); ok {
 		return "", appErr
 	}
-	return "", &apptheory.AppError{Code: "app.bad_request", Message: "invalid url"}
+	return "", newAppTheoryError("app.bad_request", "invalid url")
 }
 
 func (s *Server) maybeServeCachedLinkPreview(
@@ -95,14 +95,14 @@ func (s *Server) maybeServeCachedLinkPreview(
 	previewID string,
 	normalizedURL string,
 	forceRefresh bool,
-) (*linkPreviewResponse, bool, *apptheory.AppError) {
+) (*linkPreviewResponse, bool, *apptheory.AppTheoryError) {
 	if forceRefresh {
 		return nil, false, nil
 	}
 
 	item, ok, err := s.getFreshLinkPreview(ctx.Context(), previewID, time.Now().UTC())
 	if err != nil {
-		return nil, false, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, false, newAppTheoryError("app.internal", "internal error")
 	}
 	if !ok || item == nil {
 		return nil, false, nil
@@ -124,7 +124,7 @@ func (s *Server) fetchAndStoreLinkPreview(
 	instanceSlug string,
 	previewID string,
 	normalizedURL string,
-) (*models.LinkPreview, *apptheory.AppError) {
+) (*models.LinkPreview, *apptheory.AppTheoryError) {
 	fetched, fetchErr := fetchLinkPreview(ctx.Context(), nil, normalizedURL)
 
 	now := time.Now().UTC()
@@ -156,7 +156,7 @@ func (s *Server) fetchAndStoreLinkPreview(
 	}
 
 	if err := s.putLinkPreviewWithAudit(ctx.Context(), instanceSlug, item, previewID, now, strings.TrimSpace(ctx.RequestID)); err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to store preview"}
+		return nil, newAppTheoryError("app.internal", "failed to store preview")
 	}
 
 	return item, nil
@@ -208,9 +208,9 @@ func (s *Server) handleLinkPreview(ctx *apptheory.Context) (*apptheory.Response,
 
 func linkPreviewBadRequestError(err error) error {
 	if pe, ok := err.(*linkPreviewError); ok && pe.Code == errorCodeInvalidURL {
-		return &apptheory.AppError{Code: "app.bad_request", Message: pe.Message}
+		return newAppTheoryError("app.bad_request", pe.Message)
 	}
-	return &apptheory.AppError{Code: "app.bad_request", Message: "invalid url"}
+	return newAppTheoryError("app.bad_request", "invalid url")
 }
 
 func linkPreviewResponseDisabled(previewID, normalizedURL string) linkPreviewResponse {
@@ -286,31 +286,31 @@ func (s *Server) putLinkPreviewWithAudit(ctx context.Context, instanceSlug strin
 
 func (s *Server) handleGetLinkPreview(ctx *apptheory.Context) (*apptheory.Response, error) {
 	if s == nil || s.store == nil || s.store.DB == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	if ctx == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	instanceSlug := strings.TrimSpace(ctx.AuthIdentity)
 	if instanceSlug == "" {
-		return nil, &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
+		return nil, newAppTheoryError("app.unauthorized", "unauthorized")
 	}
 
 	id := strings.TrimSpace(ctx.Param("id"))
 	if id == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "id is required"}
+		return nil, newAppTheoryError("app.bad_request", "id is required")
 	}
 
 	item, err := s.store.GetLinkPreview(ctx.Context(), id)
 	if theoryErrors.IsNotFound(err) {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "preview not found"}
+		return nil, newAppTheoryError("app.not_found", "preview not found")
 	}
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	if !linkPreviewOwnedByInstance(item, instanceSlug) {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "preview not found"}
+		return nil, newAppTheoryError("app.not_found", "preview not found")
 	}
 
 	instCfg := s.loadInstanceTrustConfig(ctx.Context(), instanceSlug)
@@ -327,25 +327,25 @@ var imageIDRE = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 func (s *Server) handleGetLinkPreviewImage(ctx *apptheory.Context) (*apptheory.Response, error) {
 	if s == nil || s.artifacts == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	if ctx == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	instanceSlug := strings.TrimSpace(ctx.AuthIdentity)
 	if instanceSlug == "" {
-		return nil, &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
+		return nil, newAppTheoryError("app.unauthorized", "unauthorized")
 	}
 
 	imageID := strings.TrimSpace(ctx.Param("imageId"))
 	if !imageIDRE.MatchString(imageID) {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid image id"}
+		return nil, newAppTheoryError("app.bad_request", "invalid image id")
 	}
 
 	key := linkPreviewImageObjectKey(instanceSlug, imageID)
 	body, contentType, etag, err := s.artifacts.GetObject(ctx.Context(), key, linkPreviewMaxImageBytes)
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "image not found"}
+		return nil, newAppTheoryError("app.not_found", "image not found")
 	}
 	if strings.TrimSpace(contentType) == "" {
 		contentType = http.DetectContentType(body)

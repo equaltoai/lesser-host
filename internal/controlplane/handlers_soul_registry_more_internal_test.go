@@ -8,8 +8,8 @@ import (
 	"time"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
-	ttmocks "github.com/theory-cloud/tabletheory/pkg/mocks"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
+	ttmocks "github.com/theory-cloud/tabletheory/v2/pkg/mocks"
 
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -200,7 +200,7 @@ func TestParseSoulAgentRegistrationVerifyInput_BadRequests(t *testing.T) {
 	}
 	_, _, _, _, _, _, err = parseSoulAgentRegistrationVerifyInput(ctxMissingSig)
 	require.NotNil(t, err)
-	if appErr, ok := err.(*apptheory.AppError); ok {
+	if appErr, ok := err.(*apptheory.AppTheoryError); ok {
 		require.Equal(t, "app.bad_request", appErr.Code)
 	}
 }

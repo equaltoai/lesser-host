@@ -8,8 +8,8 @@ import (
 	"time"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
-	ttmocks "github.com/theory-cloud/tabletheory/pkg/mocks"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
+	ttmocks "github.com/theory-cloud/tabletheory/v2/pkg/mocks"
 
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -76,7 +76,7 @@ func TestDebitBudgetForCreateRender_Branches(t *testing.T) {
 
 		resp, err := s.debitBudgetForCreateRender(&apptheory.Context{RequestID: "rid"}, "inst", now, false, renderID, normalized, models.RenderRetentionClassBenign)
 		require.Nil(t, resp)
-		var appErr *apptheory.AppError
+		var appErr *apptheory.AppTheoryError
 		require.ErrorAs(t, err, &appErr)
 	})
 

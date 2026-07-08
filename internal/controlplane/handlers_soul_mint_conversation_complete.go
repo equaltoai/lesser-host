@@ -9,8 +9,8 @@ import (
 	"time"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	"github.com/theory-cloud/tabletheory"
-	"github.com/theory-cloud/tabletheory/pkg/core"
+	"github.com/theory-cloud/tabletheory/v2"
+	"github.com/theory-cloud/tabletheory/v2/pkg/core"
 
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
 	"github.com/equaltoai/lesser-host/internal/store/models"
@@ -37,7 +37,7 @@ func (s *Server) completeLegacySoulMintConversationForRegistration(ctx *apptheor
 		return nil, appErr
 	}
 	if appErr := s.persistCompletedMintConversation(ctx.Context(), conv, declarationsJSON, extractUsage, now); appErr != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to complete conversation"}
+		return nil, newAppTheoryError("app.internal", "failed to complete conversation")
 	}
 	if appErr := s.saveMintConversationFinalizeReadyPromotion(ctx.Context(), regCtx, conversationID, declarationsJSON, strings.TrimSpace(ctx.RequestID), now); appErr != nil {
 		return nil, appErr
@@ -63,7 +63,7 @@ func (s *Server) completeHostedGenesisSoulMintConversationForRegistration(ctx *a
 		return nil, appErr
 	}
 	if appErr := s.persistCompletedMintConversationWithSession(ctx.Context(), session, conv, declarationsJSON, extractUsage, checkpoint, now); appErr != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to complete conversation"}
+		return nil, newAppTheoryError("app.internal", "failed to complete conversation")
 	}
 	if appErr := s.saveMintConversationFinalizeReadyPromotion(ctx.Context(), regCtx, conversationID, declarationsJSON, strings.TrimSpace(ctx.RequestID), now); appErr != nil {
 		return nil, appErr
@@ -72,7 +72,7 @@ func (s *Server) completeHostedGenesisSoulMintConversationForRegistration(ctx *a
 	return hostedGenesisConversationJSONFromSession(http.StatusOK, session, conv, projectionOpts)
 }
 
-func (s *Server) saveMintConversationFinalizeReadyPromotion(ctx context.Context, regCtx mintConversationRegistrationContext, conversationID string, declarationsJSON string, requestID string, now time.Time) *apptheory.AppError {
+func (s *Server) saveMintConversationFinalizeReadyPromotion(ctx context.Context, regCtx mintConversationRegistrationContext, conversationID string, declarationsJSON string, requestID string, now time.Time) *apptheory.AppTheoryError {
 	promotion := s.loadOrFallbackSoulAgentPromotion(ctx, regCtx.agentIDHex, buildSoulAgentPromotionFromRegistration(regCtx.reg, now))
 	promotion = updateSoulAgentPromotionForConversation(promotion, conversationID, models.SoulMintConversationStatusCompleted, now)
 	promotion = updateSoulAgentPromotionReviewDigest(promotion, declarationsJSON)
@@ -87,39 +87,39 @@ func (s *Server) saveMintConversationFinalizeReadyPromotion(ctx context.Context,
 	}))
 }
 
-func (s *Server) loadHostedGenesisSessionForCompletion(ctx context.Context, regCtx mintConversationRegistrationContext, conversationID string) (*models.HostedGenesisSession, *apptheory.AppError) {
+func (s *Server) loadHostedGenesisSessionForCompletion(ctx context.Context, regCtx mintConversationRegistrationContext, conversationID string) (*models.HostedGenesisSession, *apptheory.AppTheoryError) {
 	if s == nil || s.store == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	session, err := s.store.GetHostedGenesisSession(ctx, regCtx.inst.Slug, conversationID)
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "conversation not found"}
+		return nil, newAppTheoryError("app.not_found", "conversation not found")
 	}
 	if !strings.EqualFold(strings.TrimSpace(session.RegistrationID), strings.TrimSpace(regCtx.reg.ID)) ||
 		!strings.EqualFold(strings.TrimSpace(session.AgentID), strings.TrimSpace(regCtx.agentIDHex)) {
-		return nil, &apptheory.AppError{Code: "app.forbidden", Message: "conversation is outside the registration boundary"}
+		return nil, newAppTheoryError("app.forbidden", "conversation is outside the registration boundary")
 	}
 	return session, nil
 }
 
-func requireHostedGenesisSessionAssistantReady(session *models.HostedGenesisSession) *apptheory.AppError {
+func requireHostedGenesisSessionAssistantReady(session *models.HostedGenesisSession) *apptheory.AppTheoryError {
 	if session == nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return newAppTheoryError("app.internal", "internal error")
 	}
 	if hostedgenesis.NormalizeStatus(session.Status) != hostedgenesis.StatusAssistantTurnReady &&
 		hostedgenesis.NormalizeStatus(session.Status) != hostedgenesis.StatusDeclarationExtractionPending {
-		return &apptheory.AppError{Code: appErrCodeConflict, Message: "conversation has no completed assistant turn"}
+		return newAppTheoryError(appErrCodeConflict, "conversation has no completed assistant turn")
 	}
 	return nil
 }
 
-func hostedGenesisDeclarationCheckpointForCompletion(regCtx mintConversationRegistrationContext, session *models.HostedGenesisSession, conv *models.SoulAgentMintConversation, declarationsJSON string, requestID string, now time.Time) (*hostedgenesis.DeclarationCheckpoint, *apptheory.AppError) {
+func hostedGenesisDeclarationCheckpointForCompletion(regCtx mintConversationRegistrationContext, session *models.HostedGenesisSession, conv *models.SoulAgentMintConversation, declarationsJSON string, requestID string, now time.Time) (*hostedgenesis.DeclarationCheckpoint, *apptheory.AppTheoryError) {
 	if session == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	raw := strings.TrimSpace(declarationsJSON)
 	if raw == "" {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "conversation has no produced declarations"}
+		return nil, newAppTheoryError("app.conflict", "conversation has no produced declarations")
 	}
 	sum := sha256.Sum256([]byte(raw))
 	hash := "sha256:" + hex.EncodeToString(sum[:])
@@ -146,14 +146,14 @@ func hostedGenesisDeclarationCheckpointForCompletion(regCtx mintConversationRegi
 		checkpoint.RequestID = strings.TrimSpace(session.RequestID)
 	}
 	if err := checkpoint.Validate(); err != nil {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "conversation has invalid produced declarations"}
+		return nil, newAppTheoryError("app.conflict", "conversation has invalid produced declarations")
 	}
 	return checkpoint, nil
 }
 
-func (s *Server) persistCompletedMintConversationWithSession(ctx context.Context, session *models.HostedGenesisSession, conv *models.SoulAgentMintConversation, declarationsJSON string, extractUsage models.AIUsage, checkpoint *hostedgenesis.DeclarationCheckpoint, now time.Time) *apptheory.AppError {
+func (s *Server) persistCompletedMintConversationWithSession(ctx context.Context, session *models.HostedGenesisSession, conv *models.SoulAgentMintConversation, declarationsJSON string, extractUsage models.AIUsage, checkpoint *hostedgenesis.DeclarationCheckpoint, now time.Time) *apptheory.AppTheoryError {
 	if session == nil || conv == nil || checkpoint == nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return newAppTheoryError("app.internal", "internal error")
 	}
 	expectedVersion := session.Version
 	expectedStatus := hostedgenesis.NormalizeStatus(session.Status)
@@ -191,7 +191,7 @@ func (s *Server) persistCompletedMintConversationWithSession(ctx context.Context
 		}, tabletheory.IfExists())
 		return nil
 	}); err != nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "failed to complete conversation"}
+		return newAppTheoryError("app.internal", "failed to complete conversation")
 	}
 	return nil
 }

@@ -8,7 +8,7 @@ import (
 
 	"github.com/stretchr/testify/mock"
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	ttmocks "github.com/theory-cloud/tabletheory/pkg/mocks"
+	ttmocks "github.com/theory-cloud/tabletheory/v2/pkg/mocks"
 
 	"github.com/equaltoai/lesser-host/internal/ai"
 	"github.com/equaltoai/lesser-host/internal/store"
@@ -439,7 +439,7 @@ func TestHandleAIClaimVerify_ReturnsInternalErrorWhenAIServiceNotReady(t *testin
 	if err == nil {
 		t.Fatalf("expected error")
 	}
-	if appErr, ok := err.(*apptheory.AppError); !ok || appErr.Code != "app.internal" {
+	if appErr, ok := err.(*apptheory.AppTheoryError); !ok || appErr.Code != "app.internal" {
 		t.Fatalf("expected app.internal, got %T: %v", err, err)
 	}
 }

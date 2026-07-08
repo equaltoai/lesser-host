@@ -6,7 +6,7 @@ import (
 	"strings"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
@@ -86,20 +86,20 @@ func (s *Server) loadSoulRotationOperationForIdentity(
 	ctx context.Context,
 	identity *models.SoulAgentIdentity,
 	username string,
-) (*models.SoulOperation, *apptheory.AppError) {
+) (*models.SoulOperation, *apptheory.AppTheoryError) {
 	if s == nil || identity == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	if strings.TrimSpace(username) == "" {
-		return nil, &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
+		return nil, newAppTheoryError("app.unauthorized", "unauthorized")
 	}
 
 	rot, err := s.getSoulWalletRotationRequest(ctx, identity.AgentID, username)
 	if theoryErrors.IsNotFound(err) {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "rotation operation not found"}
+		return nil, newAppTheoryError("app.not_found", "rotation operation not found")
 	}
 	if err != nil || rot == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	_, txTo, appErr := s.soulRegistryContractAddress()
@@ -110,13 +110,13 @@ func (s *Server) loadSoulRotationOperationForIdentity(
 
 	op, err := s.getSoulOperation(ctx, opID)
 	if theoryErrors.IsNotFound(err) {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "rotation operation not found"}
+		return nil, newAppTheoryError("app.not_found", "rotation operation not found")
 	}
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	if strings.ToLower(strings.TrimSpace(op.Kind)) != models.SoulOperationKindRotateWallet {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "rotation operation not found"}
+		return nil, newAppTheoryError("app.not_found", "rotation operation not found")
 	}
 	return op, nil
 }

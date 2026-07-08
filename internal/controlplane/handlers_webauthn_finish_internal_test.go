@@ -8,7 +8,7 @@ import (
 	"time"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	ttmocks "github.com/theory-cloud/tabletheory/pkg/mocks"
+	ttmocks "github.com/theory-cloud/tabletheory/v2/pkg/mocks"
 
 	"github.com/go-webauthn/webauthn/protocol"
 	"github.com/go-webauthn/webauthn/webauthn"
@@ -212,7 +212,7 @@ func TestHandleWebAuthnRegisterFinish_InvalidResponse(t *testing.T) {
 		AuthIdentity: "alice",
 		Request:      apptheory.Request{Body: body},
 	})
-	if appErr, ok := err.(*apptheory.AppError); !ok || appErr.Code != appErrCodeBadRequest {
+	if appErr, ok := err.(*apptheory.AppTheoryError); !ok || appErr.Code != appErrCodeBadRequest {
 		t.Fatalf("expected bad_request, got %T: %v", err, err)
 	}
 }

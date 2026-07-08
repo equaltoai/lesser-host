@@ -9,8 +9,8 @@ import (
 	"time"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	"github.com/theory-cloud/tabletheory"
-	"github.com/theory-cloud/tabletheory/pkg/core"
+	"github.com/theory-cloud/tabletheory/v2"
+	"github.com/theory-cloud/tabletheory/v2/pkg/core"
 
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
 	"github.com/equaltoai/lesser-host/internal/store/models"
@@ -120,9 +120,9 @@ func (s *Server) handleSoulInstanceRecoverMintConversation(ctx *apptheory.Contex
 // microvm_unavailable failed session — never a silent 200 and never a sync LLM.
 // A successful dispatch persists the durable in_progress session with the
 // refreshed MicroVM lifecycle ref and returns 202 accepted-pending.
-func (s *Server) dispatchHostedGenesisRecoveryTurn(ctx *apptheory.Context, regCtx mintConversationRegistrationContext, session hostedGenesisTurnSession, conv *models.SoulAgentMintConversation, acceptedMessages []soulMintConversationMessage) (*models.HostedGenesisSession, *models.SoulAgentMintConversation, int, *apptheory.AppError) {
+func (s *Server) dispatchHostedGenesisRecoveryTurn(ctx *apptheory.Context, regCtx mintConversationRegistrationContext, session hostedGenesisTurnSession, conv *models.SoulAgentMintConversation, acceptedMessages []soulMintConversationMessage) (*models.HostedGenesisSession, *models.SoulAgentMintConversation, int, *apptheory.AppTheoryError) {
 	if session.session == nil || conv == nil {
-		return nil, nil, 0, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, nil, 0, newAppTheoryError("app.internal", "internal error")
 	}
 	if s.hostedGenesisMicroVMDispatcher == nil {
 		log.Printf("controlplane: hosted genesis recovery dispatch unavailable agent_hash=%s conversation_hash=%s", soulMintInstanceReadAuditHash(regCtx.agentIDHex), soulMintInstanceReadAuditHash(session.conversationID))
@@ -130,7 +130,7 @@ func (s *Server) dispatchHostedGenesisRecoveryTurn(ctx *apptheory.Context, regCt
 		if appErr != nil {
 			return nil, nil, 0, appErr
 		}
-		return failedSession, failedConv, http.StatusOK, &apptheory.AppError{Code: appErrCodeMicroVMUnavailable, Message: "MicroVM recovery dispatch is unavailable"}
+		return failedSession, failedConv, http.StatusOK, newAppTheoryError(appErrCodeMicroVMUnavailable, "MicroVM recovery dispatch is unavailable")
 	}
 	binding := session.session.MicroVMSessionBinding()
 	if err := binding.Validate(); err != nil {
@@ -139,7 +139,7 @@ func (s *Server) dispatchHostedGenesisRecoveryTurn(ctx *apptheory.Context, regCt
 		if appErr != nil {
 			return nil, nil, 0, appErr
 		}
-		return failedSession, failedConv, http.StatusOK, &apptheory.AppError{Code: appErrCodeMicroVMUnavailable, Message: "MicroVM recovery dispatch binding is invalid"}
+		return failedSession, failedConv, http.StatusOK, newAppTheoryError(appErrCodeMicroVMUnavailable, "MicroVM recovery dispatch binding is invalid")
 	}
 	runCtx, cancel := context.WithTimeout(detachedMintConversationContext(ctx.Context()), hostedGenesisAcceptedTurnDispatchTimeout)
 	defer cancel()
@@ -150,7 +150,7 @@ func (s *Server) dispatchHostedGenesisRecoveryTurn(ctx *apptheory.Context, regCt
 		if appErr != nil {
 			return nil, nil, 0, appErr
 		}
-		return failedSession, failedConv, http.StatusOK, &apptheory.AppError{Code: appErrCodeMicroVMUnavailable, Message: "MicroVM recovery dispatch failed"}
+		return failedSession, failedConv, http.StatusOK, newAppTheoryError(appErrCodeMicroVMUnavailable, "MicroVM recovery dispatch failed")
 	}
 	progressedSession, progressedConv, appErr := s.persistHostedGenesisAcceptedMicroVMDispatch(ctx.Context(), session, conv, acceptedMessages, dispatch, strings.TrimSpace(ctx.RequestID), time.Now().UTC())
 	if appErr != nil {
@@ -202,18 +202,18 @@ func hostedGenesisSessionNeedsMicroVMReconciliation(session *models.HostedGenesi
 //
 // An unwired dispatcher is fail-closed and loud: reconstruction is never a
 // silent no-op, and the recover path never falls back to a non-MicroVM path.
-func (s *Server) reconcileHostedGenesisMicroVMRecovery(ctx *apptheory.Context, convCtx soulInstanceBootstrapConversationContext) (hostedGenesisMicroVMRecoveryResult, *apptheory.AppError) {
+func (s *Server) reconcileHostedGenesisMicroVMRecovery(ctx *apptheory.Context, convCtx soulInstanceBootstrapConversationContext) (hostedGenesisMicroVMRecoveryResult, *apptheory.AppTheoryError) {
 	if convCtx.session == nil || convCtx.session.MicroVMLifecycleRef == nil {
-		return hostedGenesisMicroVMRecoveryResult{}, &apptheory.AppError{Code: appErrCodeMicroVMUnavailable, Message: "MicroVM execution state is unavailable for recovery"}
+		return hostedGenesisMicroVMRecoveryResult{}, newAppTheoryError(appErrCodeMicroVMUnavailable, "MicroVM execution state is unavailable for recovery")
 	}
 	if s.hostedGenesisMicroVMDispatcher == nil {
 		log.Printf("controlplane: hosted genesis microvm reconciliation unavailable agent_hash=%s conversation_hash=%s", soulMintInstanceReadAuditHash(convCtx.agentIDHex), soulMintInstanceReadAuditHash(convCtx.conversationID))
-		return hostedGenesisMicroVMRecoveryResult{}, &apptheory.AppError{Code: appErrCodeMicroVMUnavailable, Message: "MicroVM reconstruction is unavailable"}
+		return hostedGenesisMicroVMRecoveryResult{}, newAppTheoryError(appErrCodeMicroVMUnavailable, "MicroVM reconstruction is unavailable")
 	}
 	binding := convCtx.session.MicroVMSessionBinding()
 	if err := binding.Validate(); err != nil {
 		log.Printf("controlplane: hosted genesis microvm recovery binding invalid agent_hash=%s conversation_hash=%s err=%v", soulMintInstanceReadAuditHash(convCtx.agentIDHex), soulMintInstanceReadAuditHash(convCtx.conversationID), err)
-		return hostedGenesisMicroVMRecoveryResult{}, &apptheory.AppError{Code: appErrCodeMicroVMUnavailable, Message: "MicroVM execution binding is invalid for recovery"}
+		return hostedGenesisMicroVMRecoveryResult{}, newAppTheoryError(appErrCodeMicroVMUnavailable, "MicroVM execution binding is invalid for recovery")
 	}
 	ref := *convCtx.session.MicroVMLifecycleRef
 	reconcileCtx, cancel := context.WithTimeout(detachedMintConversationContext(ctx.Context()), hostedGenesisRecoveryReconcileTimeout)
@@ -221,7 +221,7 @@ func (s *Server) reconcileHostedGenesisMicroVMRecovery(ctx *apptheory.Context, c
 	result, reconcileErr := s.hostedGenesisMicroVMDispatcher.ReconcileMicroVM(reconcileCtx, strings.TrimSpace(ctx.RequestID), binding, ref)
 	if reconcileErr != nil {
 		log.Printf("controlplane: hosted genesis microvm reconciliation failed agent_hash=%s conversation_hash=%s err=%v", soulMintInstanceReadAuditHash(convCtx.agentIDHex), soulMintInstanceReadAuditHash(convCtx.conversationID), reconcileErr)
-		return hostedGenesisMicroVMRecoveryResult{}, &apptheory.AppError{Code: appErrCodeMicroVMUnavailable, Message: "MicroVM reconstruction failed"}
+		return hostedGenesisMicroVMRecoveryResult{}, newAppTheoryError(appErrCodeMicroVMUnavailable, "MicroVM reconstruction failed")
 	}
 	if result.Terminal {
 		// The VM is dead/expired while the durable Host status has not advanced
@@ -240,7 +240,7 @@ func (s *Server) reconcileHostedGenesisMicroVMRecovery(ctx *apptheory.Context, c
 	reconciledSession := cloneHostedGenesisSession(convCtx.session)
 	if err := reconciledSession.ApplyMicroVMLifecycleRef(result.LifecycleRef); err != nil {
 		log.Printf("controlplane: hosted genesis microvm reconciled ref rejected agent_hash=%s conversation_hash=%s err=%v", soulMintInstanceReadAuditHash(convCtx.agentIDHex), soulMintInstanceReadAuditHash(convCtx.conversationID), err)
-		return hostedGenesisMicroVMRecoveryResult{}, &apptheory.AppError{Code: appErrCodeMicroVMUnavailable, Message: "MicroVM reconciled state is invalid for recovery"}
+		return hostedGenesisMicroVMRecoveryResult{}, newAppTheoryError(appErrCodeMicroVMUnavailable, "MicroVM reconciled state is invalid for recovery")
 	}
 	reconciledSession.RequestID = strings.TrimSpace(ctx.RequestID)
 	reconciledSession.UpdatedAt = time.Now().UTC()
@@ -255,9 +255,9 @@ func (s *Server) reconcileHostedGenesisMicroVMRecovery(ctx *apptheory.Context, c
 // transition to failed is validated against the real prior state. The stored
 // transcript is preserved (no re-run of the assistant); only the failure and
 // status advance are written.
-func (s *Server) persistHostedGenesisMicroVMRecoveryFailure(ctx *apptheory.Context, convCtx soulInstanceBootstrapConversationContext, reason string) (*models.HostedGenesisSession, *models.SoulAgentMintConversation, *apptheory.AppError) {
+func (s *Server) persistHostedGenesisMicroVMRecoveryFailure(ctx *apptheory.Context, convCtx soulInstanceBootstrapConversationContext, reason string) (*models.HostedGenesisSession, *models.SoulAgentMintConversation, *apptheory.AppTheoryError) {
 	if s == nil || s.store == nil || s.store.DB == nil || convCtx.session == nil || convCtx.conv == nil {
-		return nil, nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, nil, newAppTheoryError("app.internal", "internal error")
 	}
 	now := time.Now().UTC()
 	expectedStatus := hostedgenesis.NormalizeStatus(convCtx.session.Status)
@@ -293,7 +293,7 @@ func (s *Server) persistHostedGenesisMicroVMRecoveryFailure(ctx *apptheory.Conte
 		return nil
 	}); err != nil {
 		log.Printf("controlplane: hosted genesis microvm recovery failure persist failed agent_hash=%s conversation_hash=%s status=%s err=%v", soulMintInstanceReadAuditHash(failedConv.AgentID), soulMintInstanceReadAuditHash(failedConv.ConversationID), failedSession.Status, err)
-		return nil, nil, &apptheory.AppError{Code: "app.internal", Message: "failed to persist recovery failure"}
+		return nil, nil, newAppTheoryError("app.internal", "failed to persist recovery failure")
 	}
 	return failedSession, failedConv, nil
 }
@@ -314,13 +314,13 @@ func hostedGenesisSessionNeedsAssistantRecovery(session *models.HostedGenesisSes
 		strings.TrimSpace(session.AssistantCheckpointRef) == ""
 }
 
-func hostedGenesisRecoveryTurnSession(convCtx soulInstanceBootstrapConversationContext) (hostedGenesisTurnSession, []soulMintConversationMessage, *apptheory.AppError) {
+func hostedGenesisRecoveryTurnSession(convCtx soulInstanceBootstrapConversationContext) (hostedGenesisTurnSession, []soulMintConversationMessage, *apptheory.AppTheoryError) {
 	if convCtx.session == nil || convCtx.conv == nil {
-		return hostedGenesisTurnSession{}, nil, &apptheory.AppError{Code: soulMintAppErrCodeNotFound, Message: "conversation not found"}
+		return hostedGenesisTurnSession{}, nil, newAppTheoryError(soulMintAppErrCodeNotFound, "conversation not found")
 	}
 	if !hostedGenesisConversationMatchesSession(convCtx.session, convCtx.conv) ||
 		!strings.EqualFold(strings.TrimSpace(convCtx.session.RegistrationID), strings.TrimSpace(convCtx.reg.ID)) {
-		return hostedGenesisTurnSession{}, nil, &apptheory.AppError{Code: appErrCodeForbidden, Message: "conversation is outside the registration boundary"}
+		return hostedGenesisTurnSession{}, nil, newAppTheoryError(appErrCodeForbidden, "conversation is outside the registration boundary")
 	}
 	messages, appErr := hostedGenesisRecoveryMessages(convCtx.conv)
 	if appErr != nil {
@@ -331,7 +331,7 @@ func hostedGenesisRecoveryTurnSession(convCtx soulInstanceBootstrapConversationC
 		turnID = convCtx.session.TurnLedger[len(convCtx.session.TurnLedger)-1].Normalize().TurnID
 	}
 	if turnID == "" {
-		return hostedGenesisTurnSession{}, nil, &apptheory.AppError{Code: soulMintAppErrCodeConflict, Message: "conversation cannot recover without an accepted turn"}
+		return hostedGenesisTurnSession{}, nil, newAppTheoryError(soulMintAppErrCodeConflict, "conversation cannot recover without an accepted turn")
 	}
 	modelSet := firstNonEmpty(convCtx.session.Model, convCtx.conv.Model, defaultSoulMintConversationModel)
 	session := hostedGenesisTurnSession{
@@ -350,17 +350,17 @@ func hostedGenesisRecoveryTurnSession(convCtx soulInstanceBootstrapConversationC
 	return session, messages, nil
 }
 
-func hostedGenesisRecoveryMessages(conv *models.SoulAgentMintConversation) ([]soulMintConversationMessage, *apptheory.AppError) {
+func hostedGenesisRecoveryMessages(conv *models.SoulAgentMintConversation) ([]soulMintConversationMessage, *apptheory.AppTheoryError) {
 	if conv == nil {
-		return nil, &apptheory.AppError{Code: soulMintAppErrCodeNotFound, Message: "conversation not found"}
+		return nil, newAppTheoryError(soulMintAppErrCodeNotFound, "conversation not found")
 	}
 	raw := strings.TrimSpace(models.DecodeSoulMintConversationBlob(conv.Messages))
 	if raw == "" {
-		return nil, &apptheory.AppError{Code: soulMintAppErrCodeConflict, Message: "conversation cannot recover without stored messages"}
+		return nil, newAppTheoryError(soulMintAppErrCodeConflict, "conversation cannot recover without stored messages")
 	}
 	var messages []soulMintConversationMessage
 	if err := json.Unmarshal([]byte(raw), &messages); err != nil || len(messages) == 0 {
-		return nil, &apptheory.AppError{Code: soulMintAppErrCodeConflict, Message: "conversation cannot recover without stored messages"}
+		return nil, newAppTheoryError(soulMintAppErrCodeConflict, "conversation cannot recover without stored messages")
 	}
 	for i := range messages {
 		messages[i].Role = strings.ToLower(strings.TrimSpace(messages[i].Role))

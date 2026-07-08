@@ -11,9 +11,9 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	"github.com/theory-cloud/tabletheory"
-	"github.com/theory-cloud/tabletheory/pkg/core"
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
+	"github.com/theory-cloud/tabletheory/v2"
+	"github.com/theory-cloud/tabletheory/v2/pkg/core"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/httpx"
 	"github.com/equaltoai/lesser-host/internal/provisioning"
@@ -143,7 +143,7 @@ func provisionJobResponseFromModel(j *models.ProvisionJob) provisionJobResponse 
 func parseStartInstanceProvisionRequest(ctx *apptheory.Context) (startInstanceProvisionRequest, error) {
 	var req startInstanceProvisionRequest
 	if ctx == nil {
-		return req, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return req, newAppTheoryError("app.internal", "internal error")
 	}
 	if len(ctx.Request.Body) == 0 {
 		return req, nil
@@ -159,24 +159,24 @@ func sha256Hex(value string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func normalizeAdminWalletType(walletType string) (string, *apptheory.AppError) {
+func normalizeAdminWalletType(walletType string) (string, *apptheory.AppTheoryError) {
 	walletType = strings.ToLower(strings.TrimSpace(walletType))
 	if walletType == "" {
 		walletType = walletTypeEthereum
 	}
 	if walletType != walletTypeEthereum {
-		return "", &apptheory.AppError{Code: "app.bad_request", Message: "invalid admin_wallet_type"}
+		return "", newAppTheoryError("app.bad_request", "invalid admin_wallet_type")
 	}
 	return walletType, nil
 }
 
-func normalizeAdminWalletAddress(addr string) (string, *apptheory.AppError) {
+func normalizeAdminWalletAddress(addr string) (string, *apptheory.AppTheoryError) {
 	addr = strings.ToLower(strings.TrimSpace(addr))
 	if addr == "" {
-		return "", &apptheory.AppError{Code: "app.bad_request", Message: "admin_wallet_address is required"}
+		return "", newAppTheoryError("app.bad_request", "admin_wallet_address is required")
 	}
 	if !common.IsHexAddress(addr) {
-		return "", &apptheory.AppError{Code: "app.bad_request", Message: "invalid admin_wallet_address"}
+		return "", newAppTheoryError("app.bad_request", "invalid admin_wallet_address")
 	}
 	if reservedErr := validateNotReservedWalletAddress(addr, "admin_wallet_address"); reservedErr != nil {
 		return "", reservedErr
@@ -236,18 +236,18 @@ func (s *Server) getExistingProvisionJobAndNudge(ctx *apptheory.Context, inst *m
 	return job, true
 }
 
-func (s *Server) encryptConsentForJob(consentMessage string, consentSignature string) (string, *apptheory.AppError) {
+func (s *Server) encryptConsentForJob(consentMessage string, consentSignature string) (string, *apptheory.AppTheoryError) {
 	encKey, encErr := provisionworker.ConsentEncryptionKeyHex(s.cfg.ManagedProvisionConsentEncryptionKeyHex)
 	if encErr != nil {
-		return "", &apptheory.AppError{Code: "app.internal", Message: "consent encryption key is not configured"}
+		return "", newAppTheoryError("app.internal", "consent encryption key is not configured")
 	}
 	packed, packErr := provisionworker.PackConsent(consentMessage, consentSignature)
 	if packErr != nil {
-		return "", &apptheory.AppError{Code: "app.internal", Message: "failed to pack consent"}
+		return "", newAppTheoryError("app.internal", "failed to pack consent")
 	}
 	encrypted, encErr2 := provisionworker.EncryptConsent(string(packed), encKey)
 	if encErr2 != nil {
-		return "", &apptheory.AppError{Code: "app.internal", Message: "failed to protect consent"}
+		return "", newAppTheoryError("app.internal", "failed to protect consent")
 	}
 	return encrypted, nil
 }
@@ -256,7 +256,7 @@ func (s *Server) encryptConsentForJob(consentMessage string, consentSignature st
 // and encryption. Returns empty artifacts (no error) when no consent is
 // supplied. Fails closed when consent is supplied but the encryption key is
 // missing or encryption fails (CSR-017).
-func (s *Server) processConsentForJob(consentMessage, consentSignature string, reqExpiresAt time.Time) (consentMsgHash string, consentEncrypted string, consentExpiresAt time.Time, appErr *apptheory.AppError) {
+func (s *Server) processConsentForJob(consentMessage, consentSignature string, reqExpiresAt time.Time) (consentMsgHash string, consentEncrypted string, consentExpiresAt time.Time, appErr *apptheory.AppTheoryError) {
 	// Use a trimmed copy only for presence/validation decisions.
 	// Raw bytes are preserved for hash and encryption so signed
 	// consent round-trips exactly (leading/trailing whitespace
@@ -270,7 +270,7 @@ func (s *Server) processConsentForJob(consentMessage, consentSignature string, r
 	if consentExpiresAt.IsZero() {
 		parsedExpiresAt, parseErr := provisionConsentMessageExpiresAt(consentMessage)
 		if parseErr != nil {
-			return "", "", time.Time{}, &apptheory.AppError{Code: "app.bad_request", Message: parseErr.Error()}
+			return "", "", time.Time{}, newAppTheoryError("app.bad_request", parseErr.Error())
 		}
 		consentExpiresAt = parsedExpiresAt
 	}
@@ -283,9 +283,9 @@ func (s *Server) processConsentForJob(consentMessage, consentSignature string, r
 	return consentMsgHash, consentEncrypted, consentExpiresAt, nil
 }
 
-func (s *Server) buildManagedProvisionJob(slug string, req startInstanceProvisionRequest, requestID string, now time.Time) (*models.ProvisionJob, string, string, *apptheory.AppError) {
+func (s *Server) buildManagedProvisionJob(slug string, req startInstanceProvisionRequest, requestID string, now time.Time) (*models.ProvisionJob, string, string, *apptheory.AppTheoryError) {
 	if s == nil {
-		return nil, "", "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, "", "", newAppTheoryError("app.internal", "internal error")
 	}
 
 	stage := normalizeControlPlaneStage(s.cfg.Stage)
@@ -308,7 +308,7 @@ func (s *Server) buildManagedProvisionJob(slug string, req startInstanceProvisio
 
 	id, err := newToken(16)
 	if err != nil {
-		return nil, "", "", &apptheory.AppError{Code: "app.internal", Message: "failed to create provisioning job"}
+		return nil, "", "", newAppTheoryError("app.internal", "failed to create provisioning job")
 	}
 
 	baseDomain := managedProvisionBaseDomain(slug, s.cfg.ManagedParentDomain)
@@ -326,7 +326,7 @@ func (s *Server) buildManagedProvisionJob(slug string, req startInstanceProvisio
 		return nil, "", "", appErr
 	}
 	if err := provisionworker.ValidateManagedLesserReleaseVersionSupported(lesserVersion); err != nil {
-		return nil, "", "", &apptheory.AppError{Code: "app.bad_request", Message: err.Error()}
+		return nil, "", "", newAppTheoryError("app.bad_request", err.Error())
 	}
 
 	accountEmail := strings.TrimSpace(expandManagedAccountEmailTemplate(s.cfg.ManagedAccountEmailTemplate, slug))
@@ -400,12 +400,12 @@ func expandManagedAccountEmailTemplate(tmpl string, slug string) string {
 	return strings.ReplaceAll(tmpl, "{slug}", slug)
 }
 
-func (s *Server) createManagedProvisionJobTx(ctx *apptheory.Context, job *models.ProvisionJob, slug string, baseDomain string, region string, actor string, auditAction string, requestID string, now time.Time) *apptheory.AppError {
+func (s *Server) createManagedProvisionJobTx(ctx *apptheory.Context, job *models.ProvisionJob, slug string, baseDomain string, region string, actor string, auditAction string, requestID string, now time.Time) *apptheory.AppTheoryError {
 	if s == nil || s.store == nil || s.store.DB == nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return newAppTheoryError("app.internal", "internal error")
 	}
 	if ctx == nil || job == nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return newAppTheoryError("app.internal", "internal error")
 	}
 
 	updateInst := &models.Instance{Slug: slug}
@@ -434,7 +434,7 @@ func (s *Server) createManagedProvisionJobTx(ctx *apptheory.Context, job *models
 		tx.Put(audit)
 		return nil
 	}); err != nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "failed to start provisioning"}
+		return newAppTheoryError("app.internal", "failed to start provisioning")
 	}
 
 	return nil
@@ -445,23 +445,23 @@ func (s *Server) handleStartInstanceProvisioning(ctx *apptheory.Context) (*appth
 		return nil, err
 	}
 	if s == nil || s.store == nil || s.store.DB == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	slug := strings.ToLower(strings.TrimSpace(ctx.Param("slug")))
 	if slug == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "slug is required"}
+		return nil, newAppTheoryError("app.bad_request", "slug is required")
 	}
 	if !instanceSlugRE.MatchString(slug) {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid slug"}
+		return nil, newAppTheoryError("app.bad_request", "invalid slug")
 	}
 
 	inst, err := s.getInstance(ctx, slug)
 	if theoryErrors.IsNotFound(err) {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "instance not found"}
+		return nil, newAppTheoryError("app.not_found", "instance not found")
 	}
 	if err != nil || inst == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	if job, ok := s.getExistingProvisionJobAndNudge(ctx, inst); ok {
@@ -497,12 +497,12 @@ func (s *Server) handleGetInstanceProvisioning(ctx *apptheory.Context) (*apptheo
 		return nil, err
 	}
 	if s == nil || s.store == nil || s.store.DB == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	slug := strings.ToLower(strings.TrimSpace(ctx.Param("slug")))
 	if slug == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "slug is required"}
+		return nil, newAppTheoryError("app.bad_request", "slug is required")
 	}
 
 	job, jobID, appErr := s.loadInstanceProvisioningJob(ctx, slug)
@@ -520,26 +520,26 @@ func (s *Server) handleGetInstanceProvisioning(ctx *apptheory.Context) (*apptheo
 	return apptheory.JSON(http.StatusOK, s.provisionJobResponseWithDerivedFields(job))
 }
 
-func (s *Server) loadInstanceProvisioningJob(ctx *apptheory.Context, slug string) (*models.ProvisionJob, string, *apptheory.AppError) {
+func (s *Server) loadInstanceProvisioningJob(ctx *apptheory.Context, slug string) (*models.ProvisionJob, string, *apptheory.AppTheoryError) {
 	inst, err := s.getInstance(ctx, slug)
 	if theoryErrors.IsNotFound(err) {
-		return nil, "", &apptheory.AppError{Code: "app.not_found", Message: "instance not found"}
+		return nil, "", newAppTheoryError("app.not_found", "instance not found")
 	}
 	if err != nil || inst == nil {
-		return nil, "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, "", newAppTheoryError("app.internal", "internal error")
 	}
 
 	jobID := strings.TrimSpace(inst.ProvisionJobID)
 	if jobID == "" {
-		return nil, "", &apptheory.AppError{Code: "app.not_found", Message: "no provisioning job"}
+		return nil, "", newAppTheoryError("app.not_found", "no provisioning job")
 	}
 
 	job, err := s.store.GetProvisionJob(ctx.Context(), jobID)
 	if theoryErrors.IsNotFound(err) {
-		return nil, "", &apptheory.AppError{Code: "app.not_found", Message: "provisioning job not found"}
+		return nil, "", newAppTheoryError("app.not_found", "provisioning job not found")
 	}
 	if err != nil || job == nil {
-		return nil, "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, "", newAppTheoryError("app.internal", "internal error")
 	}
 	return job, jobID, nil
 }

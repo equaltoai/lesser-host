@@ -10,7 +10,7 @@ import (
 	"time"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/httpx"
 	"github.com/equaltoai/lesser-host/internal/soul"
@@ -62,14 +62,14 @@ func (s *Server) handleSoulBeginProvisionPhoneChannel(ctx *apptheory.Context) (*
 	desired := strings.TrimSpace(req.Number)
 	if desired == "" {
 		if s.telnyxSearchNums == nil {
-			return nil, &apptheory.AppError{Code: "app.conflict", Message: "phone provider is not configured"}
+			return nil, newAppTheoryError("app.conflict", "phone provider is not configured")
 		}
 		nums, err := s.telnyxSearchNums(ctx.Context(), strings.TrimSpace(req.CountryCode), 5)
 		if err != nil {
 			log.Printf("controlplane: soul phone search failed agent=%s country=%s: %v", agentIDHex, strings.TrimSpace(req.CountryCode), err)
 		}
 		if err != nil || len(nums) == 0 {
-			return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to find available phone numbers"}
+			return nil, newAppTheoryError("app.internal", "failed to find available phone numbers")
 		}
 		desired = strings.TrimSpace(nums[0])
 	}
@@ -131,12 +131,12 @@ func (s *Server) handleSoulProvisionPhoneChannel(ctx *apptheory.Context) (*appth
 		return resp, err
 	}
 	if expectedVersion != identity.SelfDescriptionVersion {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "version conflict; reload and try again"}
+		return nil, newAppTheoryError("app.conflict", "version conflict; reload and try again")
 	}
 
 	number := strings.TrimSpace(req.Number)
 	if number == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "number is required"}
+		return nil, newAppTheoryError("app.bad_request", "number is required")
 	}
 	phoneAppErr := s.validateSoulProvisionPhoneNumberAvailability(ctx.Context(), agentIDHex, number)
 	if phoneAppErr != nil {
@@ -150,7 +150,7 @@ func (s *Server) handleSoulProvisionPhoneChannel(ctx *apptheory.Context) (*appth
 	return s.finalizeSoulProvisionPhoneChannel(ctx, agentIDHex, identity, expectedVersion, number, regMap, regV3, selfSig)
 }
 
-func (s *Server) validateSoulProvisionPhoneNumberAvailability(ctx context.Context, agentIDHex string, number string) *apptheory.AppError {
+func (s *Server) validateSoulProvisionPhoneNumberAvailability(ctx context.Context, agentIDHex string, number string) *apptheory.AppTheoryError {
 	phoneIdx := &models.SoulPhoneAgentIndex{Phone: number}
 	_ = phoneIdx.UpdateKeys()
 	return s.validateSoulProvisionIndexAvailability(ctx, &models.SoulPhoneAgentIndex{}, phoneIdx.PK, phoneIdx.SK, agentIDHex, "phone number is already provisioned", "failed to validate phone mapping", func() any {
@@ -171,7 +171,7 @@ func (s *Server) prepareSoulProvisionPhoneChannel(
 	issuedAt time.Time,
 	number string,
 	selfSig string,
-) (map[string]any, *soul.RegistrationFileV3, *apptheory.AppError) {
+) (map[string]any, *soul.RegistrationFileV3, *apptheory.AppTheoryError) {
 	baseReg, baseVersion, appErr := s.loadSoulAgentRegistrationMap(ctx, agentIDHex, identity)
 	if appErr != nil {
 		return nil, nil, appErr
@@ -193,7 +193,7 @@ func (s *Server) prepareSoulProvisionPhoneChannel(
 		return nil, nil, appErr
 	}
 	if verifyErr := verifyEthereumSignatureBytes(identity.Wallet, digest, selfSig); verifyErr != nil {
-		return nil, nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid registration signature"}
+		return nil, nil, newAppTheoryError("app.bad_request", "invalid registration signature")
 	}
 	return regMap, regV3, nil
 }
@@ -210,7 +210,7 @@ func (s *Server) maybeRespondWithExistingPhoneProvision(ctx *apptheory.Context, 
 		})
 		return resp, true, err
 	}
-	return nil, true, &apptheory.AppError{Code: "app.conflict", Message: "version conflict; reload and try again"}
+	return nil, true, newAppTheoryError("app.conflict", "version conflict; reload and try again")
 }
 
 func (s *Server) finalizeSoulProvisionPhoneChannel(
@@ -225,23 +225,23 @@ func (s *Server) finalizeSoulProvisionPhoneChannel(
 ) (*apptheory.Response, error) {
 	baseURL := soulCommRequestBaseURL(ctx, s.cfg.PublicBaseURL)
 	if baseURL == "" {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	webhookURL := baseURL + "/webhooks/comm/sms/inbound"
 
 	if s.telnyxOrderNumber == nil {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "phone provider is not configured"}
+		return nil, newAppTheoryError("app.conflict", "phone provider is not configured")
 	}
 	if s.telnyxUpdateProfile == nil {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "phone provider webhook configuration is not configured"}
+		return nil, newAppTheoryError("app.conflict", "phone provider webhook configuration is not configured")
 	}
 	if _, orderErr := s.telnyxOrderNumber(ctx.Context(), number); orderErr != nil {
 		log.Printf("controlplane: soul phone provision failed agent=%s number=%s: %v", agentIDHex, number, orderErr)
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to provision phone number"}
+		return nil, newAppTheoryError("app.internal", "failed to provision phone number")
 	}
 	if updateErr := s.telnyxUpdateProfile(ctx.Context(), webhookURL); updateErr != nil {
 		log.Printf("controlplane: soul phone webhook config failed agent=%s number=%s: %v", agentIDHex, number, updateErr)
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to provision phone number"}
+		return nil, newAppTheoryError("app.internal", "failed to provision phone number")
 	}
 
 	caps := extractCapabilityNames(regMap)
@@ -281,7 +281,7 @@ func (s *Server) finalizeSoulProvisionPhoneChannel(
 	})
 }
 
-func upsertProvisionedPhoneChannel(ctx context.Context, s *Server, agentIDHex string, number string, now time.Time) *apptheory.AppError {
+func upsertProvisionedPhoneChannel(ctx context.Context, s *Server, agentIDHex string, number string, now time.Time) *apptheory.AppTheoryError {
 	channel := &models.SoulAgentChannel{
 		AgentID:       agentIDHex,
 		ChannelType:   models.SoulChannelTypePhone,
@@ -296,7 +296,7 @@ func upsertProvisionedPhoneChannel(ctx context.Context, s *Server, agentIDHex st
 	}
 	_ = channel.UpdateKeys()
 	if createErr := s.store.DB.WithContext(ctx).Model(channel).CreateOrUpdate(); createErr != nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "failed to record phone channel"}
+		return newAppTheoryError("app.internal", "failed to record phone channel")
 	}
 	return s.ensureSoulPhoneAgentIndex(ctx, &models.SoulPhoneAgentIndex{Phone: number, AgentID: agentIDHex})
 }
@@ -327,7 +327,7 @@ func (s *Server) handleSoulDeprovisionPhoneChannel(ctx *apptheory.Context) (*app
 		if theoryErrors.IsNotFound(chErr) {
 			return apptheory.JSON(http.StatusOK, map[string]any{"ok": true})
 		}
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to load phone channel"}
+		return nil, newAppTheoryError("app.internal", "failed to load phone channel")
 	}
 	if ch == nil || strings.TrimSpace(ch.Identifier) == "" {
 		return apptheory.JSON(http.StatusOK, map[string]any{"ok": true})
@@ -347,7 +347,7 @@ func (s *Server) handleSoulDeprovisionPhoneChannel(ctx *apptheory.Context) (*app
 	ch.UpdatedAt = now
 	_ = ch.UpdateKeys()
 	if err := s.store.DB.WithContext(ctx.Context()).Model(ch).CreateOrUpdate(); err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to update phone channel"}
+		return nil, newAppTheoryError("app.internal", "failed to update phone channel")
 	}
 
 	return s.finalizeSoulDeprovisionPhoneChannel(ctx, agentIDHex, identity, ch, now)
@@ -402,10 +402,10 @@ type soulProvisionPhoneBuildInput struct {
 	SelfAttestationHex string
 }
 
-func (s *Server) buildSoulProvisionPhoneRegistration(ctx context.Context, base map[string]any, baseVersion string, agentIDHex string, identity *models.SoulAgentIdentity, input soulProvisionPhoneBuildInput) (reg map[string]any, regV3 *soul.RegistrationFileV3, digest []byte, appErr *apptheory.AppError) {
+func (s *Server) buildSoulProvisionPhoneRegistration(ctx context.Context, base map[string]any, baseVersion string, agentIDHex string, identity *models.SoulAgentIdentity, input soulProvisionPhoneBuildInput) (reg map[string]any, regV3 *soul.RegistrationFileV3, digest []byte, appErr *apptheory.AppTheoryError) {
 	_ = ctx
 	if s == nil || identity == nil {
-		return nil, nil, nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, nil, nil, newAppTheoryError("app.internal", "internal error")
 	}
 	reg, appErr = prepareSoulProvisionRegistrationBase(s, base, baseVersion, agentIDHex, input.ExpectedPrev, input.NextVersion)
 	if appErr != nil {

@@ -81,12 +81,12 @@ func claimVerifyRetrievalMode(retrieval *ai.ClaimVerifyRetrievalV1) string {
 	return mode
 }
 
-func validateClaimVerifyRequest(text string, claims []string, evidence []claimVerifyEvidenceRequest, retrievalMode string) *apptheory.AppError {
+func validateClaimVerifyRequest(text string, claims []string, evidence []claimVerifyEvidenceRequest, retrievalMode string) *apptheory.AppTheoryError {
 	if len(claims) == 0 && strings.TrimSpace(text) == "" {
-		return &apptheory.AppError{Code: "app.bad_request", Message: "text or claims is required"}
+		return newAppTheoryError("app.bad_request", "text or claims is required")
 	}
 	if len(evidence) == 0 && retrievalMode != ai.ClaimVerifyRetrievalModeOpenAIWebSearch {
-		return &apptheory.AppError{Code: "app.bad_request", Message: "evidence is required"}
+		return newAppTheoryError("app.bad_request", "evidence is required")
 	}
 	return nil
 }
@@ -120,13 +120,13 @@ func estimateClaimVerifyCredits(text string, claims []string, retrieval *ai.Clai
 	return baseCredits
 }
 
-func claimVerifyModelSet(instCfg instanceTrustConfig, retrievalMode string) (string, *apptheory.AppError) {
+func claimVerifyModelSet(instCfg instanceTrustConfig, retrievalMode string) (string, *apptheory.AppTheoryError) {
 	modelSet := "deterministic"
 	if instCfg.AIEnabled && strings.TrimSpace(instCfg.AIModelSet) != "" {
 		modelSet = strings.TrimSpace(instCfg.AIModelSet)
 	}
 	if retrievalMode == ai.ClaimVerifyRetrievalModeOpenAIWebSearch && (!instCfg.AIEnabled || !strings.HasPrefix(strings.ToLower(modelSet), "openai:")) {
-		return "", &apptheory.AppError{Code: "app.bad_request", Message: "retrieval.mode=openai_web_search requires ai_enabled and an openai:* model_set"}
+		return "", newAppTheoryError("app.bad_request", "retrieval.mode=openai_web_search requires ai_enabled and an openai:* model_set")
 	}
 	return modelSet, nil
 }
@@ -227,7 +227,7 @@ func (s *Server) handleAIClaimVerify(ctx *apptheory.Context) (*apptheory.Respons
 	if err != nil {
 		fmt.Printf("ai.GetOrQueue error request_id=%s instance=%s module=%s err=%v\n", strings.TrimSpace(ctx.RequestID), instanceSlug, ai.ClaimVerifyLLMModule, err)
 		s.emitAIRequestMetrics(instanceSlug, ai.ClaimVerifyLLMModule, ai.Response{Status: ai.JobStatusError}, err)
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to queue job"}
+		return nil, newAppTheoryError("app.internal", "failed to queue job")
 	}
 
 	if err := s.enqueueAIJobIfQueued(ctx, resp); err != nil {
@@ -250,15 +250,15 @@ func (s *Server) handleAIClaimVerify(ctx *apptheory.Context) (*apptheory.Respons
 
 func (s *Server) requireAIHandler(ctx *apptheory.Context) (string, error) {
 	if s == nil || s.ai == nil || s.store == nil {
-		return "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return "", newAppTheoryError("app.internal", "internal error")
 	}
 	if ctx == nil {
-		return "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return "", newAppTheoryError("app.internal", "internal error")
 	}
 
 	instanceSlug := strings.TrimSpace(ctx.AuthIdentity)
 	if instanceSlug == "" {
-		return "", &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
+		return "", newAppTheoryError("app.unauthorized", "unauthorized")
 	}
 
 	return instanceSlug, nil
@@ -282,24 +282,24 @@ func sanitizeClaimVerifyClaims(in []string) []string {
 	return claims
 }
 
-func normalizeClaimVerifyText(raw string) (string, *apptheory.AppError) {
+func normalizeClaimVerifyText(raw string) (string, *apptheory.AppTheoryError) {
 	text := strings.TrimSpace(raw)
 	if text == "" {
 		return "", nil
 	}
 	if int64(len([]byte(text))) > claimVerifyMaxTextBytes {
-		return "", &apptheory.AppError{Code: "app.bad_request", Message: "text is too large"}
+		return "", newAppTheoryError("app.bad_request", "text is too large")
 	}
 	return text, nil
 }
 
-func normalizeClaimVerifyMetadata(field string, value string, maxBytes int64) (string, *apptheory.AppError) {
+func normalizeClaimVerifyMetadata(field string, value string, maxBytes int64) (string, *apptheory.AppTheoryError) {
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return "", nil
 	}
 	if int64(len([]byte(value))) > maxBytes {
-		return "", &apptheory.AppError{Code: "app.bad_request", Message: field + " is too large"}
+		return "", newAppTheoryError("app.bad_request", field+" is too large")
 	}
 	return value, nil
 }
@@ -307,7 +307,7 @@ func normalizeClaimVerifyMetadata(field string, value string, maxBytes int64) (s
 func buildClaimVerifyEvidence(req []claimVerifyEvidenceRequest) ([]ai.ClaimVerifyEvidenceV1, int64, error) {
 	// Evidence policy v1: caller must supply bounded evidence texts for citations.
 	if len(req) > claimVerifyMaxEvidenceItems {
-		return nil, 0, &apptheory.AppError{Code: "app.bad_request", Message: "too many evidence items"}
+		return nil, 0, newAppTheoryError("app.bad_request", "too many evidence items")
 	}
 
 	totalEvidenceBytes := int64(0)
@@ -325,7 +325,7 @@ func buildClaimVerifyEvidence(req []claimVerifyEvidenceRequest) ([]ai.ClaimVerif
 			totalEvidenceBytes += claimVerifyMaxEvidenceBytes
 		}
 		if totalEvidenceBytes > claimVerifyMaxTotalEvidence {
-			return nil, 0, &apptheory.AppError{Code: "app.bad_request", Message: "evidence too large"}
+			return nil, 0, newAppTheoryError("app.bad_request", "evidence too large")
 		}
 
 		evidence = append(evidence, item)
@@ -340,16 +340,16 @@ func buildClaimVerifyEvidenceItem(e claimVerifyEvidenceRequest, seenIDs map[stri
 		return ai.ClaimVerifyEvidenceV1{}, 0, appErr
 	}
 	if id == "" {
-		return ai.ClaimVerifyEvidenceV1{}, 0, &apptheory.AppError{Code: "app.bad_request", Message: "evidence.source_id is required"}
+		return ai.ClaimVerifyEvidenceV1{}, 0, newAppTheoryError("app.bad_request", "evidence.source_id is required")
 	}
 	if _, ok := seenIDs[id]; ok {
-		return ai.ClaimVerifyEvidenceV1{}, 0, &apptheory.AppError{Code: "app.bad_request", Message: "duplicate evidence.source_id"}
+		return ai.ClaimVerifyEvidenceV1{}, 0, newAppTheoryError("app.bad_request", "duplicate evidence.source_id")
 	}
 	seenIDs[id] = struct{}{}
 
 	renderID := strings.TrimSpace(e.RenderID)
 	if renderID != "" && !aiJobIDRE.MatchString(renderID) {
-		return ai.ClaimVerifyEvidenceV1{}, 0, &apptheory.AppError{Code: "app.bad_request", Message: "invalid evidence.render_id"}
+		return ai.ClaimVerifyEvidenceV1{}, 0, newAppTheoryError("app.bad_request", "invalid evidence.render_id")
 	}
 
 	url, appErr := normalizeClaimVerifyMetadata("evidence.url", e.URL, claimVerifyMaxURLBytes)
@@ -380,7 +380,7 @@ func claimVerifyEvidenceText(text string, renderID string) (string, int64, error
 		return clampEvidenceText(text, claimVerifyMaxEvidenceBytes)
 	}
 	if strings.TrimSpace(renderID) == "" {
-		return "", 0, &apptheory.AppError{Code: "app.bad_request", Message: "evidence.text or evidence.render_id is required"}
+		return "", 0, newAppTheoryError("app.bad_request", "evidence.text or evidence.render_id is required")
 	}
 	return "", 0, nil
 }
@@ -426,7 +426,7 @@ func normalizeClaimVerifyRetrieval(req *claimVerifyRetrievalRequest) *ai.ClaimVe
 func clampEvidenceText(raw string, maxBytes int64) (string, int64, error) {
 	evText := strings.TrimSpace(raw)
 	if evText == "" {
-		return "", 0, &apptheory.AppError{Code: "app.bad_request", Message: "evidence.text is required"}
+		return "", 0, newAppTheoryError("app.bad_request", "evidence.text is required")
 	}
 
 	b := int64(len([]byte(evText)))
@@ -434,7 +434,7 @@ func clampEvidenceText(raw string, maxBytes int64) (string, int64, error) {
 		return evText, b, nil
 	}
 
-	return "", 0, &apptheory.AppError{Code: "app.bad_request", Message: "evidence.text is too large"}
+	return "", 0, newAppTheoryError("app.bad_request", "evidence.text is too large")
 }
 
 func estimateClaimVerifyBaseCredits(claimCount int64, totalEvidenceBytes int64) int64 {
@@ -449,11 +449,11 @@ func (s *Server) enqueueAIJobIfQueued(ctx *apptheory.Context, resp ai.Response) 
 		return nil
 	}
 	if s == nil || s.queues == nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "safety queue not configured"}
+		return newAppTheoryError("app.internal", "safety queue not configured")
 	}
 
 	if err := s.queues.enqueueAIJob(ctx.Context(), ai.JobMessage{Kind: "ai_job", JobID: resp.JobID}); err != nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "failed to enqueue job"}
+		return newAppTheoryError("app.internal", "failed to enqueue job")
 	}
 	return nil
 }

@@ -194,9 +194,9 @@ func applyPhonePolicyNotEntitled(identity *models.SoulAgentIdentity) {
 	identity.VoiceAllowed = false
 }
 
-func (s *Server) persistSoulAgentPolicyFields(ctx context.Context, identity *models.SoulAgentIdentity, now time.Time) *apptheory.AppError {
+func (s *Server) persistSoulAgentPolicyFields(ctx context.Context, identity *models.SoulAgentIdentity, now time.Time) *apptheory.AppTheoryError {
 	if s == nil || s.store == nil || s.store.DB == nil || identity == nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return newAppTheoryError("app.internal", "internal error")
 	}
 	update := &models.SoulAgentIdentity{
 		AgentID:                          identity.AgentID,
@@ -228,7 +228,7 @@ func (s *Server) persistSoulAgentPolicyFields(ctx context.Context, identity *mod
 		"PolicyMigrationState",
 		"UpdatedAt",
 	); err != nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "failed to persist soul policy"}
+		return newAppTheoryError("app.internal", "failed to persist soul policy")
 	}
 	return nil
 }

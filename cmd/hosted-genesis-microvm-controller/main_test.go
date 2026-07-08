@@ -97,7 +97,7 @@ func TestRuntimeControllerUsesHostOwnedMicroVMRegistry(t *testing.T) {
 		strings.Contains(src, "runtimemicrovm.NewMemorySessionRegistry()") {
 		t.Fatalf("hosted-genesis controller must use Host's cache adapter, not the generic AppTheory TableTheory or in-memory registry")
 	}
-	if strings.Contains(src, "github.com/theory-cloud/tabletheory") {
+	if strings.Contains(src, "github.com/theory-cloud/tabletheory/v2") {
 		t.Fatalf("hosted-genesis controller must not import TableTheory directly; store owns the TableTheory boundary")
 	}
 	if !strings.Contains(src, "store.NewHostedGenesisMicroVMRegistry") {

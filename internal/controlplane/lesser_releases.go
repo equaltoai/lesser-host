@@ -82,7 +82,7 @@ func isValidGitHubRepoSegment(s string) bool {
 	return true
 }
 
-func validateManagedReleaseVersion(version string, field string) *apptheory.AppError {
+func validateManagedReleaseVersion(version string, field string) *apptheory.AppTheoryError {
 	version = strings.TrimSpace(version)
 	field = strings.TrimSpace(field)
 	if version == "" {
@@ -98,5 +98,5 @@ func validateManagedReleaseVersion(version string, field string) *apptheory.AppE
 	if field != "" {
 		message = field + " must be \"latest\" or a final tag like v1.2.3"
 	}
-	return &apptheory.AppError{Code: "app.bad_request", Message: message}
+	return newAppTheoryError("app.bad_request", message)
 }

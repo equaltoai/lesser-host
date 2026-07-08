@@ -10,8 +10,8 @@ import (
 	"time"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	"github.com/theory-cloud/tabletheory/pkg/core"
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
+	"github.com/theory-cloud/tabletheory/v2/pkg/core"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/httpx"
 	"github.com/equaltoai/lesser-host/internal/store/models"
@@ -329,10 +329,10 @@ func (s *Server) handleCreateInstance(ctx *apptheory.Context) (*apptheory.Respon
 
 	slug := strings.ToLower(strings.TrimSpace(req.Slug))
 	if slug == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "slug is required"}
+		return nil, newAppTheoryError("app.bad_request", "slug is required")
 	}
 	if !instanceSlugRE.MatchString(slug) {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid slug"}
+		return nil, newAppTheoryError("app.bad_request", "invalid slug")
 	}
 
 	now := time.Now().UTC()
@@ -373,7 +373,7 @@ func (s *Server) handleCreateInstance(ctx *apptheory.Context) (*apptheory.Respon
 		CreatedAt:              now,
 	}
 	if err := inst.UpdateKeys(); err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	parentDomain := strings.TrimSpace(s.cfg.ManagedParentDomain)
@@ -433,9 +433,9 @@ func (s *Server) handleCreateInstance(ctx *apptheory.Context) (*apptheory.Respon
 		return nil
 	}); err != nil {
 		if theoryErrors.IsConditionFailed(err) {
-			return nil, &apptheory.AppError{Code: "app.conflict", Message: "instance already exists"}
+			return nil, newAppTheoryError("app.conflict", "instance already exists")
 		}
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to create instance"}
+		return nil, newAppTheoryError("app.internal", "failed to create instance")
 	}
 
 	return apptheory.JSON(http.StatusCreated, s.instanceResponseWithDerivedFields(inst))
@@ -452,7 +452,7 @@ func (s *Server) handleListInstances(ctx *apptheory.Context) (*apptheory.Respons
 		Filter("SK", "=", models.SKMetadata).
 		Scan(&items)
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to list instances"}
+		return nil, newAppTheoryError("app.internal", "failed to list instances")
 	}
 
 	out := make([]instanceResponse, 0, len(items))
@@ -664,18 +664,18 @@ func (s *Server) handleCreateInstanceKey(ctx *apptheory.Context) (*apptheory.Res
 
 	slug := strings.ToLower(strings.TrimSpace(ctx.Param("slug")))
 	if slug == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "slug is required"}
+		return nil, newAppTheoryError("app.bad_request", "slug is required")
 	}
 
 	if _, err := s.getInstance(ctx, slug); theoryErrors.IsNotFound(err) {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "instance not found"}
+		return nil, newAppTheoryError("app.not_found", "instance not found")
 	} else if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	secret, err := newToken(32)
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to create key"}
+		return nil, newAppTheoryError("app.internal", "failed to create key")
 	}
 	plaintext := "lhk_" + secret
 
@@ -689,10 +689,10 @@ func (s *Server) handleCreateInstanceKey(ctx *apptheory.Context) (*apptheory.Res
 		CreatedAt:    now,
 	}
 	if err := key.UpdateKeys(); err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	if err := s.store.DB.WithContext(ctx.Context()).Model(key).IfNotExists().Create(); err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to create key"}
+		return nil, newAppTheoryError("app.internal", "failed to create key")
 	}
 
 	audit := &models.AuditLogEntry{
@@ -704,7 +704,7 @@ func (s *Server) handleCreateInstanceKey(ctx *apptheory.Context) (*apptheory.Res
 	}
 	_ = audit.UpdateKeys()
 	if err := s.store.DB.WithContext(ctx.Context()).Model(audit).Create(); err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to write audit log"}
+		return nil, newAppTheoryError("app.internal", "failed to write audit log")
 	}
 
 	return apptheory.JSON(http.StatusCreated, createInstanceKeyResponse{
@@ -721,13 +721,13 @@ func (s *Server) handleUpdateInstanceConfig(ctx *apptheory.Context) (*apptheory.
 
 	slug := strings.ToLower(strings.TrimSpace(ctx.Param("slug")))
 	if slug == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "slug is required"}
+		return nil, newAppTheoryError("app.bad_request", "slug is required")
 	}
 
 	if _, err := s.getInstance(ctx, slug); theoryErrors.IsNotFound(err) {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "instance not found"}
+		return nil, newAppTheoryError("app.not_found", "instance not found")
 	} else if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	var req updateInstanceConfigRequest
@@ -740,13 +740,13 @@ func (s *Server) handleUpdateInstanceConfig(ctx *apptheory.Context) (*apptheory.
 		return nil, err
 	}
 	if updateErr := update.UpdateKeys(); updateErr != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	if dbErr := s.store.DB.WithContext(ctx.Context()).Model(update).IfExists().Update(fields...); dbErr != nil {
 		if theoryErrors.IsConditionFailed(dbErr) {
-			return nil, &apptheory.AppError{Code: "app.not_found", Message: "instance not found"}
+			return nil, newAppTheoryError("app.not_found", "instance not found")
 		}
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to update instance"}
+		return nil, newAppTheoryError("app.internal", "failed to update instance")
 	}
 
 	now := time.Now().UTC()
@@ -759,12 +759,12 @@ func (s *Server) handleUpdateInstanceConfig(ctx *apptheory.Context) (*apptheory.
 	}
 	_ = audit.UpdateKeys()
 	if auditErr := s.store.DB.WithContext(ctx.Context()).Model(audit).Create(); auditErr != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to write audit log"}
+		return nil, newAppTheoryError("app.internal", "failed to write audit log")
 	}
 
 	inst, err := s.getInstance(ctx, slug)
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	return apptheory.JSON(http.StatusOK, s.instanceResponseWithDerivedFields(inst))
@@ -834,7 +834,7 @@ func buildInstanceConfigUpdate(slug string, req updateInstanceConfigRequest) (*m
 	setBoolPtr(&update.LesserAIContentDetectionEnabled, req.LesserAIContentDetectionEnabled, "LesserAIContentDetectionEnabled", &fields)
 
 	if len(fields) == 0 {
-		return nil, nil, &apptheory.AppError{Code: "app.bad_request", Message: "no config fields provided"}
+		return nil, nil, newAppTheoryError("app.bad_request", "no config fields provided")
 	}
 	update.UpdatedAt = time.Now().UTC()
 	fields = append(fields, "UpdatedAt")
@@ -846,7 +846,7 @@ func setTipChainID(update *models.Instance, src *int64, fields *[]string) error 
 		return nil
 	}
 	if *src < 0 {
-		return &apptheory.AppError{Code: "app.bad_request", Message: "tip_chain_id must be >= 0"}
+		return newAppTheoryError("app.bad_request", "tip_chain_id must be >= 0")
 	}
 	update.TipChainID = *src
 	*fields = append(*fields, "TipChainID")
@@ -876,7 +876,7 @@ func setRenderPolicy(update *models.Instance, src *string, fields *[]string) err
 	}
 	rp := strings.ToLower(strings.TrimSpace(*src))
 	if rp != renderPolicyAlways && rp != renderPolicySuspicious {
-		return &apptheory.AppError{Code: "app.bad_request", Message: "render_policy must be always or suspicious"}
+		return newAppTheoryError("app.bad_request", "render_policy must be always or suspicious")
 	}
 	update.RenderPolicy = rp
 	*fields = append(*fields, "RenderPolicy")
@@ -889,7 +889,7 @@ func setOveragePolicy(update *models.Instance, src *string, fields *[]string) er
 	}
 	op := strings.ToLower(strings.TrimSpace(*src))
 	if op != overagePolicyBlock && op != overagePolicyAllow {
-		return &apptheory.AppError{Code: "app.bad_request", Message: "overage_policy must be block or allow"}
+		return newAppTheoryError("app.bad_request", "overage_policy must be block or allow")
 	}
 	update.OveragePolicy = op
 	*fields = append(*fields, "OveragePolicy")
@@ -905,7 +905,7 @@ func setModerationTrigger(update *models.Instance, src *string, fields *[]string
 	case moderationTriggerOnReports, moderationTriggerAlways, moderationTriggerLinksMediaOnly, moderationTriggerVirality:
 		// ok
 	default:
-		return &apptheory.AppError{Code: "app.bad_request", Message: "moderation_trigger must be on_reports, always, links_media_only, or virality"}
+		return newAppTheoryError("app.bad_request", "moderation_trigger must be on_reports, always, links_media_only, or virality")
 	}
 	update.ModerationTrigger = mode
 	*fields = append(*fields, "ModerationTrigger")
@@ -917,7 +917,7 @@ func setModerationViralityMin(update *models.Instance, src *int64, fields *[]str
 		return nil
 	}
 	if *src < 0 {
-		return &apptheory.AppError{Code: "app.bad_request", Message: "moderation_virality_min must be >= 0"}
+		return newAppTheoryError("app.bad_request", "moderation_virality_min must be >= 0")
 	}
 	update.ModerationViralityMin = *src
 	*fields = append(*fields, "ModerationViralityMin")
@@ -930,7 +930,7 @@ func setAIModelSet(update *models.Instance, src *string, fields *[]string) error
 	}
 	ms := strings.TrimSpace(*src)
 	if ms == "" {
-		return &apptheory.AppError{Code: "app.bad_request", Message: "ai_model_set cannot be empty"}
+		return newAppTheoryError("app.bad_request", "ai_model_set cannot be empty")
 	}
 	update.AIModelSet = ms
 	*fields = append(*fields, "AIModelSet")
@@ -946,7 +946,7 @@ func setAIBatchingMode(update *models.Instance, src *string, fields *[]string) e
 	case aiBatchingModeNone, aiBatchingModeInRequest, aiBatchingModeWorker, aiBatchingModeHybrid:
 		// ok
 	default:
-		return &apptheory.AppError{Code: "app.bad_request", Message: "ai_batching_mode must be none, in_request, worker, or hybrid"}
+		return newAppTheoryError("app.bad_request", "ai_batching_mode must be none, in_request, worker, or hybrid")
 	}
 	update.AIBatchingMode = mode
 	*fields = append(*fields, "AIBatchingMode")
@@ -958,7 +958,7 @@ func setPositiveInt64(dst *int64, src *int64, jsonField string, modelField strin
 		return nil
 	}
 	if *src <= 0 {
-		return &apptheory.AppError{Code: "app.bad_request", Message: jsonField + " must be > 0"}
+		return newAppTheoryError("app.bad_request", jsonField+" must be > 0")
 	}
 	*dst = *src
 	*fields = append(*fields, modelField)
@@ -970,10 +970,10 @@ func setAIPricingMultiplierBps(update *models.Instance, src *int64, fields *[]st
 		return nil
 	}
 	if *src <= 0 {
-		return &apptheory.AppError{Code: "app.bad_request", Message: "ai_pricing_multiplier_bps must be > 0"}
+		return newAppTheoryError("app.bad_request", "ai_pricing_multiplier_bps must be > 0")
 	}
 	if *src > 1_000_000 {
-		return &apptheory.AppError{Code: "app.bad_request", Message: "ai_pricing_multiplier_bps too large"}
+		return newAppTheoryError("app.bad_request", "ai_pricing_multiplier_bps too large")
 	}
 	update.AIPricingMultiplierBps = src
 	*fields = append(*fields, "AIPricingMultiplierBps")
@@ -985,10 +985,10 @@ func setAIMaxInflightJobs(update *models.Instance, src *int64, fields *[]string)
 		return nil
 	}
 	if *src <= 0 {
-		return &apptheory.AppError{Code: "app.bad_request", Message: "ai_max_inflight_jobs must be > 0"}
+		return newAppTheoryError("app.bad_request", "ai_max_inflight_jobs must be > 0")
 	}
 	if *src > 10_000 {
-		return &apptheory.AppError{Code: "app.bad_request", Message: "ai_max_inflight_jobs too large"}
+		return newAppTheoryError("app.bad_request", "ai_max_inflight_jobs too large")
 	}
 	update.AIMaxInflightJobs = src
 	*fields = append(*fields, "AIMaxInflightJobs")
@@ -1001,20 +1001,20 @@ func (s *Server) handleSetInstanceBudgetMonth(ctx *apptheory.Context) (*apptheor
 
 	slug := strings.ToLower(strings.TrimSpace(ctx.Param("slug")))
 	if slug == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "slug is required"}
+		return nil, newAppTheoryError("app.bad_request", "slug is required")
 	}
 	month := strings.TrimSpace(ctx.Param("month"))
 	if month == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "month is required"}
+		return nil, newAppTheoryError("app.bad_request", "month is required")
 	}
 	if _, err := time.Parse("2006-01", month); err != nil {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "month must be YYYY-MM"}
+		return nil, newAppTheoryError("app.bad_request", "month must be YYYY-MM")
 	}
 
 	if _, err := s.getInstance(ctx, slug); theoryErrors.IsNotFound(err) {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "instance not found"}
+		return nil, newAppTheoryError("app.not_found", "instance not found")
 	} else if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	var req setBudgetMonthRequest
@@ -1022,7 +1022,7 @@ func (s *Server) handleSetInstanceBudgetMonth(ctx *apptheory.Context) (*apptheor
 		return nil, err
 	}
 	if req.IncludedCredits < 0 {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "included_credits must be >= 0"}
+		return nil, newAppTheoryError("app.bad_request", "included_credits must be >= 0")
 	}
 
 	// Preserve used credits if the record already exists.
@@ -1037,7 +1037,7 @@ func (s *Server) handleSetInstanceBudgetMonth(ctx *apptheory.Context) (*apptheor
 	if err == nil {
 		used = existing.UsedCredits
 	} else if err != nil && !theoryErrors.IsNotFound(err) {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	now := time.Now().UTC()
@@ -1049,10 +1049,10 @@ func (s *Server) handleSetInstanceBudgetMonth(ctx *apptheory.Context) (*apptheor
 		UpdatedAt:       now,
 	}
 	if err := budget.UpdateKeys(); err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	if err := s.store.DB.WithContext(ctx.Context()).Model(budget).CreateOrUpdate(); err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to set budget"}
+		return nil, newAppTheoryError("app.internal", "failed to set budget")
 	}
 
 	audit := &models.AuditLogEntry{
@@ -1064,7 +1064,7 @@ func (s *Server) handleSetInstanceBudgetMonth(ctx *apptheory.Context) (*apptheor
 	}
 	_ = audit.UpdateKeys()
 	if err := s.store.DB.WithContext(ctx.Context()).Model(audit).Create(); err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to write audit log"}
+		return nil, newAppTheoryError("app.internal", "failed to write audit log")
 	}
 
 	return apptheory.JSON(http.StatusOK, budgetMonthResponse{

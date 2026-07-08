@@ -10,7 +10,7 @@ import (
 	"unicode/utf8"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/ai"
 	"github.com/equaltoai/lesser-host/internal/billing"
@@ -67,33 +67,33 @@ var aiJobIDRE = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 func (s *Server) handleGetAIJob(ctx *apptheory.Context) (*apptheory.Response, error) {
 	if s == nil || s.store == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	if ctx == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	instanceSlug := strings.TrimSpace(ctx.AuthIdentity)
 	if instanceSlug == "" {
-		return nil, &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
+		return nil, newAppTheoryError("app.unauthorized", "unauthorized")
 	}
 
 	jobID := strings.TrimSpace(ctx.Param("jobId"))
 	if !aiJobIDRE.MatchString(jobID) {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid job id"}
+		return nil, newAppTheoryError("app.bad_request", "invalid job id")
 	}
 
 	job, err := s.store.GetAIJob(ctx.Context(), jobID)
 	if theoryErrors.IsNotFound(err) {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "job not found"}
+		return nil, newAppTheoryError("app.not_found", "job not found")
 	}
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	// Instance-scoped jobs must not be visible cross-instance.
 	if strings.TrimSpace(job.InstanceSlug) != instanceSlug {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "job not found"}
+		return nil, newAppTheoryError("app.not_found", "job not found")
 	}
 
 	out := map[string]any{
@@ -136,7 +136,7 @@ func (s *Server) handleAIEvidenceText(ctx *apptheory.Context) (*apptheory.Respon
 
 	text := strings.TrimSpace(req.Text)
 	if text == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "text is required"}
+		return nil, newAppTheoryError("app.bad_request", "text is required")
 	}
 	// Comprehend input size guardrail – truncate at a valid UTF-8 boundary.
 	if len([]byte(text)) > 5000 {
@@ -173,7 +173,7 @@ func (s *Server) handleAIEvidenceText(ctx *apptheory.Context) (*apptheory.Respon
 	})
 	if err != nil {
 		s.emitAIRequestMetrics(instanceSlug, aiEvidenceTextModule, ai.Response{Status: ai.JobStatusError}, err)
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to queue job"}
+		return nil, newAppTheoryError("app.internal", "failed to queue job")
 	}
 
 	if enqueueErr := s.enqueueAIJobIfQueued(ctx, resp); enqueueErr != nil {
@@ -250,7 +250,7 @@ func (s *Server) handleAIEvidenceImage(ctx *apptheory.Context) (*apptheory.Respo
 	})
 	if err != nil {
 		s.emitAIRequestMetrics(prepared.InstanceSlug, aiEvidenceImageModule, ai.Response{Status: ai.JobStatusError}, err)
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to queue job"}
+		return nil, newAppTheoryError("app.internal", "failed to queue job")
 	}
 
 	if enqueueErr := s.enqueueAIJobIfQueued(ctx, resp); enqueueErr != nil {
@@ -298,18 +298,18 @@ type aiEvidenceImagePrepared struct {
 
 func (s *Server) prepareAIEvidenceImage(ctx *apptheory.Context) (aiEvidenceImagePrepared, error) {
 	if s == nil || s.ai == nil || s.store == nil {
-		return aiEvidenceImagePrepared{}, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return aiEvidenceImagePrepared{}, newAppTheoryError("app.internal", "internal error")
 	}
 	if ctx == nil {
-		return aiEvidenceImagePrepared{}, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return aiEvidenceImagePrepared{}, newAppTheoryError("app.internal", "internal error")
 	}
 	if s.artifacts == nil {
-		return aiEvidenceImagePrepared{}, &apptheory.AppError{Code: "app.internal", Message: "artifact store not configured"}
+		return aiEvidenceImagePrepared{}, newAppTheoryError("app.internal", "artifact store not configured")
 	}
 
 	instanceSlug := strings.TrimSpace(ctx.AuthIdentity)
 	if instanceSlug == "" {
-		return aiEvidenceImagePrepared{}, &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
+		return aiEvidenceImagePrepared{}, newAppTheoryError("app.unauthorized", "unauthorized")
 	}
 
 	var req aiEvidenceImageRequest
@@ -319,7 +319,7 @@ func (s *Server) prepareAIEvidenceImage(ctx *apptheory.Context) (aiEvidenceImage
 
 	key := strings.TrimSpace(req.ObjectKey)
 	if key == "" {
-		return aiEvidenceImagePrepared{}, &apptheory.AppError{Code: "app.bad_request", Message: "object_key is required"}
+		return aiEvidenceImagePrepared{}, newAppTheoryError("app.bad_request", "object_key is required")
 	}
 	if appErr := validateAIEvidenceImageObjectKey(instanceSlug, key); appErr != nil {
 		return aiEvidenceImagePrepared{}, appErr
@@ -408,14 +408,14 @@ func aiEvidenceDisabledResponse(module string, policyVersion string, modelSet st
 	}
 }
 
-func validateAIEvidenceImageObjectKey(instanceSlug string, key string) *apptheory.AppError {
+func validateAIEvidenceImageObjectKey(instanceSlug string, key string) *apptheory.AppTheoryError {
 	instanceSlug = strings.TrimSpace(instanceSlug)
 	key = strings.TrimSpace(key)
 	if instanceSlug == "" {
-		return &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
+		return newAppTheoryError("app.unauthorized", "unauthorized")
 	}
 	if key == "" {
-		return &apptheory.AppError{Code: "app.bad_request", Message: "object_key is required"}
+		return newAppTheoryError("app.bad_request", "object_key is required")
 	}
 
 	prefixes := aiEvidenceImageObjectKeyPrefixes(instanceSlug)
@@ -424,7 +424,7 @@ func validateAIEvidenceImageObjectKey(instanceSlug string, key string) *apptheor
 			return nil
 		}
 	}
-	return &apptheory.AppError{Code: "app.bad_request", Message: "object_key must be under " + strings.Join(prefixes, " or ")}
+	return newAppTheoryError("app.bad_request", "object_key must be under "+strings.Join(prefixes, " or "))
 }
 
 func aiEvidenceImageObjectKeyPrefixes(instanceSlug string) []string {
@@ -440,25 +440,25 @@ func aiEvidenceImageObjectKeyPrefixes(instanceSlug string) []string {
 
 func (s *Server) headAndValidateEvidenceImageObject(ctx context.Context, key string) (contentType, etag string, size int64, err error) {
 	if s == nil || s.artifacts == nil {
-		return "", "", 0, &apptheory.AppError{Code: "app.internal", Message: "artifact store not configured"}
+		return "", "", 0, newAppTheoryError("app.internal", "artifact store not configured")
 	}
 	key = strings.TrimSpace(key)
 	if key == "" {
-		return "", "", 0, &apptheory.AppError{Code: "app.bad_request", Message: "object_key is required"}
+		return "", "", 0, newAppTheoryError("app.bad_request", "object_key is required")
 	}
 
 	// Small ref + ETag for stable caching without reading the full object.
 	contentType, etag, size, err = s.artifacts.HeadObject(ctx, key)
 	if err != nil {
-		return "", "", 0, &apptheory.AppError{Code: "app.bad_request", Message: "object not found"}
+		return "", "", 0, newAppTheoryError("app.bad_request", "object not found")
 	}
 	if size <= 0 || size > 5*1024*1024 {
-		return "", "", 0, &apptheory.AppError{Code: "app.bad_request", Message: "object too large"}
+		return "", "", 0, newAppTheoryError("app.bad_request", "object too large")
 	}
 	ct := strings.ToLower(strings.TrimSpace(contentType))
 	if ct != "" {
 		if !strings.HasPrefix(ct, "image/") {
-			return "", "", 0, &apptheory.AppError{Code: "app.bad_request", Message: "object must be an image"}
+			return "", "", 0, newAppTheoryError("app.bad_request", "object must be an image")
 		}
 	}
 	return strings.TrimSpace(contentType), strings.TrimSpace(etag), size, nil

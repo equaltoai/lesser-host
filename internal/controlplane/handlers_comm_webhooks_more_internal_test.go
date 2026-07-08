@@ -15,8 +15,8 @@ import (
 	"time"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
-	ttmocks "github.com/theory-cloud/tabletheory/pkg/mocks"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
+	ttmocks "github.com/theory-cloud/tabletheory/v2/pkg/mocks"
 
 	"github.com/stretchr/testify/mock"
 
@@ -831,9 +831,9 @@ func TestMeterTelnyxVoiceCall_DuplicateLedgerIsIdempotent(t *testing.T) {
 	}
 }
 
-func requireAppError(t *testing.T, err error) *apptheory.AppError {
+func requireAppError(t *testing.T, err error) *apptheory.AppTheoryError {
 	t.Helper()
-	appErr, ok := err.(*apptheory.AppError)
+	appErr, ok := err.(*apptheory.AppTheoryError)
 	if !ok {
 		t.Fatalf("expected AppError, got %T (%v)", err, err)
 	}

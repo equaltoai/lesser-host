@@ -8,9 +8,9 @@ import (
 	"time"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	"github.com/theory-cloud/tabletheory"
-	"github.com/theory-cloud/tabletheory/pkg/core"
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
+	"github.com/theory-cloud/tabletheory/v2"
+	"github.com/theory-cloud/tabletheory/v2/pkg/core"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/billing"
 	"github.com/equaltoai/lesser-host/internal/commworker"
@@ -60,7 +60,7 @@ const commVoiceCallUsageModule = "comm.voice.call"
 
 func (s *Server) handleCommEmailInboundWebhook(ctx *apptheory.Context) (*apptheory.Response, error) {
 	if s == nil || ctx == nil || s.enqueueCommMessage == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	if !s.cfg.SoulEnabled {
 		return apptheory.JSON(http.StatusNotFound, map[string]any{"ok": false})
@@ -79,10 +79,10 @@ func (s *Server) handleCommEmailInboundWebhook(ctx *apptheory.Context) (*apptheo
 			Notification: notif,
 		}
 		if err := msg.Validate(); err != nil {
-			return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid webhook payload"}
+			return nil, newAppTheoryError("app.bad_request", "invalid webhook payload")
 		}
 		if err := s.enqueueCommMessage(ctx.Context(), msg); err != nil {
-			return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to enqueue"}
+			return nil, newAppTheoryError("app.internal", "failed to enqueue")
 		}
 		return apptheory.JSON(http.StatusOK, map[string]any{"ok": true})
 	}
@@ -90,7 +90,7 @@ func (s *Server) handleCommEmailInboundWebhook(ctx *apptheory.Context) (*apptheo
 	// Legacy / provider-adapter shape (flat to/from strings).
 	var legacy legacyInboundEmailWebhookRequest
 	if err := httpx.ParseJSON(ctx, &legacy); err != nil {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid webhook payload"}
+		return nil, newAppTheoryError("app.bad_request", "invalid webhook payload")
 	}
 	legacy.To = strings.TrimSpace(legacy.To)
 	legacy.From = strings.TrimSpace(legacy.From)
@@ -120,17 +120,17 @@ func (s *Server) handleCommEmailInboundWebhook(ctx *apptheory.Context) (*apptheo
 		},
 	}
 	if err := msg.Validate(); err != nil {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid webhook payload"}
+		return nil, newAppTheoryError("app.bad_request", "invalid webhook payload")
 	}
 	if err := s.enqueueCommMessage(ctx.Context(), msg); err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to enqueue"}
+		return nil, newAppTheoryError("app.internal", "failed to enqueue")
 	}
 	return apptheory.JSON(http.StatusOK, map[string]any{"ok": true})
 }
 
 func (s *Server) handleCommSMSInboundWebhook(ctx *apptheory.Context) (*apptheory.Response, error) {
 	if s == nil || ctx == nil || s.enqueueCommMessage == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	if !s.cfg.SoulEnabled {
 		return apptheory.JSON(http.StatusNotFound, map[string]any{"ok": false})
@@ -149,7 +149,7 @@ func (s *Server) handleCommSMSInboundWebhook(ctx *apptheory.Context) (*apptheory
 	// Telnyx webhook payload.
 	var tel telnyxInboundWebhook
 	if err := json.Unmarshal(ctx.Request.Body, &tel); err != nil {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid webhook payload"}
+		return nil, newAppTheoryError("app.bad_request", "invalid webhook payload")
 	}
 	eventType := strings.TrimSpace(tel.Data.EventType)
 	if eventType != "message.received" {
@@ -158,10 +158,10 @@ func (s *Server) handleCommSMSInboundWebhook(ctx *apptheory.Context) (*apptheory
 
 	msg := telnyxSMSWebhookQueueMessage(tel)
 	if err := msg.Validate(); err != nil {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid webhook payload"}
+		return nil, newAppTheoryError("app.bad_request", "invalid webhook payload")
 	}
 	if err := s.enqueueCommMessage(ctx.Context(), msg); err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to enqueue"}
+		return nil, newAppTheoryError("app.internal", "failed to enqueue")
 	}
 	return apptheory.JSON(http.StatusOK, map[string]any{"ok": true})
 }
@@ -173,10 +173,10 @@ func (s *Server) enqueueCommInboundWebhook(ctx *apptheory.Context, notif commwor
 		Notification: notif,
 	}
 	if err := msg.Validate(); err != nil {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid webhook payload"}
+		return nil, newAppTheoryError("app.bad_request", "invalid webhook payload")
 	}
 	if err := s.enqueueCommMessage(ctx.Context(), msg); err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to enqueue"}
+		return nil, newAppTheoryError("app.internal", "failed to enqueue")
 	}
 	return apptheory.JSON(http.StatusOK, map[string]any{"ok": true})
 }
@@ -208,7 +208,7 @@ func telnyxSMSWebhookQueueMessage(tel telnyxInboundWebhook) commworker.QueueMess
 
 func (s *Server) handleCommVoiceInboundWebhook(ctx *apptheory.Context) (*apptheory.Response, error) {
 	if s == nil || ctx == nil || s.enqueueCommMessage == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	if !s.cfg.SoulEnabled {
 		return apptheory.JSON(http.StatusNotFound, map[string]any{"ok": false})
@@ -227,10 +227,10 @@ func (s *Server) handleCommVoiceInboundWebhook(ctx *apptheory.Context) (*apptheo
 			Notification: notif,
 		}
 		if err := msg.Validate(); err != nil {
-			return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid webhook payload"}
+			return nil, newAppTheoryError("app.bad_request", "invalid webhook payload")
 		}
 		if err := s.enqueueCommMessage(ctx.Context(), msg); err != nil {
-			return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to enqueue"}
+			return nil, newAppTheoryError("app.internal", "failed to enqueue")
 		}
 		return apptheory.JSON(http.StatusOK, map[string]any{"ok": true})
 	}
@@ -238,7 +238,7 @@ func (s *Server) handleCommVoiceInboundWebhook(ctx *apptheory.Context) (*apptheo
 	// Telnyx voice webhook payload.
 	var tel telnyxVoiceWebhook
 	if err := json.Unmarshal(ctx.Request.Body, &tel); err != nil {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid webhook payload"}
+		return nil, newAppTheoryError("app.bad_request", "invalid webhook payload")
 	}
 
 	notif, to, callID, durationSeconds := buildTelnyxVoiceNotification(ctx.Request.Body, &tel)
@@ -254,17 +254,17 @@ func (s *Server) handleCommVoiceInboundWebhook(ctx *apptheory.Context) (*apptheo
 		Notification: notif,
 	}
 	if err := msg.Validate(); err != nil {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid webhook payload"}
+		return nil, newAppTheoryError("app.bad_request", "invalid webhook payload")
 	}
 	if err := s.enqueueCommMessage(ctx.Context(), msg); err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to enqueue"}
+		return nil, newAppTheoryError("app.internal", "failed to enqueue")
 	}
 	return apptheory.JSON(http.StatusOK, map[string]any{"ok": true})
 }
 
 func (s *Server) handleCommVoiceStatusWebhook(ctx *apptheory.Context) (*apptheory.Response, error) {
 	if s == nil || ctx == nil || s.enqueueCommMessage == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	if !s.cfg.SoulEnabled {
 		return apptheory.JSON(http.StatusNotFound, map[string]any{"ok": false})

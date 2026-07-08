@@ -15,8 +15,8 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/stretchr/testify/mock"
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
-	ttmocks "github.com/theory-cloud/tabletheory/pkg/mocks"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
+	ttmocks "github.com/theory-cloud/tabletheory/v2/pkg/mocks"
 
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
 	"github.com/equaltoai/lesser-host/internal/soul"
@@ -1654,14 +1654,14 @@ func TestSoulInstanceBootstrapHelperErrors(t *testing.T) {
 	}
 	cases := []struct {
 		name       string
-		in         *apptheory.AppError
+		in         *apptheory.AppTheoryError
 		wantCode   string
 		wantStatus int
 	}{
-		{"unauthorized", &apptheory.AppError{Code: appErrCodeUnauthorized, Message: "nope"}, soulInstanceBootstrapCodeUnauthorized, http.StatusUnauthorized},
-		{"bad request", &apptheory.AppError{Code: appErrCodeBadRequest, Message: "bad"}, soulInstanceBootstrapCodeInvalidRequest, http.StatusBadRequest},
-		{"conflict", &apptheory.AppError{Code: soulMintAppErrCodeConflict, Message: "conflict"}, soulInstanceBootstrapCodeBoundaryViolation, http.StatusForbidden},
-		{"internal default", &apptheory.AppError{Code: soulMintAppErrCodeInternal, Message: "boom"}, soulInstanceBootstrapCodeInternal, http.StatusInternalServerError},
+		{"unauthorized", newAppTheoryError(appErrCodeUnauthorized, "nope"), soulInstanceBootstrapCodeUnauthorized, http.StatusUnauthorized},
+		{"bad request", newAppTheoryError(appErrCodeBadRequest, "bad"), soulInstanceBootstrapCodeInvalidRequest, http.StatusBadRequest},
+		{"conflict", newAppTheoryError(soulMintAppErrCodeConflict, "conflict"), soulInstanceBootstrapCodeBoundaryViolation, http.StatusForbidden},
+		{"internal default", newAppTheoryError(soulMintAppErrCodeInternal, "boom"), soulInstanceBootstrapCodeInternal, http.StatusInternalServerError},
 	}
 	for _, tc := range cases {
 		tc := tc
@@ -1674,11 +1674,11 @@ func TestSoulInstanceBootstrapHelperErrors(t *testing.T) {
 		})
 	}
 
-	mapped := soulInstanceBootstrapErrorFromError(&apptheory.AppError{Code: appErrCodeForbidden, Message: "forbidden"})
+	mapped := soulInstanceBootstrapErrorFromError(newAppTheoryError(appErrCodeForbidden, "forbidden"))
 	if appErr := requireAppTheoryError(t, mapped); appErr.Code != soulInstanceBootstrapCodeBoundaryViolation || appErr.StatusCode != http.StatusForbidden {
 		t.Fatalf("expected forbidden mapping, got %#v", appErr)
 	}
-	mapped = soulInstanceBootstrapErrorFromError(&apptheory.AppError{Code: soulMintAppErrCodeNotFound, Message: "missing"})
+	mapped = soulInstanceBootstrapErrorFromError(newAppTheoryError(soulMintAppErrCodeNotFound, "missing"))
 	if appErr := requireAppTheoryError(t, mapped); appErr.Code != soulInstanceBootstrapCodeNotFound || appErr.StatusCode != http.StatusNotFound {
 		t.Fatalf("expected not found mapping, got %#v", appErr)
 	}

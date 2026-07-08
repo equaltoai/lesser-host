@@ -9,6 +9,7 @@ import (
 	"errors"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -215,13 +216,129 @@ func newControllerApp(runtime *hostedgenesis.MicroVMControllerRuntime, getenv ge
 	// ControllerResponse envelope so the control plane's HTTPControllerDispatcher
 	// decodes it unchanged. Registering first is the framework-gap-safe way to
 	// override the run route without patching the framework.
-	if _, err := app.HandleStrict("POST", "/microvms", runTurnViaEndpointHandler(runtime), apptheory.RequireAuth()); err != nil {
-		return nil, err
-	}
-	if _, err := runtimemicrovm.RegisterControllerRoutes(app, runtime.Controller()); err != nil {
+	app.Handle("POST", "/microvms", runTurnViaEndpointHandler(runtime), apptheory.RequireAuth())
+	if err := registerControllerRoutesExceptRun(app, runtime); err != nil {
 		return nil, err
 	}
 	return app, nil
+}
+
+func registerControllerRoutesExceptRun(app *apptheory.App, runtime *hostedgenesis.MicroVMControllerRuntime) error {
+	if app == nil || runtime == nil {
+		return errors.New("hosted genesis microvm controller route registration is incomplete")
+	}
+	routes := []struct {
+		method  string
+		path    string
+		command runtimemicrovm.Command
+	}{
+		{"GET", "/microvms", runtimemicrovm.CommandList},
+		{"GET", "/microvms/{session_id}", runtimemicrovm.CommandGet},
+		{"POST", "/microvms/{session_id}/suspend", runtimemicrovm.CommandSuspend},
+		{"POST", "/microvms/{session_id}/resume", runtimemicrovm.CommandResume},
+		{"DELETE", "/microvms/{session_id}", runtimemicrovm.CommandTerminate},
+		{"POST", "/microvms/{session_id}/auth-token", runtimemicrovm.CommandAuthToken},
+		{"POST", "/microvms/{session_id}/shell-auth-token", runtimemicrovm.CommandShellAuthToken},
+		// Compatibility route retained by AppTheory v1.16.1 for callers created
+		// during the M16 correction window.
+		{"POST", "/microvms/{session_id}/shell-token", runtimemicrovm.CommandShellAuthToken},
+	}
+	for _, route := range routes {
+		app.Handle(route.method, route.path, controllerRouteHandler(runtime, route.command), apptheory.RequireAuth())
+	}
+	return nil
+}
+
+type controllerRoutePayload struct {
+	TenantID                    string                             `json:"tenant_id"`
+	Namespace                   string                             `json:"namespace"`
+	SessionID                   string                             `json:"session_id"`
+	ImageRef                    string                             `json:"image_ref"`
+	ImageVersion                string                             `json:"image_version"`
+	NetworkConnectorRef         string                             `json:"network_connector_ref"`
+	IngressNetworkConnectorRefs []string                           `json:"ingress_network_connector_refs"`
+	EgressNetworkConnectorRefs  []string                           `json:"egress_network_connector_refs"`
+	SessionSpec                 runtimemicrovm.SessionSpec         `json:"session_spec"`
+	IdlePolicy                  *runtimemicrovm.ProviderIdlePolicy `json:"idle_policy"`
+	MaximumDurationSeconds      int32                              `json:"maximum_duration_seconds"`
+	TTLSeconds                  int32                              `json:"ttl_seconds"`
+	AllowedPortScope            []runtimemicrovm.ProviderPortScope `json:"allowed_port_scope"`
+	MaxResults                  int32                              `json:"max_results"`
+}
+
+func controllerRouteHandler(runtime *hostedgenesis.MicroVMControllerRuntime, command runtimemicrovm.Command) apptheory.Handler {
+	return func(ctx *apptheory.Context) (*apptheory.Response, error) {
+		req, safe := controllerRequestFromContext(ctx, command)
+		if safe.Code != "" {
+			return controllerJSON(controllerHTTPStatus(&safe), controllerErrorResponse(req, &safe))
+		}
+		resp, err := runtime.Handle(ctx.Context(), req)
+		if err != nil && resp.Error == nil {
+			safeErr := runTurnSafeError(err, req.RequestID)
+			resp = controllerErrorResponse(req, safeErr)
+		}
+		return controllerJSON(controllerHTTPStatus(resp.Error), resp)
+	}
+}
+
+func controllerRequestFromContext(ctx *apptheory.Context, command runtimemicrovm.Command) (runtimemicrovm.ControllerRequest, runtimemicrovm.SafeError) {
+	request := runtimemicrovm.ControllerRequest{Command: command}
+	if ctx == nil {
+		return request, safeErrorMicrovm(runtimemicrovm.ErrorCodeInvalidControllerRequest, "apptheory: microvm controller route context is missing")
+	}
+	payload := controllerRoutePayload{}
+	if len(ctx.Request.Body) > 0 {
+		if err := json.Unmarshal(ctx.Request.Body, &payload); err != nil {
+			request.RequestID = controllerRequestID(ctx)
+			return request, safeErrorMicrovm(runtimemicrovm.ErrorCodeInvalidControllerRequest, "apptheory: microvm controller route request is malformed")
+		}
+	}
+	pathSessionID := strings.TrimSpace(ctx.Param("session_id"))
+	bodySessionID := strings.TrimSpace(payload.SessionID)
+	if pathSessionID != "" && bodySessionID != "" && pathSessionID != bodySessionID {
+		request.RequestID = controllerRequestID(ctx)
+		return request, safeErrorMicrovm(runtimemicrovm.ErrorCodeTenantBindingViolation, "apptheory: microvm controller route session binding mismatch")
+	}
+	if ctx.TenantID != "" && strings.TrimSpace(payload.TenantID) != "" && strings.TrimSpace(payload.TenantID) != strings.TrimSpace(ctx.TenantID) {
+		request.RequestID = controllerRequestID(ctx)
+		return request, safeErrorMicrovm(runtimemicrovm.ErrorCodeTenantBindingViolation, "apptheory: microvm controller route tenant binding mismatch")
+	}
+	if ctx.TenantID != "" && strings.TrimSpace(ctx.Query("tenant_id")) != "" && strings.TrimSpace(ctx.Query("tenant_id")) != strings.TrimSpace(ctx.TenantID) {
+		request.RequestID = controllerRequestID(ctx)
+		return request, safeErrorMicrovm(runtimemicrovm.ErrorCodeTenantBindingViolation, "apptheory: microvm controller route tenant binding mismatch")
+	}
+	namespace := firstNonEmptyString(payload.Namespace, ctx.Header("x-namespace-id"), ctx.Query("namespace"))
+	request = runtimemicrovm.ControllerRequest{
+		Command:                     command,
+		RequestID:                   controllerRequestID(ctx),
+		TenantID:                    firstNonEmptyString(ctx.TenantID, payload.TenantID, ctx.Query("tenant_id")),
+		Namespace:                   namespace,
+		AuthContext:                 runtimemicrovm.AuthContext{Subject: strings.TrimSpace(ctx.AuthIdentity), TenantID: strings.TrimSpace(ctx.TenantID), Namespace: namespace},
+		SessionID:                   firstNonEmptyString(pathSessionID, bodySessionID),
+		ImageRef:                    payload.ImageRef,
+		ImageVersion:                payload.ImageVersion,
+		NetworkConnectorRef:         payload.NetworkConnectorRef,
+		IngressNetworkConnectorRefs: append([]string(nil), payload.IngressNetworkConnectorRefs...),
+		EgressNetworkConnectorRefs:  append([]string(nil), payload.EgressNetworkConnectorRefs...),
+		SessionSpec:                 payload.SessionSpec,
+		IdlePolicy:                  payload.IdlePolicy,
+		MaximumDurationSeconds:      payload.MaximumDurationSeconds,
+		TTLSeconds:                  payload.TTLSeconds,
+		AllowedPortScope:            append([]runtimemicrovm.ProviderPortScope(nil), payload.AllowedPortScope...),
+		MaxResults:                  firstPositiveInt32(payload.MaxResults, parseInt32(ctx.Query("max_results"))),
+	}
+	return request, runtimemicrovm.SafeError{}
+}
+
+func controllerErrorResponse(req runtimemicrovm.ControllerRequest, safe *runtimemicrovm.SafeError) runtimemicrovm.ControllerResponse {
+	return runtimemicrovm.ControllerResponse{
+		Command:   req.Command,
+		RequestID: strings.TrimSpace(req.RequestID),
+		TenantID:  strings.TrimSpace(req.TenantID),
+		Namespace: strings.TrimSpace(req.Namespace),
+		SessionID: strings.TrimSpace(req.SessionID),
+		Error:     safe,
+	}
 }
 
 // runTurnViaEndpointHandler is the POST /microvms handler that executes a
@@ -428,6 +545,30 @@ func firstString(values []string) string {
 		}
 	}
 	return ""
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
+func parseInt32(value string) int32 {
+	n, err := strconv.ParseInt(strings.TrimSpace(value), 10, 32)
+	if err != nil || n <= 0 {
+		return 0
+	}
+	return int32(n)
+}
+
+func firstPositiveInt32(value int32, fallback int32) int32 {
+	if value > 0 {
+		return value
+	}
+	return fallback
 }
 
 func csv(value string) []string {

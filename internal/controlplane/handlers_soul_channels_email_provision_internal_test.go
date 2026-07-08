@@ -14,7 +14,7 @@ import (
 	"github.com/ethereum/go-ethereum/accounts"
 	"github.com/ethereum/go-ethereum/crypto"
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
 
 	"github.com/stretchr/testify/mock"
 
@@ -830,12 +830,12 @@ func TestHandleSoulProvisionEmail_RequiresInboundBridgeDomain(t *testing.T) {
 	}
 }
 
-func requireProvisionEmailAppErr(t *testing.T, err error) *apptheory.AppError {
+func requireProvisionEmailAppErr(t *testing.T, err error) *apptheory.AppTheoryError {
 	t.Helper()
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	appErr, ok := err.(*apptheory.AppError)
+	appErr, ok := err.(*apptheory.AppTheoryError)
 	if !ok {
 		t.Fatalf("expected AppError, got %T", err)
 	}

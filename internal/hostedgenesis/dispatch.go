@@ -17,7 +17,7 @@ import (
 // ErrMicroVMDispatchUnavailable is the fail-closed error returned when the
 // hosted-genesis accept path cannot dispatch a MicroVM controller run command.
 // It is never a license to fall back to a synchronous control-plane LLM call;
-// callers must surface it loudly (typed AppError) and persist a failed turn.
+// callers must surface it loudly (typed AppTheoryError) and persist a failed turn.
 var ErrMicroVMDispatchUnavailable = errors.New("hosted genesis microvm dispatch is unavailable")
 
 // MicroVMDispatchResult is the safe, non-secret outcome of a controller run

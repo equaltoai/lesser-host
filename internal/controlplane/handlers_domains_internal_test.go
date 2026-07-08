@@ -7,8 +7,8 @@ import (
 	"time"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
-	ttmocks "github.com/theory-cloud/tabletheory/pkg/mocks"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
+	ttmocks "github.com/theory-cloud/tabletheory/v2/pkg/mocks"
 
 	"github.com/stretchr/testify/mock"
 
@@ -198,7 +198,7 @@ func TestHandleVerifyInstanceDomain_ConflictWhenNoVerificationToken(t *testing.T
 	ctx.Params = map[string]string{"slug": "demo", "domain": "example.com"}
 	if _, err := s.handleVerifyInstanceDomain(ctx); err == nil {
 		t.Fatalf("expected conflict")
-	} else if appErr, ok := err.(*apptheory.AppError); !ok || appErr.Code != appErrCodeConflict {
+	} else if appErr, ok := err.(*apptheory.AppTheoryError); !ok || appErr.Code != appErrCodeConflict {
 		t.Fatalf("expected app.conflict, got %#v", err)
 	}
 }
@@ -276,7 +276,7 @@ func TestHandleVerifyInstanceDomain_ReturnsBadRequestWhenVerificationTXTDoesNotM
 	withDNSTXTResolver(t, txtName, "wrong", func() {
 		if _, err := s.handleVerifyInstanceDomain(ctx); err == nil {
 			t.Fatalf("expected bad_request for missing verification record")
-		} else if appErr, ok := err.(*apptheory.AppError); !ok || appErr.Code != appErrCodeBadRequest {
+		} else if appErr, ok := err.(*apptheory.AppTheoryError); !ok || appErr.Code != appErrCodeBadRequest {
 			t.Fatalf("expected app.bad_request, got %#v", err)
 		}
 	})

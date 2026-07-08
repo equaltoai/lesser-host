@@ -11,7 +11,7 @@ import (
 	"strings"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
@@ -86,7 +86,7 @@ func (s *Server) handlePortalSoulRoster(ctx *apptheory.Context) (*apptheory.Resp
 
 	username := strings.TrimSpace(ctx.AuthIdentity)
 	if username == "" {
-		return nil, &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
+		return nil, newAppTheoryError("app.unauthorized", "unauthorized")
 	}
 
 	instances, appErr := s.listOwnedInstances(ctx.Context(), username)
@@ -109,9 +109,9 @@ func (s *Server) handlePortalSoulRoster(ctx *apptheory.Context) (*apptheory.Resp
 	return apptheory.JSON(http.StatusOK, portalSoulRosterResponse{Souls: out, Count: len(out)})
 }
 
-func (s *Server) listSoulRosterDomainOwners(ctx context.Context, instances []*models.Instance) (map[string]*models.Instance, *apptheory.AppError) {
+func (s *Server) listSoulRosterDomainOwners(ctx context.Context, instances []*models.Instance) (map[string]*models.Instance, *apptheory.AppTheoryError) {
 	if s == nil || s.store == nil || s.store.DB == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	domainOwners := make(map[string]*models.Instance)
@@ -141,9 +141,9 @@ func addSoulRosterDomainOwner(domainOwners map[string]*models.Instance, domain s
 	}
 }
 
-func (s *Server) listSoulRosterCandidatesForDomains(ctx *apptheory.Context, domainOwners map[string]*models.Instance) ([]portalSoulDomainCandidate, *apptheory.AppError) {
+func (s *Server) listSoulRosterCandidatesForDomains(ctx *apptheory.Context, domainOwners map[string]*models.Instance) ([]portalSoulDomainCandidate, *apptheory.AppTheoryError) {
 	if s == nil || s.store == nil || s.store.DB == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	domains := make([]string, 0, len(domainOwners))
@@ -161,7 +161,7 @@ func (s *Server) listSoulRosterCandidatesForDomains(ctx *apptheory.Context, doma
 			Where("PK", "=", fmt.Sprintf("SOUL#DOMAIN#%s", domain)).
 			All(&idxItems)
 		if err != nil && !theoryErrors.IsNotFound(err) {
-			return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to list agents"}
+			return nil, newAppTheoryError("app.internal", "failed to list agents")
 		}
 		for _, idx := range idxItems {
 			if idx == nil {
@@ -198,9 +198,9 @@ func portalSoulRosterCandidateSortKey(c portalSoulDomainCandidate) string {
 	return slug + "\x00" + strings.ToLower(strings.TrimSpace(c.domain)) + "\x00" + strings.ToLower(strings.TrimSpace(c.localID)) + "\x00" + c.agentID
 }
 
-func (s *Server) loadPortalSoulRosterItems(ctx *apptheory.Context, candidates []portalSoulDomainCandidate) ([]portalSoulRosterItem, *apptheory.AppError) {
+func (s *Server) loadPortalSoulRosterItems(ctx *apptheory.Context, candidates []portalSoulDomainCandidate) ([]portalSoulRosterItem, *apptheory.AppTheoryError) {
 	if s == nil || s.store == nil || s.store.DB == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	out := make([]portalSoulRosterItem, 0, len(candidates))
@@ -210,14 +210,14 @@ func (s *Server) loadPortalSoulRosterItems(ctx *apptheory.Context, candidates []
 			continue
 		}
 		if err != nil {
-			return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to load agent identity"}
+			return nil, newAppTheoryError("app.internal", "failed to load agent identity")
 		}
 
 		rep, repErr := s.getSoulAgentReputation(ctx.Context(), candidate.agentID)
 		if theoryErrors.IsNotFound(repErr) {
 			rep = nil
 		} else if repErr != nil {
-			return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to load agent reputation"}
+			return nil, newAppTheoryError("app.internal", "failed to load agent reputation")
 		}
 
 		assurance := buildSoulAnchorAssuranceFromIdentity(identity, s.cfg.SoulChainID)

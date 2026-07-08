@@ -19,10 +19,10 @@ type soulUpdateAgentContactPreferencesRequest struct {
 
 func (s *Server) handleSoulUpdateAgentChannelPreferences(ctx *apptheory.Context) (*apptheory.Response, error) {
 	if s == nil || ctx == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	if !s.cfg.SoulEnabled {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "not found"}
+		return nil, newAppTheoryError("app.not_found", "not found")
 	}
 	if appErr := s.requireSoulRegistryConfigured(); appErr != nil {
 		return nil, appErr
@@ -51,7 +51,7 @@ func (s *Server) handleSoulUpdateAgentChannelPreferences(ctx *apptheory.Context)
 	now := time.Now().UTC()
 	model := buildSoulV3ContactPreferencesModel(agentIDHex, prefs, now)
 	if err := model.UpdateKeys(); err != nil {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: fmt.Sprintf("invalid contactPreferences: %v", err)}
+		return nil, newAppTheoryError("app.bad_request", fmt.Sprintf("invalid contactPreferences: %v", err))
 	}
 	if appErr := s.syncSoulV3ContactPreferences(ctx.Context(), agentIDHex, prefs, now); appErr != nil {
 		return nil, appErr
@@ -67,24 +67,24 @@ func (s *Server) handleSoulUpdateAgentChannelPreferences(ctx *apptheory.Context)
 
 	resp, err := apptheory.JSON(http.StatusOK, soulAgentContactPreferencesResponse(agentIDHex, identity.UpdatedAt, model))
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	return resp, nil
 }
 
-func parseSoulUpdateAgentContactPreferencesRequest(ctx *apptheory.Context) (*soul.ContactPreferencesV3, *apptheory.AppError) {
+func parseSoulUpdateAgentContactPreferencesRequest(ctx *apptheory.Context) (*soul.ContactPreferencesV3, *apptheory.AppTheoryError) {
 	var req soulUpdateAgentContactPreferencesRequest
 	if err := httpx.ParseJSON(ctx, &req); err != nil {
-		if appErr, ok := err.(*apptheory.AppError); ok {
+		if appErr, ok := err.(*apptheory.AppTheoryError); ok {
 			return nil, appErr
 		}
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid JSON"}
+		return nil, newAppTheoryError("app.bad_request", "invalid JSON")
 	}
 	if req.ContactPreferences == nil {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "contactPreferences is required"}
+		return nil, newAppTheoryError("app.bad_request", "contactPreferences is required")
 	}
 	if err := req.ContactPreferences.Validate(); err != nil {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: fmt.Sprintf("invalid contactPreferences: %v", err)}
+		return nil, newAppTheoryError("app.bad_request", fmt.Sprintf("invalid contactPreferences: %v", err))
 	}
 	return req.ContactPreferences, nil
 }

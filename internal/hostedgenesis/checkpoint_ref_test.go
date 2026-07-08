@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/theory-cloud/tabletheory/pkg/validation"
+	"github.com/theory-cloud/tabletheory/v2/pkg/validation"
 )
 
 func TestCheckpointRefCompactsRawIDsIntoTableTheorySafeValue(t *testing.T) {

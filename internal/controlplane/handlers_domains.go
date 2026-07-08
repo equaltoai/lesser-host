@@ -7,7 +7,7 @@ import (
 	"time"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/domains"
 	"github.com/equaltoai/lesser-host/internal/httpx"
@@ -73,19 +73,19 @@ func (s *Server) handleListInstanceDomains(ctx *apptheory.Context) (*apptheory.R
 		return nil, err
 	}
 	if s == nil || s.store == nil || s.store.DB == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	slug := strings.ToLower(strings.TrimSpace(ctx.Param("slug")))
 	if slug == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "slug is required"}
+		return nil, newAppTheoryError("app.bad_request", "slug is required")
 	}
 
 	// Ensure the instance exists.
 	if _, err := s.getInstance(ctx, slug); theoryErrors.IsNotFound(err) {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "instance not found"}
+		return nil, newAppTheoryError("app.not_found", "instance not found")
 	} else if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	var items []*models.Domain
@@ -95,7 +95,7 @@ func (s *Server) handleListInstanceDomains(ctx *apptheory.Context) (*apptheory.R
 		Where("gsi1PK", "=", fmt.Sprintf("INSTANCE_DOMAINS#%s", slug)).
 		All(&items)
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to list domains"}
+		return nil, newAppTheoryError("app.internal", "failed to list domains")
 	}
 
 	out := make([]domainResponse, 0, len(items))
@@ -114,19 +114,19 @@ func (s *Server) handleAddInstanceDomain(ctx *apptheory.Context) (*apptheory.Res
 		return nil, err
 	}
 	if s == nil || s.store == nil || s.store.DB == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	slug := strings.ToLower(strings.TrimSpace(ctx.Param("slug")))
 	if slug == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "slug is required"}
+		return nil, newAppTheoryError("app.bad_request", "slug is required")
 	}
 
 	// Ensure the instance exists.
 	if _, err := s.getInstance(ctx, slug); theoryErrors.IsNotFound(err) {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "instance not found"}
+		return nil, newAppTheoryError("app.not_found", "instance not found")
 	} else if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	var req addDomainRequest
@@ -137,7 +137,7 @@ func (s *Server) handleAddInstanceDomain(ctx *apptheory.Context) (*apptheory.Res
 	rawDomain := strings.TrimSpace(req.Domain)
 	domain, err := domains.NormalizeDomain(rawDomain)
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: err.Error()}
+		return nil, newAppTheoryError("app.bad_request", err.Error())
 	}
 
 	// Prevent operators from manually re-adding the managed primary domain.
@@ -147,12 +147,12 @@ func (s *Server) handleAddInstanceDomain(ctx *apptheory.Context) (*apptheory.Res
 	}
 	primary := fmt.Sprintf("%s.%s", slug, strings.TrimPrefix(parentDomain, "."))
 	if domain == primary {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "domain is already managed as the primary domain"}
+		return nil, newAppTheoryError("app.conflict", "domain is already managed as the primary domain")
 	}
 
 	token, err := newToken(16)
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to create verification token"}
+		return nil, newAppTheoryError("app.internal", "failed to create verification token")
 	}
 
 	now := time.Now().UTC()
@@ -171,9 +171,9 @@ func (s *Server) handleAddInstanceDomain(ctx *apptheory.Context) (*apptheory.Res
 
 	if err := s.store.DB.WithContext(ctx.Context()).Model(item).IfNotExists().Create(); err != nil {
 		if theoryErrors.IsConditionFailed(err) {
-			return nil, &apptheory.AppError{Code: "app.conflict", Message: "domain already exists"}
+			return nil, newAppTheoryError("app.conflict", "domain already exists")
 		}
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to add domain"}
+		return nil, newAppTheoryError("app.internal", "failed to add domain")
 	}
 
 	audit := &models.AuditLogEntry{
@@ -202,12 +202,12 @@ type verifyDomainResponse struct {
 	Domain domainResponse `json:"domain"`
 }
 
-func (s *Server) markDomainVerified(ctx *apptheory.Context, domain string, slug string, domainType string, now time.Time) *apptheory.AppError {
+func (s *Server) markDomainVerified(ctx *apptheory.Context, domain string, slug string, domainType string, now time.Time) *apptheory.AppTheoryError {
 	if s == nil || s.store == nil || s.store.DB == nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return newAppTheoryError("app.internal", "internal error")
 	}
 	if ctx == nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return newAppTheoryError("app.internal", "internal error")
 	}
 
 	update := &models.Domain{
@@ -231,9 +231,9 @@ func (s *Server) markDomainVerified(ctx *apptheory.Context, domain string, slug 
 		"UpdatedAt",
 	); err != nil {
 		if theoryErrors.IsConditionFailed(err) {
-			return &apptheory.AppError{Code: "app.not_found", Message: "domain not found"}
+			return newAppTheoryError("app.not_found", "domain not found")
 		}
-		return &apptheory.AppError{Code: "app.internal", Message: "failed to verify domain"}
+		return newAppTheoryError("app.internal", "failed to verify domain")
 	}
 
 	return nil
@@ -275,12 +275,12 @@ func (s *Server) handleVerifyInstanceDomain(ctx *apptheory.Context) (*apptheory.
 
 	slug := strings.ToLower(strings.TrimSpace(ctx.Param("slug")))
 	if slug == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "slug is required"}
+		return nil, newAppTheoryError("app.bad_request", "slug is required")
 	}
 
 	domain, err := domains.NormalizeDomain(ctx.Param("domain"))
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: err.Error()}
+		return nil, newAppTheoryError("app.bad_request", err.Error())
 	}
 
 	item, err := s.loadInstanceDomain(ctx, domain, slug)
@@ -294,7 +294,7 @@ func (s *Server) handleVerifyInstanceDomain(ctx *apptheory.Context) (*apptheory.
 
 	token := strings.TrimSpace(item.VerificationToken)
 	if token == "" {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "domain is not eligible for verification"}
+		return nil, newAppTheoryError("app.conflict", "domain is not eligible for verification")
 	}
 
 	want := domainVerificationValuePrefix + token
@@ -341,16 +341,16 @@ func (s *Server) handleDeleteInstanceDomain(ctx *apptheory.Context) (*apptheory.
 		return nil, err
 	}
 	if s == nil || s.store == nil || s.store.DB == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	slug := strings.ToLower(strings.TrimSpace(ctx.Param("slug")))
 	if slug == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "slug is required"}
+		return nil, newAppTheoryError("app.bad_request", "slug is required")
 	}
 	domain, err := domains.NormalizeDomain(ctx.Param("domain"))
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: err.Error()}
+		return nil, newAppTheoryError("app.bad_request", err.Error())
 	}
 
 	var item models.Domain
@@ -360,17 +360,17 @@ func (s *Server) handleDeleteInstanceDomain(ctx *apptheory.Context) (*apptheory.
 		Where("SK", "=", models.SKMetadata).
 		First(&item)
 	if theoryErrors.IsNotFound(err) {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "domain not found"}
+		return nil, newAppTheoryError("app.not_found", "domain not found")
 	}
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	if strings.TrimSpace(item.InstanceSlug) != slug {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "domain not found"}
+		return nil, newAppTheoryError("app.not_found", "domain not found")
 	}
 
 	if strings.TrimSpace(item.Type) == models.DomainTypePrimary {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "primary domain cannot be removed"}
+		return nil, newAppTheoryError("app.conflict", "primary domain cannot be removed")
 	}
 
 	if err := s.store.DB.WithContext(ctx.Context()).
@@ -378,7 +378,7 @@ func (s *Server) handleDeleteInstanceDomain(ctx *apptheory.Context) (*apptheory.
 		Where("PK", "=", item.PK).
 		Where("SK", "=", item.SK).
 		Delete(); err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to delete domain"}
+		return nil, newAppTheoryError("app.internal", "failed to delete domain")
 	}
 
 	now := time.Now().UTC()

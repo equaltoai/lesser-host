@@ -27,7 +27,7 @@ func (s *Server) buildMintConversationFinalizeV2Registration(
 	issuedAt time.Time,
 	nextVersion int,
 	selfAttestation string,
-) (reg map[string]any, regV2 *soul.RegistrationFileV2, digest []byte, capsNorm []string, claimLevels map[string]string, appErr *apptheory.AppError) {
+) (reg map[string]any, regV2 *soul.RegistrationFileV2, digest []byte, capsNorm []string, claimLevels map[string]string, appErr *apptheory.AppTheoryError) {
 	return s.buildMintConversationFinalizeV2RegistrationWithOptions(agentIDHex, identity, decl, boundarySignatures, issuedAt, nextVersion, selfAttestation, mintConversationFinalizeRegistrationOptions{
 		AuthorityModel:    models.SoulAuthorityModelWalletPrincipal,
 		AnchorState:       soulIdentityAnchorState(identity),
@@ -44,16 +44,16 @@ func (s *Server) buildMintConversationFinalizeV2RegistrationWithOptions(
 	nextVersion int,
 	selfAttestation string,
 	opts mintConversationFinalizeRegistrationOptions,
-) (reg map[string]any, regV2 *soul.RegistrationFileV2, digest []byte, capsNorm []string, claimLevels map[string]string, appErr *apptheory.AppError) {
+) (reg map[string]any, regV2 *soul.RegistrationFileV2, digest []byte, capsNorm []string, claimLevels map[string]string, appErr *apptheory.AppTheoryError) {
 	if s == nil || identity == nil {
-		return nil, nil, nil, nil, nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, nil, nil, nil, nil, newAppTheoryError("app.internal", "internal error")
 	}
 	agentIDHex = strings.ToLower(strings.TrimSpace(agentIDHex))
 	if agentIDHex == "" {
-		return nil, nil, nil, nil, nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, nil, nil, nil, nil, newAppTheoryError("app.internal", "internal error")
 	}
 	if nextVersion <= 0 {
-		return nil, nil, nil, nil, nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid version"}
+		return nil, nil, nil, nil, nil, newAppTheoryError("app.bad_request", "invalid version")
 	}
 
 	issuedAt = issuedAt.UTC()
@@ -114,7 +114,7 @@ func (s *Server) buildMintConversationFinalizeV2RegistrationWithOptions(
 
 	regBytes, err := json.Marshal(reg)
 	if err != nil {
-		return nil, nil, nil, nil, nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid registration JSON"}
+		return nil, nil, nil, nil, nil, newAppTheoryError("app.bad_request", "invalid registration JSON")
 	}
 	parsed, appErr := parseMintConversationFinalizeV2Registration(regBytes)
 	if appErr != nil {
@@ -174,22 +174,22 @@ func mintConversationFinalizeIdentityForPublication(identity *models.SoulAgentId
 	return &copy
 }
 
-func requireMintConversationFinalizeVersionAndActive(identity *models.SoulAgentIdentity, nextVersion int, expectedVersion int) *apptheory.AppError {
+func requireMintConversationFinalizeVersionAndActive(identity *models.SoulAgentIdentity, nextVersion int, expectedVersion int) *apptheory.AppTheoryError {
 	if identity == nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return newAppTheoryError("app.internal", "internal error")
 	}
 	if identity.SelfDescriptionVersion > nextVersion {
-		return &apptheory.AppError{Code: "app.conflict", Message: "agent has advanced beyond this version"}
+		return newAppTheoryError("app.conflict", "agent has advanced beyond this version")
 	}
 	if identity.SelfDescriptionVersion < expectedVersion {
-		return &apptheory.AppError{Code: "app.conflict", Message: "version conflict; reload and try again"}
+		return newAppTheoryError("app.conflict", "version conflict; reload and try again")
 	}
 	return requireMintConversationFinalizeActiveIdentity(identity)
 }
 
-func requireMintConversationFinalizeActiveIdentity(identity *models.SoulAgentIdentity) *apptheory.AppError {
+func requireMintConversationFinalizeActiveIdentity(identity *models.SoulAgentIdentity) *apptheory.AppTheoryError {
 	if identity == nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return newAppTheoryError("app.internal", "internal error")
 	}
 	lifecycleStatus := ""
 	lifecycleStatus = strings.ToLower(strings.TrimSpace(identity.LifecycleStatus))
@@ -200,7 +200,7 @@ func requireMintConversationFinalizeActiveIdentity(identity *models.SoulAgentIde
 	case "", models.SoulAgentStatusPending, models.SoulAgentStatusActive:
 		return nil
 	default:
-		return &apptheory.AppError{Code: "app.conflict", Message: "agent must be active or pending before publishing mint conversation registration"}
+		return newAppTheoryError("app.conflict", "agent must be active or pending before publishing mint conversation registration")
 	}
 }
 
@@ -292,13 +292,13 @@ func nonNilMintConversationTransparency(transparency map[string]any) map[string]
 	return transparency
 }
 
-func parseMintConversationFinalizeV2Registration(regBytes []byte) (*soul.RegistrationFileV2, *apptheory.AppError) {
+func parseMintConversationFinalizeV2Registration(regBytes []byte) (*soul.RegistrationFileV2, *apptheory.AppTheoryError) {
 	parsed, err := soul.ParseRegistrationFileV2(regBytes)
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid v2 registration schema"}
+		return nil, newAppTheoryError("app.bad_request", "invalid v2 registration schema")
 	}
 	if err := parsed.Validate(); err != nil {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: err.Error()}
+		return nil, newAppTheoryError("app.bad_request", err.Error())
 	}
 	return parsed, nil
 }

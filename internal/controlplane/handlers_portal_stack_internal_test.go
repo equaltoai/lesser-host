@@ -6,8 +6,8 @@ import (
 	"time"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
-	ttmocks "github.com/theory-cloud/tabletheory/pkg/mocks"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
+	ttmocks "github.com/theory-cloud/tabletheory/v2/pkg/mocks"
 
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -150,7 +150,7 @@ func TestHandlePortalGetInstanceStack_OtherSlugDenial(t *testing.T) {
 
 	_, err := s.handlePortalGetInstanceStack(ctx)
 	require.Error(t, err)
-	appErr, ok := err.(*apptheory.AppError)
+	appErr, ok := err.(*apptheory.AppTheoryError)
 	require.True(t, ok, "expected AppError, got %T: %v", err, err)
 	require.Equal(t, "app.forbidden", appErr.Code)
 }

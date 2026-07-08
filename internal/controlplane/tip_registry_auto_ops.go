@@ -15,24 +15,24 @@ import (
 	"github.com/equaltoai/lesser-host/internal/tips"
 )
 
-func (s *Server) validateTipRegistryConfigForAutoOps() *apptheory.AppError {
+func (s *Server) validateTipRegistryConfigForAutoOps() *apptheory.AppTheoryError {
 	if s == nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return newAppTheoryError("app.internal", "internal error")
 	}
 	if s.cfg.TipChainID <= 0 || strings.TrimSpace(s.cfg.TipContractAddress) == "" {
-		return &apptheory.AppError{Code: "app.conflict", Message: "tip registry is not configured"}
+		return newAppTheoryError("app.conflict", "tip registry is not configured")
 	}
 	if s.cfg.TipTxMode == tipTxModeSafe && !common.IsHexAddress(strings.TrimSpace(s.cfg.TipAdminSafeAddress)) {
-		return &apptheory.AppError{Code: "app.conflict", Message: "tip registry safe is not configured"}
+		return newAppTheoryError("app.conflict", "tip registry safe is not configured")
 	}
 	if !common.IsHexAddress(strings.TrimSpace(s.cfg.TipDefaultHostWalletAddress)) {
-		return &apptheory.AppError{Code: "app.conflict", Message: "tip default host wallet is not configured"}
+		return newAppTheoryError("app.conflict", "tip default host wallet is not configured")
 	}
 	if isReservedWalletAddress(s.cfg.TipDefaultHostWalletAddress) {
-		return &apptheory.AppError{Code: "app.conflict", Message: "tip default host wallet is reserved"}
+		return newAppTheoryError("app.conflict", "tip default host wallet is reserved")
 	}
 	if s.cfg.TipDefaultHostFeeBps > 500 {
-		return &apptheory.AppError{Code: "app.conflict", Message: "tip default host fee is not configured"}
+		return newAppTheoryError("app.conflict", "tip default host fee is not configured")
 	}
 	return nil
 }
@@ -65,7 +65,7 @@ func (s *Server) determineAutoTipRegistryOpKind(ctx context.Context, contractAdd
 	}
 }
 
-func encodeAutoTipRegistryTx(opKind string, hostID common.Hash, desiredWallet common.Address, desiredFee uint16) (string, string, int64, *bool, *apptheory.AppError) {
+func encodeAutoTipRegistryTx(opKind string, hostID common.Hash, desiredWallet common.Address, desiredFee uint16) (string, string, int64, *bool, *apptheory.AppTheoryError) {
 	var data []byte
 	var err error
 	var active *bool
@@ -89,7 +89,7 @@ func encodeAutoTipRegistryTx(opKind string, hostID common.Hash, desiredWallet co
 		err = fmt.Errorf("unsupported tip registry op kind")
 	}
 	if err != nil {
-		return "", "", 0, nil, &apptheory.AppError{Code: "app.internal", Message: "failed to encode transaction"}
+		return "", "", 0, nil, newAppTheoryError("app.internal", "failed to encode transaction")
 	}
 
 	txData := "0x" + hex.EncodeToString(data)
@@ -101,7 +101,7 @@ func (s *Server) buildAutoTipRegistryOperation(ctx context.Context, domain strin
 		return nil, nil, nil
 	}
 	if s.store == nil || s.store.DB == nil {
-		return nil, nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, nil, newAppTheoryError("app.internal", "internal error")
 	}
 	if appErr := s.validateTipRegistryConfigForAutoOps(); appErr != nil {
 		return nil, nil, appErr
@@ -109,7 +109,7 @@ func (s *Server) buildAutoTipRegistryOperation(ctx context.Context, domain strin
 
 	domainNormalized, err := domains.NormalizeDomain(domain)
 	if err != nil {
-		return nil, nil, &apptheory.AppError{Code: "app.internal", Message: "failed to normalize domain"}
+		return nil, nil, newAppTheoryError("app.internal", "failed to normalize domain")
 	}
 
 	hostID := tips.HostIDFromDomain(domainNormalized)

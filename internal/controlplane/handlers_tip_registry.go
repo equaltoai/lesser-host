@@ -20,7 +20,7 @@ import (
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/ethereum/go-ethereum/rpc"
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/domains"
 	"github.com/equaltoai/lesser-host/internal/httpx"
@@ -74,37 +74,37 @@ type safeTxPayload struct {
 	Data        string `json:"data"`
 }
 
-func (s *Server) requireTipRegistryConfigured() *apptheory.AppError {
+func (s *Server) requireTipRegistryConfigured() *apptheory.AppTheoryError {
 	if s == nil || s.store == nil || s.store.DB == nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return newAppTheoryError("app.internal", "internal error")
 	}
 	if !s.cfg.TipEnabled {
-		return &apptheory.AppError{Code: "app.conflict", Message: "tip registry is not configured"}
+		return newAppTheoryError("app.conflict", "tip registry is not configured")
 	}
 	if s.cfg.TipChainID <= 0 || strings.TrimSpace(s.cfg.TipContractAddress) == "" {
-		return &apptheory.AppError{Code: "app.conflict", Message: "tip registry is not configured"}
+		return newAppTheoryError("app.conflict", "tip registry is not configured")
 	}
 	return nil
 }
 
-func (s *Server) requireTipRPCConfigured() *apptheory.AppError {
+func (s *Server) requireTipRPCConfigured() *apptheory.AppTheoryError {
 	if strings.TrimSpace(s.cfg.TipRPCURL) == "" {
-		return &apptheory.AppError{Code: "app.conflict", Message: "tip rpc not configured"}
+		return newAppTheoryError("app.conflict", "tip rpc not configured")
 	}
 	return nil
 }
 
-func (s *Server) requireTipSafeConfigured() *apptheory.AppError {
+func (s *Server) requireTipSafeConfigured() *apptheory.AppTheoryError {
 	if strings.TrimSpace(s.cfg.TipTxMode) != tipTxModeSafe {
 		return nil
 	}
 	if common.IsHexAddress(strings.TrimSpace(s.cfg.TipAdminSafeAddress)) {
 		return nil
 	}
-	return &apptheory.AppError{Code: "app.conflict", Message: "tip registry safe is not configured"}
+	return newAppTheoryError("app.conflict", "tip registry safe is not configured")
 }
 
-func normalizeTipRegistryRegistrationKind(kind string) (string, *apptheory.AppError) {
+func normalizeTipRegistryRegistrationKind(kind string) (string, *apptheory.AppTheoryError) {
 	kind = strings.ToLower(strings.TrimSpace(kind))
 	if kind == "" {
 		kind = models.TipRegistryOperationKindRegisterHost
@@ -113,17 +113,17 @@ func normalizeTipRegistryRegistrationKind(kind string) (string, *apptheory.AppEr
 	case models.TipRegistryOperationKindRegisterHost, models.TipRegistryOperationKindUpdateHost:
 		return kind, nil
 	default:
-		return "", &apptheory.AppError{Code: "app.bad_request", Message: "invalid kind"}
+		return "", newAppTheoryError("app.bad_request", "invalid kind")
 	}
 }
 
-func (s *Server) normalizeTipRegistryWalletAddress(ctx context.Context, walletAddr string) (string, *apptheory.AppError) {
+func (s *Server) normalizeTipRegistryWalletAddress(ctx context.Context, walletAddr string) (string, *apptheory.AppTheoryError) {
 	walletAddr = strings.TrimSpace(walletAddr)
 	if walletAddr == "" {
-		return "", &apptheory.AppError{Code: "app.bad_request", Message: "wallet_address is required"}
+		return "", newAppTheoryError("app.bad_request", "wallet_address is required")
 	}
 	if !common.IsHexAddress(walletAddr) {
-		return "", &apptheory.AppError{Code: "app.bad_request", Message: "invalid wallet_address"}
+		return "", newAppTheoryError("app.bad_request", "invalid wallet_address")
 	}
 	walletAddr = strings.ToLower(walletAddr)
 	if appErr := validateNotReservedWalletAddress(walletAddr, "wallet_address"); appErr != nil {
@@ -150,7 +150,7 @@ func (s *Server) handleTipHostRegistrationBegin(ctx *apptheory.Context) (*appthe
 	rawDomain := strings.TrimSpace(req.Domain)
 	domainNormalized, err := domains.NormalizeDomain(rawDomain)
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: err.Error()}
+		return nil, newAppTheoryError("app.bad_request", err.Error())
 	}
 
 	walletAddr, appErr := s.normalizeTipRegistryWalletAddress(ctx.Context(), req.WalletAddr)
@@ -159,23 +159,23 @@ func (s *Server) handleTipHostRegistrationBegin(ctx *apptheory.Context) (*appthe
 	}
 
 	if req.HostFeeBps < 0 || req.HostFeeBps > 500 {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "host_fee_bps must be between 0 and 500"}
+		return nil, newAppTheoryError("app.bad_request", "host_fee_bps must be between 0 and 500")
 	}
 
 	token, err := newToken(16)
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to create proof token"}
+		return nil, newAppTheoryError("app.internal", "failed to create proof token")
 	}
 	proofValue := tipRegistryProofValue + token
 
 	nonce, err := generateNonce()
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to create nonce"}
+		return nil, newAppTheoryError("app.internal", "failed to create nonce")
 	}
 
 	id, err := newToken(16)
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to create registration id"}
+		return nil, newAppTheoryError("app.internal", "failed to create registration id")
 	}
 
 	now := time.Now().UTC()
@@ -209,7 +209,7 @@ func (s *Server) handleTipHostRegistrationBegin(ctx *apptheory.Context) (*appthe
 	_ = reg.UpdateKeys()
 
 	if err := s.store.DB.WithContext(ctx.Context()).Model(reg).IfNotExists().Create(); err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to create registration"}
+		return nil, newAppTheoryError("app.internal", "failed to create registration")
 	}
 
 	audit := &models.AuditLogEntry{
@@ -267,63 +267,63 @@ func buildTipRegistryWalletMessage(domainNormalized, walletAddr string, chainID 
 	return sb.String()
 }
 
-func parseTipHostRegistrationVerifyInput(ctx *apptheory.Context) (string, requiredProofSet, *apptheory.AppError) {
+func parseTipHostRegistrationVerifyInput(ctx *apptheory.Context) (string, requiredProofSet, *apptheory.AppTheoryError) {
 	var req tipHostRegistrationVerifyRequest
 	if err := httpx.ParseJSON(ctx, &req); err != nil {
-		if appErr, ok := err.(*apptheory.AppError); ok {
+		if appErr, ok := err.(*apptheory.AppTheoryError); ok {
 			return "", requiredProofSet{}, appErr
 		}
-		return "", requiredProofSet{}, &apptheory.AppError{Code: "app.bad_request", Message: "invalid request"}
+		return "", requiredProofSet{}, newAppTheoryError("app.bad_request", "invalid request")
 	}
 
 	sig := strings.TrimSpace(req.Signature)
 	if sig == "" {
-		return "", requiredProofSet{}, &apptheory.AppError{Code: "app.bad_request", Message: "signature is required"}
+		return "", requiredProofSet{}, newAppTheoryError("app.bad_request", "signature is required")
 	}
 
 	requiredProofs, err := parseTipRegistryProofs(req.Proofs)
 	if err != nil {
-		if appErr, ok := err.(*apptheory.AppError); ok {
+		if appErr, ok := err.(*apptheory.AppTheoryError); ok {
 			return "", requiredProofSet{}, appErr
 		}
-		return "", requiredProofSet{}, &apptheory.AppError{Code: "app.bad_request", Message: "invalid proofs"}
+		return "", requiredProofSet{}, newAppTheoryError("app.bad_request", "invalid proofs")
 	}
 
 	return sig, requiredProofs, nil
 }
 
-func (s *Server) loadTipHostRegistrationForVerify(ctx *apptheory.Context, id string) (*models.TipHostRegistration, *apptheory.AppError) {
+func (s *Server) loadTipHostRegistrationForVerify(ctx *apptheory.Context, id string) (*models.TipHostRegistration, *apptheory.AppTheoryError) {
 	reg, err := s.getTipHostRegistration(ctx, id)
 	if theoryErrors.IsNotFound(err) {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "registration not found"}
+		return nil, newAppTheoryError("app.not_found", "registration not found")
 	}
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	if !reg.ExpiresAt.IsZero() && time.Now().After(reg.ExpiresAt) {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "registration expired"}
+		return nil, newAppTheoryError("app.bad_request", "registration expired")
 	}
 	if reg.Status == models.TipHostRegistrationStatusCompleted {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "registration already completed"}
+		return nil, newAppTheoryError("app.conflict", "registration already completed")
 	}
 
 	return reg, nil
 }
 
-func verifyTipHostRegistrationWallet(reg *models.TipHostRegistration, signature string) *apptheory.AppError {
+func verifyTipHostRegistrationWallet(reg *models.TipHostRegistration, signature string) *apptheory.AppTheoryError {
 	if reg == nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return newAppTheoryError("app.internal", "internal error")
 	}
 	if verifyErr := verifyEthereumSignature(reg.WalletAddr, reg.WalletMessage, strings.TrimSpace(signature)); verifyErr != nil {
-		return &apptheory.AppError{Code: "app.forbidden", Message: "invalid signature"}
+		return newAppTheoryError("app.forbidden", "invalid signature")
 	}
 	return nil
 }
 
-func verifyTipHostRegistrationProofs(ctx context.Context, reg *models.TipHostRegistration, requiredProofs requiredProofSet) (bool, bool, *apptheory.AppError) {
+func verifyTipHostRegistrationProofs(ctx context.Context, reg *models.TipHostRegistration, requiredProofs requiredProofSet) (bool, bool, *apptheory.AppTheoryError) {
 	if reg == nil {
-		return false, false, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return false, false, newAppTheoryError("app.internal", "internal error")
 	}
 
 	proofValue := tipRegistryProofValue + strings.TrimSpace(reg.DNSToken)
@@ -332,13 +332,13 @@ func verifyTipHostRegistrationProofs(ctx context.Context, reg *models.TipHostReg
 
 	if requiredProofs.requireDNS {
 		if ok := verifyTipRegistryDNS(ctx, reg.DomainNormalized, proofValue); !ok {
-			return false, false, &apptheory.AppError{Code: "app.bad_request", Message: "dns proof not found"}
+			return false, false, newAppTheoryError("app.bad_request", "dns proof not found")
 		}
 		verifiedDNS = true
 	}
 	if requiredProofs.requireHTTPS {
 		if ok := verifyTipRegistryHTTPS(ctx, reg.DomainNormalized, proofValue); !ok {
-			return false, false, &apptheory.AppError{Code: "app.bad_request", Message: "https proof not found"}
+			return false, false, newAppTheoryError("app.bad_request", "https proof not found")
 		}
 		verifiedHTTPS = true
 	}
@@ -346,9 +346,9 @@ func verifyTipHostRegistrationProofs(ctx context.Context, reg *models.TipHostReg
 	return verifiedDNS, verifiedHTTPS, nil
 }
 
-func (s *Server) enforceTipRegistryUpdateProofPolicy(ctx context.Context, reg *models.TipHostRegistration, verifiedDNS bool, verifiedHTTPS bool) *apptheory.AppError {
+func (s *Server) enforceTipRegistryUpdateProofPolicy(ctx context.Context, reg *models.TipHostRegistration, verifiedDNS bool, verifiedHTTPS bool) *apptheory.AppTheoryError {
 	if reg == nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return newAppTheoryError("app.internal", "internal error")
 	}
 	if strings.ToLower(strings.TrimSpace(reg.Kind)) != models.TipRegistryOperationKindUpdateHost {
 		return nil
@@ -356,24 +356,24 @@ func (s *Server) enforceTipRegistryUpdateProofPolicy(ctx context.Context, reg *m
 
 	requireBoth, why, requireErr := s.tipRegistryUpdateRequiresBothProofs(ctx, reg)
 	if requireErr != nil {
-		if appErr, ok := requireErr.(*apptheory.AppError); ok {
+		if appErr, ok := requireErr.(*apptheory.AppTheoryError); ok {
 			return appErr
 		}
-		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return newAppTheoryError("app.internal", "internal error")
 	}
 	if requireBoth && (!verifiedDNS || !verifiedHTTPS) {
-		return &apptheory.AppError{Code: "app.bad_request", Message: "update requires both dns and https proof: " + why}
+		return newAppTheoryError("app.bad_request", "update requires both dns and https proof: "+why)
 	}
 
 	return nil
 }
 
-func (s *Server) completeTipHostRegistration(ctx *apptheory.Context, reg *models.TipHostRegistration, verifiedDNS bool, verifiedHTTPS bool, now time.Time) (*models.TipHostRegistration, *apptheory.AppError) {
+func (s *Server) completeTipHostRegistration(ctx *apptheory.Context, reg *models.TipHostRegistration, verifiedDNS bool, verifiedHTTPS bool, now time.Time) (*models.TipHostRegistration, *apptheory.AppTheoryError) {
 	if s == nil || s.store == nil || s.store.DB == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	if ctx == nil || reg == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	update := &models.TipHostRegistration{
@@ -413,7 +413,7 @@ func (s *Server) completeTipHostRegistration(ctx *apptheory.Context, reg *models
 		"UpdatedAt",
 		"CompletedAt",
 	); err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to update registration"}
+		return nil, newAppTheoryError("app.internal", "failed to update registration")
 	}
 
 	return update, nil
@@ -426,7 +426,7 @@ func (s *Server) handleTipHostRegistrationVerify(ctx *apptheory.Context) (*appth
 
 	id := strings.TrimSpace(ctx.Param("id"))
 	if id == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "id is required"}
+		return nil, newAppTheoryError("app.bad_request", "id is required")
 	}
 
 	sig, requiredProofs, appErr := parseTipHostRegistrationVerifyInput(ctx)
@@ -511,11 +511,11 @@ func parseTipRegistryProofs(proofs []string) (requiredProofSet, error) {
 		case "":
 			continue
 		default:
-			return requiredProofSet{}, &apptheory.AppError{Code: "app.bad_request", Message: "invalid proof: " + p}
+			return requiredProofSet{}, newAppTheoryError("app.bad_request", "invalid proof: "+p)
 		}
 	}
 	if !out.requireDNS && !out.requireHTTPS {
-		return requiredProofSet{}, &apptheory.AppError{Code: "app.bad_request", Message: "at least one proof is required"}
+		return requiredProofSet{}, newAppTheoryError("app.bad_request", "at least one proof is required")
 	}
 	return out, nil
 }
@@ -678,26 +678,26 @@ func mustPrefix(cidr string) netip.Prefix {
 
 func (s *Server) tipRegistryUpdateRequiresBothProofs(ctx context.Context, reg *models.TipHostRegistration) (bool, string, error) {
 	if reg == nil {
-		return false, "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return false, "", newAppTheoryError("app.internal", "internal error")
 	}
 	if strings.TrimSpace(s.cfg.TipRPCURL) == "" || strings.TrimSpace(s.cfg.TipContractAddress) == "" {
-		return false, "", &apptheory.AppError{Code: "app.conflict", Message: "tip rpc not configured"}
+		return false, "", newAppTheoryError("app.conflict", "tip rpc not configured")
 	}
 	hostID := common.HexToHash(strings.TrimSpace(reg.HostIDHex))
 	contractAddr := common.HexToAddress(strings.TrimSpace(s.cfg.TipContractAddress))
 
 	client, err := dialEthClient(ctx, s.cfg.TipRPCURL)
 	if err != nil {
-		return false, "", &apptheory.AppError{Code: "app.internal", Message: "failed to connect to rpc"}
+		return false, "", newAppTheoryError("app.internal", "failed to connect to rpc")
 	}
 	defer client.Close()
 
 	host, err := tipSplitterGetHost(ctx, client, contractAddr, hostID)
 	if err != nil {
-		return false, "", &apptheory.AppError{Code: "app.internal", Message: "failed to read host state"}
+		return false, "", newAppTheoryError("app.internal", "failed to read host state")
 	}
 	if (host.Wallet == common.Address{}) {
-		return false, "", &apptheory.AppError{Code: "app.bad_request", Message: "host is not registered"}
+		return false, "", newAppTheoryError("app.bad_request", "host is not registered")
 	}
 
 	newWallet := common.HexToAddress(strings.TrimSpace(reg.WalletAddr))
@@ -717,20 +717,20 @@ func (s *Server) tipRegistryUpdateRequiresBothProofs(ctx context.Context, reg *m
 	return false, "", nil
 }
 
-func (s *Server) tipRegistryContractAddress() (common.Address, string, *apptheory.AppError) {
+func (s *Server) tipRegistryContractAddress() (common.Address, string, *apptheory.AppTheoryError) {
 	contractAddrRaw := strings.TrimSpace(s.cfg.TipContractAddress)
 	if !common.IsHexAddress(contractAddrRaw) {
-		return common.Address{}, "", &apptheory.AppError{Code: "app.conflict", Message: "tip registry is not configured"}
+		return common.Address{}, "", newAppTheoryError("app.conflict", "tip registry is not configured")
 	}
 	contractAddr := common.HexToAddress(contractAddrRaw)
 	txTo := strings.ToLower(contractAddr.Hex())
 	return contractAddr, txTo, nil
 }
 
-func (s *Server) tipRegistryWalletFromRegistration(ctx context.Context, reg *models.TipHostRegistration) (common.Address, string, *apptheory.AppError) {
+func (s *Server) tipRegistryWalletFromRegistration(ctx context.Context, reg *models.TipHostRegistration) (common.Address, string, *apptheory.AppTheoryError) {
 	walletAddrRaw := strings.TrimSpace(reg.WalletAddr)
 	if !common.IsHexAddress(walletAddrRaw) {
-		return common.Address{}, "", &apptheory.AppError{Code: "app.bad_request", Message: "invalid wallet address"}
+		return common.Address{}, "", newAppTheoryError("app.bad_request", "invalid wallet address")
 	}
 	if appErr := validateNotReservedWalletAddress(walletAddrRaw, "wallet_address"); appErr != nil {
 		return common.Address{}, "", appErr
@@ -742,22 +742,22 @@ func (s *Server) tipRegistryWalletFromRegistration(ctx context.Context, reg *mod
 	return walletAddr, strings.ToLower(walletAddr.Hex()), nil
 }
 
-func validateTipHostFeeBps(hostFeeBps int64) (uint16, *apptheory.AppError) {
+func validateTipHostFeeBps(hostFeeBps int64) (uint16, *apptheory.AppTheoryError) {
 	if hostFeeBps < 0 || hostFeeBps > 500 {
-		return 0, &apptheory.AppError{Code: "app.bad_request", Message: "host_fee_bps must be between 0 and 500"}
+		return 0, newAppTheoryError("app.bad_request", "host_fee_bps must be between 0 and 500")
 	}
 	return uint16(hostFeeBps), nil //nolint:gosec // bounded (0..500) validated above
 }
 
-func (s *Server) tipRegistrySafeAddress() (string, *apptheory.AppError) {
+func (s *Server) tipRegistrySafeAddress() (string, *apptheory.AppTheoryError) {
 	safeAddr := strings.ToLower(strings.TrimSpace(s.cfg.TipAdminSafeAddress))
 	if s.cfg.TipTxMode == tipTxModeSafe && !common.IsHexAddress(safeAddr) {
-		return "", &apptheory.AppError{Code: "app.conflict", Message: "tip registry safe is not configured"}
+		return "", newAppTheoryError("app.conflict", "tip registry safe is not configured")
 	}
 	return safeAddr, nil
 }
 
-func encodeTipRegistryOperationData(kind string, hostID common.Hash, wallet common.Address, fee uint16) ([]byte, string, *apptheory.AppError) {
+func encodeTipRegistryOperationData(kind string, hostID common.Hash, wallet common.Address, fee uint16) ([]byte, string, *apptheory.AppTheoryError) {
 	kind = strings.ToLower(strings.TrimSpace(kind))
 
 	var data []byte
@@ -768,17 +768,17 @@ func encodeTipRegistryOperationData(kind string, hostID common.Hash, wallet comm
 	case models.TipRegistryOperationKindUpdateHost:
 		data, err = tips.EncodeUpdateHostCall(hostID, wallet, fee)
 	default:
-		return nil, "", &apptheory.AppError{Code: "app.bad_request", Message: "invalid kind"}
+		return nil, "", newAppTheoryError("app.bad_request", "invalid kind")
 	}
 	if err != nil {
-		return nil, "", &apptheory.AppError{Code: "app.internal", Message: "failed to encode transaction"}
+		return nil, "", newAppTheoryError("app.internal", "failed to encode transaction")
 	}
 	return data, kind, nil
 }
 
 func (s *Server) createTipRegistryOperationForRegistration(ctx context.Context, reg *models.TipHostRegistration) (*models.TipRegistryOperation, *safeTxPayload, error) {
 	if reg == nil {
-		return nil, nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	_, txTo, appErr := s.tipRegistryContractAddress()
@@ -840,7 +840,7 @@ func (s *Server) createTipRegistryOperationForRegistration(ctx context.Context, 
 				op = existing
 			}
 		} else {
-			return nil, nil, &apptheory.AppError{Code: "app.internal", Message: "failed to create operation"}
+			return nil, nil, newAppTheoryError("app.internal", "failed to create operation")
 		}
 	}
 
@@ -938,9 +938,9 @@ func tipSplitterGetHost(ctx context.Context, client *ethclient.Client, contract 
 	return tips.DecodeGetHostResult(ret)
 }
 
-func (s *Server) requireTipRegistryHostRegistered(ctx context.Context, hostID common.Hash) *apptheory.AppError {
+func (s *Server) requireTipRegistryHostRegistered(ctx context.Context, hostID common.Hash) *apptheory.AppTheoryError {
 	if s == nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return newAppTheoryError("app.internal", "internal error")
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -951,22 +951,22 @@ func (s *Server) requireTipRegistryHostRegistered(ctx context.Context, hostID co
 
 	contractAddrRaw := strings.TrimSpace(s.cfg.TipContractAddress)
 	if !common.IsHexAddress(contractAddrRaw) {
-		return &apptheory.AppError{Code: "app.conflict", Message: "tip registry is not configured"}
+		return newAppTheoryError("app.conflict", "tip registry is not configured")
 	}
 	contractAddr := common.HexToAddress(contractAddrRaw)
 
 	client, err := dialEthClient(ctx, s.cfg.TipRPCURL)
 	if err != nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "failed to connect to rpc"}
+		return newAppTheoryError("app.internal", "failed to connect to rpc")
 	}
 	defer client.Close()
 
 	host, err := tipSplitterGetHost(ctx, client, contractAddr, hostID)
 	if err != nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "failed to read host state"}
+		return newAppTheoryError("app.internal", "failed to read host state")
 	}
 	if host == nil || (host.Wallet == common.Address{}) {
-		return &apptheory.AppError{Code: "app.bad_request", Message: "host is not registered"}
+		return newAppTheoryError("app.bad_request", "host is not registered")
 	}
 
 	return nil
@@ -984,7 +984,7 @@ func (s *Server) handleListTipRegistryOperations(ctx *apptheory.Context) (*appth
 		return nil, err
 	}
 	if s == nil || s.store == nil || s.store.DB == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	status := ""
@@ -1005,7 +1005,7 @@ func (s *Server) handleListTipRegistryOperations(ctx *apptheory.Context) (*appth
 		Where("gsi1PK", "=", fmt.Sprintf("TIPREG_OP_STATUS#%s", status)).
 		All(&items)
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to list operations"}
+		return nil, newAppTheoryError("app.internal", "failed to list operations")
 	}
 
 	out := make([]models.TipRegistryOperation, 0, len(items))
@@ -1024,20 +1024,20 @@ func (s *Server) handleGetTipRegistryOperation(ctx *apptheory.Context) (*apptheo
 		return nil, err
 	}
 	if s == nil || s.store == nil || s.store.DB == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	id := strings.TrimSpace(ctx.Param("id"))
 	if id == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "id is required"}
+		return nil, newAppTheoryError("app.bad_request", "id is required")
 	}
 
 	op, err := s.getTipRegistryOperation(ctx.Context(), id)
 	if theoryErrors.IsNotFound(err) {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "operation not found"}
+		return nil, newAppTheoryError("app.not_found", "operation not found")
 	}
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	return apptheory.JSON(http.StatusOK, op)
@@ -1060,7 +1060,7 @@ func (s *Server) handleRecordTipRegistryOperationExecution(ctx *apptheory.Contex
 
 	id := strings.TrimSpace(ctx.Param("id"))
 	if id == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "id is required"}
+		return nil, newAppTheoryError("app.bad_request", "id is required")
 	}
 
 	var req recordTipRegistryExecutionRequest
@@ -1070,26 +1070,26 @@ func (s *Server) handleRecordTipRegistryOperationExecution(ctx *apptheory.Contex
 
 	txHash := strings.TrimSpace(req.ExecTxHash)
 	if !isHexHash32(txHash) {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "exec_tx_hash is required"}
+		return nil, newAppTheoryError("app.bad_request", "exec_tx_hash is required")
 	}
 
 	op, err := s.getTipRegistryOperation(ctx.Context(), id)
 	if theoryErrors.IsNotFound(err) {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "operation not found"}
+		return nil, newAppTheoryError("app.not_found", "operation not found")
 	}
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	client, err := dialEthClient(ctx.Context(), s.cfg.TipRPCURL)
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to connect to rpc"}
+		return nil, newAppTheoryError("app.internal", "failed to connect to rpc")
 	}
 	defer client.Close()
 
 	receipt, err := client.TransactionReceipt(ctx.Context(), common.HexToHash(txHash))
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "receipt not found"}
+		return nil, newAppTheoryError("app.bad_request", "receipt not found")
 	}
 
 	receiptJSON := tipRegistryReceiptSnapshotJSON(txHash, receipt)
@@ -1145,7 +1145,7 @@ func (s *Server) handleRecordTipRegistryOperationExecution(ctx *apptheory.Contex
 		"UpdatedAt",
 		"ExecutedAt",
 	); err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to update operation"}
+		return nil, newAppTheoryError("app.internal", "failed to update operation")
 	}
 
 	audit := &models.AuditLogEntry{
@@ -1301,7 +1301,7 @@ func (s *Server) handleSetTipRegistryHostActive(ctx *apptheory.Context) (*appthe
 
 	domainNormalized, err := domains.NormalizeDomain(ctx.Param("domain"))
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: err.Error()}
+		return nil, newAppTheoryError("app.bad_request", err.Error())
 	}
 
 	var req setTipRegistryHostActiveRequest
@@ -1315,7 +1315,7 @@ func (s *Server) handleSetTipRegistryHostActive(ctx *apptheory.Context) (*appthe
 	}
 	data, err := tips.EncodeSetHostActiveCall(hostID, req.Active)
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to encode transaction"}
+		return nil, newAppTheoryError("app.internal", "failed to encode transaction")
 	}
 
 	contractAddr := common.HexToAddress(strings.TrimSpace(s.cfg.TipContractAddress))
@@ -1348,7 +1348,7 @@ func (s *Server) handleSetTipRegistryHostActive(ctx *apptheory.Context) (*appthe
 
 	if err := s.store.DB.WithContext(ctx.Context()).Model(op).IfNotExists().Create(); err != nil {
 		if !theoryErrors.IsConditionFailed(err) {
-			return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to create operation"}
+			return nil, newAppTheoryError("app.internal", "failed to create operation")
 		}
 		if existing, getErr := s.getTipRegistryOperation(ctx.Context(), opID); getErr == nil && existing != nil {
 			op = existing
@@ -1398,13 +1398,13 @@ func (s *Server) handleSetTipRegistryTokenAllowed(ctx *apptheory.Context) (*appt
 
 	tokenAddr := strings.TrimSpace(req.TokenAddress)
 	if !common.IsHexAddress(tokenAddr) || strings.EqualFold(tokenAddr, "0x0000000000000000000000000000000000000000") {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid token_address"}
+		return nil, newAppTheoryError("app.bad_request", "invalid token_address")
 	}
 	token := common.HexToAddress(tokenAddr)
 
 	data, err := tips.EncodeSetTokenAllowedCall(token, req.Allowed)
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to encode transaction"}
+		return nil, newAppTheoryError("app.internal", "failed to encode transaction")
 	}
 
 	contractAddr := common.HexToAddress(strings.TrimSpace(s.cfg.TipContractAddress))
@@ -1436,7 +1436,7 @@ func (s *Server) handleSetTipRegistryTokenAllowed(ctx *apptheory.Context) (*appt
 
 	if err := s.store.DB.WithContext(ctx.Context()).Model(op).IfNotExists().Create(); err != nil {
 		if !theoryErrors.IsConditionFailed(err) {
-			return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to create operation"}
+			return nil, newAppTheoryError("app.internal", "failed to create operation")
 		}
 		if existing, getErr := s.getTipRegistryOperation(ctx.Context(), opID); getErr == nil && existing != nil {
 			op = existing
@@ -1468,24 +1468,24 @@ func (s *Server) handleEnsureTipRegistryHost(ctx *apptheory.Context) (*apptheory
 		return nil, err
 	}
 	if s == nil || s.store == nil || s.store.DB == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	if !s.cfg.TipEnabled || s.cfg.TipChainID <= 0 || strings.TrimSpace(s.cfg.TipContractAddress) == "" {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "tip registry is not configured"}
+		return nil, newAppTheoryError("app.conflict", "tip registry is not configured")
 	}
 	if s.cfg.TipTxMode == tipTxModeSafe && !common.IsHexAddress(strings.TrimSpace(s.cfg.TipAdminSafeAddress)) {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "tip registry safe is not configured"}
+		return nil, newAppTheoryError("app.conflict", "tip registry safe is not configured")
 	}
 	if !common.IsHexAddress(strings.TrimSpace(s.cfg.TipDefaultHostWalletAddress)) {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "tip default host wallet is not configured"}
+		return nil, newAppTheoryError("app.conflict", "tip default host wallet is not configured")
 	}
 	if s.cfg.TipDefaultHostFeeBps > 500 {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "tip default host fee is not configured"}
+		return nil, newAppTheoryError("app.conflict", "tip default host fee is not configured")
 	}
 
 	domainNormalized, err := domains.NormalizeDomain(ctx.Param("domain"))
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: err.Error()}
+		return nil, newAppTheoryError("app.bad_request", err.Error())
 	}
 
 	op, safeTx, err := s.ensureTipRegistryHostOperation(ctx.Context(), domainNormalized, "", strings.TrimSpace(ctx.AuthIdentity), ctx.RequestID)
@@ -1504,16 +1504,16 @@ func (s *Server) handleEnsureTipRegistryHost(ctx *apptheory.Context) (*apptheory
 
 func (s *Server) ensureTipRegistryHostOperation(ctx context.Context, domainNormalized, domainRaw, actor, requestID string) (*models.TipRegistryOperation, *safeTxPayload, error) {
 	if s == nil || s.store == nil || s.store.DB == nil {
-		return nil, nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, nil, newAppTheoryError("app.internal", "internal error")
 	}
 	if !s.cfg.TipEnabled {
-		return nil, nil, &apptheory.AppError{Code: "app.conflict", Message: "tip registry is not configured"}
+		return nil, nil, newAppTheoryError("app.conflict", "tip registry is not configured")
 	}
 	if appErr := s.validateTipRegistryConfigForAutoOps(); appErr != nil {
 		return nil, nil, appErr
 	}
 	if s.cfg.TipChainID <= 0 || strings.TrimSpace(s.cfg.TipContractAddress) == "" {
-		return nil, nil, &apptheory.AppError{Code: "app.conflict", Message: "tip registry is not configured"}
+		return nil, nil, newAppTheoryError("app.conflict", "tip registry is not configured")
 	}
 
 	domainNormalized = strings.TrimSpace(domainNormalized)
@@ -1594,17 +1594,17 @@ func (s *Server) ensureTipRegistryHostOperation(ctx context.Context, domainNorma
 	}, nil
 }
 
-func (s *Server) createOrLoadTipRegistryOperation(ctx context.Context, op *models.TipRegistryOperation) (*models.TipRegistryOperation, *apptheory.AppError) {
+func (s *Server) createOrLoadTipRegistryOperation(ctx context.Context, op *models.TipRegistryOperation) (*models.TipRegistryOperation, *apptheory.AppTheoryError) {
 	if s == nil || s.store == nil || s.store.DB == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	if op == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	if err := s.store.DB.WithContext(ctx).Model(op).IfNotExists().Create(); err != nil {
 		if !theoryErrors.IsConditionFailed(err) {
-			return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to create operation"}
+			return nil, newAppTheoryError("app.internal", "failed to create operation")
 		}
 		if existing, getErr := s.getTipRegistryOperation(ctx, strings.TrimSpace(op.ID)); getErr == nil && existing != nil {
 			return existing, nil

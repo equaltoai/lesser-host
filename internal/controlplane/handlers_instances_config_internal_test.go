@@ -16,7 +16,7 @@ func TestBuildInstanceConfigUpdate(t *testing.T) {
 	rp := testNope
 	_, _, err = buildInstanceConfigUpdate("slug", updateInstanceConfigRequest{RenderPolicy: &rp})
 	require.Error(t, err)
-	var appErr *apptheory.AppError
+	var appErr *apptheory.AppTheoryError
 	require.ErrorAs(t, err, &appErr)
 	require.Equal(t, appErrCodeBadRequest, appErr.Code)
 
