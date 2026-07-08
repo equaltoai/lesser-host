@@ -92,7 +92,7 @@ func openAIJSONSchemaChatCompletion(
 ) (*openai.ChatCompletion, time.Time, error) {
 	client := openAIClientForKey(apiKey)
 	start := time.Now()
-	chat, err := client.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
+	params := openai.ChatCompletionNewParams{
 		Model: openai.ChatModel(model),
 		Messages: []openai.ChatCompletionMessageParamUnion{
 			openai.SystemMessage(system),
@@ -101,13 +101,29 @@ func openAIJSONSchemaChatCompletion(
 		ResponseFormat: openai.ChatCompletionNewParamsResponseFormatUnion{
 			OfJSONSchema: &openai.ResponseFormatJSONSchemaParam{JSONSchema: schemaParam},
 		},
-		Temperature: openai.Float(temperature),
-	})
+	}
+	if openAIModelSupportsTemperature(model) {
+		params.Temperature = openai.Float(temperature)
+	}
+	chat, err := client.Chat.Completions.New(ctx, params)
 	if err != nil {
 		return nil, start, err
 	}
 
 	return chat, start, nil
+}
+
+func openAIModelSupportsTemperature(model string) bool {
+	model = strings.ToLower(strings.TrimSpace(model))
+	if strings.HasPrefix(model, "gpt-5") {
+		return false
+	}
+	for _, prefix := range []string{"o1", "o3", "o4"} {
+		if model == prefix || strings.HasPrefix(model, prefix+"-") {
+			return false
+		}
+	}
+	return true
 }
 
 func openAIJSONSchemaBatch[Prompt any, Parsed any, Out any](
