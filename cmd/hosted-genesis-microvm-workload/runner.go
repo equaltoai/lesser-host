@@ -14,6 +14,7 @@ import (
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis/completion"
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis/mintprompt"
 	"github.com/equaltoai/lesser-host/internal/secrets"
+	"github.com/equaltoai/lesser-host/internal/soul"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
@@ -23,6 +24,7 @@ import (
 type turnStore interface {
 	GetHostedGenesisSession(ctx context.Context, instanceSlug string, conversationID string) (*models.HostedGenesisSession, error)
 	GetSoulAgentMintConversation(ctx context.Context, agentID string, conversationID string) (*models.SoulAgentMintConversation, error)
+	PutSoulAgentMintConversation(ctx context.Context, item *models.SoulAgentMintConversation) error
 	GetSoulAgentRegistration(ctx context.Context, id string) (*models.SoulAgentRegistration, error)
 }
 
@@ -158,7 +160,7 @@ func (r *turnRunner) runTurnAndPersist(ctx context.Context, turn completion.Comp
 		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeInvalidCompletionState, err.Error())
 	}
 
-	assistantContent, _, err := r.runAssistantTurn(ctx, in)
+	assistantContent, assistantUsage, err := r.runAssistantTurn(ctx, in)
 	if err != nil || strings.TrimSpace(assistantContent) == "" {
 		msg := "assistant turn failed"
 		if err != nil {
@@ -168,6 +170,13 @@ func (r *turnRunner) runTurnAndPersist(ctx context.Context, turn completion.Comp
 	}
 
 	postTurnMessageCount := len(in.messages) + 1
+	postTurnMessages := append(append([]llm.MintConversationMessage(nil), in.messages...), llm.MintConversationMessage{
+		Role:    "assistant",
+		Content: strings.TrimSpace(assistantContent),
+	})
+	if persistErr := r.persistConversationAssistantTurn(ctx, &in, turn, postTurnMessages, assistantUsage); persistErr != nil {
+		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeAssistantTurnFailed, "persist assistant turn: "+persistErr.Error())
+	}
 	if _, werr := r.writer.RecordAssistantTurnReady(ctx, turn, completion.AssistantTurnCompletion{
 		AssistantContent: assistantContent,
 		MessageCount:     postTurnMessageCount,
@@ -177,11 +186,18 @@ func (r *turnRunner) runTurnAndPersist(ctx context.Context, turn completion.Comp
 		return fmt.Errorf("record assistant turn ready: %w", werr)
 	}
 
-	draft, _, err := r.runDeclarationExtraction(ctx, in, assistantContent)
+	draft, declarationUsage, err := r.runDeclarationExtraction(ctx, in, assistantContent)
 	if err != nil {
 		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeDeclarationExtractionFailed, err.Error())
 	}
-	checkpoint, err := r.buildDeclarationCheckpoint(turn, in, draft)
+	declarationsJSON, err := r.buildProducedDeclarationsJSON(draft, in.modelSet)
+	if err != nil {
+		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeInvalidProducedDeclarations, err.Error())
+	}
+	if persistErr := r.persistConversationDeclarationReady(ctx, &in, turn, declarationsJSON, declarationUsage); persistErr != nil {
+		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeInvalidProducedDeclarations, "persist declarations: "+persistErr.Error())
+	}
+	checkpoint, err := r.buildDeclarationCheckpoint(turn, in, declarationsJSON)
 	if err != nil {
 		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeInvalidProducedDeclarations, err.Error())
 	}
@@ -191,21 +207,126 @@ func (r *turnRunner) runTurnAndPersist(ctx context.Context, turn completion.Comp
 	return nil
 }
 
-// buildDeclarationCheckpoint assembles a publish-ready DeclarationCheckpoint
-// from the extracted draft. The declaration id + hash are derived from the
-// conversation + turn identity so a replay produces the same checkpoint
-// (idempotent declaration_ready).
-func (r *turnRunner) buildDeclarationCheckpoint(turn completion.CompletionTurn, in turnInput, draft llm.MintConversationDeclarationsDraft) (hostedgenesis.DeclarationCheckpoint, error) {
+type producedDeclarations struct {
+	SelfDescription soul.SelfDescriptionV2 `json:"selfDescription"`
+	Capabilities    []soul.CapabilityV2    `json:"capabilities"`
+	Boundaries      []soul.BoundaryV2      `json:"boundaries"`
+	Transparency    map[string]any         `json:"transparency"`
+}
+
+func (r *turnRunner) persistConversationAssistantTurn(ctx context.Context, in *turnInput, turn completion.CompletionTurn, messages []llm.MintConversationMessage, usage models.AIUsage) error {
+	if r == nil || r.store == nil || in.conv == nil {
+		return errors.New("conversation store is not initialized")
+	}
+	body, err := json.Marshal(messages)
+	if err != nil {
+		return fmt.Errorf("marshal assistant transcript: %w", err)
+	}
 	now := r.now()
-	declarationID := fmt.Sprintf("decl:%s:%s:%s", in.session.InstanceSlug, in.session.ConversationID, turn.TurnID)
-	declarationHash, err := hashDeclarationDraft(draft)
+	conv := *in.conv
+	conv.Messages = models.EncodeSoulMintConversationBlob(string(body))
+	conv.Usage = addAIUsage(conv.Usage, usage)
+	conv.Status = models.SoulMintConversationStatusAssistantTurnReady
+	conv.StatusReason = ""
+	conv.LatestTurnID = strings.TrimSpace(turn.TurnID)
+	conv.RequestID = firstNonEmpty(strings.TrimSpace(turn.RequestID), conv.RequestID)
+	conv.UpdatedAt = now
+	if err := conv.UpdateKeys(); err != nil {
+		return err
+	}
+	if err := r.store.PutSoulAgentMintConversation(ctx, &conv); err != nil {
+		return err
+	}
+	in.conv = &conv
+	return nil
+}
+
+func (r *turnRunner) persistConversationDeclarationReady(ctx context.Context, in *turnInput, turn completion.CompletionTurn, declarationsJSON string, usage models.AIUsage) error {
+	if r == nil || r.store == nil || in.conv == nil {
+		return errors.New("conversation store is not initialized")
+	}
+	now := r.now()
+	conv := *in.conv
+	conv.ProducedDeclarations = models.EncodeSoulMintConversationBlob(strings.TrimSpace(declarationsJSON))
+	conv.Usage = addAIUsage(conv.Usage, usage)
+	conv.Status = models.SoulMintConversationStatusDeclarationReady
+	conv.StatusReason = ""
+	conv.LatestTurnID = strings.TrimSpace(turn.TurnID)
+	conv.RequestID = firstNonEmpty(strings.TrimSpace(turn.RequestID), conv.RequestID)
+	conv.CompletedAt = now
+	conv.UpdatedAt = now
+	if err := conv.UpdateKeys(); err != nil {
+		return err
+	}
+	if err := r.store.PutSoulAgentMintConversation(ctx, &conv); err != nil {
+		return err
+	}
+	in.conv = &conv
+	return nil
+}
+
+func (r *turnRunner) buildProducedDeclarationsJSON(draft llm.MintConversationDeclarationsDraft, modelSet string) (string, error) {
+	now := r.now()
+	decl := producedDeclarations{
+		SelfDescription: draft.SelfDescription,
+		Capabilities:    []soul.CapabilityV2{},
+		Boundaries:      []soul.BoundaryV2{},
+		Transparency:    draft.Transparency,
+	}
+	decl.SelfDescription.AuthoredBy = "agent"
+	decl.SelfDescription.MintingModel = strings.TrimSpace(modelSet)
+	if err := decl.SelfDescription.Validate(); err != nil {
+		return "", fmt.Errorf("invalid extracted selfDescription: %w", err)
+	}
+	for _, c := range draft.Capabilities {
+		c.ClaimLevel = "self-declared"
+		if strings.TrimSpace(c.Capability) == "" || strings.TrimSpace(c.Scope) == "" {
+			continue
+		}
+		if err := c.Validate(); err != nil {
+			continue
+		}
+		decl.Capabilities = append(decl.Capabilities, c)
+	}
+	for i, b := range draft.Boundaries {
+		entry := soul.BoundaryV2{
+			ID:             fmt.Sprintf("mint-%d-%02d", now.Unix(), i+1),
+			Category:       strings.ToLower(strings.TrimSpace(b.Category)),
+			Statement:      strings.TrimSpace(b.Statement),
+			Rationale:      strings.TrimSpace(b.Rationale),
+			AddedAt:        now.UTC().Format(time.RFC3339),
+			AddedInVersion: "1",
+			Signature:      "0x00",
+		}
+		if err := entry.Validate(); err != nil {
+			continue
+		}
+		decl.Boundaries = append(decl.Boundaries, entry)
+	}
+	if decl.Transparency == nil {
+		decl.Transparency = map[string]any{}
+	}
+	body, err := json.Marshal(decl)
+	if err != nil {
+		return "", fmt.Errorf("marshal produced declarations: %w", err)
+	}
+	return string(body), nil
+}
+
+// buildDeclarationCheckpoint assembles a publish-ready DeclarationCheckpoint
+// over the exact ProducedDeclarations JSON persisted to the conversation. The
+// checkpoint hash must match that stored blob byte-for-byte; otherwise the
+// instance API correctly refuses to project declarations.
+func (r *turnRunner) buildDeclarationCheckpoint(turn completion.CompletionTurn, in turnInput, declarationsJSON string) (hostedgenesis.DeclarationCheckpoint, error) {
+	now := r.now()
+	declarationHash, hashHex, err := hashDeclarationJSON(declarationsJSON)
 	if err != nil {
 		return hostedgenesis.DeclarationCheckpoint{}, err
 	}
 	return hostedgenesis.DeclarationCheckpoint{
-		DeclarationID:   declarationID,
+		DeclarationID:   "decl_" + hashHex[:16],
 		DeclarationHash: declarationHash,
-		CheckpointRef:   hostedgenesis.CheckpointRef("declaration", in.session.ConversationID, turn.TurnID),
+		CheckpointRef:   hostedgenesis.CheckpointRef("declaration", in.session.ConversationID, hashHex[:16]),
 		ProducedAt:      now,
 		RegistrationID:  in.session.RegistrationID,
 		ConversationID:  in.session.ConversationID,
@@ -214,6 +335,35 @@ func (r *turnRunner) buildDeclarationCheckpoint(turn completion.CompletionTurn, 
 		Model:           in.modelSet,
 		RequestID:       turn.RequestID,
 	}, nil
+}
+
+func addAIUsage(existing models.AIUsage, delta models.AIUsage) models.AIUsage {
+	out := existing
+	if strings.TrimSpace(out.Provider) == "" {
+		out.Provider = strings.TrimSpace(delta.Provider)
+	}
+	if strings.TrimSpace(out.Model) == "" {
+		out.Model = strings.TrimSpace(delta.Model)
+	}
+	out.InputTokens += delta.InputTokens
+	out.OutputTokens += delta.OutputTokens
+	total := delta.TotalTokens
+	if total == 0 && (delta.InputTokens != 0 || delta.OutputTokens != 0) {
+		total = delta.InputTokens + delta.OutputTokens
+	}
+	out.TotalTokens += total
+	out.DurationMs += delta.DurationMs
+	out.ToolCalls += delta.ToolCalls
+	return out
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }
 
 func (r *turnRunner) recordFailure(ctx context.Context, turn completion.CompletionTurn, code hostedgenesis.FailureCode, message string) error {

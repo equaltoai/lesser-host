@@ -36,6 +36,14 @@ func (f *fakeTurnStore) GetSoulAgentMintConversation(_ context.Context, _, _ str
 	}
 	return f.conv, nil
 }
+func (f *fakeTurnStore) PutSoulAgentMintConversation(_ context.Context, item *models.SoulAgentMintConversation) error {
+	if item == nil {
+		return errNotFound
+	}
+	c := *item
+	f.conv = &c
+	return nil
+}
 func (f *fakeTurnStore) GetSoulAgentRegistration(_ context.Context, _ string) (*models.SoulAgentRegistration, error) {
 	if f.reg == nil {
 		return nil, errNotFound
@@ -195,6 +203,21 @@ func TestRunTurnAndPersist_AssistantTurnReadyThenDeclarationReady(t *testing.T) 
 	if !strings.HasPrefix(compStore.session.DeclarationCheckpoint.DeclarationHash, "sha256:") {
 		t.Fatalf("expected sha256 declaration hash, got %q", compStore.session.DeclarationCheckpoint.DeclarationHash)
 	}
+	decodedMessages := models.DecodeSoulMintConversationBlob(turnStore.conv.Messages)
+	if !strings.Contains(decodedMessages, `"role":"assistant"`) || !strings.Contains(decodedMessages, "I am acme.") {
+		t.Fatalf("expected assistant transcript persisted to conversation, got %s", decodedMessages)
+	}
+	decodedDeclarations := models.DecodeSoulMintConversationBlob(turnStore.conv.ProducedDeclarations)
+	if decodedDeclarations == "" || !strings.Contains(decodedDeclarations, `"selfDescription"`) {
+		t.Fatalf("expected produced declarations persisted to conversation, got %s", decodedDeclarations)
+	}
+	gotHash, _, err := hashDeclarationJSON(decodedDeclarations)
+	if err != nil {
+		t.Fatalf("hash produced declarations: %v", err)
+	}
+	if gotHash != compStore.session.DeclarationCheckpoint.DeclarationHash {
+		t.Fatalf("checkpoint hash must match persisted declarations: got %s want %s", compStore.session.DeclarationCheckpoint.DeclarationHash, gotHash)
+	}
 }
 
 // TestRunTurnAndPersist_MissingSessionRecordsFailure proves a missing
@@ -285,15 +308,18 @@ func validDeclarationDraft() map[string]any {
 	return map[string]any{
 		"selfDescription": map[string]any{
 			"purpose":      "I help with tasks.",
+			"constraints":  "test only",
+			"commitments":  "be concise",
+			"limitations":  "unit test",
 			"authoredBy":   "agent",
 			"mintingModel": "openai:gpt-test",
 		},
 		"capabilities": []any{map[string]any{
-			"capability": "reasoning", "scope": "general", "claimLevel": "self-declared",
+			"capability": "reasoning", "scope": "general", "claimLevel": "self-declared", "lastValidated": "", "validationRef": "", "degradesTo": "",
 		}},
 		"boundaries": []any{map[string]any{
-			"category": "scope_limit", "statement": "I will not harm.",
+			"category": "scope_limit", "statement": "I will not harm.", "rationale": "safety",
 		}},
-		"transparency": map[string]any{"notes": "test"},
+		"transparency": map[string]any{"modelProviderUncertainty": "test", "operationalNotes": "test"},
 	}
 }

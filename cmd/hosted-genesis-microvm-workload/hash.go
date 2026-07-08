@@ -3,20 +3,20 @@ package main
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
-	"fmt"
-
-	"github.com/equaltoai/lesser-host/internal/ai/llm"
+	"errors"
+	"strings"
 )
 
-// hashDeclarationDraft returns the sha256 digest of the canonical JSON encoding
-// of the extracted declaration draft, prefixed with "sha256:" to match the
-// hostedgenesis DeclarationCheckpoint hash contract.
-func hashDeclarationDraft(draft llm.MintConversationDeclarationsDraft) (string, error) {
-	body, err := json.Marshal(draft)
-	if err != nil {
-		return "", fmt.Errorf("marshal declaration draft: %w", err)
+// hashDeclarationJSON returns the sha256 digest of the exact ProducedDeclarations
+// JSON persisted to the SoulAgentMintConversation record. The hosted-genesis
+// projection verifies this byte-for-byte against the stored blob before exposing
+// declarations to the instance API.
+func hashDeclarationJSON(declarationsJSON string) (prefixed string, hexDigest string, err error) {
+	body := strings.TrimSpace(declarationsJSON)
+	if body == "" {
+		return "", "", errors.New("declarations JSON is required")
 	}
-	sum := sha256.Sum256(body)
-	return "sha256:" + hex.EncodeToString(sum[:]), nil
+	sum := sha256.Sum256([]byte(body))
+	hexDigest = hex.EncodeToString(sum[:])
+	return "sha256:" + hexDigest, hexDigest, nil
 }
