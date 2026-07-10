@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	ttmocks "github.com/theory-cloud/tabletheory/pkg/mocks"
+	ttmocks "github.com/theory-cloud/tabletheory/v2/pkg/mocks"
 
 	"github.com/stretchr/testify/mock"
 
@@ -46,12 +46,12 @@ func TestLinkPreviewBadRequestError(t *testing.T) {
 	t.Parallel()
 
 	err := linkPreviewBadRequestError(&linkPreviewError{Code: errorCodeInvalidURL, Message: "nope"})
-	if appErr, ok := err.(*apptheory.AppError); !ok || appErr.Code != appErrCodeBadRequest || appErr.Message != "nope" {
+	if appErr, ok := err.(*apptheory.AppTheoryError); !ok || appErr.Code != appErrCodeBadRequest || appErr.Message != "nope" {
 		t.Fatalf("unexpected error: %T: %v", err, err)
 	}
 
 	err = linkPreviewBadRequestError(assertErr{})
-	if appErr, ok := err.(*apptheory.AppError); !ok || appErr.Code != appErrCodeBadRequest {
+	if appErr, ok := err.(*apptheory.AppTheoryError); !ok || appErr.Code != appErrCodeBadRequest {
 		t.Fatalf("unexpected error: %T: %v", err, err)
 	}
 }

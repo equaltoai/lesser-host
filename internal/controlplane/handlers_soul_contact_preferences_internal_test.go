@@ -163,7 +163,7 @@ func TestHandleSoulUpdateAgentChannelPreferences_InvalidPreferences(t *testing.T
 	if resp != nil {
 		t.Fatalf("expected nil response on validation error, got %#v", resp)
 	}
-	appErr, ok := err.(*apptheory.AppError)
+	appErr, ok := err.(*apptheory.AppTheoryError)
 	if !ok {
 		t.Fatalf("expected app error, got %v", err)
 	}

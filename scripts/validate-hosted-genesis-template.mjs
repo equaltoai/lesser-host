@@ -93,8 +93,8 @@ if (!controlPlane) {
 	fail('missing control-plane Lambda function');
 }
 const controlPlaneEnv = lambdaEnv(controlPlane);
-if (Object.prototype.hasOwnProperty.call(controlPlaneEnv, 'HOSTED_GENESIS_QUEUE_URL')) {
-	fail('control-plane Lambda must not receive HOSTED_GENESIS_QUEUE_URL; HostedGenesisSession is user-visible authority');
+if (!Object.prototype.hasOwnProperty.call(controlPlaneEnv, 'HOSTED_GENESIS_QUEUE_URL')) {
+	fail('control-plane Lambda lacks HOSTED_GENESIS_QUEUE_URL for non-authoritative MicroVM dispatch handoff');
 }
 const stage = typeof controlPlaneEnv.STAGE === 'string' ? controlPlaneEnv.STAGE.trim().toLowerCase() : '';
 
@@ -118,12 +118,21 @@ for (const [logicalId, policy] of iamPolicies) {
 	const appliesToControlPlane = [...controlPlaneRoleRefs].some((roleRef) => roleBindings.includes(roleRef));
 	if (!appliesToControlPlane) continue;
 	const policyText = JSON.stringify(properties.PolicyDocument ?? {});
-	if (policyText.includes(hostedGenesisQueueLogicalId) && policyText.includes('sqs:SendMessage')) {
-		fail(`control-plane IAM policy ${logicalId} grants SendMessage to HostedGenesisQueue; queue must remain operator/backfill only`);
+	if (policyText.includes(hostedGenesisQueueLogicalId) && (policyText.includes('sqs:ReceiveMessage') || policyText.includes('sqs:DeleteMessage') || policyText.includes('sqs:ChangeMessageVisibility'))) {
+		fail(`control-plane IAM policy ${logicalId} grants hosted-genesis queue consume authority; control plane may only enqueue non-authoritative dispatch handoff`);
 	}
 }
 
 const eventSourceMappings = resourceEntries.filter(([, resource]) => resource.Type === 'AWS::Lambda::EventSourceMapping');
+const controlPlaneLogicalId = controlPlane[0];
+const controlPlaneHostedGenesisMapping = eventSourceMappings.find(([, resource]) => {
+	const properties = asRecord(resource.Properties);
+	return hasRefTo(properties.EventSourceArn, hostedGenesisQueueLogicalId) &&
+		hasRefTo(properties.FunctionName, controlPlaneLogicalId);
+});
+if (controlPlaneHostedGenesisMapping) {
+	fail('control-plane Lambda must not consume HOSTED_GENESIS_QUEUE_URL; ai-worker owns non-authoritative MicroVM dispatch transport');
+}
 const aiWorkerLogicalId = aiWorker[0];
 const hostedGenesisMapping = eventSourceMappings.find(([, resource]) => {
 	const properties = asRecord(resource.Properties);
@@ -135,6 +144,12 @@ if (!hostedGenesisMapping) {
 }
 if (asRecord(hostedGenesisMapping[1].Properties).BatchSize !== 1) {
 	fail('AI worker hosted genesis EventSourceMapping must use BatchSize 1');
+}
+const hostedGenesisResponseTypes = asRecord(hostedGenesisMapping[1].Properties).FunctionResponseTypes;
+if (!Array.isArray(hostedGenesisResponseTypes) ||
+	hostedGenesisResponseTypes.length !== 1 ||
+	hostedGenesisResponseTypes[0] !== 'ReportBatchItemFailures') {
+	fail('AI worker hosted genesis EventSourceMapping must enable ReportBatchItemFailures');
 }
 
 const microvmController = lambdaEntries.find(([logicalId, resource]) =>
@@ -150,7 +165,7 @@ if (microvmController) {
 		fail('hosted genesis MicroVM controller must fail closed with default auth deny');
 	}
 	if (controllerEnv.APPTHEORY_MICROVM_CONTRACT_VERSION !== 'm16.microvm/v1') {
-		fail('hosted genesis MicroVM controller must pin the AppTheory v1.15 M16 contract');
+		fail('hosted genesis MicroVM controller must pin the AppTheory M16 contract');
 	}
 	if (!Object.prototype.hasOwnProperty.call(controllerEnv, 'STATE_TABLE_NAME')) {
 		fail('hosted genesis MicroVM controller requires STATE_TABLE_NAME for HostedGenesisSession reconstruction');
@@ -213,5 +228,5 @@ if (stage === 'live') {
 }
 
 console.error(
-	`hosted genesis template guard: OK ${templatePath} keeps HostedGenesisSession as user-visible authority, HostedGenesisQueue as non-authoritative operator/backfill transport, AI worker EventSourceMapping, and AppTheory MicroVM fail-closed/no-token invariants`,
+	`hosted genesis template guard: OK ${templatePath} keeps HostedGenesisSession as user-visible authority, HostedGenesisQueue as non-authoritative MicroVM dispatch/backfill transport, AI worker EventSourceMapping, and AppTheory MicroVM fail-closed/no-token invariants`,
 );

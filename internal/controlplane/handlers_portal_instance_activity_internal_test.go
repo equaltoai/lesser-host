@@ -168,7 +168,7 @@ func TestHandlePortalGetInstanceActivity_RequireInstanceAccessEnforced(t *testin
 	}
 	_, err := s.handlePortalGetInstanceActivity(ctx)
 	require.Error(t, err)
-	appErr, ok := err.(*apptheory.AppError)
+	appErr, ok := err.(*apptheory.AppTheoryError)
 	require.True(t, ok)
 	require.Equal(t, "app.forbidden", appErr.Code)
 }
@@ -263,7 +263,7 @@ func TestHandlePortalGetInstanceActivity_UpstreamErrorReturnsError(t *testing.T)
 	}
 	_, err := s.handlePortalGetInstanceActivity(ctx)
 	require.Error(t, err)
-	appErr, ok := err.(*apptheory.AppError)
+	appErr, ok := err.(*apptheory.AppTheoryError)
 	require.True(t, ok)
 	require.Equal(t, "app.upstream_error", appErr.Code)
 }

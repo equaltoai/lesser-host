@@ -14,8 +14,8 @@ import (
 	"github.com/ethereum/go-ethereum/accounts"
 	"github.com/ethereum/go-ethereum/crypto"
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
-	ttmocks "github.com/theory-cloud/tabletheory/pkg/mocks"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
+	ttmocks "github.com/theory-cloud/tabletheory/v2/pkg/mocks"
 
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -214,7 +214,7 @@ func TestHandleSoulAgentRegistrationPrincipalDeclarationPreflight_ValidationBran
 		})
 
 		_, err := s.handleSoulAgentRegistrationPrincipalDeclarationPreflight(ctx)
-		var appErr *apptheory.AppError
+		var appErr *apptheory.AppTheoryError
 		require.ErrorAs(t, err, &appErr)
 		require.Equal(t, "invalid principal_address", appErr.Message)
 	})
@@ -227,7 +227,7 @@ func TestHandleSoulAgentRegistrationPrincipalDeclarationPreflight_ValidationBran
 		})
 
 		_, err := s.handleSoulAgentRegistrationPrincipalDeclarationPreflight(ctx)
-		var appErr *apptheory.AppError
+		var appErr *apptheory.AppTheoryError
 		require.ErrorAs(t, err, &appErr)
 		require.Equal(t, "principal_declaration is required", appErr.Message)
 	})
@@ -240,7 +240,7 @@ func TestHandleSoulAgentRegistrationPrincipalDeclarationPreflight_ValidationBran
 		})
 
 		_, err := s.handleSoulAgentRegistrationPrincipalDeclarationPreflight(ctx)
-		var appErr *apptheory.AppError
+		var appErr *apptheory.AppTheoryError
 		require.ErrorAs(t, err, &appErr)
 		require.Equal(t, "declared_at is required", appErr.Message)
 	})
@@ -251,7 +251,7 @@ func TestHandleSoulAgentRegistrationPrincipalDeclarationPreflight_ValidationBran
 		ctx := newSoulRegistryPrincipalPreflightContext(t, reg, nil)
 
 		_, err := s.handleSoulAgentRegistrationPrincipalDeclarationPreflight(ctx)
-		var appErr *apptheory.AppError
+		var appErr *apptheory.AppTheoryError
 		require.ErrorAs(t, err, &appErr)
 		require.Equal(t, "registration expired", appErr.Message)
 	})
@@ -488,7 +488,7 @@ func TestHandleSoulAgentRegistrationVerify_ValidationBranches(t *testing.T) {
 		})
 
 		_, err := s.handleSoulAgentRegistrationVerify(ctx)
-		var appErr *apptheory.AppError
+		var appErr *apptheory.AppTheoryError
 		require.ErrorAs(t, err, &appErr)
 		require.Equal(t, "invalid principal_address", appErr.Message)
 	})
@@ -501,7 +501,7 @@ func TestHandleSoulAgentRegistrationVerify_ValidationBranches(t *testing.T) {
 		})
 
 		_, err := s.handleSoulAgentRegistrationVerify(ctx)
-		var appErr *apptheory.AppError
+		var appErr *apptheory.AppTheoryError
 		require.ErrorAs(t, err, &appErr)
 		require.Equal(t, "principal_declaration is required", appErr.Message)
 	})
@@ -514,7 +514,7 @@ func TestHandleSoulAgentRegistrationVerify_ValidationBranches(t *testing.T) {
 		})
 
 		_, err := s.handleSoulAgentRegistrationVerify(ctx)
-		var appErr *apptheory.AppError
+		var appErr *apptheory.AppTheoryError
 		require.ErrorAs(t, err, &appErr)
 		require.Equal(t, "principal_declaration is too long", appErr.Message)
 	})
@@ -527,7 +527,7 @@ func TestHandleSoulAgentRegistrationVerify_ValidationBranches(t *testing.T) {
 		})
 
 		_, err := s.handleSoulAgentRegistrationVerify(ctx)
-		var appErr *apptheory.AppError
+		var appErr *apptheory.AppTheoryError
 		require.ErrorAs(t, err, &appErr)
 		require.Equal(t, "declared_at is required", appErr.Message)
 	})
@@ -540,7 +540,7 @@ func TestHandleSoulAgentRegistrationVerify_ValidationBranches(t *testing.T) {
 		})
 
 		_, err := s.handleSoulAgentRegistrationVerify(ctx)
-		var appErr *apptheory.AppError
+		var appErr *apptheory.AppTheoryError
 		require.ErrorAs(t, err, &appErr)
 		require.Equal(t, "declared_at must be an RFC3339 timestamp", appErr.Message)
 	})
@@ -553,7 +553,7 @@ func TestHandleSoulAgentRegistrationVerify_ValidationBranches(t *testing.T) {
 		})
 
 		_, err := s.handleSoulAgentRegistrationVerify(ctx)
-		var appErr *apptheory.AppError
+		var appErr *apptheory.AppTheoryError
 		require.ErrorAs(t, err, &appErr)
 		require.Equal(t, "principal_signature is required", appErr.Message)
 	})
@@ -566,7 +566,7 @@ func TestHandleSoulAgentRegistrationVerify_ValidationBranches(t *testing.T) {
 		})
 
 		_, err := s.handleSoulAgentRegistrationVerify(ctx)
-		var appErr *apptheory.AppError
+		var appErr *apptheory.AppTheoryError
 		require.ErrorAs(t, err, &appErr)
 		require.Equal(t, "invalid principal_signature", appErr.Message)
 	})
@@ -585,7 +585,7 @@ func TestHandleSoulAgentRegistrationVerify_ValidationBranches(t *testing.T) {
 		})
 
 		_, err := s.handleSoulAgentRegistrationVerify(ctx)
-		var appErr *apptheory.AppError
+		var appErr *apptheory.AppTheoryError
 		require.ErrorAs(t, err, &appErr)
 		require.Equal(t, "invalid principal_signature", appErr.Message)
 	})
@@ -598,7 +598,7 @@ func TestHandleSoulAgentRegistrationVerify_ValidationBranches(t *testing.T) {
 		ctx := newSoulRegistryVerifyContext(t, s, reg, key, nil)
 
 		_, err := s.handleSoulAgentRegistrationVerify(ctx)
-		var appErr *apptheory.AppError
+		var appErr *apptheory.AppTheoryError
 		require.ErrorAs(t, err, &appErr)
 		require.Equal(t, "mint signer key is not configured", appErr.Message)
 	})

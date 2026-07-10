@@ -9,7 +9,7 @@ import (
 	"time"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/ai"
 	"github.com/equaltoai/lesser-host/internal/ai/llm"

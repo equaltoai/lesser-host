@@ -11,7 +11,7 @@ import (
 	"time"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/commworker"
 	"github.com/equaltoai/lesser-host/internal/httpx"
@@ -86,7 +86,7 @@ func soulCommRequestBaseURL(_ *apptheory.Context, publicBaseURL string) string {
 
 func (s *Server) handleCommVoiceTeXML(ctx *apptheory.Context) (*apptheory.Response, error) {
 	if s == nil || s.store == nil || s.store.DB == nil || ctx == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	if !s.cfg.SoulEnabled {
 		return apptheory.JSON(http.StatusNotFound, map[string]any{"ok": false})
@@ -94,7 +94,7 @@ func (s *Server) handleCommVoiceTeXML(ctx *apptheory.Context) (*apptheory.Respon
 
 	messageID := strings.TrimSpace(ctx.Param("messageId"))
 	if messageID == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "messageId is required"}
+		return nil, newAppTheoryError("app.bad_request", "messageId is required")
 	}
 
 	item, ok, err := s.loadSoulCommVoiceInstruction(ctx, messageID)
@@ -107,13 +107,13 @@ func (s *Server) handleCommVoiceTeXML(ctx *apptheory.Context) (*apptheory.Respon
 
 	baseURL := soulCommRequestBaseURL(ctx, s.cfg.PublicBaseURL)
 	if baseURL == "" {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	actionURL := baseURL + "/webhooks/comm/voice/gather/" + url.PathEscape(messageID)
 
 	payload, buildErr := buildSoulCommVoiceTeXML(strings.TrimSpace(item.Body), strings.TrimSpace(item.Voice), actionURL)
 	if buildErr != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	return &apptheory.Response{
 		Status: http.StatusOK,
@@ -137,7 +137,7 @@ func (s *Server) loadSoulCommVoiceInstruction(ctx *apptheory.Context, messageID 
 		return models.SoulCommVoiceInstruction{}, false, nil
 	}
 	if err != nil {
-		return models.SoulCommVoiceInstruction{}, false, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return models.SoulCommVoiceInstruction{}, false, newAppTheoryError("app.internal", "internal error")
 	}
 	return item, true, nil
 }
@@ -153,7 +153,7 @@ func buildSoulCommVoiceTeXML(body string, voice string, actionURL string) ([]byt
 		voice = telnyxDefaultOutboundVoice
 	}
 	if actionURL == "" {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "action url is required"}
+		return nil, newAppTheoryError("app.internal", "action url is required")
 	}
 
 	var escaped bytes.Buffer
@@ -179,7 +179,7 @@ func buildSoulCommVoiceTeXML(body string, voice string, actionURL string) ([]byt
 
 func (s *Server) handleCommVoiceGatherWebhook(ctx *apptheory.Context) (*apptheory.Response, error) {
 	if s == nil || s.store == nil || s.store.DB == nil || ctx == nil || s.enqueueCommMessage == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	if !s.cfg.SoulEnabled {
 		return apptheory.JSON(http.StatusNotFound, map[string]any{"ok": false})
@@ -193,7 +193,7 @@ func (s *Server) handleCommVoiceGatherWebhook(ctx *apptheory.Context) (*apptheor
 		messageID = strings.TrimSpace(queryFirst(ctx, "messageId"))
 	}
 	if messageID == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "messageId is required"}
+		return nil, newAppTheoryError("app.bad_request", "messageId is required")
 	}
 
 	instruction, ok, err := s.loadSoulCommVoiceInstruction(ctx, messageID)
@@ -253,7 +253,7 @@ func buildVoiceGatherCapture(messageID string, instruction models.SoulCommVoiceI
 	}, true
 }
 
-func (s *Server) enqueueVoiceGatherCapture(ctx *apptheory.Context, messageID string, capture voiceGatherCapture) *apptheory.AppError {
+func (s *Server) enqueueVoiceGatherCapture(ctx *apptheory.Context, messageID string, capture voiceGatherCapture) *apptheory.AppTheoryError {
 	inReplyTo := messageID
 	notif := commworker.InboundNotification{
 		Type:       "communication:inbound",
@@ -271,17 +271,17 @@ func (s *Server) enqueueVoiceGatherCapture(ctx *apptheory.Context, messageID str
 		Notification: notif,
 	}
 	if err := msg.Validate(); err != nil {
-		return &apptheory.AppError{Code: "app.bad_request", Message: "invalid gather payload"}
+		return newAppTheoryError("app.bad_request", "invalid gather payload")
 	}
 	if err := s.enqueueCommMessage(ctx.Context(), msg); err != nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "failed to enqueue"}
+		return newAppTheoryError("app.internal", "failed to enqueue")
 	}
 	return nil
 }
 
-func parseTelnyxVoiceGatherCallback(ctx *apptheory.Context) (telnyxVoiceGatherCallback, *apptheory.AppError) {
+func parseTelnyxVoiceGatherCallback(ctx *apptheory.Context) (telnyxVoiceGatherCallback, *apptheory.AppTheoryError) {
 	if ctx == nil {
-		return telnyxVoiceGatherCallback{}, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return telnyxVoiceGatherCallback{}, newAppTheoryError("app.internal", "internal error")
 	}
 
 	body := bytes.TrimSpace(ctx.Request.Body)
@@ -325,7 +325,7 @@ func parseTelnyxVoiceGatherCallback(ctx *apptheory.Context) (telnyxVoiceGatherCa
 		Confidence:   strings.TrimSpace(firstNonEmpty(queryFirst(ctx, "Confidence"), queryFirst(ctx, "confidence"))),
 	}
 	if !hasTelnyxVoiceGatherContent(cb) {
-		return telnyxVoiceGatherCallback{}, &apptheory.AppError{Code: "app.bad_request", Message: "invalid gather payload"}
+		return telnyxVoiceGatherCallback{}, newAppTheoryError("app.bad_request", "invalid gather payload")
 	}
 	return cb, nil
 }
@@ -442,12 +442,12 @@ func (s *Server) maybeHandleOutboundVoiceStatusWebhook(ctx *apptheory.Context) (
 		return nil, false, nil
 	}
 	if s == nil || s.store == nil || s.store.DB == nil || ctx == nil {
-		return nil, true, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, true, newAppTheoryError("app.internal", "internal error")
 	}
 
 	var tel telnyxVoiceWebhook
 	if err := httpx.ParseJSON(ctx, &tel); err != nil {
-		return nil, true, &apptheory.AppError{Code: "app.bad_request", Message: "invalid webhook payload"}
+		return nil, true, newAppTheoryError("app.bad_request", "invalid webhook payload")
 	}
 
 	if err := s.updateOutboundVoiceStatusFromWebhook(ctx, messageID, &tel); err != nil {
@@ -471,7 +471,7 @@ func (s *Server) updateOutboundVoiceStatusFromWebhook(ctx *apptheory.Context, me
 		return nil
 	}
 	if err != nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return newAppTheoryError("app.internal", "internal error")
 	}
 	if strings.TrimSpace(statusItem.MessageID) == "" {
 		statusItem.MessageID = messageID
@@ -484,7 +484,7 @@ func (s *Server) updateOutboundVoiceStatusFromWebhook(ctx *apptheory.Context, me
 		}
 		billingCallID := outboundVoiceBillingCallID(messageID, callID, tel.Data.EventType)
 		if err := s.meterOutboundTelnyxVoiceCall(ctx, &statusItem, billingCallID, durationSeconds); err != nil {
-			return &apptheory.AppError{Code: "app.internal", Message: "failed to meter voice call"}
+			return newAppTheoryError("app.internal", "failed to meter voice call")
 		}
 	}
 
@@ -502,14 +502,14 @@ func (s *Server) updateOutboundVoiceStatusFromWebhook(ctx *apptheory.Context, me
 		statusItem.ErrorMessage = errorMessage
 	}
 	if err := s.store.DB.WithContext(ctx.Context()).Model(&statusItem).IfExists().Update("ProviderMessageID", "Status", "ErrorCode", "ErrorMessage", "UpdatedAt"); err != nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return newAppTheoryError("app.internal", "internal error")
 	}
 	return nil
 }
 
 func (s *Server) validateOutboundVoiceBillingSource(ctx *apptheory.Context, statusItem *models.SoulCommMessageStatus, fromNumber string, toNumber string) error {
 	if statusItem == nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return newAppTheoryError("app.internal", "internal error")
 	}
 	instruction, ok, err := s.loadSoulCommVoiceInstruction(ctx, statusItem.MessageID)
 	if err != nil {
@@ -521,13 +521,13 @@ func (s *Server) validateOutboundVoiceBillingSource(ctx *apptheory.Context, stat
 	_ = instruction.UpdateKeys()
 	expectedAgentID := strings.ToLower(strings.TrimSpace(statusItem.AgentID))
 	if !strings.EqualFold(strings.TrimSpace(instruction.AgentID), expectedAgentID) {
-		return &apptheory.AppError{Code: "app.bad_request", Message: "invalid webhook payload"}
+		return newAppTheoryError("app.bad_request", "invalid webhook payload")
 	}
 	if strings.TrimSpace(fromNumber) != "" && normalizeCommPhoneE164(fromNumber) != normalizeCommPhoneE164(instruction.From) {
-		return &apptheory.AppError{Code: "app.bad_request", Message: "invalid webhook payload"}
+		return newAppTheoryError("app.bad_request", "invalid webhook payload")
 	}
 	if strings.TrimSpace(toNumber) != "" && normalizeCommPhoneE164(toNumber) != normalizeCommPhoneE164(instruction.To) {
-		return &apptheory.AppError{Code: "app.bad_request", Message: "invalid webhook payload"}
+		return newAppTheoryError("app.bad_request", "invalid webhook payload")
 	}
 	return nil
 }

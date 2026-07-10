@@ -81,7 +81,7 @@ func TestRecordAssistantTurnReady_AppliesConditionalWrite(t *testing.T) {
 	if store.lastExpectV != 3 || store.lastExpectS != hostedgenesis.StatusInProgress {
 		t.Fatalf("expected conditional on version=3 status=in_progress, got version=%d status=%q", store.lastExpectV, store.lastExpectS)
 	}
-	if got.AssistantCheckpointRef != "checkpoint://hosted-genesis/conv-1/assistant/turn-1" {
+	if got.AssistantCheckpointRef != hostedgenesis.CheckpointRef("assistant", "conv-1", "turn-1") {
 		t.Fatalf("unexpected assistant checkpoint ref %q", got.AssistantCheckpointRef)
 	}
 	if got.MessageCount != 2 {

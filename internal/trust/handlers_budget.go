@@ -8,9 +8,9 @@ import (
 	"time"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	"github.com/theory-cloud/tabletheory"
-	"github.com/theory-cloud/tabletheory/pkg/core"
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
+	"github.com/theory-cloud/tabletheory/v2"
+	"github.com/theory-cloud/tabletheory/v2/pkg/core"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/billing"
 	"github.com/equaltoai/lesser-host/internal/httpx"
@@ -56,7 +56,7 @@ func (s *Server) handleBudgetDebit(ctx *apptheory.Context) (*apptheory.Response,
 
 	budget, ok, err := s.loadInstanceBudgetMonth(ctx.Context(), prepared.PK, prepared.SK)
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	if !ok {
 		return apptheory.JSON(http.StatusOK, budgetDebitNotConfiguredResponse(prepared))
@@ -80,7 +80,7 @@ func (s *Server) handleBudgetDebit(ctx *apptheory.Context) (*apptheory.Response,
 		UpdatedAt:    now,
 	}
 	if updateErr := update.UpdateKeys(); updateErr != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	ledger := buildBudgetDebitLedgerEntry(prepared, now, billingType, includedDebited, overageDebited)
@@ -94,15 +94,15 @@ func (s *Server) handleBudgetDebit(ctx *apptheory.Context) (*apptheory.Response,
 		return apptheory.JSON(http.StatusOK, budgetDebitExceededResponse(prepared, latest, remaining))
 	}
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	latest, ok, err := s.loadInstanceBudgetMonth(ctx.Context(), prepared.PK, prepared.SK)
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	if !ok {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	remaining = latest.IncludedCredits - latest.UsedCredits
@@ -132,21 +132,21 @@ func (s *Server) handleBudgetDebit(ctx *apptheory.Context) (*apptheory.Response,
 
 func (s *Server) prepareBudgetDebit(ctx *apptheory.Context) (budgetDebitPrepared, error) {
 	if ctx == nil {
-		return budgetDebitPrepared{}, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return budgetDebitPrepared{}, newAppTheoryError("app.internal", "internal error")
 	}
 	if s == nil {
-		return budgetDebitPrepared{}, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return budgetDebitPrepared{}, newAppTheoryError("app.internal", "internal error")
 	}
 	if s.store == nil {
-		return budgetDebitPrepared{}, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return budgetDebitPrepared{}, newAppTheoryError("app.internal", "internal error")
 	}
 	if s.store.DB == nil {
-		return budgetDebitPrepared{}, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return budgetDebitPrepared{}, newAppTheoryError("app.internal", "internal error")
 	}
 
 	instanceSlug := strings.TrimSpace(ctx.AuthIdentity)
 	if instanceSlug == "" {
-		return budgetDebitPrepared{}, &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
+		return budgetDebitPrepared{}, newAppTheoryError("app.unauthorized", "unauthorized")
 	}
 
 	instCfg := s.loadInstanceTrustConfig(ctx.Context(), instanceSlug)
@@ -157,7 +157,7 @@ func (s *Server) prepareBudgetDebit(ctx *apptheory.Context) (budgetDebitPrepared
 		return budgetDebitPrepared{}, err
 	}
 	if req.Credits <= 0 {
-		return budgetDebitPrepared{}, &apptheory.AppError{Code: "app.bad_request", Message: "credits must be > 0"}
+		return budgetDebitPrepared{}, newAppTheoryError("app.bad_request", "credits must be > 0")
 	}
 
 	// The authenticated instance is the metered party, so it cannot select the

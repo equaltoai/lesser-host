@@ -14,7 +14,7 @@ import (
 	"github.com/ethereum/go-ethereum/accounts"
 	"github.com/ethereum/go-ethereum/crypto"
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
 
 	"github.com/stretchr/testify/mock"
 
@@ -229,14 +229,14 @@ func signProvisionPhoneRequest(
 	return "0x" + hex.EncodeToString(sig)
 }
 
-func requireProvisionPhoneAppErr(t *testing.T, err error) *apptheory.AppError {
+func requireProvisionPhoneAppErr(t *testing.T, err error) *apptheory.AppTheoryError {
 	t.Helper()
 	if err == nil {
 		t.Fatal("expected app error")
 	}
-	appErr, ok := err.(*apptheory.AppError)
+	appErr, ok := err.(*apptheory.AppTheoryError)
 	if !ok {
-		t.Fatalf("expected *apptheory.AppError, got %T", err)
+		t.Fatalf("expected *apptheory.AppTheoryError, got %T", err)
 	}
 	return appErr
 }

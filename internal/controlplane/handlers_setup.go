@@ -7,7 +7,7 @@ import (
 	"time"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/httpx"
 	"github.com/equaltoai/lesser-host/internal/soul"
@@ -71,7 +71,7 @@ type setupFinalizeResponse struct {
 
 func (s *Server) loadControlPlaneConfig(ctx *apptheory.Context) (*models.ControlPlaneConfig, error) {
 	if s == nil || s.store == nil || s.store.DB == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	var cfg models.ControlPlaneConfig
@@ -103,7 +103,7 @@ func (s *Server) controlPlaneLocked(ctx *apptheory.Context) (locked bool, cfg *m
 func (s *Server) handleSetupStatus(ctx *apptheory.Context) (*apptheory.Response, error) {
 	locked, cfg, err := s.controlPlaneLocked(ctx)
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	var (
@@ -152,15 +152,15 @@ func (s *Server) handleSetupStatus(ctx *apptheory.Context) (*apptheory.Response,
 func (s *Server) handleSetupBootstrapChallenge(ctx *apptheory.Context) (*apptheory.Response, error) {
 	locked, _, err := s.controlPlaneLocked(ctx)
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	if !locked {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "control plane is already bootstrapped"}
+		return nil, newAppTheoryError("app.conflict", "control plane is already bootstrapped")
 	}
 
 	bootstrapWallet := strings.ToLower(strings.TrimSpace(s.cfg.BootstrapWalletAddress))
 	if bootstrapWallet == "" {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "bootstrap wallet is not configured"}
+		return nil, newAppTheoryError("app.conflict", "bootstrap wallet is not configured")
 	}
 
 	var req setupBootstrapChallengeRequest
@@ -169,19 +169,19 @@ func (s *Server) handleSetupBootstrapChallenge(ctx *apptheory.Context) (*apptheo
 	}
 
 	if strings.TrimSpace(req.Address) == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "address is required"}
+		return nil, newAppTheoryError("app.bad_request", "address is required")
 	}
 	if req.ChainID == 0 {
 		req.ChainID = 1
 	}
 
 	if strings.ToLower(strings.TrimSpace(req.Address)) != bootstrapWallet {
-		return nil, &apptheory.AppError{Code: "app.forbidden", Message: "wallet does not match bootstrap credential"}
+		return nil, newAppTheoryError("app.forbidden", "wallet does not match bootstrap credential")
 	}
 
 	challenge, err := s.createWalletChallenge(ctx.Context(), bootstrapWallet, req.ChainID, setupBootstrapUser)
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to create challenge"}
+		return nil, newAppTheoryError("app.internal", "failed to create challenge")
 	}
 
 	return apptheory.JSON(http.StatusOK, walletChallengeResponse{
@@ -199,15 +199,15 @@ func (s *Server) handleSetupBootstrapChallenge(ctx *apptheory.Context) (*apptheo
 func (s *Server) handleSetupBootstrapVerify(ctx *apptheory.Context) (*apptheory.Response, error) {
 	locked, _, err := s.controlPlaneLocked(ctx)
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	if !locked {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "control plane is already bootstrapped"}
+		return nil, newAppTheoryError("app.conflict", "control plane is already bootstrapped")
 	}
 
 	bootstrapWallet := strings.ToLower(strings.TrimSpace(s.cfg.BootstrapWalletAddress))
 	if bootstrapWallet == "" {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "bootstrap wallet is not configured"}
+		return nil, newAppTheoryError("app.conflict", "bootstrap wallet is not configured")
 	}
 
 	in, err := parseSetupBootstrapVerifyInput(ctx)
@@ -220,7 +220,7 @@ func (s *Server) handleSetupBootstrapVerify(ctx *apptheory.Context) (*apptheory.
 
 	token, err := newToken(32)
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to create setup session"}
+		return nil, newAppTheoryError("app.internal", "failed to create setup session")
 	}
 
 	now := time.Now().UTC()
@@ -238,10 +238,10 @@ func (s *Server) handleSetupBootstrapVerify(ctx *apptheory.Context) (*apptheory.
 		InstanceLock: true,
 	}
 	if err := session.UpdateKeys(); err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to create setup session"}
+		return nil, newAppTheoryError("app.internal", "failed to create setup session")
 	}
 	if err := s.store.DB.WithContext(ctx.Context()).Model(session).Create(); err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to create setup session"}
+		return nil, newAppTheoryError("app.internal", "failed to create setup session")
 	}
 
 	return apptheory.JSON(http.StatusOK, setupBootstrapVerifyResponse{
@@ -277,16 +277,16 @@ func parseSetupBootstrapVerifyInput(ctx *apptheory.Context) (setupBootstrapVerif
 	signature := strings.TrimSpace(raw.Signature)
 
 	if challengeID == "" {
-		return setupBootstrapVerifyInput{}, &apptheory.AppError{Code: "app.bad_request", Message: "challengeId is required"}
+		return setupBootstrapVerifyInput{}, newAppTheoryError("app.bad_request", "challengeId is required")
 	}
 	if address == "" {
-		return setupBootstrapVerifyInput{}, &apptheory.AppError{Code: "app.bad_request", Message: "address is required"}
+		return setupBootstrapVerifyInput{}, newAppTheoryError("app.bad_request", "address is required")
 	}
 	if signature == "" {
-		return setupBootstrapVerifyInput{}, &apptheory.AppError{Code: "app.bad_request", Message: "signature is required"}
+		return setupBootstrapVerifyInput{}, newAppTheoryError("app.bad_request", "signature is required")
 	}
 	if message == "" {
-		return setupBootstrapVerifyInput{}, &apptheory.AppError{Code: "app.bad_request", Message: "message is required"}
+		return setupBootstrapVerifyInput{}, newAppTheoryError("app.bad_request", "message is required")
 	}
 
 	return setupBootstrapVerifyInput{
@@ -299,39 +299,39 @@ func parseSetupBootstrapVerifyInput(ctx *apptheory.Context) (setupBootstrapVerif
 
 func (s *Server) verifySetupBootstrapChallenge(ctx *apptheory.Context, bootstrapWallet string, in setupBootstrapVerifyInput) error {
 	if s == nil || ctx == nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return newAppTheoryError("app.internal", "internal error")
 	}
 
 	if strings.ToLower(strings.TrimSpace(in.Address)) != bootstrapWallet {
-		return &apptheory.AppError{Code: "app.forbidden", Message: "wallet does not match bootstrap credential"}
+		return newAppTheoryError("app.forbidden", "wallet does not match bootstrap credential")
 	}
 
 	challenge, err := s.getWalletChallenge(ctx.Context(), in.ChallengeID)
 	if theoryErrors.IsNotFound(err) {
-		return &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
+		return newAppTheoryError("app.unauthorized", "unauthorized")
 	}
 	if err != nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return newAppTheoryError("app.internal", "internal error")
 	}
 
 	if strings.TrimSpace(challenge.Username) != setupBootstrapUser {
-		return &apptheory.AppError{Code: "app.forbidden", Message: "challenge is not bound to bootstrap identity"}
+		return newAppTheoryError("app.forbidden", "challenge is not bound to bootstrap identity")
 	}
 	if strings.ToLower(strings.TrimSpace(challenge.Address)) != bootstrapWallet {
-		return &apptheory.AppError{Code: "app.forbidden", Message: "challenge address mismatch"}
+		return newAppTheoryError("app.forbidden", "challenge address mismatch")
 	}
 	if strings.TrimSpace(challenge.Message) != in.Message {
-		return &apptheory.AppError{Code: "app.forbidden", Message: "message mismatch"}
+		return newAppTheoryError("app.forbidden", "message mismatch")
 	}
 
 	if verifyErr := verifyEthereumSignature(bootstrapWallet, in.Message, in.Signature); verifyErr != nil {
-		return &apptheory.AppError{Code: "app.unauthorized", Message: "invalid signature"}
+		return newAppTheoryError("app.unauthorized", "invalid signature")
 	}
 	if consumeErr := s.consumeWalletChallenge(ctx.Context(), in.ChallengeID); consumeErr != nil {
 		if theoryErrors.IsConditionFailed(consumeErr) || theoryErrors.IsNotFound(consumeErr) {
-			return &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
+			return newAppTheoryError("app.unauthorized", "unauthorized")
 		}
-		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return newAppTheoryError("app.internal", "internal error")
 	}
 
 	return nil
@@ -340,7 +340,7 @@ func (s *Server) verifySetupBootstrapChallenge(ctx *apptheory.Context, bootstrap
 func (s *Server) requireSetupSession(ctx *apptheory.Context) (*models.SetupSession, error) {
 	token := httpx.BearerToken(ctx.Request.Headers)
 	if token == "" {
-		return nil, &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
+		return nil, newAppTheoryError("app.unauthorized", "unauthorized")
 	}
 
 	var session models.SetupSession
@@ -361,13 +361,13 @@ func (s *Server) requireSetupSession(ctx *apptheory.Context) (*models.SetupSessi
 			continue
 		}
 		if err != nil {
-			return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+			return nil, newAppTheoryError("app.internal", "internal error")
 		}
 		found = true
 		break
 	}
 	if !found {
-		return nil, &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
+		return nil, newAppTheoryError("app.unauthorized", "unauthorized")
 	}
 
 	if !session.ExpiresAt.IsZero() && time.Now().After(session.ExpiresAt) {
@@ -376,15 +376,15 @@ func (s *Server) requireSetupSession(ctx *apptheory.Context) (*models.SetupSessi
 			Where("PK", "=", session.PK).
 			Where("SK", "=", session.SK).
 			Delete()
-		return nil, &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
+		return nil, newAppTheoryError("app.unauthorized", "unauthorized")
 	}
 	if strings.TrimSpace(session.Purpose) != setupPurposeBootstrap {
-		return nil, &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
+		return nil, newAppTheoryError("app.unauthorized", "unauthorized")
 	}
 
 	bootstrapWallet := strings.ToLower(strings.TrimSpace(s.cfg.BootstrapWalletAddress))
 	if bootstrapWallet == "" || strings.ToLower(strings.TrimSpace(session.WalletAddr)) != bootstrapWallet {
-		return nil, &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
+		return nil, newAppTheoryError("app.unauthorized", "unauthorized")
 	}
 
 	return &session, nil
@@ -397,7 +397,7 @@ func (s *Server) walletLinkedUsername(ctx *apptheory.Context, walletType, addres
 	}
 	address = strings.ToLower(strings.TrimSpace(address))
 	if address == "" {
-		return "", &apptheory.AppError{Code: "app.bad_request", Message: "address is required"}
+		return "", newAppTheoryError("app.bad_request", "address is required")
 	}
 
 	var index models.WalletIndex
@@ -415,35 +415,35 @@ func (s *Server) walletLinkedUsername(ctx *apptheory.Context, walletType, addres
 	return strings.TrimSpace(index.Username), nil
 }
 
-func (s *Server) validateSetupCreateAdminState(ctx *apptheory.Context) (*models.ControlPlaneConfig, *apptheory.AppError) {
+func (s *Server) validateSetupCreateAdminState(ctx *apptheory.Context) (*models.ControlPlaneConfig, *apptheory.AppTheoryError) {
 	locked, cfg, err := s.controlPlaneLocked(ctx)
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	if !locked {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "control plane is already bootstrapped"}
+		return nil, newAppTheoryError("app.conflict", "control plane is already bootstrapped")
 	}
 	if cfg != nil && strings.TrimSpace(cfg.PrimaryAdminUsername) != "" {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "primary admin already created"}
+		return nil, newAppTheoryError("app.conflict", "primary admin already created")
 	}
 
 	if _, setupErr := s.requireSetupSession(ctx); setupErr != nil {
-		if appErr, ok := setupErr.(*apptheory.AppError); ok {
+		if appErr, ok := setupErr.(*apptheory.AppTheoryError); ok {
 			return nil, appErr
 		}
-		return nil, &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
+		return nil, newAppTheoryError("app.unauthorized", "unauthorized")
 	}
 
 	return cfg, nil
 }
 
-func parseSetupCreateAdminRequestInput(ctx *apptheory.Context) (setupCreateAdminRequest, *apptheory.AppError) {
+func parseSetupCreateAdminRequestInput(ctx *apptheory.Context) (setupCreateAdminRequest, *apptheory.AppTheoryError) {
 	var req setupCreateAdminRequest
 	if parseErr := httpx.ParseJSON(ctx, &req); parseErr != nil {
-		if appErr, ok := parseErr.(*apptheory.AppError); ok {
+		if appErr, ok := parseErr.(*apptheory.AppTheoryError); ok {
 			return setupCreateAdminRequest{}, appErr
 		}
-		return setupCreateAdminRequest{}, &apptheory.AppError{Code: "app.bad_request", Message: "invalid request"}
+		return setupCreateAdminRequest{}, newAppTheoryError("app.bad_request", "invalid request")
 	}
 
 	req.DisplayName = strings.TrimSpace(req.DisplayName)
@@ -454,86 +454,83 @@ func parseSetupCreateAdminRequestInput(ctx *apptheory.Context) (setupCreateAdmin
 
 	username, err := soul.ValidateManagedHandle(req.Username)
 	if strings.TrimSpace(req.Username) == "" {
-		return setupCreateAdminRequest{}, &apptheory.AppError{Code: "app.bad_request", Message: "username is required"}
+		return setupCreateAdminRequest{}, newAppTheoryError("app.bad_request", "username is required")
 	}
 	if err != nil {
-		return setupCreateAdminRequest{}, &apptheory.AppError{Code: "app.bad_request", Message: err.Error()}
+		return setupCreateAdminRequest{}, newAppTheoryError("app.bad_request", err.Error())
 	}
 	req.Username = username
 	if strings.EqualFold(req.Username, setupBootstrapUser) {
-		return setupCreateAdminRequest{}, &apptheory.AppError{Code: "app.bad_request", Message: "username is reserved"}
+		return setupCreateAdminRequest{}, newAppTheoryError("app.bad_request", "username is reserved")
 	}
 
 	if req.Wallet.ChallengeID == "" {
-		return setupCreateAdminRequest{}, &apptheory.AppError{Code: "app.bad_request", Message: "wallet.challengeId is required"}
+		return setupCreateAdminRequest{}, newAppTheoryError("app.bad_request", "wallet.challengeId is required")
 	}
 	if req.Wallet.Address == "" {
-		return setupCreateAdminRequest{}, &apptheory.AppError{Code: "app.bad_request", Message: "wallet.address is required"}
+		return setupCreateAdminRequest{}, newAppTheoryError("app.bad_request", "wallet.address is required")
 	}
 	if req.Wallet.Signature == "" {
-		return setupCreateAdminRequest{}, &apptheory.AppError{Code: "app.bad_request", Message: "wallet.signature is required"}
+		return setupCreateAdminRequest{}, newAppTheoryError("app.bad_request", "wallet.signature is required")
 	}
 	if req.Wallet.Message == "" {
-		return setupCreateAdminRequest{}, &apptheory.AppError{Code: "app.bad_request", Message: "wallet.message is required"}
+		return setupCreateAdminRequest{}, newAppTheoryError("app.bad_request", "wallet.message is required")
 	}
 
 	return req, nil
 }
 
-func (s *Server) verifySetupCreateAdminWallet(ctx *apptheory.Context, username string, wallet walletVerifyRequest) (string, int, *apptheory.AppError) {
+func (s *Server) verifySetupCreateAdminWallet(ctx *apptheory.Context, username string, wallet walletVerifyRequest) (string, int, *apptheory.AppTheoryError) {
 	challenge, err := s.getWalletChallenge(ctx.Context(), wallet.ChallengeID)
 	if theoryErrors.IsNotFound(err) {
-		return "", 0, &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
+		return "", 0, newAppTheoryError("app.unauthorized", "unauthorized")
 	}
 	if err != nil {
-		return "", 0, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return "", 0, newAppTheoryError("app.internal", "internal error")
 	}
 	if strings.TrimSpace(challenge.Username) != strings.TrimSpace(username) {
-		return "", 0, &apptheory.AppError{Code: "app.forbidden", Message: "wallet challenge username mismatch"}
+		return "", 0, newAppTheoryError("app.forbidden", "wallet challenge username mismatch")
 	}
 
 	adminWalletAddr := strings.ToLower(strings.TrimSpace(wallet.Address))
 	if adminWalletAddr != strings.ToLower(strings.TrimSpace(challenge.Address)) {
-		return "", 0, &apptheory.AppError{Code: "app.forbidden", Message: "wallet challenge address mismatch"}
+		return "", 0, newAppTheoryError("app.forbidden", "wallet challenge address mismatch")
 	}
 	if strings.TrimSpace(wallet.Message) != strings.TrimSpace(challenge.Message) {
-		return "", 0, &apptheory.AppError{Code: "app.forbidden", Message: "wallet challenge message mismatch"}
+		return "", 0, newAppTheoryError("app.forbidden", "wallet challenge message mismatch")
 	}
 
 	existing, err := s.walletLinkedUsername(ctx, walletTypeEthereum, adminWalletAddr)
 	if err != nil {
-		return "", 0, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return "", 0, newAppTheoryError("app.internal", "internal error")
 	}
 	if existing != "" {
-		return "", 0, &apptheory.AppError{Code: "app.conflict", Message: "wallet is already linked to a user"}
+		return "", 0, newAppTheoryError("app.conflict", "wallet is already linked to a user")
 	}
 
 	if err := verifyEthereumSignature(adminWalletAddr, wallet.Message, wallet.Signature); err != nil {
-		return "", 0, &apptheory.AppError{Code: "app.unauthorized", Message: "invalid signature"}
+		return "", 0, newAppTheoryError("app.unauthorized", "invalid signature")
 	}
 	if consumeErr := s.consumeWalletChallenge(ctx.Context(), wallet.ChallengeID); consumeErr != nil {
 		if theoryErrors.IsConditionFailed(consumeErr) || theoryErrors.IsNotFound(consumeErr) {
-			return "", 0, &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
+			return "", 0, newAppTheoryError("app.unauthorized", "unauthorized")
 		}
-		return "", 0, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return "", 0, newAppTheoryError("app.internal", "internal error")
 	}
 
 	return adminWalletAddr, challenge.ChainID, nil
 }
 
-func (s *Server) rejectBootstrapWalletAsSetupAdmin(walletAddr string) *apptheory.AppError {
+func (s *Server) rejectBootstrapWalletAsSetupAdmin(walletAddr string) *apptheory.AppTheoryError {
 	bootstrapWallet := strings.ToLower(strings.TrimSpace(s.cfg.BootstrapWalletAddress))
 	adminWallet := strings.ToLower(strings.TrimSpace(walletAddr))
 	if bootstrapWallet == "" || adminWallet == "" || adminWallet != bootstrapWallet {
 		return nil
 	}
-	return &apptheory.AppError{
-		Code:    "app.forbidden",
-		Message: "bootstrap wallet is one-time setup authority and cannot be the primary admin wallet",
-	}
+	return newAppTheoryError("app.forbidden", "bootstrap wallet is one-time setup authority and cannot be the primary admin wallet")
 }
 
-func (s *Server) createSetupAdminUser(ctx *apptheory.Context, username string, displayName string, now time.Time) *apptheory.AppError {
+func (s *Server) createSetupAdminUser(ctx *apptheory.Context, username string, displayName string, now time.Time) *apptheory.AppTheoryError {
 	user := &models.User{
 		Username:       strings.TrimSpace(username),
 		Role:           models.RoleAdmin,
@@ -543,18 +540,18 @@ func (s *Server) createSetupAdminUser(ctx *apptheory.Context, username string, d
 		CreatedAt:      now,
 	}
 	if err := user.UpdateKeys(); err != nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return newAppTheoryError("app.internal", "internal error")
 	}
 	if err := s.store.DB.WithContext(ctx.Context()).Model(user).IfNotExists().Create(); err != nil {
 		if theoryErrors.IsConditionFailed(err) {
-			return &apptheory.AppError{Code: "app.conflict", Message: "username already exists"}
+			return newAppTheoryError("app.conflict", "username already exists")
 		}
-		return &apptheory.AppError{Code: "app.internal", Message: "failed to create admin"}
+		return newAppTheoryError("app.internal", "failed to create admin")
 	}
 	return nil
 }
 
-func (s *Server) linkSetupAdminWallet(ctx *apptheory.Context, username string, walletAddr string, chainID int, now time.Time) *apptheory.AppError {
+func (s *Server) linkSetupAdminWallet(ctx *apptheory.Context, username string, walletAddr string, chainID int, now time.Time) *apptheory.AppTheoryError {
 	cred := &models.WalletCredential{
 		Username: strings.TrimSpace(username),
 		Address:  strings.ToLower(strings.TrimSpace(walletAddr)),
@@ -564,29 +561,29 @@ func (s *Server) linkSetupAdminWallet(ctx *apptheory.Context, username string, w
 		LastUsed: now,
 	}
 	if err := cred.UpdateKeys(); err != nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return newAppTheoryError("app.internal", "internal error")
 	}
 	if err := s.store.DB.WithContext(ctx.Context()).Model(cred).IfNotExists().Create(); err != nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "failed to link wallet"}
+		return newAppTheoryError("app.internal", "failed to link wallet")
 	}
 
 	index := &models.WalletIndex{}
 	index.UpdateKeys(walletTypeEthereum, walletAddr, username)
 	if err := s.store.DB.WithContext(ctx.Context()).Model(index).IfNotExists().Create(); err != nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "failed to link wallet"}
+		return newAppTheoryError("app.internal", "failed to link wallet")
 	}
 
 	return nil
 }
 
-func (s *Server) setControlPlanePrimaryAdmin(ctx *apptheory.Context, username string) *apptheory.AppError {
+func (s *Server) setControlPlanePrimaryAdmin(ctx *apptheory.Context, username string) *apptheory.AppTheoryError {
 	cp := &models.ControlPlaneConfig{
 		PrimaryAdminUsername: strings.TrimSpace(username),
 		BootstrappedAt:       time.Time{},
 	}
 	_ = cp.UpdateKeys()
 	if err := s.store.DB.WithContext(ctx.Context()).Model(cp).CreateOrUpdate(); err != nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "failed to update control plane config"}
+		return newAppTheoryError("app.internal", "failed to update control plane config")
 	}
 	return nil
 }
@@ -632,22 +629,19 @@ func (s *Server) handleSetupCreateAdmin(ctx *apptheory.Context) (*apptheory.Resp
 	applyAuditSourceProvenance(ctx, audit)
 	_ = audit.UpdateKeys()
 	if err := s.store.DB.WithContext(ctx.Context()).Model(audit).Create(); err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to write audit log"}
+		return nil, newAppTheoryError("app.internal", "failed to write audit log")
 	}
 
 	return apptheory.JSON(http.StatusCreated, setupCreateAdminResponse{Username: req.Username})
 }
 
-func (s *Server) requirePrimaryAdminPasskey(ctx *apptheory.Context, username string) *apptheory.AppError {
+func (s *Server) requirePrimaryAdminPasskey(ctx *apptheory.Context, username string) *apptheory.AppTheoryError {
 	creds, err := s.listUserWebAuthnCredentials(ctx, username)
 	if err != nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return newAppTheoryError("app.internal", "internal error")
 	}
 	if len(creds) == 0 {
-		return &apptheory.AppError{
-			Code:    "app.conflict",
-			Message: "primary admin passkey is required before finalize",
-		}
+		return newAppTheoryError("app.conflict", "primary admin passkey is required before finalize")
 	}
 	return nil
 }
@@ -655,25 +649,25 @@ func (s *Server) requirePrimaryAdminPasskey(ctx *apptheory.Context, username str
 func (s *Server) handleSetupFinalize(ctx *apptheory.Context) (*apptheory.Response, error) {
 	locked, cfg, err := s.controlPlaneLocked(ctx)
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	if !locked {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "control plane is already bootstrapped"}
+		return nil, newAppTheoryError("app.conflict", "control plane is already bootstrapped")
 	}
 	if cfg == nil || strings.TrimSpace(cfg.PrimaryAdminUsername) == "" {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "primary admin is not configured"}
+		return nil, newAppTheoryError("app.conflict", "primary admin is not configured")
 	}
 
 	username := strings.TrimSpace(ctx.AuthIdentity)
 	if username == "" {
-		return nil, &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
+		return nil, newAppTheoryError("app.unauthorized", "unauthorized")
 	}
 	role := operatorRoleFromContext(ctx)
 	if role != models.RoleAdmin {
-		return nil, &apptheory.AppError{Code: "app.forbidden", Message: "admin required"}
+		return nil, newAppTheoryError("app.forbidden", "admin required")
 	}
 	if username != strings.TrimSpace(cfg.PrimaryAdminUsername) {
-		return nil, &apptheory.AppError{Code: "app.forbidden", Message: "only the primary admin can finalize"}
+		return nil, newAppTheoryError("app.forbidden", "only the primary admin can finalize")
 	}
 	if appErr := s.requirePrimaryAdminPasskey(ctx, username); appErr != nil {
 		return nil, appErr
@@ -683,7 +677,7 @@ func (s *Server) handleSetupFinalize(ctx *apptheory.Context) (*apptheory.Respons
 	cfg.BootstrappedAt = now
 	_ = cfg.UpdateKeys()
 	if err := s.store.DB.WithContext(ctx.Context()).Model(cfg).CreateOrUpdate(); err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to finalize setup"}
+		return nil, newAppTheoryError("app.internal", "failed to finalize setup")
 	}
 
 	audit := &models.AuditLogEntry{
@@ -696,7 +690,7 @@ func (s *Server) handleSetupFinalize(ctx *apptheory.Context) (*apptheory.Respons
 	applyAuditSourceProvenance(ctx, audit)
 	_ = audit.UpdateKeys()
 	if err := s.store.DB.WithContext(ctx.Context()).Model(audit).Create(); err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to write audit log"}
+		return nil, newAppTheoryError("app.internal", "failed to write audit log")
 	}
 
 	t := now.UTC()

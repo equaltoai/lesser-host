@@ -7,7 +7,7 @@ import (
 	"time"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/httpx"
 	"github.com/equaltoai/lesser-host/internal/store/models"
@@ -35,10 +35,10 @@ func (s *Server) handleSuspendSoulAgent(ctx *apptheory.Context) (*apptheory.Resp
 
 	identity, err := s.getSoulAgentIdentity(ctx.Context(), agentIDHex)
 	if theoryErrors.IsNotFound(err) {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "agent not found"}
+		return nil, newAppTheoryError("app.not_found", "agent not found")
 	}
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	var req soulSuspendAgentRequest
@@ -52,7 +52,7 @@ func (s *Server) handleSuspendSoulAgent(ctx *apptheory.Context) (*apptheory.Resp
 		identity.UpdatedAt = now
 		_ = identity.UpdateKeys()
 		if err := s.store.DB.WithContext(ctx.Context()).Model(identity).IfExists().Update("Status", "LifecycleStatus", "LifecycleReason", "UpdatedAt"); err != nil {
-			return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to suspend agent"}
+			return nil, newAppTheoryError("app.internal", "failed to suspend agent")
 		}
 	}
 
@@ -86,15 +86,15 @@ func (s *Server) handleReinstateSoulAgent(ctx *apptheory.Context) (*apptheory.Re
 
 	identity, err := s.getSoulAgentIdentity(ctx.Context(), agentIDHex)
 	if theoryErrors.IsNotFound(err) {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "agent not found"}
+		return nil, newAppTheoryError("app.not_found", "agent not found")
 	}
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	now := time.Now().UTC()
 	if strings.TrimSpace(identity.Status) != models.SoulAgentStatusSuspended {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "agent is not suspended"}
+		return nil, newAppTheoryError("app.conflict", "agent is not suspended")
 	}
 
 	identity.Status = models.SoulAgentStatusActive
@@ -103,7 +103,7 @@ func (s *Server) handleReinstateSoulAgent(ctx *apptheory.Context) (*apptheory.Re
 	identity.UpdatedAt = now
 	_ = identity.UpdateKeys()
 	if err := s.store.DB.WithContext(ctx.Context()).Model(identity).IfExists().Update("Status", "LifecycleStatus", "LifecycleReason", "UpdatedAt"); err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to reinstate agent"}
+		return nil, newAppTheoryError("app.internal", "failed to reinstate agent")
 	}
 
 	audit := &models.AuditLogEntry{

@@ -10,8 +10,8 @@ import (
 	"testing"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
-	ttmocks "github.com/theory-cloud/tabletheory/pkg/mocks"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
+	ttmocks "github.com/theory-cloud/tabletheory/v2/pkg/mocks"
 
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -235,7 +235,7 @@ func TestHandlePortalGetInstanceCost_DateRangeTooWideRejectedBeforeUpstream(t *t
 		"to":   {"2026-01-03"},
 	}))
 	require.Error(t, err)
-	appErr, ok := err.(*apptheory.AppError)
+	appErr, ok := err.(*apptheory.AppTheoryError)
 	require.True(t, ok)
 	require.Equal(t, "app.bad_request", appErr.Code)
 	require.Zero(t, secretReads)
@@ -298,7 +298,7 @@ func TestHandlePortalGetInstanceCost_WrongOwnerForbiddenBeforeSecretOrHTTP(t *te
 		"to":   {testCostDate1},
 	}))
 	require.Error(t, err)
-	appErr, ok := err.(*apptheory.AppError)
+	appErr, ok := err.(*apptheory.AppTheoryError)
 	require.True(t, ok)
 	require.Equal(t, appErrCodeForbidden, appErr.Code)
 	require.Zero(t, secretReads)
@@ -319,7 +319,7 @@ func TestHandlePortalGetInstanceCost_Upstream5xxDoesNotLeakKeyOrBody(t *testing.
 		"to":   {testCostDate1},
 	}))
 	require.Error(t, err)
-	appErr, ok := err.(*apptheory.AppError)
+	appErr, ok := err.(*apptheory.AppTheoryError)
 	require.True(t, ok)
 	require.Equal(t, "app.upstream_error", appErr.Code)
 	require.NotContains(t, appErr.Message, testRawKey)
@@ -349,7 +349,7 @@ func TestHandlePortalGetInstanceCost_UpstreamUnavailable(t *testing.T) {
 		"to":   {testCostDate1},
 	}))
 	require.Error(t, err)
-	appErr, ok := err.(*apptheory.AppError)
+	appErr, ok := err.(*apptheory.AppTheoryError)
 	require.True(t, ok)
 	require.Equal(t, "app.upstream_unavailable", appErr.Code)
 	require.NotContains(t, appErr.Message, testRawKey)
@@ -374,7 +374,7 @@ func TestHandlePortalGetInstanceCost_KeyResolverFailureDoesNotLeak(t *testing.T)
 		"to":   {testCostDate1},
 	}))
 	require.Error(t, err)
-	appErr, ok := err.(*apptheory.AppError)
+	appErr, ok := err.(*apptheory.AppTheoryError)
 	require.True(t, ok)
 	require.Equal(t, "app.internal", appErr.Code)
 	require.NotContains(t, appErr.Message, testRawKey)
@@ -419,7 +419,7 @@ func TestHandlePortalGetInstanceCost_InvalidDates(t *testing.T) {
 				"to":   {tt.to},
 			}))
 			require.Error(t, err)
-			appErr, ok := err.(*apptheory.AppError)
+			appErr, ok := err.(*apptheory.AppTheoryError)
 			require.True(t, ok)
 			require.Equal(t, tt.code, appErr.Code)
 		})
@@ -438,7 +438,7 @@ func TestHandlePortalGetInstanceCost_InstanceNotFound(t *testing.T) {
 		"to":   {testCostDate1},
 	}))
 	require.Error(t, err)
-	appErr, ok := err.(*apptheory.AppError)
+	appErr, ok := err.(*apptheory.AppTheoryError)
 	require.True(t, ok)
 	require.Equal(t, soulMintAppErrCodeNotFound, appErr.Code)
 }

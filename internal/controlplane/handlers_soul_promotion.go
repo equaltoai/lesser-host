@@ -10,7 +10,7 @@ import (
 	"time"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
@@ -93,13 +93,13 @@ func (s *Server) getSoulAgentPromotion(ctx context.Context, agentIDHex string) (
 	return getSoulAgentItemBySK[models.SoulAgentPromotion](s, ctx, agentIDHex, "PROMOTION")
 }
 
-func (s *Server) saveSoulAgentPromotion(ctx context.Context, promotion *models.SoulAgentPromotion) *apptheory.AppError {
+func (s *Server) saveSoulAgentPromotion(ctx context.Context, promotion *models.SoulAgentPromotion) *apptheory.AppTheoryError {
 	if s == nil || s.store == nil || s.store.DB == nil || promotion == nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return newAppTheoryError("app.internal", "internal error")
 	}
 	_ = promotion.UpdateKeys()
 	if err := s.store.DB.WithContext(ctx).Model(promotion).CreateOrUpdate(); err != nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "failed to save promotion state"}
+		return newAppTheoryError("app.internal", "failed to save promotion state")
 	}
 	return nil
 }
@@ -473,7 +473,7 @@ func appendPendingOnchainBindingAction(actions []string, promotion *models.SoulA
 	}
 }
 
-func (s *Server) loadSoulAgentPromotionForAccess(ctx *apptheory.Context, agentIDHex string) (*models.SoulAgentPromotion, *apptheory.AppError) {
+func (s *Server) loadSoulAgentPromotionForAccess(ctx *apptheory.Context, agentIDHex string) (*models.SoulAgentPromotion, *apptheory.AppTheoryError) {
 	if appErr := s.requireSoulRegistryConfigured(); appErr != nil {
 		return nil, appErr
 	}
@@ -486,10 +486,10 @@ func (s *Server) loadSoulAgentPromotionForAccess(ctx *apptheory.Context, agentID
 
 	promotion, err := s.getSoulAgentPromotion(ctx.Context(), agentIDHex)
 	if theoryErrors.IsNotFound(err) {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "promotion not found"}
+		return nil, newAppTheoryError("app.not_found", "promotion not found")
 	}
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	if !isOperator(ctx) {
@@ -549,7 +549,7 @@ func (s *Server) handleSoulAgentPromotionVerify(ctx *apptheory.Context) (*appthe
 		return nil, appErr
 	}
 	if strings.TrimSpace(promotion.RegistrationID) == "" {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "promotion has no registration to verify"}
+		return nil, newAppTheoryError("app.conflict", "promotion has no registration to verify")
 	}
 
 	ctx.Params["id"] = promotion.RegistrationID

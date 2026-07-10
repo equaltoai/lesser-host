@@ -41,37 +41,37 @@ type soulConfigPolicyVocabulary struct {
 	MissingPolicyRecordMigrationState string   `json:"missing_policy_record_migration_state"`
 }
 
-func (s *Server) requireSoulRegistryConfigured() *apptheory.AppError {
+func (s *Server) requireSoulRegistryConfigured() *apptheory.AppTheoryError {
 	if s == nil || s.store == nil || s.store.DB == nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return newAppTheoryError("app.internal", "internal error")
 	}
 	if !s.cfg.SoulEnabled {
-		return &apptheory.AppError{Code: "app.conflict", Message: "soul registry is not configured"}
+		return newAppTheoryError("app.conflict", "soul registry is not configured")
 	}
 	if s.cfg.SoulChainID <= 0 || strings.TrimSpace(s.cfg.SoulRegistryContractAddress) == "" {
-		return &apptheory.AppError{Code: "app.conflict", Message: "soul registry is not configured"}
+		return newAppTheoryError("app.conflict", "soul registry is not configured")
 	}
 	if !common.IsHexAddress(strings.TrimSpace(s.cfg.SoulRegistryContractAddress)) {
-		return &apptheory.AppError{Code: "app.conflict", Message: "soul registry is not configured"}
+		return newAppTheoryError("app.conflict", "soul registry is not configured")
 	}
 	return nil
 }
 
-func (s *Server) requireSoulRPCConfigured() *apptheory.AppError {
+func (s *Server) requireSoulRPCConfigured() *apptheory.AppTheoryError {
 	if strings.TrimSpace(s.cfg.SoulRPCURL) == "" {
-		return &apptheory.AppError{Code: "app.conflict", Message: "soul rpc not configured"}
+		return newAppTheoryError("app.conflict", "soul rpc not configured")
 	}
 	return nil
 }
 
 func (s *Server) handleSoulConfig(ctx *apptheory.Context) (*apptheory.Response, error) {
 	if s == nil || ctx == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	contractAddr := strings.TrimSpace(s.cfg.SoulRegistryContractAddress)
 	if !s.cfg.SoulEnabled || s.cfg.SoulChainID <= 0 || contractAddr == "" || !common.IsHexAddress(contractAddr) {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "not found"}
+		return nil, newAppTheoryError("app.not_found", "not found")
 	}
 
 	caps := normalizeSoulCapabilitiesLoose(s.cfg.SoulSupportedCapabilities)
@@ -114,7 +114,7 @@ func (s *Server) handleSoulConfig(ctx *apptheory.Context) (*apptheory.Response, 
 		},
 	})
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	if resp.Headers == nil {

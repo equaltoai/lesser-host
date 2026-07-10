@@ -358,7 +358,7 @@ func testMintConversationBeginFinalizeRejectsPublishedRegistrations(t *testing.T
 
 	body := mustMarshalJSON(t, soulMintConversationFinalizeBeginRequest{BoundarySignatures: map[string]string{"b1": "0x00"}})
 	_, err := s.handleSoulBeginFinalizeMintConversation(f.makeCtx(body))
-	appErr, ok := err.(*apptheory.AppError)
+	appErr, ok := err.(*apptheory.AppTheoryError)
 	if !ok || appErr.Message != soulMintConversationAlreadyPublishedMessage {
 		t.Fatalf("expected already published error, got %#v", err)
 	}
@@ -381,7 +381,7 @@ func testMintConversationBeginFinalizeRequiresBoundarySignatures(t *testing.T) {
 
 	body := mustMarshalJSON(t, soulMintConversationFinalizeBeginRequest{BoundarySignatures: map[string]string{"other": "0x00"}})
 	_, err := s.handleSoulBeginFinalizeMintConversation(f.makeCtx(body))
-	appErr, ok := err.(*apptheory.AppError)
+	appErr, ok := err.(*apptheory.AppTheoryError)
 	if !ok || appErr.Message != "missing boundary signature for b1" {
 		t.Fatalf("expected missing boundary signature error, got %#v", err)
 	}
@@ -408,7 +408,7 @@ func testMintConversationFinalizeRequiresExpectedVersion(t *testing.T) {
 		SelfAttestation:    "0x00",
 	})
 	_, err := s.handleSoulFinalizeMintConversation(f.makeCtx(body))
-	appErr, ok := err.(*apptheory.AppError)
+	appErr, ok := err.(*apptheory.AppTheoryError)
 	if !ok || appErr.Message != "expected_version is required" {
 		t.Fatalf("expected missing expected_version error, got %#v", err)
 	}
@@ -451,7 +451,7 @@ func testMintConversationFinalizeRejectsInvalidRegistrationSignature(t *testing.
 		SelfAttestation:    "0x00",
 	})
 	_, err = s.handleSoulFinalizeMintConversation(f.makeCtx(body))
-	appErr, ok := err.(*apptheory.AppError)
+	appErr, ok := err.(*apptheory.AppTheoryError)
 	if !ok || appErr.Message != soulInstanceBootstrapTestInvalidRegSig {
 		t.Fatalf("expected invalid registration signature error, got %#v", err)
 	}
@@ -480,7 +480,7 @@ func assertMintConversationFinalizeIdentityVersionError(t *testing.T, identityVe
 		SelfAttestation:    "0x00",
 	})
 	_, err := s.handleSoulFinalizeMintConversation(f.makeCtx(body))
-	appErr, ok := err.(*apptheory.AppError)
+	appErr, ok := err.(*apptheory.AppTheoryError)
 	if !ok || appErr.Message != wantMessage {
 		t.Fatalf("expected %q error, got %#v", wantMessage, err)
 	}

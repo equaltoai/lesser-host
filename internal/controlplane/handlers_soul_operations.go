@@ -12,9 +12,9 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	"github.com/theory-cloud/tabletheory"
-	"github.com/theory-cloud/tabletheory/pkg/core"
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
+	"github.com/theory-cloud/tabletheory/v2"
+	"github.com/theory-cloud/tabletheory/v2/pkg/core"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/httpx"
 	"github.com/equaltoai/lesser-host/internal/store/models"
@@ -41,7 +41,7 @@ func (s *Server) handleListSoulOperations(ctx *apptheory.Context) (*apptheory.Re
 	switch status {
 	case models.SoulOperationStatusPending, models.SoulOperationStatusProposed, models.SoulOperationStatusExecuted, models.SoulOperationStatusFailed:
 	default:
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid status"}
+		return nil, newAppTheoryError("app.bad_request", "invalid status")
 	}
 
 	var items []*models.SoulOperation
@@ -51,7 +51,7 @@ func (s *Server) handleListSoulOperations(ctx *apptheory.Context) (*apptheory.Re
 		Where("gsi1PK", "=", fmt.Sprintf("SOUL_OP_STATUS#%s", status)).
 		All(&items)
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to list operations"}
+		return nil, newAppTheoryError("app.internal", "failed to list operations")
 	}
 
 	out := make([]models.SoulOperation, 0, len(items))
@@ -74,15 +74,15 @@ func (s *Server) handleGetSoulOperation(ctx *apptheory.Context) (*apptheory.Resp
 
 	id := strings.TrimSpace(ctx.Param("id"))
 	if id == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "id is required"}
+		return nil, newAppTheoryError("app.bad_request", "id is required")
 	}
 
 	op, err := s.getSoulOperation(ctx.Context(), id)
 	if theoryErrors.IsNotFound(err) {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "operation not found"}
+		return nil, newAppTheoryError("app.not_found", "operation not found")
 	}
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	return apptheory.JSON(http.StatusOK, op)
@@ -123,13 +123,13 @@ func (s *Server) handleRecordSoulOperationExecution(ctx *apptheory.Context) (*ap
 	return apptheory.JSON(http.StatusOK, updated)
 }
 
-func (s *Server) recordSoulOperationExecution(ctx context.Context, actor string, requestID string, op *models.SoulOperation, txHash string) (*models.SoulOperation, *apptheory.AppError) {
+func (s *Server) recordSoulOperationExecution(ctx context.Context, actor string, requestID string, op *models.SoulOperation, txHash string) (*models.SoulOperation, *apptheory.AppTheoryError) {
 	if op == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	txHash = strings.TrimSpace(txHash)
 	if !isHexHash32(txHash) {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "exec_tx_hash is required"}
+		return nil, newAppTheoryError("app.bad_request", "exec_tx_hash is required")
 	}
 
 	if terminal, appErr := terminalSoulOperationExecutionResult(op, txHash); terminal != nil || appErr != nil {
@@ -207,9 +207,9 @@ func (s *Server) recordSoulOperationExecution(ctx context.Context, actor string,
 	return update, nil
 }
 
-func terminalSoulOperationExecutionResult(op *models.SoulOperation, txHash string) (*models.SoulOperation, *apptheory.AppError) {
+func terminalSoulOperationExecutionResult(op *models.SoulOperation, txHash string) (*models.SoulOperation, *apptheory.AppTheoryError) {
 	if op == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	if !isTerminalSoulOperationStatus(op.Status) {
 		return nil, nil
@@ -217,7 +217,7 @@ func terminalSoulOperationExecutionResult(op *models.SoulOperation, txHash strin
 	if strings.EqualFold(strings.TrimSpace(op.ExecTxHash), strings.TrimSpace(txHash)) && strings.TrimSpace(op.ExecTxHash) != "" {
 		return op, nil
 	}
-	return nil, &apptheory.AppError{Code: "app.conflict", Message: "operation execution already recorded"}
+	return nil, newAppTheoryError("app.conflict", "operation execution already recorded")
 }
 
 func isTerminalSoulOperationStatus(status string) bool {
@@ -229,9 +229,9 @@ func isTerminalSoulOperationStatus(status string) bool {
 	}
 }
 
-func (s *Server) saveSoulOperationExecutionRecord(ctx context.Context, update *models.SoulOperation, txHash string) (*models.SoulOperation, bool, *apptheory.AppError) {
+func (s *Server) saveSoulOperationExecutionRecord(ctx context.Context, update *models.SoulOperation, txHash string) (*models.SoulOperation, bool, *apptheory.AppTheoryError) {
 	if s == nil || s.store == nil || s.store.DB == nil || update == nil {
-		return nil, false, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, false, newAppTheoryError("app.internal", "internal error")
 	}
 
 	fields := []string{
@@ -258,7 +258,7 @@ func (s *Server) saveSoulOperationExecutionRecord(ctx context.Context, update *m
 		return update, true, nil
 	}
 	if !theoryErrors.IsConditionFailed(err) {
-		return nil, false, &apptheory.AppError{Code: "app.internal", Message: "failed to update operation"}
+		return nil, false, newAppTheoryError("app.internal", "failed to update operation")
 	}
 
 	current, getErr := s.getSoulOperation(ctx, strings.TrimSpace(update.OperationID))
@@ -267,10 +267,10 @@ func (s *Server) saveSoulOperationExecutionRecord(ctx context.Context, update *m
 			return terminal, false, appErr
 		}
 	}
-	return nil, false, &apptheory.AppError{Code: "app.conflict", Message: "operation execution already recorded"}
+	return nil, false, newAppTheoryError("app.conflict", "operation execution already recorded")
 }
 
-func (s *Server) syncMintPromotionAfterOperationExecution(ctx context.Context, update *models.SoulOperation, requestID string, now time.Time, success bool) *apptheory.AppError {
+func (s *Server) syncMintPromotionAfterOperationExecution(ctx context.Context, update *models.SoulOperation, requestID string, now time.Time, success bool) *apptheory.AppTheoryError {
 	if !strings.EqualFold(strings.TrimSpace(update.Kind), models.SoulOperationKindMint) {
 		return nil
 	}
@@ -307,13 +307,13 @@ func (s *Server) syncMintPromotionAfterOperationExecution(ctx context.Context, u
 	return nil
 }
 
-func parseSoulOperationExecutionInput(ctx *apptheory.Context) (id string, txHash string, appErr *apptheory.AppError) {
+func parseSoulOperationExecutionInput(ctx *apptheory.Context) (id string, txHash string, appErr *apptheory.AppTheoryError) {
 	if ctx == nil {
-		return "", "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return "", "", newAppTheoryError("app.internal", "internal error")
 	}
 	id = strings.TrimSpace(ctx.Param("id"))
 	if id == "" {
-		return "", "", &apptheory.AppError{Code: "app.bad_request", Message: "id is required"}
+		return "", "", newAppTheoryError("app.bad_request", "id is required")
 	}
 
 	txHash, appErr = parseSoulOperationExecutionTxHash(ctx)
@@ -323,37 +323,37 @@ func parseSoulOperationExecutionInput(ctx *apptheory.Context) (id string, txHash
 	return id, txHash, nil
 }
 
-func parseSoulOperationExecutionTxHash(ctx *apptheory.Context) (string, *apptheory.AppError) {
+func parseSoulOperationExecutionTxHash(ctx *apptheory.Context) (string, *apptheory.AppTheoryError) {
 	if ctx == nil {
-		return "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return "", newAppTheoryError("app.internal", "internal error")
 	}
 	var req recordSoulExecutionRequest
 	if err := httpx.ParseJSON(ctx, &req); err != nil {
-		appErr, ok := err.(*apptheory.AppError)
+		appErr, ok := err.(*apptheory.AppTheoryError)
 		if ok {
 			return "", appErr
 		}
-		return "", &apptheory.AppError{Code: "app.bad_request", Message: "invalid request"}
+		return "", newAppTheoryError("app.bad_request", "invalid request")
 	}
 	txHash := strings.TrimSpace(req.ExecTxHash)
 	if !isHexHash32(txHash) {
-		return "", &apptheory.AppError{Code: "app.bad_request", Message: "exec_tx_hash is required"}
+		return "", newAppTheoryError("app.bad_request", "exec_tx_hash is required")
 	}
 	return txHash, nil
 }
 
-func (s *Server) loadSoulOperationForExecution(ctx context.Context, id string) (*models.SoulOperation, *apptheory.AppError) {
+func (s *Server) loadSoulOperationForExecution(ctx context.Context, id string) (*models.SoulOperation, *apptheory.AppTheoryError) {
 	op, err := s.getSoulOperation(ctx, id)
 	if theoryErrors.IsNotFound(err) {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "operation not found"}
+		return nil, newAppTheoryError("app.not_found", "operation not found")
 	}
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	return op, nil
 }
 
-func (s *Server) dialSoulRPCClient(ctx context.Context) (ethRPCClient, *apptheory.AppError) {
+func (s *Server) dialSoulRPCClient(ctx context.Context) (ethRPCClient, *apptheory.AppTheoryError) {
 	dial := s.dialEVM
 	if dial == nil {
 		dial = func(ctx context.Context, rpcURL string) (ethRPCClient, error) { return dialEthClient(ctx, rpcURL) }
@@ -361,18 +361,18 @@ func (s *Server) dialSoulRPCClient(ctx context.Context) (ethRPCClient, *apptheor
 
 	client, err := dial(ctx, s.cfg.SoulRPCURL)
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to connect to rpc"}
+		return nil, newAppTheoryError("app.internal", "failed to connect to rpc")
 	}
 	return client, nil
 }
 
-func getTransactionReceipt(ctx context.Context, client ethRPCClient, txHash string) (*types.Receipt, *apptheory.AppError) {
+func getTransactionReceipt(ctx context.Context, client ethRPCClient, txHash string) (*types.Receipt, *apptheory.AppTheoryError) {
 	if client == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	receipt, err := client.TransactionReceipt(ctx, common.HexToHash(txHash))
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "receipt not found"}
+		return nil, newAppTheoryError("app.bad_request", "receipt not found")
 	}
 	return receipt, nil
 }

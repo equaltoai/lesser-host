@@ -4,8 +4,8 @@ import * as path from "node:path";
 
 import {
   AppTheoryMicrovmController,
+  AppTheoryMicrovmImage,
   AppTheoryMicrovmNetworkConnector,
-  type IAppTheoryMicrovmImage,
 } from "@theory-cloud/apptheory-cdk";
 import * as cdk from "aws-cdk-lib";
 import * as customresources from "aws-cdk-lib/custom-resources";
@@ -94,6 +94,12 @@ export interface HostedGenesisMicrovmProps {
   // auth is preserved: the controller routes stay authorizer-required +
   // deny-by-default regardless of this grant.
   readonly controlPlaneFunction?: lambda.Function;
+  // aiWorkerFunction consumes the HostedGenesisQueue and performs the actual
+  // AppTheory MicroVM run/invoke handoff after the accept path has returned
+  // 202. It receives the same HTTP dispatcher env + auth-token SSM grant as the
+  // control plane, but still receives no raw MicroVM IAM/session-registry
+  // access; it only speaks to the governed controller API.
+  readonly aiWorkerFunction?: lambda.Function;
 }
 
 export interface HostedGenesisMicrovmResult {
@@ -156,9 +162,14 @@ export function configureHostedGenesisMicrovm(
     scope,
     "HostedGenesisMicrovmEgressConnector",
   );
-  const ingressConnector = AppTheoryMicrovmNetworkConnector.allIngress(
+  // AWS rejects CreateMicrovmAuthToken when ALL_INGRESS is combined with any
+  // other ingress connector. Host also wires SHELL_INGRESS for governed shell
+  // token support, so the workload endpoint must use HTTP_INGRESS explicitly.
+  // AppTheory v1.17.0 exposes the documented AWS-managed HTTP_INGRESS connector
+  // directly, preserving the framework's typed INGRESS boundary.
+  const ingressConnector = AppTheoryMicrovmNetworkConnector.httpIngress(
     scope,
-    "HostedGenesisMicrovmIngressConnector",
+    "HostedGenesisMicrovmHttpIngressConnector",
   );
   const shellIngressConnector = AppTheoryMicrovmNetworkConnector.shellIngress(
     scope,
@@ -188,6 +199,19 @@ export function configureHostedGenesisMicrovm(
     props.namePrefix,
     props.stage,
     workloadArtifact,
+  );
+
+  // AWS RunMicrovm assumes this explicit execution role for the guest workload.
+  // The workload reloads the platform-supplied credentials and builds a fresh
+  // TableTheory store per turn; it must not re-assume this same role. Keep image
+  // build authority and runtime authority separate: the build role has no
+  // sts:AssumeRole grant and is not trusted by the execution role.
+  const executionRole = createHostedGenesisMicrovmExecutionRole(
+    scope,
+    "HostedGenesisMicrovmExecutionRole",
+    props.namePrefix,
+    props.stage,
+    props.stateTable,
   );
 
   // P52 H1 step 2 (F1): the base image ARN is the AWS-managed MicroVM base
@@ -247,134 +271,60 @@ export function configureHostedGenesisMicrovm(
   // returned only {"imageVersion": "0"} for this image.
   const baseImageVersion = "0";
 
-  // P52 H1 (endpoint-based architecture, 2026-07-05): build the
-  // AWS::Lambda::MicrovmImage with a raw cdk.CfnResource instead of the
-  // AppTheory v1.15.2 AppTheoryMicrovmImage construct. The construct's
-  // renderHooks guard (@theory-cloud/apptheory-cdk lib/microvm-image.js:234)
-  // THROWS "AppTheoryMicrovmImage requires props.hooks.microvmHooks or
-  // props.hooks.microvmImageHooks" when neither hook group is supplied — i.e.
-  // it REFUSES to render a no-hooks image (Hooks: { Port: 8080 } alone). The
-  // AppTheoryMicrovmImageHooks TypeScript fields being optional does NOT mean
-  // the runtime accepts their absence; verified by a local synth failure
-  // (2026-07-05, see the p52-h1-no-hooks-framework-guard memory).
-  //
-  // A no-hooks image is what the endpoint-based architecture requires: the AWS
-  // Lambda MicroVM BUILD environment does NOT route inbound HTTP to the
-  // container's :8080 hook port (proven across lab deploys #10/#11/#12 — the
-  // PR #882 loggingListener saw ZERO `connection accepted` events from the
-  // build service on :8080), so an image with /ready ENABLED cannot satisfy
-  // the readiness probe and the build hangs → CREATE_FAILED "did not
-  // stabilize". The AWS getting-started example
-  // (microvms-getting-started.html Step 3) builds an image with NO --hooks at
-  // all and it reaches CREATED. So the working shape is: no AWS-invoked hooks
-  // (Hooks: { Port: 8080 } with no MicrovmImageHooks + no MicrovmHooks); the
-  // image just builds + snapshots → CREATED. Turn execution is then via the
-  // controller POSTing to the MicroVM's RUNTIME endpoint (the runtime
-  // environment has its own ingress connectors and is exercised at E2E, not at
-  // image-build time) — a separate brief.
-  //
-  // This is a principal-approved framework-gap exception. The proper fix —
-  // relax AppTheory's renderHooks so Hooks: { Port: 8080 } with no hook
-  // enablements is a valid config (or add a `mode: "endpoint"` / "no-hooks"
-  // opt-in) plus first-class support for endpoint-invoked turns — is routed
-  // upstream to AppTheory via coordinate-framework-feedback, with the lab
-  // evidence (build-env-no-ingress proof + this synth path) attached. The raw
-  // CfnResource below is the host-side bypass that lets the image build while
-  // the framework evolves; it produces the SAME CloudFormation properties the
-  // construct produced EXCEPT it omits MicrovmImageHooks + MicrovmHooks (no
-  // AWS-invoked hooks). Property names + shapes match the synthesized reference
-  // from `cdk synth` with the prior construct (PascalCase CloudFormation shape;
-  // verified 2026-07-05).
-  //
-  // The workload's hookServer is UNCHANGED — it still serves /ready, /validate,
-  // and the runtime hooks on :8080; the only change is that AWS does not invoke
-  // the build-time hooks. Fail-closed controller auth is unchanged.
-  const microvmImage = new cdk.CfnResource(scope, "HostedGenesisMicrovmImage", {
-    type: "AWS::Lambda::MicrovmImage",
-    properties: {
-      Name: `${props.namePrefix}_hosted_genesis`,
-      Description: "AppTheory MicroVM image for hosted-genesis dogfood",
-      BaseImageArn: baseImageArn,
-      BaseImageVersion: baseImageVersion,
-      BuildRoleArn: buildRole.roleArn,
-      CodeArtifact: { Uri: workloadArtifact.s3ObjectUrl },
-      EgressNetworkConnectors: [egressConnector.networkConnectorArn],
-      EnvironmentVariables: [
+  // AppTheory v1.17.0 is the formal replacement for Host's temporary
+  // MicroVM image L1 bridge. Endpoint-dispatched hosted-genesis images now use
+  // the framework construct directly with `hooks: {}`: AppTheory synthesizes an
+  // explicit empty Hooks object, Lambda builds the image without AWS-invoked
+  // lifecycle hooks, and runtime HTTP traffic is delivered through the MicroVM
+  // endpoint on the default port 8080.
+  const microvmImage = new AppTheoryMicrovmImage(
+    scope,
+    "HostedGenesisMicrovmImage",
+    {
+      name: `${props.namePrefix}_hosted_genesis`,
+      description: "AppTheory MicroVM image for hosted-genesis dogfood",
+      baseImageArn,
+      baseImageVersion,
+      buildRoleArn: buildRole.roleArn,
+      codeArtifact: { uri: workloadArtifact.s3ObjectUrl },
+      egressNetworkConnectors: [egressConnector],
+      environmentVariables: [
         {
-          Key: "HOSTED_GENESIS_MICROVM_NAMESPACE",
-          Value: HOSTED_GENESIS_MICROVM_NAMESPACE,
+          key: "HOSTED_GENESIS_MICROVM_NAMESPACE",
+          value: HOSTED_GENESIS_MICROVM_NAMESPACE,
         },
         {
-          Key: "HOSTED_GENESIS_MICROVM_SOURCE_OF_TRUTH",
-          Value: HOSTED_GENESIS_MICROVM_SOURCE_OF_TRUTH,
+          key: "HOSTED_GENESIS_MICROVM_SOURCE_OF_TRUTH",
+          value: HOSTED_GENESIS_MICROVM_SOURCE_OF_TRUTH,
         },
-        // P52 H1.5 corrective (AppTheory v1.15.2): the in-VM workload resolves the
-        // Host state table via models.MainTableName() -> STATE_TABLE_NAME. The
-        // workload calls store.LambdaInit() to persist completion truth, so it must
-        // know the same table name the control plane writes. This is a non-secret
-        // table name (already a CfnOutput); the table ARN is granted to the
-        // host-owned MicroVM execution role below, not baked into the image.
         {
-          Key: "STATE_TABLE_NAME",
-          Value: props.stateTable.tableName,
+          key: "STATE_TABLE_NAME",
+          value: props.stateTable.tableName,
         },
-        // AWS_REGION is reserved by the Lambda Microvms service (service-injected
-        // into the guest env); do NOT set it in EnvironmentVariables — the workload
-        // reads the service-provided AWS_REGION at runtime.
       ],
-      // NO MicrovmImageHooks, NO MicrovmHooks, and NO Hooks.Port — see the
-      // comment above. The build env does not reach :8080 for /ready, so no
-      // AWS-invoked build-time hooks. AWS rejects a Hooks config that carries a
-      // Port but no hook groups ("At least one MicroVM hook or MicroVM image
-      // hook must be enabled when the hooks port is specified"), so Hooks is
-      // empty. With no Port specified, Lambda routes inbound runtime traffic to
-      // the default port 8080 (AWS docs: "By default, Lambda routes inbound
-      // traffic to port 8080"), so the workload on :8080 stays reachable via the
-      // runtime endpoint. This matches the getting-started example (no --hooks
-      // → CREATED).
-      Hooks: {},
-      // P52 H1: enable CloudWatch logging so a failing image build emits
-      // diagnosable logs. The 2026-07-04 lab deploy failed with
-      // HostedGenesisMicrovmImage CREATE_FAILED "did not stabilize" and the build
-      // produced NO logs because logging was { disabled: true }, leaving the
-      // failure undiagnosable. The AWS Lambda MicroVM developer guide publishes
-      // the build-log location as /aws/lambda/microvms/<image-name>
-      // (microvms-images.html "Image states and build states": "Check
-      // stateReason or CloudWatch logs (/aws/lambda/microvms/<image-name>) for
-      // failure details"; getting-started: "check the build logs in CloudWatch
-      // under /aws/lambda/microvms/my-first-microvm-image"). The image name is
-      // ${namePrefix}_hosted_genesis, so the log group follows the documented
-      // convention stage-aware (the stage prefix keeps lab/live build logs
-      // separate). The build role below carries the logs:CreateLogGroup /
-      // logs:CreateLogStream / logs:PutLogEvents the build service needs to
-      // write these logs (getting-started IAM example).
-      Logging: {
-        CloudWatch: {
-          LogGroup: `/aws/lambda/microvms/${props.namePrefix}_hosted_genesis`,
-          LogStream: "build",
+      hooks: {},
+      logging: {
+        cloudWatch: {
+          logGroup: `/aws/lambda/microvms/${props.namePrefix}_hosted_genesis`,
+          logStream: "build",
         },
       },
-      Resources: [{ MinimumMemoryInMiB: 2048 }],
-      AdditionalOsCapabilities: ["ALL"],
-      CpuConfigurations: [{ Architecture: "ARM_64" }],
-      Tags: [
-        { Key: "Service", Value: "lesser-host" },
-        { Key: "Stage", Value: props.stage },
-        { Key: "Purpose", Value: "hosted-genesis-microvm-dogfood" },
-      ],
+      resources: [{ minimumMemoryInMiB: 2048 }],
+      tags: {
+        Service: "lesser-host",
+        Stage: props.stage,
+        Purpose: "hosted-genesis-microvm-dogfood",
+      },
     },
-  });
-
-  // The AppTheoryMicrovmController construct takes a typed IAppTheoryMicrovmImage
-  // and reads ONLY microvmImageArn from it (microvm-controller.js:91). A raw
-  // CfnResource does not expose that property, so build a minimal adapter
-  // satisfying the interface: the image ARN as Fn::GetAtt ImageArn (the same
-  // attribute the construct's microvmImageArn exposed — see the CfnOutputs
-  // below). The controller never reads microvmImageState/microvmImageName from
-  // this reference; those are read directly off the CfnResource below.
-  const microvmImageRef: IAppTheoryMicrovmImage = {
-    microvmImageArn: microvmImage.getAtt("ImageArn").toString(),
-  };
+  );
+  // The temporary Host L1 bridge used the top-level CloudFormation logical ID
+  // `HostedGenesisMicrovmImage`. AppTheory's first-class construct owns a child
+  // `MicrovmImage` resource, which would otherwise synthesize a new logical ID
+  // and force CloudFormation to create a second image with the same Name before
+  // deleting the old one. AWS rejects that replacement as AlreadyExists, so
+  // preserve the deployed logical ID and let CloudFormation update the existing
+  // MicroVM image in place.
+  microvmImage.microvmImage.overrideLogicalId("HostedGenesisMicrovmImage");
 
   const authorizer = new lambda.Function(
     scope,
@@ -400,10 +350,10 @@ export function configureHostedGenesisMicrovm(
     },
   );
 
-  // P52 H1.5 corrective (AppTheory v1.15.2): host owns the MicroVM execution
-  // role passed to RunMicrovm via AppTheoryMicrovmController.executionRole. The
-  // AppTheory v1.15.2 controller reads APPTHEORY_MICROVM_EXECUTION_ROLE_ARN from
-  // its env and propagates it through ProviderRunInput.ExecutionRoleArn into
+  // P52 H1.5 corrective: host owns the MicroVM execution role passed to
+  // RunMicrovm via AppTheoryMicrovmController.executionRole. The AppTheory
+  // controller reads APPTHEORY_MICROVM_EXECUTION_ROLE_ARN from its env and
+  // propagates it through ProviderRunInput.ExecutionRoleArn into
   // lambdamicrovms.RunMicrovmInput.ExecutionRoleArn; the construct grants the
   // controller Lambda iam:PassRole on this role and emits the ARN env var. AWS
   // Lambda MicroVMs assume this role (lambda.amazonaws.com trust) for the
@@ -417,14 +367,6 @@ export function configureHostedGenesisMicrovm(
   // /lesser-host/api/claude), and X-Ray/CloudWatch emission for the in-VM
   // process. No wildcard DynamoDB, no broader SSM, no PassRole, no IAM. Raw
   // secrets never enter the image env or CloudFormation — only param NAMES.
-  const executionRole = createHostedGenesisMicrovmExecutionRole(
-    scope,
-    "HostedGenesisMicrovmExecutionRole",
-    props.namePrefix,
-    props.stage,
-    props.stateTable,
-  );
-
   const controller = new AppTheoryMicrovmController(
     scope,
     "HostedGenesisMicrovmController",
@@ -457,11 +399,11 @@ export function configureHostedGenesisMicrovm(
       authorizerName: `${props.namePrefix}-hosted-genesis-microvm-authorizer`,
       authorizerHeaderName: "Authorization",
       authorizerCacheTtl: cdk.Duration.seconds(0),
-      microvmImage: microvmImageRef,
+      microvmImage,
       ingressNetworkConnectors: [ingressConnector],
       egressNetworkConnectors: [egressConnector],
       shellIngressNetworkConnector: shellIngressConnector,
-      // P52 H1.5 corrective (AppTheory v1.15.2): the host-owned execution role
+      // P52 H1.5 corrective: the host-owned execution role
       // the controller propagates to RunMicrovm. The construct emits its ARN as
       // APPTHEORY_MICROVM_EXECUTION_ROLE_ARN on the controller Lambda and grants
       // the controller iam:PassRole on it. See executionRole doc above.
@@ -478,7 +420,10 @@ export function configureHostedGenesisMicrovm(
       },
     },
   );
-  props.stateTable.grantReadData(controller.controllerFunction);
+  props.stateTable.grantReadWriteData(controller.controllerFunction);
+  grantHostedGenesisMicrovmControllerRunPermissions(
+    controller.controllerFunction,
+  );
 
   // P52 H1.5: provisioned concurrency on the controller Lambda keeps the
   // governed HTTP API warm so the control plane's accept-path dispatch
@@ -496,21 +441,35 @@ export function configureHostedGenesisMicrovm(
     provisionedConcurrentExecutions: 1,
   });
 
-  // P52 H1.5: grant the control-plane Lambda ssm:GetParameter on the authorizer
-  // bearer-token SecureString + inject the controller endpoint + auth-token SSM
-  // param name + image/network-connector refs env vars so controlplane.NewServer
-  // can construct the HTTPControllerDispatcher. The control plane never receives
-  // MicroVM IAM or session-registry access — it only speaks HTTP to the
-  // governed controller API with the authorizer bearer token (loaded from SSM
-  // at runtime, never committed or logged). Fail-closed auth on the controller
-  // routes is unaffected.
-  if (props.controlPlaneFunction) {
-    grantControlPlaneMicroVMDispatch(
+  // P52 H1.5/P53: grant Host dispatch Lambdas ssm:GetParameter on the
+  // authorizer bearer-token SecureString + inject the controller endpoint +
+  // auth-token SSM param name + image/network-connector refs env vars so they
+  // can construct the HTTPControllerDispatcher. The control plane uses this for
+  // recovery/extraction; ai-worker uses it for the queued accept-path handoff.
+  // Neither Lambda receives raw MicroVM IAM or session-registry access — both
+  // only speak HTTP to the governed controller API with the authorizer bearer
+  // token (loaded from SSM at runtime, never committed or logged). Fail-closed
+  // auth on the controller routes is unaffected.
+  for (const dispatchFn of [
+    props.controlPlaneFunction,
+    props.aiWorkerFunction,
+  ].filter((fn): fn is lambda.Function => !!fn)) {
+    // AppTheory v1.17 treats controller image/network refs as deployment-pinned
+    // defaults and rejects caller-supplied overrides that do not exactly match
+    // those pinned refs. Keep the control-plane dispatcher env in lockstep with
+    // the controller's ingress set (HTTP endpoint ingress + governed shell
+    // ingress) so POST /microvms cannot drift from the controller deployment
+    // contract. This is connector metadata only; the control plane still has no
+    // MicroVM IAM and cannot issue shell tokens.
+    grantFunctionMicroVMDispatch(
       scope,
-      props.controlPlaneFunction,
+      dispatchFn,
       controller.endpoint,
-      microvmImage.getAtt("ImageArn").toString(),
-      [ingressConnector.networkConnectorArn],
+      microvmImage.microvmImageArn,
+      [
+        ingressConnector.networkConnectorArn,
+        shellIngressConnector.networkConnectorArn,
+      ],
       [egressConnector.networkConnectorArn],
       authTokenSSMParam,
     );
@@ -531,21 +490,20 @@ export function configureHostedGenesisMicrovm(
   // can verify a real deploy produced an ACTIVE image. Both are Fn::GetAtt tokens
   // on the AWS::Lambda::MicrovmImage resource (ImageArn + State — see
   // AWSCloudFormation UserGuide aws-resource-lambda-microvmimage.html return
-  // values), read directly off the raw CfnResource below (the prior
-  // AppTheoryMicrovmImage construct surfaced the same attrs as
-  // microvmImageArn / microvmImageState — microvm-image.ts:329,334). They resolve
+  // values), read directly off the AppTheoryMicrovmImage construct as
+  // microvmImageArn / microvmImageState. They resolve
   // only after CloudFormation creates the image and its asynchronous build
   // transitions CREATING -> CREATED (State=ACTIVE), so `cdk deploy` /
   // describe-stacks is the F1 verification surface. This step does NOT deploy;
   // the principal deploys and factory reads these outputs to confirm
   // State=ACTIVE — the F1 deploy proof.
   new cdk.CfnOutput(scope, "HostedGenesisMicrovmImageArn", {
-    value: microvmImage.getAtt("ImageArn").toString(),
+    value: microvmImage.microvmImageArn,
     description:
       "ARN of the hosted-genesis AWS::Lambda::MicrovmImage (Fn::GetAtt ImageArn); resolves post-deploy.",
   });
   new cdk.CfnOutput(scope, "HostedGenesisMicrovmImageState", {
-    value: microvmImage.getAtt("State").toString(),
+    value: microvmImage.microvmImageState,
     description:
       "State of the hosted-genesis AWS::Lambda::MicrovmImage (Fn::GetAtt State); factory verifies State=ACTIVE after a real deploy.",
   });
@@ -553,16 +511,37 @@ export function configureHostedGenesisMicrovm(
   return { enabled: true, controller };
 }
 
-// grantControlPlaneMicroVMDispatch grants the control-plane Lambda the
-// credentials it needs to dispatch MicroVM runs through the governed
-// AppTheoryMicrovmController HTTP API: ssm:GetParameter on the authorizer
-// bearer-token SecureString (the authorizer's identity source) + kms:Decrypt
-// for the SecureString, and injects the env vars controlplane.NewServer reads
-// to build the HTTPControllerDispatcher. The control plane never receives
-// MicroVM IAM (RunMicrovm/GetMicrovm/...) or session-registry access — the
-// controller Lambda is the single governed surface; the control plane only
-// speaks HTTP to the controller endpoint with the authorizer bearer token.
-function grantControlPlaneMicroVMDispatch(
+function grantHostedGenesisMicrovmControllerRunPermissions(
+  fn: lambda.Function,
+): void {
+  // 2026-07-07 lab evidence: AppTheory grants these Lambda MicroVM
+  // control-plane actions on `arn:...:microvm:*`, but IAM policy simulation for
+  // the deployed lab controller role evaluates `lambda:RunMicrovm` as
+  // implicitDeny for that resource shape. The Lambda MicroVM service currently
+  // behaves like permission-only control actions here, so Host adds a narrowly
+  // action-scoped wildcard-resource supplement until the framework grant can be
+  // corrected upstream. This does NOT widen iam:PassRole (still scoped by the
+  // AppTheory construct to the host-owned execution role) and does NOT give the
+  // browser/control plane MicroVM IAM; only the fail-closed controller Lambda can
+  // use these actions.
+  fn.addToRolePolicy(
+    new iam.PolicyStatement({
+      sid: "HostedGenesisMicrovmControlPlaneWildcard",
+      actions: [
+        "lambda:CreateMicrovmAuthToken",
+        "lambda:CreateMicrovmShellAuthToken",
+        "lambda:GetMicrovm",
+        "lambda:ResumeMicrovm",
+        "lambda:RunMicrovm",
+        "lambda:SuspendMicrovm",
+        "lambda:TerminateMicrovm",
+      ],
+      resources: ["*"],
+    }),
+  );
+}
+
+function grantFunctionMicroVMDispatch(
   scope: Construct,
   fn: lambda.Function,
   controllerEndpoint: string,
@@ -587,7 +566,9 @@ function grantControlPlaneMicroVMDispatch(
       actions: ["kms:Decrypt"],
       resources: ["*"],
       conditions: {
-        StringEquals: { "kms:ViaService": `ssm.${cdk.Aws.REGION}.amazonaws.com` },
+        StringEquals: {
+          "kms:ViaService": `ssm.${cdk.Aws.REGION}.amazonaws.com`,
+        },
       },
     }),
   );
@@ -599,7 +580,10 @@ function grantControlPlaneMicroVMDispatch(
   // run body. addEnvironment is the CDK-supported way to append env vars to a
   // Function constructed elsewhere.
   fn.addEnvironment("HOSTED_GENESIS_MICROVM_ENABLED", "true");
-  fn.addEnvironment("APPTHEORY_MICROVM_CONTROLLER_ENDPOINT", controllerEndpoint);
+  fn.addEnvironment(
+    "APPTHEORY_MICROVM_CONTROLLER_ENDPOINT",
+    controllerEndpoint,
+  );
   fn.addEnvironment(
     "HOSTED_GENESIS_MICROVM_AUTH_TOKEN_SSM_PARAM",
     authTokenSSMParamName,
@@ -751,7 +735,11 @@ interface HostedGenesisMicrovmAuthTokenProvisioning {
 function provisionHostedGenesisMicrovmAuthToken(
   scope: Construct,
   id: string,
-  props: { readonly stage: string; readonly paramName: string; readonly removalPolicy: cdk.RemovalPolicy },
+  props: {
+    readonly stage: string;
+    readonly paramName: string;
+    readonly removalPolicy: cdk.RemovalPolicy;
+  },
 ): HostedGenesisMicrovmAuthTokenProvisioning {
   const paramArn = ssmParamArn(scope, props.paramName);
 
@@ -792,7 +780,9 @@ function provisionHostedGenesisMicrovmAuthToken(
       actions: ["kms:Decrypt"],
       resources: ["*"],
       conditions: {
-        StringEquals: { "kms:ViaService": `ssm.${cdk.Aws.REGION}.amazonaws.com` },
+        StringEquals: {
+          "kms:ViaService": `ssm.${cdk.Aws.REGION}.amazonaws.com`,
+        },
       },
     }),
   );
@@ -937,13 +927,13 @@ const hostedGenesisMicrovmProviderKeySSMParams = [
 ] as const;
 
 // createHostedGenesisMicrovmExecutionRole creates the host-owned IAM role passed
-// to RunMicrovm as the MicroVM execution role (AppTheory v1.15.2
-// executionRole propagation). AWS Lambda MicroVMs assume it via
+// to RunMicrovm as the MicroVM execution role (AppTheory executionRole
+// propagation). AWS Lambda MicroVMs assume it via
 // lambda.amazonaws.com trust for the in-VM hosted-genesis workload.
 //
 // Least-privilege — exactly what the in-VM workload needs to run a turn:
 //   - DynamoDB read/write on the Host state table only (the workload persists
-//     HostedGenesisSession completion truth via store.LambdaInit + STATE_TABLE_NAME).
+//     HostedGenesisSession completion truth via store.MicroVMInit + STATE_TABLE_NAME).
 //   - ssm:GetParameter on the two provider-key SecureString params (the workload's
 //     SSM key fallback). Scoped to those ARNs only — no broader ssm:*.
 //   - kms:Decrypt for the SecureString encryption (scoped ViaService to SSM in
@@ -1002,7 +992,9 @@ function createHostedGenesisMicrovmExecutionRole(
       actions: ["kms:Decrypt"],
       resources: ["*"],
       conditions: {
-        StringEquals: { "kms:ViaService": `ssm.${cdk.Aws.REGION}.amazonaws.com` },
+        StringEquals: {
+          "kms:ViaService": `ssm.${cdk.Aws.REGION}.amazonaws.com`,
+        },
       },
     }),
   );
@@ -1011,7 +1003,9 @@ function createHostedGenesisMicrovmExecutionRole(
   // (the workload wires apptheory observability hooks). Scoped managed policies
   // only — no administrative actions.
   role.addManagedPolicy(
-    iam.ManagedPolicy.fromAwsManagedPolicyName("service-role/AWSLambdaBasicExecutionRole"),
+    iam.ManagedPolicy.fromAwsManagedPolicyName(
+      "service-role/AWSLambdaBasicExecutionRole",
+    ),
   );
 
   cdk.Tags.of(role).add("Service", "lesser-host");
@@ -1149,9 +1143,13 @@ function buildHostedGenesisMicrovmWorkloadAsset(
     "WORKDIR /app",
     "COPY hosted-genesis-microvm-workload /app/hosted-genesis-microvm-workload",
     "EXPOSE 8080",
-    "CMD [\"/app/hosted-genesis-microvm-workload\"]",
+    'CMD ["/app/hosted-genesis-microvm-workload"]',
     "",
   ].join("\n");
-  fs.writeFileSync(path.join(buildDir, "Dockerfile"), dockerfileContent, "utf8");
+  fs.writeFileSync(
+    path.join(buildDir, "Dockerfile"),
+    dockerfileContent,
+    "utf8",
+  );
   return new s3assets.Asset(scope, id, { path: buildDir });
 }

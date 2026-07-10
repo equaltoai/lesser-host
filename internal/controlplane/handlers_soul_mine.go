@@ -8,7 +8,7 @@ import (
 	"strings"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
@@ -36,7 +36,7 @@ func (s *Server) handleSoulListMyAgents(ctx *apptheory.Context) (*apptheory.Resp
 
 	username := strings.TrimSpace(ctx.AuthIdentity)
 	if username == "" {
-		return nil, &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
+		return nil, newAppTheoryError("app.unauthorized", "unauthorized")
 	}
 
 	instances, appErr := s.listOwnedInstances(ctx.Context(), username)
@@ -59,9 +59,9 @@ func (s *Server) handleSoulListMyAgents(ctx *apptheory.Context) (*apptheory.Resp
 	return apptheory.JSON(http.StatusOK, soulMineAgentsResponse{Agents: out, Count: len(out)})
 }
 
-func (s *Server) listOwnedInstances(ctx context.Context, username string) ([]*models.Instance, *apptheory.AppError) {
+func (s *Server) listOwnedInstances(ctx context.Context, username string) ([]*models.Instance, *apptheory.AppTheoryError) {
 	if s == nil || s.store == nil || s.store.DB == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	username = strings.TrimSpace(username)
 	if username == "" {
@@ -75,7 +75,7 @@ func (s *Server) listOwnedInstances(ctx context.Context, username string) ([]*mo
 		Where("gsi1PK", "=", fmt.Sprintf("OWNER#%s", username)).
 		All(&instances)
 	if err != nil && !theoryErrors.IsNotFound(err) {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to list instances"}
+		return nil, newAppTheoryError("app.internal", "failed to list instances")
 	}
 
 	out := make([]*models.Instance, 0, len(instances))
@@ -100,9 +100,9 @@ func (s *Server) listOwnedInstances(ctx context.Context, username string) ([]*mo
 	return out, nil
 }
 
-func (s *Server) listDomainsForInstances(ctx context.Context, instances []*models.Instance) (map[string]struct{}, *apptheory.AppError) {
+func (s *Server) listDomainsForInstances(ctx context.Context, instances []*models.Instance) (map[string]struct{}, *apptheory.AppTheoryError) {
 	if s == nil || s.store == nil || s.store.DB == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	domainSet := map[string]struct{}{}
@@ -121,7 +121,7 @@ func (s *Server) listDomainsForInstances(ctx context.Context, instances []*model
 	return domainSet, nil
 }
 
-func (s *Server) listVerifiedDomainsForInstance(ctx context.Context, inst *models.Instance) ([]string, *apptheory.AppError) {
+func (s *Server) listVerifiedDomainsForInstance(ctx context.Context, inst *models.Instance) ([]string, *apptheory.AppTheoryError) {
 	slug := strings.ToLower(strings.TrimSpace(inst.Slug))
 	var domains []*models.Domain
 	err := s.store.DB.WithContext(ctx).
@@ -130,7 +130,7 @@ func (s *Server) listVerifiedDomainsForInstance(ctx context.Context, inst *model
 		Where("gsi1PK", "=", fmt.Sprintf("INSTANCE_DOMAINS#%s", slug)).
 		All(&domains)
 	if err != nil && !theoryErrors.IsNotFound(err) {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to list domains"}
+		return nil, newAppTheoryError("app.internal", "failed to list domains")
 	}
 
 	out := make([]string, 0, len(domains))
@@ -159,9 +159,9 @@ func addStringsToSet(set map[string]struct{}, values ...string) {
 	}
 }
 
-func (s *Server) listAgentIDsForDomains(ctx context.Context, domainSet map[string]struct{}) ([]string, *apptheory.AppError) {
+func (s *Server) listAgentIDsForDomains(ctx context.Context, domainSet map[string]struct{}) ([]string, *apptheory.AppTheoryError) {
 	if s == nil || s.store == nil || s.store.DB == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	agentSet := map[string]struct{}{}
@@ -172,7 +172,7 @@ func (s *Server) listAgentIDsForDomains(ctx context.Context, domainSet map[strin
 			Where("PK", "=", fmt.Sprintf("SOUL#DOMAIN#%s", domain)).
 			All(&idxItems)
 		if err != nil && !theoryErrors.IsNotFound(err) {
-			return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to list agents"}
+			return nil, newAppTheoryError("app.internal", "failed to list agents")
 		}
 		for _, idx := range idxItems {
 			if idx == nil {
@@ -194,9 +194,9 @@ func (s *Server) listAgentIDsForDomains(ctx context.Context, domainSet map[strin
 	return agentIDs, nil
 }
 
-func (s *Server) loadSoulMineAgentItems(ctx context.Context, agentIDs []string) ([]soulMineAgentItem, *apptheory.AppError) {
+func (s *Server) loadSoulMineAgentItems(ctx context.Context, agentIDs []string) ([]soulMineAgentItem, *apptheory.AppTheoryError) {
 	if s == nil || s.store == nil || s.store.DB == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	out := make([]soulMineAgentItem, 0, len(agentIDs))
@@ -206,14 +206,14 @@ func (s *Server) loadSoulMineAgentItems(ctx context.Context, agentIDs []string) 
 			continue
 		}
 		if err != nil {
-			return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to load agent identity"}
+			return nil, newAppTheoryError("app.internal", "failed to load agent identity")
 		}
 
 		rep, repErr := s.getSoulAgentReputation(ctx, agentID)
 		if theoryErrors.IsNotFound(repErr) {
 			rep = nil
 		} else if repErr != nil {
-			return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to load agent reputation"}
+			return nil, newAppTheoryError("app.internal", "failed to load agent reputation")
 		}
 
 		out = append(out, soulMineAgentItem{Agent: *identity, Reputation: rep})

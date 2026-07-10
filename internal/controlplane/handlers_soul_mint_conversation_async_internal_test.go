@@ -10,23 +10,19 @@ import (
 
 	"github.com/stretchr/testify/mock"
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
-	ttmocks "github.com/theory-cloud/tabletheory/pkg/mocks"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
 	"github.com/equaltoai/lesser-host/internal/store/models"
-	"github.com/equaltoai/lesser-host/internal/testutil"
 )
 
-// TestH1_2_AcceptPathDispatchesControllerRunAndReturns202 proves the production
-// hosted genesis accept path dispatches the AppTheory M16 MicroVM controller
-// run command through the MicroVMDispatcher seam and returns HTTP 202
-// accepted-pending with the durable session in_progress (no synchronous control
-// plane LLM call).
-func TestH1_2_AcceptPathDispatchesControllerRunAndReturns202(t *testing.T) {
-	tdb, s, reg, dispatcher := h1d2AcceptPathFixture(t)
+// TestH1_2_AcceptPathEnqueuesMicroVMDispatchAndReturns202 proves the production
+// hosted genesis accept path durably commits the turn, enqueues a non-
+// authoritative MicroVM dispatch command, and returns HTTP 202 accepted-pending
+// without synchronously waiting for the MicroVM to become ready.
+func TestH1_2_AcceptPathEnqueuesMicroVMDispatchAndReturns202(t *testing.T) {
+	_, s, reg, dispatcher := h1d2AcceptPathFixture(t)
 	s.hostedGenesisMicroVMDispatcher = dispatcher
-	h1d2ExpectAcceptPathProgression(t, tdb, hostedgenesis.StatusInProgress)
 
 	resp, err := s.handleSoulInstanceMintConversation(h1d2AcceptPathRequest(t, reg))
 	if err != nil {
@@ -42,57 +38,38 @@ func TestH1_2_AcceptPathDispatchesControllerRunAndReturns202(t *testing.T) {
 	if out.Conversation.Status != models.SoulMintConversationStatusInProgress {
 		t.Fatalf("expected in_progress durable status, got %#v", out.Conversation)
 	}
-	if dispatcher.calls != 1 {
-		t.Fatalf("expected exactly one M16 controller run dispatch, got %d", dispatcher.calls)
+	if dispatcher.calls != 0 {
+		t.Fatalf("accept path must not synchronously dispatch the MicroVM, got %d calls", dispatcher.calls)
 	}
-	if dispatcher.lastBinding.ConversationID == "" || dispatcher.lastBinding.RegistrationID != reg.ID {
-		t.Fatalf("expected dispatch bound to the accepted turn's session, got %#v", dispatcher.lastBinding)
+	if dispatcher.queueCalls != 1 {
+		t.Fatalf("expected exactly one non-authoritative MicroVM dispatch queue message, got %d", dispatcher.queueCalls)
+	}
+	if dispatcher.lastQueue.Step != hostedgenesis.StepMicroVMDispatch || dispatcher.lastQueue.RegistrationID != reg.ID || dispatcher.lastQueue.ConversationID == "" || dispatcher.lastQueue.TurnID == "" {
+		t.Fatalf("expected dispatch queue message bound to accepted turn, got %#v", dispatcher.lastQueue)
 	}
 }
 
-// TestH1_2_AcceptPathPopulatesThreeMicroVMFieldsViaApplyLifecycleRef proves a
-// successful dispatch populates MicroVMExecutionID, ExecutionStateRef, and
-// MicroVMLifecycleRef on the authoritative HostedGenesisSession via
-// ApplyMicroVMLifecycleRef (the lifecycle ref is validated against the binding).
-func TestH1_2_AcceptPathPopulatesThreeMicroVMFieldsViaApplyLifecycleRef(t *testing.T) {
-	tdb, s, reg, dispatcher := h1d2AcceptPathFixture(t)
+func TestH1_2_AcceptPathDoesNotPopulateMicroVMRefsBeforeWorkerDispatch(t *testing.T) {
+	_, s, reg, dispatcher := h1d2AcceptPathFixture(t)
 	s.hostedGenesisMicroVMDispatcher = dispatcher
-	var captured *models.HostedGenesisSession
-	h1d2ExpectAcceptPathProgressionCapture(t, tdb, &captured)
 
 	resp, err := s.handleSoulInstanceMintConversation(h1d2AcceptPathRequest(t, reg))
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
-	if resp.Status != http.StatusAccepted {
-		t.Fatalf("expected 202, got %#v", resp)
-	}
-	if captured == nil {
-		t.Fatalf("expected persisted in_progress session capture")
-	}
-	if captured.MicroVMExecutionID == "" || captured.ExecutionStateRef == "" || captured.MicroVMLifecycleRef == nil {
-		t.Fatalf("expected all three MicroVM execution/cache refs populated, got %#v", captured)
-	}
-	if !strings.HasPrefix(captured.ExecutionStateRef, "microvm://") {
-		t.Fatalf("expected ExecutionStateRef formatted by FormatMicroVMExecutionStateRef, got %q", captured.ExecutionStateRef)
-	}
-	if captured.MicroVMLifecycleRef.SessionID != dispatcher.lastBinding.ConversationID {
-		t.Fatalf("expected lifecycle ref bound to dispatched session, got %#v", captured.MicroVMLifecycleRef)
-	}
-	if captured.MicroVMLifecycleRef.SourceOfTruth != hostedgenesis.MicroVMSourceOfTruth {
-		t.Fatalf("expected lifecycle ref source of truth, got %#v", captured.MicroVMLifecycleRef)
+	_ = assertSoulInstanceMintConversationDispatchedResponse(t, resp)
+	if dispatcher.queueCalls != 1 || dispatcher.calls != 0 {
+		t.Fatalf("expected enqueue-only accept path, queue=%d dispatch=%d", dispatcher.queueCalls, dispatcher.calls)
 	}
 }
 
-// TestH1_2_MicroVMUnavailableIsLoudFailureNotSyncLLMFallthrough proves that
-// when the MicroVM dispatcher is unwired (the production misconfiguration
-// case), the accept path fails closed and loudly with a typed 503
-// microvm-unavailable error and persists a retryable failed session, rather
-// than silently falling back to a synchronous control-plane LLM call.
-func TestH1_2_MicroVMUnavailableIsLoudFailureNotSyncLLMFallthrough(t *testing.T) {
+// TestH1_2_MicroVMQueueUnavailableIsLoudFailureNotSyncLLMFallthrough proves that
+// when the dispatch queue is unavailable, the accept path fails closed and
+// loudly with a typed 503 microvm-unavailable error and persists a retryable
+// failed session rather than silently falling back to a synchronous LLM call.
+func TestH1_2_MicroVMQueueUnavailableIsLoudFailureNotSyncLLMFallthrough(t *testing.T) {
 	tdb, s, reg, _ := h1d2AcceptPathFixture(t)
-	// No dispatcher wired: production must not fall back to sync LLM.
-	s.hostedGenesisMicroVMDispatcher = nil
+	s.enqueueHostedGenesisMessage = nil
 	syncLLMCalled := false
 	s.hostedGenesisAssistantRunner = func(_ context.Context, _ hostedGenesisAssistantRunInput) (hostedGenesisAssistantRunResult, error) {
 		syncLLMCalled = true
@@ -109,7 +86,7 @@ func TestH1_2_MicroVMUnavailableIsLoudFailureNotSyncLLMFallthrough(t *testing.T)
 		t.Fatalf("expected typed microvm-unavailable 503, got %#v", appErr)
 	}
 	if syncLLMCalled {
-		t.Fatalf("accept path must not fall back to synchronous LLM when MicroVM dispatch is unavailable")
+		t.Fatalf("accept path must not fall back to synchronous LLM when MicroVM queue dispatch is unavailable")
 	}
 }
 
@@ -169,10 +146,6 @@ func h1d2AcceptPathFixture(t *testing.T) (*mintConversationTestDB, *Server, mode
 	s := newMintConversationServer(tdb)
 	reg := mintConversationHandleReg()
 	t.Setenv("ANTHROPIC_API_KEY", "anthropic-test-key")
-	s.enqueueHostedGenesisMessage = func(_ context.Context, msg hostedgenesis.QueueMessage) error {
-		t.Fatalf("accept path must not enqueue SQS authority: %#v", msg)
-		return nil
-	}
 	expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, soulInstanceBootstrapTestInstanceSlug)
 	stubMintConversationRegistration(t, tdb, reg)
 	stubSoulInstanceBootstrapDomainAndInstance(t, tdb, reg.DomainNormalized, soulInstanceBootstrapTestInstanceSlug)
@@ -180,6 +153,11 @@ func h1d2AcceptPathFixture(t *testing.T) (*mintConversationTestDB, *Server, mode
 	tdb.qMintIdem.On("First", mock.AnythingOfType("*models.SoulMintConversationIdempotency")).Return(theoryErrors.ErrItemNotFound).Once()
 	expectSoulInstanceMintConversationDebit(t, tdb, reg.AgentID, true)
 	dispatcher := &stubMicroVMDispatcher{t: t}
+	s.enqueueHostedGenesisMessage = func(_ context.Context, msg hostedgenesis.QueueMessage) error {
+		dispatcher.queueCalls++
+		dispatcher.lastQueue = msg
+		return nil
+	}
 	return tdb, s, reg, dispatcher
 }
 
@@ -195,24 +173,6 @@ func h1d2AcceptPathRequest(t *testing.T, reg models.SoulAgentRegistration) *appt
 func h1d2ExpectAcceptPathProgression(t *testing.T, tdb *mintConversationTestDB, wantStatus hostedgenesis.Status) {
 	t.Helper()
 	expectSoulInstanceMintConversationProgression(t, tdb, wantStatus)
-}
-
-func h1d2ExpectAcceptPathProgressionCapture(t *testing.T, tdb *mintConversationTestDB, captured **models.HostedGenesisSession) {
-	t.Helper()
-	tb, _ := tdb.db.TransactWriteBuilder.(*ttmocks.MockTransactionBuilder)
-	if tb == nil {
-		tb = new(ttmocks.MockTransactionBuilder)
-		tdb.db.TransactWriteBuilder = tb
-	}
-	tdb.db.On("TransactWrite", mock.Anything, mock.Anything).Return(nil).Once()
-	tb.On("UpdateWithBuilder", mock.AnythingOfType("*models.HostedGenesisSession"), mock.Anything, mock.Anything).Return(tb).Once().Run(func(args mock.Arguments) {
-		*captured = testutil.RequireMockArg[*models.HostedGenesisSession](t, args, 0)
-		if hostedgenesis.NormalizeStatus((*captured).Status) != hostedgenesis.StatusInProgress {
-			t.Fatalf("expected in_progress dispatched session, got %#v", *captured)
-		}
-	})
-	tb.On("UpdateWithBuilder", mock.AnythingOfType("*models.SoulAgentMintConversation"), mock.Anything, mock.Anything).Return(tb).Once()
-	tb.On("Execute").Return(nil).Once()
 }
 
 // assertHostedGenesisProgressedSession asserts the persisted progressed session

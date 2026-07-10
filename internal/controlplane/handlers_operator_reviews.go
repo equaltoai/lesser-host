@@ -7,9 +7,9 @@ import (
 	"time"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	"github.com/theory-cloud/tabletheory"
-	"github.com/theory-cloud/tabletheory/pkg/core"
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
+	"github.com/theory-cloud/tabletheory/v2"
+	"github.com/theory-cloud/tabletheory/v2/pkg/core"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/domains"
 	"github.com/equaltoai/lesser-host/internal/httpx"
@@ -25,9 +25,9 @@ type reviewNoteRequest struct {
 	Note string `json:"note,omitempty"`
 }
 
-func requireStoreDB(s *Server) *apptheory.AppError {
+func requireStoreDB(s *Server) *apptheory.AppTheoryError {
 	if s == nil || s.store == nil || s.store.DB == nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return newAppTheoryError("app.internal", "internal error")
 	}
 	return nil
 }
@@ -46,10 +46,10 @@ func parseOptionalReviewNote(ctx *apptheory.Context) reviewNoteRequest {
 
 func listByGSI1PK[T any](ctx *apptheory.Context, s *Server, model any, pk string, limit int) ([]T, error) {
 	if s == nil || s.store == nil || s.store.DB == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	if ctx == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	if limit <= 0 {
 		limit = 200
@@ -88,7 +88,7 @@ func (s *Server) handleListVanityDomainRequests(ctx *apptheory.Context) (*appthe
 		200,
 	)
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to list requests"}
+		return nil, newAppTheoryError("app.internal", "failed to list requests")
 	}
 
 	return apptheory.JSON(http.StatusOK, listVanityDomainRequestsResponse{Requests: items, Count: len(items)})
@@ -104,7 +104,7 @@ func (s *Server) handleApproveVanityDomainRequest(ctx *apptheory.Context) (*appt
 
 	domain, err := domains.NormalizeDomain(ctx.Param("domain"))
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: err.Error()}
+		return nil, newAppTheoryError("app.bad_request", err.Error())
 	}
 
 	var req models.VanityDomainRequest
@@ -114,10 +114,10 @@ func (s *Server) handleApproveVanityDomainRequest(ctx *apptheory.Context) (*appt
 		Where("SK", "=", models.SKMetadata).
 		First(&req)
 	if theoryErrors.IsNotFound(err) {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "request not found"}
+		return nil, newAppTheoryError("app.not_found", "request not found")
 	}
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	if strings.TrimSpace(req.Status) == models.VanityDomainRequestStatusApproved {
@@ -131,19 +131,19 @@ func (s *Server) handleApproveVanityDomainRequest(ctx *apptheory.Context) (*appt
 		Where("SK", "=", models.SKMetadata).
 		First(&item)
 	if theoryErrors.IsNotFound(err) {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "domain not found"}
+		return nil, newAppTheoryError("app.not_found", "domain not found")
 	}
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	if strings.TrimSpace(item.Type) != models.DomainTypeVanity {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "domain is not a vanity domain"}
+		return nil, newAppTheoryError("app.conflict", "domain is not a vanity domain")
 	}
 	if strings.TrimSpace(item.Status) == models.DomainStatusActive {
 		return apptheory.JSON(http.StatusOK, req)
 	}
 	if strings.TrimSpace(item.Status) != models.DomainStatusVerified {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "domain must be verified before activation"}
+		return nil, newAppTheoryError("app.conflict", "domain must be verified before activation")
 	}
 
 	note := parseOptionalReviewNote(ctx)
@@ -205,7 +205,7 @@ func (s *Server) handleApproveVanityDomainRequest(ctx *apptheory.Context) (*appt
 		if theoryErrors.IsConditionFailed(err) {
 			return apptheory.JSON(http.StatusOK, req)
 		}
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to approve request"}
+		return nil, newAppTheoryError("app.internal", "failed to approve request")
 	}
 
 	req.Status = models.VanityDomainRequestStatusApproved
@@ -227,7 +227,7 @@ func (s *Server) handleRejectVanityDomainRequest(ctx *apptheory.Context) (*appth
 
 	domain, err := domains.NormalizeDomain(ctx.Param("domain"))
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: err.Error()}
+		return nil, newAppTheoryError("app.bad_request", err.Error())
 	}
 
 	var req models.VanityDomainRequest
@@ -237,10 +237,10 @@ func (s *Server) handleRejectVanityDomainRequest(ctx *apptheory.Context) (*appth
 		Where("SK", "=", models.SKMetadata).
 		First(&req)
 	if theoryErrors.IsNotFound(err) {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "request not found"}
+		return nil, newAppTheoryError("app.not_found", "request not found")
 	}
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	if strings.TrimSpace(req.Status) == models.VanityDomainRequestStatusRejected {
@@ -254,13 +254,13 @@ func (s *Server) handleRejectVanityDomainRequest(ctx *apptheory.Context) (*appth
 		Where("SK", "=", models.SKMetadata).
 		First(&item)
 	if theoryErrors.IsNotFound(err) {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "domain not found"}
+		return nil, newAppTheoryError("app.not_found", "domain not found")
 	}
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	if strings.TrimSpace(item.Type) != models.DomainTypeVanity {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "domain is not a vanity domain"}
+		return nil, newAppTheoryError("app.conflict", "domain is not a vanity domain")
 	}
 
 	note := parseOptionalReviewNote(ctx)
@@ -318,7 +318,7 @@ func (s *Server) handleRejectVanityDomainRequest(ctx *apptheory.Context) (*appth
 		if theoryErrors.IsConditionFailed(err) {
 			return apptheory.JSON(http.StatusOK, req)
 		}
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to reject request"}
+		return nil, newAppTheoryError("app.internal", "failed to reject request")
 	}
 
 	req.Status = models.VanityDomainRequestStatusRejected
@@ -349,7 +349,7 @@ func (s *Server) handlePortalCreateExternalInstanceRegistration(ctx *apptheory.C
 		return nil, err
 	}
 	if s == nil || s.store == nil || s.store.DB == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	req, parseErr := httpx.BindJSON[externalInstanceRegistrationRequest](ctx)
@@ -359,22 +359,22 @@ func (s *Server) handlePortalCreateExternalInstanceRegistration(ctx *apptheory.C
 
 	slug := strings.ToLower(strings.TrimSpace(req.Slug))
 	if slug == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "slug is required"}
+		return nil, newAppTheoryError("app.bad_request", "slug is required")
 	}
 	if !instanceSlugRE.MatchString(slug) {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid slug"}
+		return nil, newAppTheoryError("app.bad_request", "invalid slug")
 	}
 
 	// Ensure no instance exists yet.
 	if _, err := s.getInstance(ctx, slug); err == nil {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "instance already exists"}
+		return nil, newAppTheoryError("app.conflict", "instance already exists")
 	} else if err != nil && !theoryErrors.IsNotFound(err) {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	id, err := newToken(16)
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to create registration"}
+		return nil, newAppTheoryError("app.internal", "failed to create registration")
 	}
 
 	now := time.Now().UTC()
@@ -392,9 +392,9 @@ func (s *Server) handlePortalCreateExternalInstanceRegistration(ctx *apptheory.C
 
 	if err := s.store.DB.WithContext(ctx.Context()).Model(item).IfNotExists().Create(); err != nil {
 		if theoryErrors.IsConditionFailed(err) {
-			return nil, &apptheory.AppError{Code: "app.conflict", Message: "registration already exists"}
+			return nil, newAppTheoryError("app.conflict", "registration already exists")
 		}
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to create registration"}
+		return nil, newAppTheoryError("app.internal", "failed to create registration")
 	}
 
 	audit := &models.AuditLogEntry{
@@ -414,7 +414,7 @@ func (s *Server) handlePortalListExternalInstanceRegistrations(ctx *apptheory.Co
 		return nil, err
 	}
 	if s == nil || s.store == nil || s.store.DB == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	username := strings.TrimSpace(ctx.AuthIdentity)
@@ -428,7 +428,7 @@ func (s *Server) handlePortalListExternalInstanceRegistrations(ctx *apptheory.Co
 		Limit(200).
 		All(&items)
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to list registrations"}
+		return nil, newAppTheoryError("app.internal", "failed to list registrations")
 	}
 
 	out := make([]models.ExternalInstanceRegistration, 0, len(items))
@@ -453,7 +453,7 @@ func (s *Server) handleListExternalInstanceRegistrations(ctx *apptheory.Context)
 		200,
 	)
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to list registrations"}
+		return nil, newAppTheoryError("app.internal", "failed to list registrations")
 	}
 
 	return apptheory.JSON(http.StatusOK, listExternalInstanceRegistrationsResponse{Registrations: items, Count: len(items)})
@@ -464,13 +464,13 @@ func (s *Server) handleApproveExternalInstanceRegistration(ctx *apptheory.Contex
 		return nil, err
 	}
 	if s == nil || s.store == nil || s.store.DB == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	username := strings.TrimSpace(ctx.Param("username"))
 	id := strings.TrimSpace(ctx.Param("id"))
 	if username == "" || id == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "username and id are required"}
+		return nil, newAppTheoryError("app.bad_request", "username and id are required")
 	}
 
 	var reg models.ExternalInstanceRegistration
@@ -482,21 +482,21 @@ func (s *Server) handleApproveExternalInstanceRegistration(ctx *apptheory.Contex
 		Where("SK", "=", sk).
 		First(&reg)
 	if theoryErrors.IsNotFound(err) {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "registration not found"}
+		return nil, newAppTheoryError("app.not_found", "registration not found")
 	}
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	if strings.TrimSpace(reg.Status) == models.ExternalInstanceRegistrationStatusApproved {
 		return apptheory.JSON(http.StatusOK, externalInstanceRegistrationResponse{Registration: reg})
 	}
 	if strings.TrimSpace(reg.Status) != models.ExternalInstanceRegistrationStatusPending {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "registration is not pending"}
+		return nil, newAppTheoryError("app.conflict", "registration is not pending")
 	}
 
 	slug := strings.ToLower(strings.TrimSpace(reg.Slug))
 	if slug == "" {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "registration is missing slug"}
+		return nil, newAppTheoryError("app.conflict", "registration is missing slug")
 	}
 
 	// Create an external instance record (no managed primary domain).
@@ -508,7 +508,7 @@ func (s *Server) handleApproveExternalInstanceRegistration(ctx *apptheory.Contex
 		CreatedAt: now,
 	}
 	if err := inst.UpdateKeys(); err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	actor := strings.TrimSpace(ctx.AuthIdentity)
@@ -557,7 +557,7 @@ func (s *Server) handleApproveExternalInstanceRegistration(ctx *apptheory.Contex
 		if theoryErrors.IsConditionFailed(err) {
 			return apptheory.JSON(http.StatusOK, externalInstanceRegistrationResponse{Registration: reg})
 		}
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to approve registration"}
+		return nil, newAppTheoryError("app.internal", "failed to approve registration")
 	}
 
 	reg.Status = models.ExternalInstanceRegistrationStatusApproved
@@ -573,13 +573,13 @@ func (s *Server) handleRejectExternalInstanceRegistration(ctx *apptheory.Context
 		return nil, err
 	}
 	if s == nil || s.store == nil || s.store.DB == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	username := strings.TrimSpace(ctx.Param("username"))
 	id := strings.TrimSpace(ctx.Param("id"))
 	if username == "" || id == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "username and id are required"}
+		return nil, newAppTheoryError("app.bad_request", "username and id are required")
 	}
 
 	var reg models.ExternalInstanceRegistration
@@ -591,10 +591,10 @@ func (s *Server) handleRejectExternalInstanceRegistration(ctx *apptheory.Context
 		Where("SK", "=", sk).
 		First(&reg)
 	if theoryErrors.IsNotFound(err) {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "registration not found"}
+		return nil, newAppTheoryError("app.not_found", "registration not found")
 	}
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	if strings.TrimSpace(reg.Status) == models.ExternalInstanceRegistrationStatusRejected {
 		return apptheory.JSON(http.StatusOK, externalInstanceRegistrationResponse{Registration: reg})
@@ -635,7 +635,7 @@ func (s *Server) handleRejectExternalInstanceRegistration(ctx *apptheory.Context
 		if theoryErrors.IsConditionFailed(err) {
 			return apptheory.JSON(http.StatusOK, externalInstanceRegistrationResponse{Registration: reg})
 		}
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to reject registration"}
+		return nil, newAppTheoryError("app.internal", "failed to reject registration")
 	}
 
 	reg.Status = models.ExternalInstanceRegistrationStatusRejected

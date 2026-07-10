@@ -44,11 +44,32 @@ introduced. The Lesser instance-key hosted-genesis route family now treats the H
 The M0 AppTheory MicroVM decision is preserved: no raw-AWS MicroVM substitute or local framework fork is introduced in
 this milestone.
 
+### Hosted-genesis MicroVM registry boundary (2026-07-07 corrective)
+
+The deployed controller uses a Host-owned operational cache model, `HostedGenesisMicroVMExecution`, behind
+`store.NewHostedGenesisMicroVMRegistry`. The adapter implements AppTheory's `SessionRegistry` and
+`SessionRegistryLister` interfaces while keeping TableTheory keys derived inside Host's store/model boundary.
+
+`HostedGenesisSession` remains source truth. The registry adapter stores only safe AppTheory `SessionRecord` fields
+needed for MicroVM lifecycle operations; it never stores raw bearer tokens, provider secrets, raw Instance API keys,
+wallet signatures, SSM values, AWS credentials, or raw transcripts. When a cache row is absent or stale,
+`microvm.NewReconstructingSessionRegistry` invokes Host's `HostedGenesisMicroVMReconstructionHook` to reconstruct the
+execution/cache envelope from `HostedGenesisSession` and writes the reconstructed record back through Host's cache
+adapter.
+
+The rejected pattern is initializing TableTheory with AppTheory's generic `runtimemicrovm.SessionRegistryRecord` or
+calling `NewTableTheorySessionRegistry` in deployed Host code. That framework-generic model uses snake_case attribute
+shape and exposes table-row concerns that do not belong at Host's controller/domain boundary. Controller list/delete
+routes remain fully implemented through the Host adapter; deleting a registry row removes only operational cache and
+does not delete `HostedGenesisSession` truth.
+
 ### Worker and retry model (M4 demoted)
 
-Hosted-genesis SQS may remain available for operator/backfill/janitor recovery, but the control plane no longer receives
-`HOSTED_GENESIS_QUEUE_URL` and does not enqueue user-visible conversation turns. If an operator/backfill path feeds the
-queue, the AI worker consumes one hosted-genesis job at a time and re-loads all durable state before writing:
+Hosted-genesis SQS remains available as non-authoritative transport for accepted-turn MicroVM dispatch plus
+operator/backfill/janitor recovery. The control plane may enqueue a MicroVM dispatch command after
+`HostedGenesisSession` and the user-visible conversation turn are already durably committed, but it must not treat the
+queue as conversation authority. If the AI worker consumes a hosted-genesis job, it re-loads all durable state before
+writing:
 
 1. registration id and agent id
 2. registration domain
@@ -57,9 +78,10 @@ queue, the AI worker consumes one hosted-genesis job at a time and re-loads all 
 5. idempotency row when present
 
 The queue has an SQS-managed encrypted DLQ, three receive attempts, and a one-message batch size. Queue loss, DLQ
-backlog, or AI-worker outage must not block status reads, recovery guidance, or finalize gate decisions once
+backlog, or AI-worker outage must not override status reads, recovery guidance, or finalize gate decisions once
 `HostedGenesisSession` truth exists. Retry with the same `idempotency_key` and request hash replays the existing
-conversation/turn and does not append another user message or debit credits again.
+conversation/turn and may re-enqueue the missing MicroVM dispatch command only after validating the durable session; it
+does not append another user message or debit credits again.
 
 ### `created` status decision
 

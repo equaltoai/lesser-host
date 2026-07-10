@@ -7,7 +7,7 @@ import (
 	"time"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
@@ -22,27 +22,27 @@ func (s *Server) handleListInstanceUsage(ctx *apptheory.Context) (*apptheory.Res
 		return nil, err
 	}
 	if s == nil || s.store == nil || s.store.DB == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	slug := strings.ToLower(strings.TrimSpace(ctx.Param("slug")))
 	if slug == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "slug is required"}
+		return nil, newAppTheoryError("app.bad_request", "slug is required")
 	}
 
 	month := strings.TrimSpace(ctx.Param("month"))
 	if month == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "month is required"}
+		return nil, newAppTheoryError("app.bad_request", "month is required")
 	}
 	if _, err := time.Parse("2006-01", month); err != nil {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "month must be YYYY-MM"}
+		return nil, newAppTheoryError("app.bad_request", "month must be YYYY-MM")
 	}
 
 	// Ensure the instance exists.
 	if _, err := s.getInstance(ctx, slug); theoryErrors.IsNotFound(err) {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "instance not found"}
+		return nil, newAppTheoryError("app.not_found", "instance not found")
 	} else if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	pk := fmt.Sprintf("USAGE#%s#%s", slug, month)
@@ -54,7 +54,7 @@ func (s *Server) handleListInstanceUsage(ctx *apptheory.Context) (*apptheory.Res
 		Limit(200).
 		All(&items)
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to list usage"}
+		return nil, newAppTheoryError("app.internal", "failed to list usage")
 	}
 
 	return apptheory.JSON(http.StatusOK, listUsageResponse{

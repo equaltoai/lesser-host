@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SEC-5: Web CSP byte-string integrity.
 #
-# Extracts the `webCsp` and `safeAppCsp` arrays from cdk/lib/lesser-host-stack.ts,
+# Extracts the `webCsp` and `safeAppCsp` arrays from cdk/lib/web-delivery.ts,
 # joins each array with '; ' (per the CDK .join('; ') expression), and compares
 # the resulting byte-string against the current locked-in value.
 #
@@ -24,7 +24,7 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
-STACK_FILE="${REPO_ROOT}/cdk/lib/lesser-host-stack.ts"
+CSP_SOURCE_FILE="${REPO_ROOT}/cdk/lib/web-delivery.ts"
 
 # ── Locked-in expected byte-strings ──────────────────────────────────────
 # These are the current CDK source + CDK test values.  The CDK array elements
@@ -36,8 +36,8 @@ EXPECTED_SAFE_APP_CSP="default-src 'none'; base-uri 'none'; object-src 'none'; f
 
 EXPECTED_COUNT=11
 
-if [[ ! -f "${STACK_FILE}" ]]; then
-  echo "BLOCKED: missing CDK stack file: ${STACK_FILE}" >&2
+if [[ ! -f "${CSP_SOURCE_FILE}" ]]; then
+  echo "BLOCKED: missing CDK CSP source file: ${CSP_SOURCE_FILE}" >&2
   exit 2
 fi
 
@@ -58,7 +58,7 @@ extract_csp_elements() {
       gsub(/^"/, "");  gsub(/"$/, "");
       if ($0 != "") { print; }
     }
-  ' "${STACK_FILE}"
+  ' "${CSP_SOURCE_FILE}"
 }
 
 # ── Validate a single CSP policy ─────────────────────────────────────────
@@ -72,7 +72,7 @@ validate_csp_bytes() {
   elements="$(extract_csp_elements "${csp_label}")"
 
   if [[ -z "${elements}" ]]; then
-    echo "FAIL: could not extract ${csp_label} from ${STACK_FILE}" >&2
+    echo "FAIL: could not extract ${csp_label} from ${CSP_SOURCE_FILE}" >&2
     return 1
   fi
 
@@ -134,7 +134,7 @@ validate_csp_bytes() {
 }
 
 echo "SEC-5: CSP byte-string integrity"
-echo "Stack file: ${STACK_FILE}"
+echo "CSP source file: ${CSP_SOURCE_FILE}"
 echo ""
 
 # Validate webCsp.

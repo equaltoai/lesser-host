@@ -8,7 +8,7 @@ import (
 	"time"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/httpx"
 	"github.com/equaltoai/lesser-host/internal/soulvalidation"
@@ -36,7 +36,7 @@ func (s *Server) handleSoulIssueValidationChallenge(ctx *apptheory.Context) (*ap
 		return nil, appErr
 	}
 	if !s.cfg.SoulEnabled {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "not found"}
+		return nil, newAppTheoryError("app.not_found", "not found")
 	}
 
 	agentIDHex, _, appErr := parseSoulAgentIDHex(ctx.Param("agentId"))
@@ -64,7 +64,7 @@ func (s *Server) handleSoulIssueValidationChallenge(ctx *apptheory.Context) (*ap
 
 	id, err := newToken(16)
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to create challenge id"}
+		return nil, newAppTheoryError("app.internal", "failed to create challenge id")
 	}
 
 	now := time.Now().UTC()
@@ -93,7 +93,7 @@ func (s *Server) handleSoulIssueValidationChallenge(ctx *apptheory.Context) (*ap
 	_ = chal.UpdateKeys()
 
 	if err := s.store.DB.WithContext(ctx.Context()).Model(chal).IfNotExists().Create(); err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to create challenge"}
+		return nil, newAppTheoryError("app.internal", "failed to create challenge")
 	}
 
 	s.tryWriteAuditLog(ctx, &models.AuditLogEntry{
@@ -107,29 +107,29 @@ func (s *Server) handleSoulIssueValidationChallenge(ctx *apptheory.Context) (*ap
 	return apptheory.JSON(http.StatusOK, soulIssueValidationChallengeResponse{Challenge: *chal})
 }
 
-func (s *Server) requireSoulAgentIdentityExists(ctx context.Context, agentIDHex string) *apptheory.AppError {
+func (s *Server) requireSoulAgentIdentityExists(ctx context.Context, agentIDHex string) *apptheory.AppTheoryError {
 	if s == nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return newAppTheoryError("app.internal", "internal error")
 	}
 	_, err := s.getSoulAgentIdentity(ctx, agentIDHex)
 	if theoryErrors.IsNotFound(err) {
-		return &apptheory.AppError{Code: "app.not_found", Message: "agent not found"}
+		return newAppTheoryError("app.not_found", "agent not found")
 	}
 	if err != nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return newAppTheoryError("app.internal", "internal error")
 	}
 	return nil
 }
 
-func normalizeSoulValidationChallengeType(raw string) (string, *apptheory.AppError) {
+func normalizeSoulValidationChallengeType(raw string) (string, *apptheory.AppTheoryError) {
 	challengeType := strings.ToLower(strings.TrimSpace(raw))
 	if !soulvalidation.IsValidChallengeType(challengeType) {
-		return "", &apptheory.AppError{Code: "app.bad_request", Message: "invalid challenge_type"}
+		return "", newAppTheoryError("app.bad_request", "invalid challenge_type")
 	}
 	return challengeType, nil
 }
 
-func normalizeSoulValidationValidatorID(raw string) (string, *apptheory.AppError) {
+func normalizeSoulValidationValidatorID(raw string) (string, *apptheory.AppTheoryError) {
 	validatorID := strings.ToLower(strings.TrimSpace(raw))
 	if validatorID == "" {
 		return soulValidatorSystem, nil
@@ -138,7 +138,7 @@ func normalizeSoulValidationValidatorID(raw string) (string, *apptheory.AppError
 		return validatorID, nil
 	}
 	if _, _, vErr := parseSoulAgentIDHex(validatorID); vErr != nil {
-		return "", &apptheory.AppError{Code: "app.bad_request", Message: "invalid validator_id"}
+		return "", newAppTheoryError("app.bad_request", "invalid validator_id")
 	}
 	return validatorID, nil
 }
@@ -170,7 +170,7 @@ func (s *Server) handleSoulRecordValidationResponse(ctx *apptheory.Context) (*ap
 		return nil, appErr
 	}
 	if !s.cfg.SoulEnabled {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "not found"}
+		return nil, newAppTheoryError("app.not_found", "not found")
 	}
 
 	agentIDHex, _, appErr := parseSoulAgentIDHex(ctx.Param("agentId"))
@@ -179,7 +179,7 @@ func (s *Server) handleSoulRecordValidationResponse(ctx *apptheory.Context) (*ap
 	}
 	challengeID := strings.TrimSpace(ctx.Param("challengeId"))
 	if challengeID == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "challenge_id is required"}
+		return nil, newAppTheoryError("app.bad_request", "challenge_id is required")
 	}
 
 	chal, appErr := s.getUnevaluatedSoulValidationChallenge(ctx.Context(), agentIDHex, challengeID)
@@ -200,7 +200,7 @@ func (s *Server) handleSoulRecordValidationResponse(ctx *apptheory.Context) (*ap
 	_ = chal.UpdateKeys()
 
 	if err := s.store.DB.WithContext(ctx.Context()).Model(chal).IfExists().Update("Response", "Status", "RespondedAt", "UpdatedAt"); err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to update challenge"}
+		return nil, newAppTheoryError("app.internal", "failed to update challenge")
 	}
 
 	s.tryWriteAuditLog(ctx, &models.AuditLogEntry{
@@ -231,7 +231,7 @@ func (s *Server) handleSoulEvaluateValidationChallenge(ctx *apptheory.Context) (
 		return nil, appErr
 	}
 	if !s.cfg.SoulEnabled {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "not found"}
+		return nil, newAppTheoryError("app.not_found", "not found")
 	}
 
 	agentIDHex, _, appErr := parseSoulAgentIDHex(ctx.Param("agentId"))
@@ -240,7 +240,7 @@ func (s *Server) handleSoulEvaluateValidationChallenge(ctx *apptheory.Context) (
 	}
 	challengeID := strings.TrimSpace(ctx.Param("challengeId"))
 	if challengeID == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "challenge_id is required"}
+		return nil, newAppTheoryError("app.bad_request", "challenge_id is required")
 	}
 
 	chal, appErr := s.getUnevaluatedSoulValidationChallenge(ctx.Context(), agentIDHex, challengeID)
@@ -285,7 +285,7 @@ func (s *Server) handleSoulEvaluateValidationChallenge(ctx *apptheory.Context) (
 	_ = rec.UpdateKeys()
 
 	if err := s.store.DB.WithContext(ctx.Context()).Model(rec).Create(); err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to record validation"}
+		return nil, newAppTheoryError("app.internal", "failed to record validation")
 	}
 
 	chal.Status = models.SoulValidationChallengeStatusEvaluated
@@ -296,7 +296,7 @@ func (s *Server) handleSoulEvaluateValidationChallenge(ctx *apptheory.Context) (
 	_ = chal.UpdateKeys()
 
 	if err := s.store.DB.WithContext(ctx.Context()).Model(chal).IfExists().Update("Status", "Result", "Score", "EvaluatedAt", "UpdatedAt"); err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to update challenge"}
+		return nil, newAppTheoryError("app.internal", "failed to update challenge")
 	}
 
 	s.tryWriteAuditLog(ctx, &models.AuditLogEntry{
@@ -310,27 +310,27 @@ func (s *Server) handleSoulEvaluateValidationChallenge(ctx *apptheory.Context) (
 	return apptheory.JSON(http.StatusOK, soulEvaluateValidationChallengeResponse{Challenge: *chal, Record: *rec})
 }
 
-func (s *Server) getUnevaluatedSoulValidationChallenge(ctx context.Context, agentIDHex string, challengeID string) (*models.SoulAgentValidationChallenge, *apptheory.AppError) {
+func (s *Server) getUnevaluatedSoulValidationChallenge(ctx context.Context, agentIDHex string, challengeID string) (*models.SoulAgentValidationChallenge, *apptheory.AppTheoryError) {
 	chal, err := s.getSoulValidationChallenge(ctx, agentIDHex, challengeID)
 	if theoryErrors.IsNotFound(err) {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "challenge not found"}
+		return nil, newAppTheoryError("app.not_found", "challenge not found")
 	}
 	if err != nil || chal == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	if strings.TrimSpace(chal.Status) == models.SoulValidationChallengeStatusEvaluated {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "challenge is already evaluated"}
+		return nil, newAppTheoryError("app.conflict", "challenge is already evaluated")
 	}
 	return chal, nil
 }
 
-func normalizeSoulValidationResult(raw string) (string, *apptheory.AppError) {
+func normalizeSoulValidationResult(raw string) (string, *apptheory.AppTheoryError) {
 	result := strings.ToLower(strings.TrimSpace(raw))
 	switch result {
 	case models.SoulValidationResultPass, models.SoulValidationResultFail, models.SoulValidationResultTimeout:
 		return result, nil
 	default:
-		return "", &apptheory.AppError{Code: "app.bad_request", Message: "invalid result"}
+		return "", newAppTheoryError("app.bad_request", "invalid result")
 	}
 }
 

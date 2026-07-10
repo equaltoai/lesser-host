@@ -3,9 +3,9 @@ package store
 import (
 	"context"
 
-	"github.com/theory-cloud/tabletheory"
-	"github.com/theory-cloud/tabletheory/pkg/core"
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
+	"github.com/theory-cloud/tabletheory/v2"
+	"github.com/theory-cloud/tabletheory/v2/pkg/core"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
 )
 
 // DB is the storage interface used by Store.
@@ -44,10 +44,6 @@ type lambdaTimeoutDB struct {
 
 func (d *lambdaTimeoutDB) Model(model any) core.Query {
 	return d.db.Model(model)
-}
-
-func (d *lambdaTimeoutDB) Transaction(fn func(tx *core.Tx) error) error {
-	return d.db.Transaction(fn)
 }
 
 func (d *lambdaTimeoutDB) Migrate() error {

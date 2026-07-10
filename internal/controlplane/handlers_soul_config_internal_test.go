@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	ttmocks "github.com/theory-cloud/tabletheory/pkg/mocks"
+	ttmocks "github.com/theory-cloud/tabletheory/v2/pkg/mocks"
 
 	"github.com/stretchr/testify/require"
 
@@ -83,7 +83,7 @@ func TestHandleSoulConfig_ErrorsAndSuccess(t *testing.T) {
 		resp, err := nilServer.handleSoulConfig(&apptheory.Context{})
 		require.Nil(t, resp)
 		require.NotNil(t, err)
-		var appErr *apptheory.AppError
+		var appErr *apptheory.AppTheoryError
 		require.ErrorAs(t, err, &appErr)
 		require.Equal(t, appErrCodeInternal, appErr.Code)
 
@@ -103,7 +103,7 @@ func TestHandleSoulConfig_ErrorsAndSuccess(t *testing.T) {
 		resp, err := s.handleSoulConfig(&apptheory.Context{})
 		require.Nil(t, resp)
 		require.NotNil(t, err)
-		var appErr *apptheory.AppError
+		var appErr *apptheory.AppTheoryError
 		require.ErrorAs(t, err, &appErr)
 		require.Equal(t, appErrCodeNotFound, appErr.Code)
 

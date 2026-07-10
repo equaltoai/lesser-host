@@ -10,7 +10,7 @@ import (
 
 	"github.com/stretchr/testify/mock"
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/store/models"
 	"github.com/equaltoai/lesser-host/internal/testutil"
@@ -330,15 +330,15 @@ func TestSoulMintInstanceReadErrorMappingHelpers(t *testing.T) {
 
 	cases := []struct {
 		name       string
-		in         *apptheory.AppError
+		in         *apptheory.AppTheoryError
 		wantCode   string
 		wantStatus int
 	}{
-		{"bad request", &apptheory.AppError{Code: appErrCodeBadRequest, Message: mintConversationInstanceReadMessageBad}, soulMintInstanceReadCodeInvalidRequest, http.StatusBadRequest},
-		{mintConversationInstanceReadNameNotFound, &apptheory.AppError{Code: soulMintAppErrCodeNotFound, Message: mintConversationInstanceReadMessageMissing}, soulMintInstanceReadCodeNotFound, http.StatusNotFound},
-		{mintConversationInstanceReadNameUnauthorized, &apptheory.AppError{Code: appErrCodeUnauthorized, Message: testNope}, soulMintInstanceReadCodeUnauthorized, http.StatusUnauthorized},
-		{"conflict", &apptheory.AppError{Code: soulMintAppErrCodeConflict, Message: mintConversationInstanceReadMessageState}, soulMintInstanceReadCodeConflict, http.StatusConflict},
-		{"internal default", &apptheory.AppError{Code: soulMintAppErrCodeInternal, Message: "boom"}, soulMintInstanceReadCodeInternal, http.StatusInternalServerError},
+		{"bad request", newAppTheoryError(appErrCodeBadRequest, mintConversationInstanceReadMessageBad), soulMintInstanceReadCodeInvalidRequest, http.StatusBadRequest},
+		{mintConversationInstanceReadNameNotFound, newAppTheoryError(soulMintAppErrCodeNotFound, mintConversationInstanceReadMessageMissing), soulMintInstanceReadCodeNotFound, http.StatusNotFound},
+		{mintConversationInstanceReadNameUnauthorized, newAppTheoryError(appErrCodeUnauthorized, testNope), soulMintInstanceReadCodeUnauthorized, http.StatusUnauthorized},
+		{"conflict", newAppTheoryError(soulMintAppErrCodeConflict, mintConversationInstanceReadMessageState), soulMintInstanceReadCodeConflict, http.StatusConflict},
+		{"internal default", newAppTheoryError(soulMintAppErrCodeInternal, "boom"), soulMintInstanceReadCodeInternal, http.StatusInternalServerError},
 	}
 	for _, tc := range cases {
 		tc := tc
@@ -354,10 +354,10 @@ func TestSoulMintInstanceReadErrorMappingHelpers(t *testing.T) {
 	if got := soulMintInstanceReadAccessError(nil); got != nil {
 		t.Fatalf("expected nil access error mapping, got %#v", got)
 	}
-	if appErr := soulMintInstanceReadAccessError(&apptheory.AppError{Code: soulMintAppErrCodeInternal}); appErr.Code != soulMintInstanceReadCodeInternal || appErr.StatusCode != http.StatusInternalServerError {
+	if appErr := soulMintInstanceReadAccessError(newAppTheoryError(soulMintAppErrCodeInternal, "")); appErr.Code != soulMintInstanceReadCodeInternal || appErr.StatusCode != http.StatusInternalServerError {
 		t.Fatalf("expected internal access mapping, got %#v", appErr)
 	}
-	if appErr := soulMintInstanceReadAccessError(&apptheory.AppError{Code: soulMintAppErrCodeConflict}); appErr.Code != soulMintInstanceReadCodeBoundaryViolation || appErr.Details["reason"] != soulMintInstanceReadReasonDomainNotVerified {
+	if appErr := soulMintInstanceReadAccessError(newAppTheoryError(soulMintAppErrCodeConflict, "")); appErr.Code != soulMintInstanceReadCodeBoundaryViolation || appErr.Details["reason"] != soulMintInstanceReadReasonDomainNotVerified {
 		t.Fatalf("expected domain boundary mapping, got %#v", appErr)
 	}
 }

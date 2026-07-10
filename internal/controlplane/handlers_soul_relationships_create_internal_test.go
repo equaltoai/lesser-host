@@ -12,7 +12,7 @@ import (
 	"github.com/ethereum/go-ethereum/accounts"
 	"github.com/ethereum/go-ethereum/crypto"
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	ttmocks "github.com/theory-cloud/tabletheory/pkg/mocks"
+	ttmocks "github.com/theory-cloud/tabletheory/v2/pkg/mocks"
 
 	"github.com/stretchr/testify/mock"
 
@@ -106,7 +106,7 @@ func TestHandleSoulCreateRelationship_RequiresCreatedAt(t *testing.T) {
 	if gotErr == nil {
 		t.Fatalf("expected error")
 	}
-	appErr, ok := gotErr.(*apptheory.AppError)
+	appErr, ok := gotErr.(*apptheory.AppTheoryError)
 	if !ok {
 		t.Fatalf("expected AppError, got %T", gotErr)
 	}

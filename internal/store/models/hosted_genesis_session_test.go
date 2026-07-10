@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"github.com/theory-cloud/tabletheory/v2/pkg/validation"
 
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
 )
@@ -139,6 +140,32 @@ func TestHostedGenesisSessionFromMigrationSeed(t *testing.T) {
 	require.Equal(t, "demo", session.InstanceSlug)
 	require.Equal(t, string(hostedgenesis.StatusFailed), session.Status)
 	require.Len(t, session.TurnLedger, 1)
+}
+
+func TestHostedGenesisSessionNormalizesUnsafeLegacyCheckpointRefs(t *testing.T) {
+	t.Parallel()
+
+	session := validHostedGenesisSessionModel()
+	session.ConversationID = "k6pDHgCsaBIpVXqxnO--JA"
+	session.LatestTurnID = "turn_Bfyb__PXUrAynurbjgIfdg"
+	session.InputCheckpointRef = "checkpoint://hosted-genesis/k6pDHgCsaBIpVXqxnO--JA/input/turn_Bfyb__PXUrAynurbjgIfdg"
+	session.AssistantCheckpointRef = "checkpoint://hosted-genesis/k6pDHgCsaBIpVXqxnO--JA/assistant/turn_Bfyb__PXUrAynurbjgIfdg"
+	session.TurnLedger[0].TurnID = "turn_Bfyb__PXUrAynurbjgIfdg"
+	session.TurnLedger[0].InputCheckpointRef = session.InputCheckpointRef
+	session.TurnLedger[0].AssistantCheckpointRef = session.AssistantCheckpointRef
+	checkpoint := validHostedGenesisDeclarationCheckpoint()
+	checkpoint.CheckpointRef = "checkpoint://hosted-genesis/k6pDHgCsaBIpVXqxnO--JA/declaration/turn_Bfyb__PXUrAynurbjgIfdg"
+	session.DeclarationCheckpoint = &checkpoint
+
+	require.NoError(t, session.BeforeUpdate())
+	require.NotContains(t, session.InputCheckpointRef, "k6pDHgCsaBIpVXqxnO--JA")
+	require.NotContains(t, session.AssistantCheckpointRef, "k6pDHgCsaBIpVXqxnO--JA")
+	require.NotContains(t, session.TurnLedger[0].InputCheckpointRef, "k6pDHgCsaBIpVXqxnO--JA")
+	require.NotContains(t, session.TurnLedger[0].AssistantCheckpointRef, "k6pDHgCsaBIpVXqxnO--JA")
+	require.NotContains(t, session.DeclarationCheckpoint.CheckpointRef, "k6pDHgCsaBIpVXqxnO--JA")
+	require.NoError(t, validation.ValidateValue(session.InputCheckpointRef))
+	require.NoError(t, validation.ValidateValue(session.AssistantCheckpointRef))
+	require.NoError(t, validation.ValidateValue(session.DeclarationCheckpoint.CheckpointRef))
 }
 
 func validHostedGenesisSessionModel() *HostedGenesisSession {

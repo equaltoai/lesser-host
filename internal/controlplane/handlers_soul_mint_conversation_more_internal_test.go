@@ -16,9 +16,9 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	apptheory "github.com/theory-cloud/apptheory/runtime"
 	runtimemicrovm "github.com/theory-cloud/apptheory/runtime/microvm"
-	"github.com/theory-cloud/tabletheory/pkg/core"
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
-	ttmocks "github.com/theory-cloud/tabletheory/pkg/mocks"
+	"github.com/theory-cloud/tabletheory/v2/pkg/core"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
+	ttmocks "github.com/theory-cloud/tabletheory/v2/pkg/mocks"
 
 	"github.com/stretchr/testify/mock"
 
@@ -217,15 +217,20 @@ func stubHostedGenesisAssistantRunner(t *testing.T, s *Server, response string, 
 }
 
 // stubHostedGenesisMicroVMDispatcher wires a stub MicroVMDispatcher that records
-// the binding the accept path dispatched and returns a validated in_progress
-// lifecycle ref. It asserts the sync assistant runner is NOT invoked so the
-// accept path is proven dispatch-only.
+// a valid MicroVM dispatcher plus queue enqueue seam. It asserts the sync
+// assistant runner is NOT invoked so the accept path is proven
+// queue-handoff-only.
 func stubHostedGenesisMicroVMDispatcher(t *testing.T, s *Server) *stubMicroVMDispatcher {
 	t.Helper()
 	dispatcher := &stubMicroVMDispatcher{t: t}
 	s.hostedGenesisMicroVMDispatcher = dispatcher
+	s.enqueueHostedGenesisMessage = func(_ context.Context, msg hostedgenesis.QueueMessage) error {
+		dispatcher.queueCalls++
+		dispatcher.lastQueue = msg
+		return nil
+	}
 	// Guard the synchronous runner seam: H1.2 makes the production accept path
-	// dispatch-only, so the sync assistant runner must never be reached.
+	// queue-handoff-only, so the sync assistant runner must never be reached.
 	s.hostedGenesisAssistantRunner = func(_ context.Context, _ hostedGenesisAssistantRunInput) (hostedGenesisAssistantRunResult, error) {
 		t.Fatalf("synchronous assistant runner must not be invoked on the dispatch-only accept path")
 		return hostedGenesisAssistantRunResult{}, nil
@@ -240,6 +245,8 @@ type stubMicroVMDispatcher struct {
 	lastBinding    hostedgenesis.MicroVMSessionBinding
 	dispatchErr    error
 	reconcileErr   error
+	queueCalls     int
+	lastQueue      hostedgenesis.QueueMessage
 	// observedState is the lifecycle state the stub reports from a controller
 	// get reconciliation (defaults to running/non-terminal).
 	observedState runtimemicrovm.LifecycleState
@@ -809,7 +816,7 @@ func testMintConversationHandleRequiresRegistrationID(t *testing.T) {
 	tdb := newMintConversationTestDB()
 	s := newMintConversationServer(tdb)
 	_, err := s.handleSoulMintConversation(adminCtx())
-	appErr, ok := err.(*apptheory.AppError)
+	appErr, ok := err.(*apptheory.AppTheoryError)
 	if !ok || appErr.Message != "registration id is required" {
 		t.Fatalf("expected registration id error, got %#v", err)
 	}
@@ -827,7 +834,7 @@ func testMintConversationHandleRequiresMessage(t *testing.T) {
 	ctx.Params = map[string]string{"id": reg.ID}
 	ctx.Request.Body = []byte(`{}`)
 	_, err := s.handleSoulMintConversation(ctx)
-	appErr, ok := err.(*apptheory.AppError)
+	appErr, ok := err.(*apptheory.AppTheoryError)
 	if !ok || appErr.Message != "message is required" {
 		t.Fatalf("expected message required error, got %#v", err)
 	}
@@ -846,7 +853,7 @@ func testMintConversationHandleRejectsLongMessage(t *testing.T) {
 	ctx.Params = map[string]string{"id": reg.ID}
 	ctx.Request.Body = body
 	_, err := s.handleSoulMintConversation(ctx)
-	appErr, ok := err.(*apptheory.AppError)
+	appErr, ok := err.(*apptheory.AppTheoryError)
 	if !ok || appErr.Message != "message is too long" {
 		t.Fatalf("expected message length error, got %#v", err)
 	}
@@ -871,7 +878,7 @@ func testMintConversationHandleRejectsPublishedRegistration(t *testing.T) {
 	ctx.Request.Body = mustMarshalJSON(t, soulMintConversationRequest{Message: "hello"})
 
 	_, err := s.handleSoulMintConversation(ctx)
-	appErr, ok := err.(*apptheory.AppError)
+	appErr, ok := err.(*apptheory.AppTheoryError)
 	if !ok || appErr.Message != soulMintConversationAlreadyPublishedMessage {
 		t.Fatalf("expected published registration conflict, got %#v", err)
 	}
@@ -897,7 +904,7 @@ func testMintConversationHandleRejectsUnsupportedModel(t *testing.T) {
 	ctx.Params = map[string]string{"id": reg.ID}
 	ctx.Request.Body = body
 	_, err := s.handleSoulMintConversation(ctx)
-	appErr, ok := err.(*apptheory.AppError)
+	appErr, ok := err.(*apptheory.AppTheoryError)
 	if !ok || appErr.Message != "unsupported model set" {
 		t.Fatalf("expected unsupported model error, got %#v", err)
 	}
@@ -928,7 +935,7 @@ func testMintConversationHandleRejectsModelChangeForExistingConversation(t *test
 	ctx.Params = map[string]string{"id": reg.ID}
 	ctx.Request.Body = body
 	_, err := s.handleSoulMintConversation(ctx)
-	appErr, ok := err.(*apptheory.AppError)
+	appErr, ok := err.(*apptheory.AppTheoryError)
 	if !ok || appErr.Message != "cannot change model for an existing conversation" {
 		t.Fatalf("expected model change error, got %#v", err)
 	}
@@ -944,7 +951,7 @@ func testMintConversationGetRequiresConversationID(t *testing.T) {
 	ctx := adminCtx()
 	ctx.Params = map[string]string{"id": reg.ID}
 	_, err := s.handleSoulGetMintConversation(ctx)
-	appErr, ok := err.(*apptheory.AppError)
+	appErr, ok := err.(*apptheory.AppTheoryError)
 	if !ok || appErr.Message != "conversationId is required" {
 		t.Fatalf("expected missing conversation id error, got %#v", err)
 	}
@@ -1016,7 +1023,7 @@ func testMintConversationGetRequiresDomainOwnership(t *testing.T) {
 	}
 
 	_, err := s.handleSoulGetMintConversation(ctx)
-	appErr, ok := err.(*apptheory.AppError)
+	appErr, ok := err.(*apptheory.AppTheoryError)
 	if !ok || appErr.Code != "app.forbidden" {
 		t.Fatalf("expected domain ownership failure, got %#v", err)
 	}
@@ -1033,7 +1040,7 @@ func testMintConversationCompleteRequiresConversationID(t *testing.T) {
 	ctx := adminCtx()
 	ctx.Params = map[string]string{"id": reg.ID}
 	_, err := s.handleSoulCompleteMintConversation(ctx)
-	appErr, ok := err.(*apptheory.AppError)
+	appErr, ok := err.(*apptheory.AppTheoryError)
 	if !ok || appErr.Message != "conversationId is required" {
 		t.Fatalf("expected missing conversation id error, got %#v", err)
 	}
@@ -1119,7 +1126,7 @@ func testMintConversationCompleteRejectsPublishedRegistration(t *testing.T) {
 	ctx.Params = map[string]string{"id": reg.ID, "conversationId": mintConversationTestConversationID}
 
 	_, err := s.handleSoulCompleteMintConversation(ctx)
-	appErr, ok := err.(*apptheory.AppError)
+	appErr, ok := err.(*apptheory.AppTheoryError)
 	if !ok || appErr.Message != soulMintConversationAlreadyPublishedMessage {
 		t.Fatalf("expected published registration conflict, got %#v", err)
 	}
@@ -1150,7 +1157,7 @@ func testMintConversationCompleteRejectsMissingAssistantTurn(t *testing.T) {
 	ctx.Params = map[string]string{"id": reg.ID, "conversationId": mintConversationTestConversationID}
 	ctx.Request.Body = body
 	_, err := s.handleSoulCompleteMintConversation(ctx)
-	appErr, ok := err.(*apptheory.AppError)
+	appErr, ok := err.(*apptheory.AppTheoryError)
 	if !ok || appErr.Code != appErrCodeConflict || appErr.Message != "conversation has no completed assistant turn" {
 		t.Fatalf("expected durable assistant-turn conflict, got %#v", err)
 	}
@@ -1240,7 +1247,7 @@ func testMintConversationBeginFinalizeRequiresBucketConfiguration(t *testing.T) 
 	s := newMintConversationServer(tdb)
 	s.soulPacks = nil
 	_, err := s.handleSoulBeginFinalizeMintConversation(adminCtx())
-	appErr, ok := err.(*apptheory.AppError)
+	appErr, ok := err.(*apptheory.AppTheoryError)
 	if !ok || appErr.Message != "soul registry bucket is not configured" {
 		t.Fatalf("expected bucket error, got %#v", err)
 	}
@@ -1252,7 +1259,7 @@ func testMintConversationFinalizeRequiresRegistrationIDWithBucketConfigured(t *t
 	s := newMintConversationServer(tdb)
 
 	_, err := s.handleSoulFinalizeMintConversation(adminCtx())
-	appErr, ok := err.(*apptheory.AppError)
+	appErr, ok := err.(*apptheory.AppTheoryError)
 	if !ok || appErr.Message != "registration id is required" {
 		t.Fatalf("expected registration id error, got %#v", err)
 	}
@@ -1664,7 +1671,7 @@ func assertMintConversationFinalizeRegistrationSuccess(
 	digest []byte,
 	capsNorm []string,
 	claimLevels map[string]string,
-	appErr *apptheory.AppError,
+	appErr *apptheory.AppTheoryError,
 ) {
 	t.Helper()
 	if appErr != nil {

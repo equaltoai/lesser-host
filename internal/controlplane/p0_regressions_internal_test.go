@@ -24,9 +24,9 @@ func TestP0_RequireSetupSession_UnauthorizedWithoutBearer(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	appErr, ok := err.(*apptheory.AppError)
+	appErr, ok := err.(*apptheory.AppTheoryError)
 	if !ok {
-		t.Fatalf("expected *apptheory.AppError, got %T: %v", err, err)
+		t.Fatalf("expected *apptheory.AppTheoryError, got %T: %v", err, err)
 	}
 	if appErr.Code != testProvisionConsentCodeUnauthorized {
 		t.Fatalf("expected %s, got %q", testProvisionConsentCodeUnauthorized, appErr.Code)
@@ -55,9 +55,9 @@ func TestP0_SetupFinalizeRejectsNonAdminRole(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	appErr, ok := err.(*apptheory.AppError)
+	appErr, ok := err.(*apptheory.AppTheoryError)
 	if !ok {
-		t.Fatalf("expected *apptheory.AppError, got %T: %v", err, err)
+		t.Fatalf("expected *apptheory.AppTheoryError, got %T: %v", err, err)
 	}
 	if appErr.Code != "app.forbidden" {
 		t.Fatalf("expected app.forbidden, got %q", appErr.Code)

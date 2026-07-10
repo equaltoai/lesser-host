@@ -76,7 +76,7 @@ func (s *Server) handlePortalListInvoices(ctx *apptheory.Context) (*apptheory.Re
 	username := strings.TrimSpace(ctx.AuthIdentity)
 	profile, ok, err := s.loadBillingProfile(ctx, username)
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	if !ok || profile == nil || strings.TrimSpace(profile.StripeCustomerID) == "" {
 		return apptheory.JSON(http.StatusOK, listInvoicesResponse{
@@ -87,7 +87,7 @@ func (s *Server) handlePortalListInvoices(ctx *apptheory.Context) (*apptheory.Re
 
 	raw, listErr := provider.ListRecentInvoices(ctx.Context(), strings.TrimSpace(profile.StripeCustomerID), 25)
 	if listErr != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to list invoices"}
+		return nil, newAppTheoryError("app.internal", "failed to list invoices")
 	}
 
 	out := make([]invoiceSummary, 0, len(raw))
@@ -135,7 +135,7 @@ func (s *Server) handlePortalGetPaymentMethod(ctx *apptheory.Context) (*apptheor
 
 	profile, ok, err := s.loadBillingProfile(ctx, username)
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	if !ok || profile == nil || strings.TrimSpace(profile.DefaultPaymentMethodID) == "" {
 		return apptheory.JSON(http.StatusOK, getPaymentMethodResponse{})
@@ -155,7 +155,7 @@ func (s *Server) handlePortalGetPaymentMethod(ctx *apptheory.Context) (*apptheor
 			// Not found — return null payment_method without error.
 			return apptheory.JSON(http.StatusOK, getPaymentMethodResponse{})
 		}
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	// Map to safe DTO — never expose PK/SK/internal fields.

@@ -12,7 +12,7 @@ import (
 	"time"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
@@ -445,22 +445,22 @@ func (s *Server) resolveAgentIDsForInstance(ctx *apptheory.Context, inst *models
 	return agentIDs
 }
 
-func (s *Server) loadTrustFederation(ctx *apptheory.Context, inst *models.Instance) (portalTrustFederationResponse, *apptheory.AppError) {
+func (s *Server) loadTrustFederation(ctx *apptheory.Context, inst *models.Instance) (portalTrustFederationResponse, *apptheory.AppTheoryError) {
 	resp := portalTrustFederationResponse{
 		Peers:  []portalTrustFederationPeerRow{},
 		Source: trustFederationSource,
 	}
 	if s == nil || inst == nil {
-		return resp, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return resp, newAppTheoryError("app.internal", "internal error")
 	}
 
 	apiKey, keyErr := s.resolvePortalCostInstanceKey(ctx.Context(), inst)
 	if keyErr != nil || strings.TrimSpace(apiKey) == "" {
-		return resp, &apptheory.AppError{Code: "app.internal", Message: "failed to resolve instance federation access"}
+		return resp, newAppTheoryError("app.internal", "failed to resolve instance federation access")
 	}
 	baseURL, urlErr := s.resolvePortalCostMetricsBaseURL(inst)
 	if urlErr != nil {
-		return resp, &apptheory.AppError{Code: "app.internal", Message: "failed to resolve instance federation endpoint"}
+		return resp, newAppTheoryError("app.internal", "failed to resolve instance federation endpoint")
 	}
 
 	client := s.portalManagedHTTPClient()
@@ -477,16 +477,16 @@ func (s *Server) loadTrustFederation(ctx *apptheory.Context, inst *models.Instan
 	return buildTrustFederationResponse(instances, time.Now().UTC(), truncated), nil
 }
 
-func (s *Server) fetchLesserFederationStatistics(ctx context.Context, client *http.Client, baseURL string, apiKey string) *apptheory.AppError {
+func (s *Server) fetchLesserFederationStatistics(ctx context.Context, client *http.Client, baseURL string, apiKey string) *apptheory.AppTheoryError {
 	endpoint, err := buildManagedInstanceFederationURL(baseURL, "/api/v1/admin/federation/statistics", nil)
 	if err != nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "failed to resolve federation statistics endpoint"}
+		return newAppTheoryError("app.internal", "failed to resolve federation statistics endpoint")
 	}
 	var decoded lesserFederationStatisticsResponse
 	return decodeManagedLesserJSON(ctx, client, http.MethodGet, endpoint, apiKey, &decoded)
 }
 
-func (s *Server) fetchLesserFederationInstances(ctx context.Context, client *http.Client, baseURL string, apiKey string) ([]lesserFederationInstanceInfo, bool, *apptheory.AppError) {
+func (s *Server) fetchLesserFederationInstances(ctx context.Context, client *http.Client, baseURL string, apiKey string) ([]lesserFederationInstanceInfo, bool, *apptheory.AppTheoryError) {
 	out := make([]lesserFederationInstanceInfo, 0)
 	cursor := ""
 	truncated := false
@@ -499,7 +499,7 @@ func (s *Server) fetchLesserFederationInstances(ctx context.Context, client *htt
 		}
 		endpoint, err := buildManagedInstanceFederationURL(baseURL, "/api/v1/admin/federation/instances", q)
 		if err != nil {
-			return nil, false, &apptheory.AppError{Code: "app.internal", Message: "failed to resolve federation instances endpoint"}
+			return nil, false, newAppTheoryError("app.internal", "failed to resolve federation instances endpoint")
 		}
 
 		var page lesserFederationInstancesPage
@@ -534,25 +534,25 @@ func buildManagedInstanceFederationURL(baseURL string, path string, q url.Values
 	return u.String(), nil
 }
 
-func decodeManagedLesserJSON(ctx context.Context, client *http.Client, method string, endpoint string, apiKey string, dest any) *apptheory.AppError {
+func decodeManagedLesserJSON(ctx context.Context, client *http.Client, method string, endpoint string, apiKey string, dest any) *apptheory.AppTheoryError {
 	req, err := http.NewRequestWithContext(ctx, method, endpoint, nil)
 	if err != nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "failed to create managed Lesser request"}
+		return newAppTheoryError("app.internal", "failed to create managed Lesser request")
 	}
 	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(apiKey))
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := client.Do(req) //nolint:gosec // endpoint is derived from managed instance metadata or an injected test seam.
 	if err != nil {
-		return &apptheory.AppError{Code: "app.upstream_unavailable", Message: "failed to reach managed Lesser"}
+		return newAppTheoryError("app.upstream_unavailable", "failed to reach managed Lesser")
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1024))
-		return &apptheory.AppError{Code: "app.upstream_error", Message: "managed Lesser request failed"}
+		return newAppTheoryError("app.upstream_error", "managed Lesser request failed")
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(dest); err != nil {
-		return &apptheory.AppError{Code: "app.upstream_error", Message: "failed to decode managed Lesser response"}
+		return newAppTheoryError("app.upstream_error", "failed to decode managed Lesser response")
 	}
 	return nil
 }

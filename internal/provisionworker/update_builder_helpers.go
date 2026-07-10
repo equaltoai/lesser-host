@@ -3,7 +3,7 @@ package provisionworker
 import (
 	"strings"
 
-	"github.com/theory-cloud/tabletheory/pkg/core"
+	"github.com/theory-cloud/tabletheory/v2/pkg/core"
 )
 
 func setStringIfNotEmpty(ub core.UpdateBuilder, field, value string) {

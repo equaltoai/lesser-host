@@ -68,25 +68,25 @@ func (s *Server) portalManagedHTTPClient() *http.Client {
 	return outboundhttp.NewSSRFProtectedClient(nil, outboundhttp.WithTimeout(instanceMetricsTimeout))
 }
 
-func (s *Server) fetchManagedInstanceMetrics(ctx context.Context, inst *models.Instance, apiKey string, from string, to string) (lesserInstanceMetricsResponse, *apptheory.AppError) {
+func (s *Server) fetchManagedInstanceMetrics(ctx context.Context, inst *models.Instance, apiKey string, from string, to string) (lesserInstanceMetricsResponse, *apptheory.AppTheoryError) {
 	apiKey = strings.TrimSpace(apiKey)
 	if apiKey == "" {
-		return lesserInstanceMetricsResponse{}, &apptheory.AppError{Code: "app.internal", Message: "failed to resolve instance metrics access"}
+		return lesserInstanceMetricsResponse{}, newAppTheoryError("app.internal", "failed to resolve instance metrics access")
 	}
 
 	baseURL, err := s.resolvePortalCostMetricsBaseURL(inst)
 	if err != nil {
-		return lesserInstanceMetricsResponse{}, &apptheory.AppError{Code: "app.internal", Message: "failed to resolve instance metrics endpoint"}
+		return lesserInstanceMetricsResponse{}, newAppTheoryError("app.internal", "failed to resolve instance metrics endpoint")
 	}
 
 	endpoint, err := buildManagedInstanceMetricsURL(baseURL, from, to)
 	if err != nil {
-		return lesserInstanceMetricsResponse{}, &apptheory.AppError{Code: "app.internal", Message: "failed to resolve instance metrics endpoint"}
+		return lesserInstanceMetricsResponse{}, newAppTheoryError("app.internal", "failed to resolve instance metrics endpoint")
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
-		return lesserInstanceMetricsResponse{}, &apptheory.AppError{Code: "app.internal", Message: "failed to create instance metrics request"}
+		return lesserInstanceMetricsResponse{}, newAppTheoryError("app.internal", "failed to create instance metrics request")
 	}
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	req.Header.Set("Accept", "application/json")
@@ -95,18 +95,18 @@ func (s *Server) fetchManagedInstanceMetrics(ctx context.Context, inst *models.I
 
 	resp, err := client.Do(req) //nolint:gosec // URL is derived from managed instance metadata or an injected test seam, not from browser input.
 	if err != nil {
-		return lesserInstanceMetricsResponse{}, &apptheory.AppError{Code: "app.upstream_unavailable", Message: "failed to reach instance metrics"}
+		return lesserInstanceMetricsResponse{}, newAppTheoryError("app.upstream_unavailable", "failed to reach instance metrics")
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1024))
-		return lesserInstanceMetricsResponse{}, &apptheory.AppError{Code: "app.upstream_error", Message: "failed to fetch instance metrics"}
+		return lesserInstanceMetricsResponse{}, newAppTheoryError("app.upstream_error", "failed to fetch instance metrics")
 	}
 
 	var decoded lesserInstanceMetricsResponse
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&decoded); err != nil {
-		return lesserInstanceMetricsResponse{}, &apptheory.AppError{Code: "app.upstream_error", Message: "failed to decode instance metrics"}
+		return lesserInstanceMetricsResponse{}, newAppTheoryError("app.upstream_error", "failed to decode instance metrics")
 	}
 	if decoded.Daily == nil {
 		decoded.Daily = []lesserInstanceMetricsDailyRow{}

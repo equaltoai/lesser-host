@@ -7,10 +7,10 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
-	theorycore "github.com/theory-cloud/tabletheory/pkg/core"
-	theoryerrors "github.com/theory-cloud/tabletheory/pkg/errors"
-	theorymodel "github.com/theory-cloud/tabletheory/pkg/model"
-	theoryquery "github.com/theory-cloud/tabletheory/pkg/query"
+	theorycore "github.com/theory-cloud/tabletheory/v2/pkg/core"
+	theoryerrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
+	theorymodel "github.com/theory-cloud/tabletheory/v2/pkg/model"
+	theoryquery "github.com/theory-cloud/tabletheory/v2/pkg/query"
 )
 
 func TestSoulCommMailboxMessageKeysAndRetention(t *testing.T) {

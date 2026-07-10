@@ -81,7 +81,7 @@ func (s *Server) handleSoulAppendContinuity(ctx *apptheory.Context) (*apptheory.
 		return nil, appErr
 	}
 	if err := verifyEthereumSignatureBytes(identity.Wallet, digest, entryData.signature); err != nil {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid continuity signature"}
+		return nil, newAppTheoryError("app.bad_request", "invalid continuity signature")
 	}
 	entry := &models.SoulAgentContinuity{
 		AgentID:      agentIDHex,
@@ -95,7 +95,7 @@ func (s *Server) handleSoulAppendContinuity(ctx *apptheory.Context) (*apptheory.
 	_ = entry.UpdateKeys()
 
 	if err := s.store.DB.WithContext(ctx.Context()).Model(entry).Create(); err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to create continuity entry"}
+		return nil, newAppTheoryError("app.internal", "failed to create continuity entry")
 	}
 
 	// Audit log.
@@ -121,10 +121,10 @@ type soulAppendContinuityData struct {
 	now                time.Time
 }
 
-func parseSoulAppendContinuityData(req soulAppendContinuityRequest, now time.Time) (soulAppendContinuityData, *apptheory.AppError) {
+func parseSoulAppendContinuityData(req soulAppendContinuityRequest, now time.Time) (soulAppendContinuityData, *apptheory.AppTheoryError) {
 	entryType := strings.ToLower(strings.TrimSpace(req.Type))
 	if !isValidContinuityEntryType(entryType) {
-		return soulAppendContinuityData{}, &apptheory.AppError{Code: "app.bad_request", Message: "invalid continuity entry type"}
+		return soulAppendContinuityData{}, newAppTheoryError("app.bad_request", "invalid continuity entry type")
 	}
 
 	parsedTS, timestampCanonical, appErr := parseSoulContinuityTimestamp(strings.TrimSpace(req.Timestamp), now)
@@ -134,20 +134,20 @@ func parseSoulAppendContinuityData(req soulAppendContinuityRequest, now time.Tim
 
 	summary := strings.TrimSpace(req.Summary)
 	if summary == "" {
-		return soulAppendContinuityData{}, &apptheory.AppError{Code: "app.bad_request", Message: "summary is required"}
+		return soulAppendContinuityData{}, newAppTheoryError("app.bad_request", "summary is required")
 	}
 	if len(summary) > 4096 {
-		return soulAppendContinuityData{}, &apptheory.AppError{Code: "app.bad_request", Message: "summary is too long"}
+		return soulAppendContinuityData{}, newAppTheoryError("app.bad_request", "summary is too long")
 	}
 
 	recovery := strings.TrimSpace(req.Recovery)
 	if len(recovery) > 8192 {
-		return soulAppendContinuityData{}, &apptheory.AppError{Code: "app.bad_request", Message: "recovery is too long"}
+		return soulAppendContinuityData{}, newAppTheoryError("app.bad_request", "recovery is too long")
 	}
 
 	signature := strings.TrimSpace(req.Signature)
 	if signature == "" {
-		return soulAppendContinuityData{}, &apptheory.AppError{Code: "app.bad_request", Message: "signature is required"}
+		return soulAppendContinuityData{}, newAppTheoryError("app.bad_request", "signature is required")
 	}
 
 	return soulAppendContinuityData{
@@ -162,25 +162,25 @@ func parseSoulAppendContinuityData(req soulAppendContinuityRequest, now time.Tim
 	}, nil
 }
 
-func parseSoulContinuityTimestamp(raw string, now time.Time) (time.Time, string, *apptheory.AppError) {
+func parseSoulContinuityTimestamp(raw string, now time.Time) (time.Time, string, *apptheory.AppTheoryError) {
 	return parseSoulSignedTimestamp(raw, now, "timestamp")
 }
 
-func parseSoulSignedTimestamp(raw string, now time.Time, field string) (time.Time, string, *apptheory.AppError) {
+func parseSoulSignedTimestamp(raw string, now time.Time, field string) (time.Time, string, *apptheory.AppTheoryError) {
 	raw = strings.TrimSpace(raw)
 	field = strings.TrimSpace(field)
 	if field == "" {
 		field = "timestamp"
 	}
 	if raw == "" {
-		return time.Time{}, "", &apptheory.AppError{Code: "app.bad_request", Message: field + " is required"}
+		return time.Time{}, "", newAppTheoryError("app.bad_request", field+" is required")
 	}
 	parsedTS, parseErr := time.Parse(time.RFC3339, raw)
 	if parseErr != nil {
 		var parsedNano time.Time
 		parsedNano, parseErr = time.Parse(time.RFC3339Nano, raw)
 		if parseErr != nil {
-			return time.Time{}, "", &apptheory.AppError{Code: "app.bad_request", Message: field + " must be RFC3339"}
+			return time.Time{}, "", newAppTheoryError("app.bad_request", field+" must be RFC3339")
 		}
 		parsedTS = parsedNano
 	}
@@ -190,10 +190,10 @@ func parseSoulSignedTimestamp(raw string, now time.Time, field string) (time.Tim
 	now = now.UTC()
 	parsedTS = parsedTS.UTC()
 	if parsedTS.After(now.Add(soulSignedRequestMaxFutureSkew)) {
-		return time.Time{}, "", &apptheory.AppError{Code: "app.bad_request", Message: field + " cannot be in the future"}
+		return time.Time{}, "", newAppTheoryError("app.bad_request", field+" cannot be in the future")
 	}
 	if parsedTS.Before(now.Add(-soulSignedRequestMaxAge)) {
-		return time.Time{}, "", &apptheory.AppError{Code: "app.bad_request", Message: field + " is too far in the past"}
+		return time.Time{}, "", newAppTheoryError("app.bad_request", field+" is too far in the past")
 	}
 	canonicalTS := parsedTS.Truncate(time.Millisecond)
 	return canonicalTS, canonicalSoulSignedTimestamp(canonicalTS), nil
@@ -203,7 +203,7 @@ func canonicalSoulSignedTimestamp(ts time.Time) string {
 	return ts.UTC().Truncate(time.Millisecond).Format("2006-01-02T15:04:05.000Z")
 }
 
-func computeSoulContinuityEntryDigest(entryType string, timestamp string, summary string, recovery string, references []string, nonce string) ([]byte, *apptheory.AppError) {
+func computeSoulContinuityEntryDigest(entryType string, timestamp string, summary string, recovery string, references []string, nonce string) ([]byte, *apptheory.AppTheoryError) {
 	entryType = strings.ToLower(strings.TrimSpace(entryType))
 	timestampStr := strings.TrimSpace(timestamp)
 	summary = strings.TrimSpace(summary)
@@ -228,11 +228,11 @@ func computeSoulContinuityEntryDigest(entryType string, timestamp string, summar
 
 	unsignedBytes, err := json.Marshal(unsigned)
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid continuity JSON"}
+		return nil, newAppTheoryError("app.bad_request", "invalid continuity JSON")
 	}
 	jcsBytes, err := jsoncanonicalizer.Transform(unsignedBytes)
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid continuity JSON"}
+		return nil, newAppTheoryError("app.bad_request", "invalid continuity JSON")
 	}
 	return crypto.Keccak256(jcsBytes), nil
 }
@@ -261,7 +261,7 @@ func (s *Server) handleSoulPublicGetContinuity(ctx *apptheory.Context) (*apptheo
 		return nil, appErr
 	}
 	if !s.cfg.SoulEnabled {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "not found"}
+		return nil, newAppTheoryError("app.not_found", "not found")
 	}
 
 	agentIDHex, _, appErr := parseSoulAgentIDHex(ctx.Param("agentId"))
@@ -285,7 +285,7 @@ func (s *Server) handleSoulPublicGetContinuity(ctx *apptheory.Context) (*apptheo
 
 	paged, err := qb.AllPaginated(&items)
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to list continuity entries"}
+		return nil, newAppTheoryError("app.internal", "failed to list continuity entries")
 	}
 
 	out := make([]models.SoulAgentContinuity, 0, len(items))
@@ -317,7 +317,7 @@ func (s *Server) handleSoulPublicGetContinuity(ctx *apptheory.Context) (*apptheo
 		NextCursor: nextCursor,
 	})
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	s.setSoulPublicHeaders(ctx, resp, "public, max-age=60")
 	return resp, nil

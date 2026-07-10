@@ -157,6 +157,7 @@ Guidance:
 - Prefer the smallest durable set of high-signal boundaries. Return 2-4 boundaries unless the transcript clearly supports fewer.
 - Do not emit redundant or near-duplicate boundaries that would force extra wallet signatures later.
 - Transparency should describe the agent's model/provider uncertainty and any relevant operational notes.
+- The JSON schema is strict: provide every schema property; use an empty string when a field is not supported by the transcript.
 `)
 }
 
@@ -176,7 +177,7 @@ func mintConversationDeclarationsJSONSchemaV1() map[string]any {
 					"authoredBy":   map[string]any{"type": "string", "enum": []string{"agent"}},
 					"mintingModel": map[string]any{"type": "string"},
 				},
-				"required": []string{"purpose", "authoredBy"},
+				"required": []string{"purpose", "constraints", "commitments", "limitations", "authoredBy", "mintingModel"},
 			},
 			"capabilities": map[string]any{
 				"type":     "array",
@@ -187,10 +188,6 @@ func mintConversationDeclarationsJSONSchemaV1() map[string]any {
 					"properties": map[string]any{
 						"capability": map[string]any{"type": "string"},
 						"scope":      map[string]any{"type": "string"},
-						"constraints": map[string]any{
-							"type":                 "object",
-							"additionalProperties": true,
-						},
 						"claimLevel": map[string]any{
 							"type": "string",
 							"enum": []string{"self-declared"},
@@ -199,7 +196,7 @@ func mintConversationDeclarationsJSONSchemaV1() map[string]any {
 						"validationRef": map[string]any{"type": "string"},
 						"degradesTo":    map[string]any{"type": "string"},
 					},
-					"required": []string{"capability", "scope", "claimLevel"},
+					"required": []string{"capability", "scope", "claimLevel", "lastValidated", "validationRef", "degradesTo"},
 				},
 			},
 			"boundaries": map[string]any{
@@ -217,12 +214,17 @@ func mintConversationDeclarationsJSONSchemaV1() map[string]any {
 						"statement": map[string]any{"type": "string"},
 						"rationale": map[string]any{"type": "string"},
 					},
-					"required": []string{"category", "statement"},
+					"required": []string{"category", "statement", "rationale"},
 				},
 			},
 			"transparency": map[string]any{
 				"type":                 "object",
-				"additionalProperties": true,
+				"additionalProperties": false,
+				"properties": map[string]any{
+					"modelProviderUncertainty": map[string]any{"type": "string"},
+					"operationalNotes":         map[string]any{"type": "string"},
+				},
+				"required": []string{"modelProviderUncertainty", "operationalNotes"},
 			},
 		},
 		"required": []string{"selfDescription", "capabilities", "boundaries", "transparency"},

@@ -6,7 +6,7 @@ import (
 	"time"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
@@ -79,7 +79,7 @@ type soulAgentCommListContext struct {
 	Limit        int
 }
 
-func (s *Server) requireSoulAgentWithDomainAccess(ctx *apptheory.Context, agentIDHex string) (*models.SoulAgentIdentity, *apptheory.AppError) {
+func (s *Server) requireSoulAgentWithDomainAccess(ctx *apptheory.Context, agentIDHex string) (*models.SoulAgentIdentity, *apptheory.AppTheoryError) {
 	identity, _, _, appErr := s.requireSoulAgentWithDomainAccessDetails(ctx, agentIDHex)
 	return identity, appErr
 }
@@ -87,17 +87,17 @@ func (s *Server) requireSoulAgentWithDomainAccess(ctx *apptheory.Context, agentI
 func (s *Server) requireSoulAgentWithDomainAccessDetails(
 	ctx *apptheory.Context,
 	agentIDHex string,
-) (*models.SoulAgentIdentity, *models.Domain, *models.Instance, *apptheory.AppError) {
+) (*models.SoulAgentIdentity, *models.Domain, *models.Instance, *apptheory.AppTheoryError) {
 	if s == nil || ctx == nil {
-		return nil, nil, nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, nil, nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	identity, err := s.getSoulAgentIdentity(ctx.Context(), agentIDHex)
 	if theoryErrors.IsNotFound(err) {
-		return nil, nil, nil, &apptheory.AppError{Code: "app.not_found", Message: "agent not found"}
+		return nil, nil, nil, newAppTheoryError("app.not_found", "agent not found")
 	}
 	if err != nil {
-		return nil, nil, nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, nil, nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	domain, instance, accessErr := s.requireSoulDomainAccess(ctx, strings.TrimSpace(identity.Domain))
@@ -107,7 +107,7 @@ func (s *Server) requireSoulAgentWithDomainAccessDetails(
 	return identity, domain, instance, nil
 }
 
-func (s *Server) loadSoulAgentCommListContext(ctx *apptheory.Context) (soulAgentCommListContext, *apptheory.AppError) {
+func (s *Server) loadSoulAgentCommListContext(ctx *apptheory.Context) (soulAgentCommListContext, *apptheory.AppTheoryError) {
 	if appErr := s.requireSoulRegistryConfigured(); appErr != nil {
 		return soulAgentCommListContext{}, appErr
 	}
@@ -138,10 +138,10 @@ func (s *Server) loadSoulAgentCommListContext(ctx *apptheory.Context) (soulAgent
 func (s *Server) listSoulAgentCommActivities(
 	ctx *apptheory.Context,
 	listCtx soulAgentCommListContext,
-) ([]soulAgentCommActivityItem, *apptheory.AppError) {
+) ([]soulAgentCommActivityItem, *apptheory.AppTheoryError) {
 	messages, appErr := s.listSoulAgentCommMailboxRows(ctx, listCtx, "DESC", listCtx.Limit)
 	if appErr != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to list communication activity"}
+		return nil, newAppTheoryError("app.internal", "failed to list communication activity")
 	}
 
 	items := make([]soulAgentCommActivityItem, 0, len(messages))
@@ -157,10 +157,10 @@ func (s *Server) listSoulAgentCommActivities(
 func (s *Server) listSoulAgentCommQueueItems(
 	ctx *apptheory.Context,
 	listCtx soulAgentCommListContext,
-) ([]soulAgentCommQueueItem, *apptheory.AppError) {
+) ([]soulAgentCommQueueItem, *apptheory.AppTheoryError) {
 	messages, appErr := s.listSoulAgentCommMailboxRowsMatching(ctx, listCtx, "ASC", 100, isPortalQueuedMailboxItem)
 	if appErr != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to list queued messages"}
+		return nil, newAppTheoryError("app.internal", "failed to list queued messages")
 	}
 
 	items := make([]soulAgentCommQueueItem, 0, minInt(listCtx.Limit, len(messages)))
@@ -182,7 +182,7 @@ func (s *Server) listSoulAgentCommMailboxRowsMatching(
 	order string,
 	pageLimit int,
 	matches func(*models.SoulCommMailboxMessage) bool,
-) ([]*models.SoulCommMailboxMessage, *apptheory.AppError) {
+) ([]*models.SoulCommMailboxMessage, *apptheory.AppTheoryError) {
 	items := make([]*models.SoulCommMailboxMessage, 0, listCtx.Limit)
 	cursor := ""
 	for len(items) < listCtx.Limit {
@@ -211,7 +211,7 @@ func (s *Server) listSoulAgentCommMailboxRows(
 	listCtx soulAgentCommListContext,
 	order string,
 	limit int,
-) ([]*models.SoulCommMailboxMessage, *apptheory.AppError) {
+) ([]*models.SoulCommMailboxMessage, *apptheory.AppTheoryError) {
 	var items []*models.SoulCommMailboxMessage
 	order = strings.ToUpper(strings.TrimSpace(order))
 	if order != "ASC" {
@@ -223,7 +223,7 @@ func (s *Server) listSoulAgentCommMailboxRows(
 		OrderBy("SK", order).
 		Limit(limit).
 		All(&items); err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	return items, nil
 }
@@ -234,7 +234,7 @@ func (s *Server) listSoulAgentCommMailboxRowsPage(
 	order string,
 	limit int,
 	cursor string,
-) ([]*models.SoulCommMailboxMessage, bool, string, *apptheory.AppError) {
+) ([]*models.SoulCommMailboxMessage, bool, string, *apptheory.AppTheoryError) {
 	var items []*models.SoulCommMailboxMessage
 	order = strings.ToUpper(strings.TrimSpace(order))
 	if order != "ASC" {
@@ -250,7 +250,7 @@ func (s *Server) listSoulAgentCommMailboxRowsPage(
 	}
 	paged, err := q.AllPaginated(&items)
 	if err != nil {
-		return nil, false, "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, false, "", newAppTheoryError("app.internal", "internal error")
 	}
 	if paged == nil {
 		return items, false, "", nil
@@ -432,7 +432,7 @@ func (s *Server) handleSoulAgentCommStatus(ctx *apptheory.Context) (*apptheory.R
 
 	messageID := strings.TrimSpace(ctx.Param("messageId"))
 	if messageID == "" || len(messageID) > 128 {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "messageId is invalid"}
+		return nil, newAppTheoryError("app.bad_request", "messageId is invalid")
 	}
 
 	rec := &models.SoulCommMessageStatus{MessageID: messageID}
@@ -444,18 +444,18 @@ func (s *Server) handleSoulAgentCommStatus(ctx *apptheory.Context) (*apptheory.R
 		Where("SK", "=", rec.SK).
 		First(&item)
 	if theoryErrors.IsNotFound(err) {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "message not found"}
+		return nil, newAppTheoryError("app.not_found", "message not found")
 	}
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	if strings.ToLower(strings.TrimSpace(item.AgentID)) != agentIDHex {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "message not found"}
+		return nil, newAppTheoryError("app.not_found", "message not found")
 	}
 
 	resp, err := apptheory.JSON(http.StatusOK, soulCommStatusJSON(item))
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	return resp, nil
 }

@@ -36,8 +36,8 @@ func (e TurnLedgerEntry) Normalize() TurnLedgerEntry {
 	e.TurnID = strings.TrimSpace(e.TurnID)
 	e.IdempotencyKey = strings.TrimSpace(e.IdempotencyKey)
 	e.RequestHash = strings.ToLower(strings.TrimSpace(e.RequestHash))
-	e.InputCheckpointRef = strings.TrimSpace(e.InputCheckpointRef)
-	e.AssistantCheckpointRef = strings.TrimSpace(e.AssistantCheckpointRef)
+	e.InputCheckpointRef = NormalizeCheckpointRef(e.InputCheckpointRef)
+	e.AssistantCheckpointRef = NormalizeCheckpointRef(e.AssistantCheckpointRef)
 	e.BillingLedgerRef = strings.TrimSpace(e.BillingLedgerRef)
 	if !e.AcceptedAt.IsZero() {
 		e.AcceptedAt = e.AcceptedAt.UTC()

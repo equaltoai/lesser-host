@@ -25,7 +25,7 @@ func TestMicroVMControllerRuntimeExercisesAppTheoryM16Commands(t *testing.T) {
 		Registry:                    runtimemicrovm.NewMemorySessionRegistry(),
 		ImageRef:                    "arn:aws:lambda:us-east-1:123456789012:microvm-image/hosted-genesis:1",
 		NetworkConnectorRef:         "arn:aws:lambda:us-east-1:123456789012:network-connector/hosted-genesis-egress",
-		IngressNetworkConnectorRefs: []string{"ALL_INGRESS"},
+		IngressNetworkConnectorRefs: []string{"HTTP_INGRESS"},
 		EgressNetworkConnectorRefs:  []string{"arn:aws:lambda:us-east-1:123456789012:network-connector/hosted-genesis-egress"},
 	})
 	require.NoError(t, err)
@@ -200,7 +200,7 @@ func TestMicroVMControllerRuntimeUsesAppTheoryM16WithoutLocalAdapter(t *testing.
 		require.NoError(t, err)
 		source := string(b)
 		retiredAdapter := "ProvisionalDogfood" + "MicroVMClient"
-		require.NotContains(t, source, retiredAdapter, "v1.15 M16 adoption must retire Host's provisional adapter")
+		require.NotContains(t, source, retiredAdapter, "AppTheory M16 adoption must retire Host's provisional adapter")
 		forbiddenEscape := "RawAWSSDK" + ": true"
 		require.NotContains(t, source, forbiddenEscape, "AppTheory raw SDK escape hatch must remain disabled")
 	}

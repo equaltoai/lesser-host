@@ -10,8 +10,8 @@ import (
 	"testing"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
-	ttmocks "github.com/theory-cloud/tabletheory/pkg/mocks"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
+	ttmocks "github.com/theory-cloud/tabletheory/v2/pkg/mocks"
 
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -230,7 +230,7 @@ func TestHandlePortalListInvoices_Unauthenticated(t *testing.T) {
 	resp, err := s.handlePortalListInvoices(ctx)
 	require.Nil(t, resp)
 	require.Error(t, err)
-	appErr, ok := err.(*apptheory.AppError)
+	appErr, ok := err.(*apptheory.AppTheoryError)
 	require.True(t, ok)
 	require.Equal(t, "app.unauthorized", appErr.Code)
 }
@@ -282,7 +282,7 @@ func TestHandlePortalListInvoices_ProviderError(t *testing.T) {
 	resp, err := s.handlePortalListInvoices(ctx)
 	require.Nil(t, resp)
 	require.Error(t, err)
-	appErr, ok := err.(*apptheory.AppError)
+	appErr, ok := err.(*apptheory.AppTheoryError)
 	require.True(t, ok)
 	require.Equal(t, "app.internal", appErr.Code)
 }
@@ -487,7 +487,7 @@ func TestHandlePortalGetPaymentMethod_DBError(t *testing.T) {
 	resp, err := s.handlePortalGetPaymentMethod(ctx)
 	require.Nil(t, resp, "DB errors must not return data")
 	require.Error(t, err)
-	appErr, ok := err.(*apptheory.AppError)
+	appErr, ok := err.(*apptheory.AppTheoryError)
 	require.True(t, ok)
 	require.Equal(t, "app.internal", appErr.Code,
 		"unexpected DB errors must become sanitized app.internal, not swallowed as no-data")
@@ -501,7 +501,7 @@ func TestHandlePortalGetPaymentMethod_Unauthenticated(t *testing.T) {
 	resp, err := s.handlePortalGetPaymentMethod(ctx)
 	require.Nil(t, resp)
 	require.Error(t, err)
-	appErr, ok := err.(*apptheory.AppError)
+	appErr, ok := err.(*apptheory.AppTheoryError)
 	require.True(t, ok)
 	require.Equal(t, "app.unauthorized", appErr.Code)
 }
@@ -811,7 +811,7 @@ func TestHandlePortalListInvoices_NilStore(t *testing.T) {
 	resp, err := s.handlePortalListInvoices(ctx)
 	require.Nil(t, resp)
 	require.Error(t, err)
-	appErr, ok := err.(*apptheory.AppError)
+	appErr, ok := err.(*apptheory.AppTheoryError)
 	require.True(t, ok)
 	require.Equal(t, "app.internal", appErr.Code)
 }
@@ -824,7 +824,7 @@ func TestHandlePortalGetPaymentMethod_NilStore(t *testing.T) {
 	resp, err := s.handlePortalGetPaymentMethod(ctx)
 	require.Nil(t, resp)
 	require.Error(t, err)
-	appErr, ok := err.(*apptheory.AppError)
+	appErr, ok := err.(*apptheory.AppTheoryError)
 	require.True(t, ok)
 	require.Equal(t, "app.internal", appErr.Code)
 }
@@ -1081,7 +1081,7 @@ func TestHandlePortalListInvoices_ErrorMessageSanitization(t *testing.T) {
 	_, err := s.handlePortalListInvoices(ctx)
 	require.Error(t, err)
 
-	appErr, ok := err.(*apptheory.AppError)
+	appErr, ok := err.(*apptheory.AppTheoryError)
 	require.True(t, ok)
 	// The handler wraps provider errors in a generic message; the raw error
 	// from the provider should NOT leak through the AppError's Message field.

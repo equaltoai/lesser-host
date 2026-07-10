@@ -7,7 +7,7 @@ import (
 	"time"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
@@ -55,13 +55,13 @@ func (s *Server) handlePortalListInstanceKeys(ctx *apptheory.Context) (*apptheor
 		return nil, err
 	}
 	if s == nil || s.store == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	limit := parseLimit(queryFirst(ctx, "limit"), 50, 1, 200)
 	keys, err := s.store.ListInstanceKeysByInstance(ctx.Context(), strings.TrimSpace(inst.Slug), limit)
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to list keys"}
+		return nil, newAppTheoryError("app.internal", "failed to list keys")
 	}
 
 	out := make([]instanceKeyListItem, 0, len(keys))
@@ -81,25 +81,25 @@ func (s *Server) handlePortalRevokeInstanceKey(ctx *apptheory.Context) (*apptheo
 		return nil, err
 	}
 	if s == nil || s.store == nil || s.store.DB == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	slug := strings.ToLower(strings.TrimSpace(inst.Slug))
 	keyID := strings.TrimSpace(ctx.Param("keyId"))
 	if keyID == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "keyId is required"}
+		return nil, newAppTheoryError("app.bad_request", "keyId is required")
 	}
 
 	key, err := s.store.GetInstanceKey(ctx.Context(), keyID)
 	if theoryErrors.IsNotFound(err) || key == nil {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "key not found"}
+		return nil, newAppTheoryError("app.not_found", "key not found")
 	}
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to load key"}
+		return nil, newAppTheoryError("app.internal", "failed to load key")
 	}
 
 	if strings.TrimSpace(key.InstanceSlug) != slug {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "key not found"}
+		return nil, newAppTheoryError("app.not_found", "key not found")
 	}
 
 	if !key.RevokedAt.IsZero() {
@@ -115,7 +115,7 @@ func (s *Server) handlePortalRevokeInstanceKey(ctx *apptheory.Context) (*apptheo
 	_ = key.UpdateKeys()
 
 	if err := s.store.DB.WithContext(ctx.Context()).Model(key).IfExists().Update("RevokedAt", "GSI1PK", "GSI1SK"); err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to revoke key"}
+		return nil, newAppTheoryError("app.internal", "failed to revoke key")
 	}
 
 	audit := &models.AuditLogEntry{

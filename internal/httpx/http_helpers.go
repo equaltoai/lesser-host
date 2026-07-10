@@ -15,7 +15,7 @@ func ParseJSON(ctx *apptheory.Context, dest any) error {
 		return err
 	}
 	if err := json.Unmarshal(ctx.Request.Body, dest); err != nil {
-		return &apptheory.AppError{Code: "app.bad_request", Message: "invalid JSON"}
+		return newAppTheoryError("app.bad_request", "invalid JSON")
 	}
 	return nil
 }
@@ -32,20 +32,20 @@ func BindJSON[Req any](ctx *apptheory.Context) (Req, error) {
 		Body: true,
 	})
 	if err != nil {
-		return zero, &apptheory.AppError{Code: "app.bad_request", Message: "invalid JSON"}
+		return zero, newAppTheoryError("app.bad_request", "invalid JSON")
 	}
 	return req, nil
 }
 
 func validateJSONBody(ctx *apptheory.Context) error {
 	if ctx == nil {
-		return &apptheory.AppError{Code: "app.bad_request", Message: "invalid request"}
+		return newAppTheoryError("app.bad_request", "invalid request")
 	}
 	if len(ctx.Request.Body) == 0 {
-		return &apptheory.AppError{Code: "app.bad_request", Message: "empty body"}
+		return newAppTheoryError("app.bad_request", "empty body")
 	}
 	if len(ctx.Request.Body) > maxRequestBodySize {
-		return &apptheory.AppError{Code: "app.bad_request", Message: "request body too large"}
+		return newAppTheoryError("app.bad_request", "request body too large")
 	}
 	return nil
 }

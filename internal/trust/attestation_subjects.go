@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/domains"
 	"github.com/equaltoai/lesser-host/internal/manageddomain"
@@ -21,7 +21,7 @@ type instanceAttestationSubject struct {
 	ContentHash  string
 }
 
-func (s *Server) normalizeInstanceAttestationSubject(ctx context.Context, instanceSlug, actorURI, objectURI, contentHash string) (instanceAttestationSubject, *apptheory.AppError) {
+func (s *Server) normalizeInstanceAttestationSubject(ctx context.Context, instanceSlug, actorURI, objectURI, contentHash string) (instanceAttestationSubject, *apptheory.AppTheoryError) {
 	subject := instanceAttestationSubject{
 		InstanceSlug: strings.ToLower(strings.TrimSpace(instanceSlug)),
 		ActorURI:     strings.TrimSpace(actorURI),
@@ -32,19 +32,19 @@ func (s *Server) normalizeInstanceAttestationSubject(ctx context.Context, instan
 		return subject, nil
 	}
 	if subject.ActorURI == "" || subject.ObjectURI == "" || subject.ContentHash == "" {
-		return instanceAttestationSubject{}, &apptheory.AppError{Code: "app.bad_request", Message: "actor_uri, object_uri, and content_hash are required together"}
+		return instanceAttestationSubject{}, newAppTheoryError("app.bad_request", "actor_uri, object_uri, and content_hash are required together")
 	}
 	if subject.InstanceSlug == "" {
-		return instanceAttestationSubject{}, &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
+		return instanceAttestationSubject{}, newAppTheoryError("app.unauthorized", "unauthorized")
 	}
 
 	actorHost, err := attestationSubjectURIHost(subject.ActorURI)
 	if err != nil {
-		return instanceAttestationSubject{}, &apptheory.AppError{Code: "app.bad_request", Message: "actor_uri must be an http(s) URI with an instance-owned host"}
+		return instanceAttestationSubject{}, newAppTheoryError("app.bad_request", "actor_uri must be an http(s) URI with an instance-owned host")
 	}
 	objectHost, err := attestationSubjectURIHost(subject.ObjectURI)
 	if err != nil {
-		return instanceAttestationSubject{}, &apptheory.AppError{Code: "app.bad_request", Message: "object_uri must be an http(s) URI with an instance-owned host"}
+		return instanceAttestationSubject{}, newAppTheoryError("app.bad_request", "object_uri must be an http(s) URI with an instance-owned host")
 	}
 
 	ok, appErr := s.instanceOwnsAttestationHosts(ctx, subject.InstanceSlug, actorHost, objectHost)
@@ -52,7 +52,7 @@ func (s *Server) normalizeInstanceAttestationSubject(ctx context.Context, instan
 		return instanceAttestationSubject{}, appErr
 	}
 	if !ok {
-		return instanceAttestationSubject{}, &apptheory.AppError{Code: "app.bad_request", Message: "attestation subject is not owned by authenticated instance"}
+		return instanceAttestationSubject{}, newAppTheoryError("app.bad_request", "attestation subject is not owned by authenticated instance")
 	}
 	return subject, nil
 }
@@ -77,7 +77,7 @@ func attestationSubjectURIHost(raw string) (string, error) {
 	return domains.NormalizeDomain(host)
 }
 
-func (s *Server) instanceOwnsAttestationHosts(ctx context.Context, instanceSlug, actorHost, objectHost string) (bool, *apptheory.AppError) {
+func (s *Server) instanceOwnsAttestationHosts(ctx context.Context, instanceSlug, actorHost, objectHost string) (bool, *apptheory.AppTheoryError) {
 	instanceSlug = strings.ToLower(strings.TrimSpace(instanceSlug))
 	actorHost = strings.ToLower(strings.TrimSpace(actorHost))
 	objectHost = strings.ToLower(strings.TrimSpace(objectHost))
@@ -112,9 +112,9 @@ func (s *Server) instanceOwnsAttestationHosts(ctx context.Context, instanceSlug,
 	return attestationHostsInSet(owned, actorHost, objectHost), nil
 }
 
-func (s *Server) loadAttestationSubjectInstance(ctx context.Context, instanceSlug string) (models.Instance, bool, *apptheory.AppError) {
+func (s *Server) loadAttestationSubjectInstance(ctx context.Context, instanceSlug string) (models.Instance, bool, *apptheory.AppTheoryError) {
 	if s == nil || s.store == nil || s.store.DB == nil {
-		return models.Instance{}, false, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return models.Instance{}, false, newAppTheoryError("app.internal", "internal error")
 	}
 	var inst models.Instance
 	err := s.store.DB.WithContext(ctx).
@@ -127,12 +127,12 @@ func (s *Server) loadAttestationSubjectInstance(ctx context.Context, instanceSlu
 		return models.Instance{}, false, nil
 	}
 	if err != nil {
-		return models.Instance{}, false, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return models.Instance{}, false, newAppTheoryError("app.internal", "internal error")
 	}
 	return inst, true, nil
 }
 
-func (s *Server) loadAttestationSubjectDomains(ctx context.Context, instanceSlug string) ([]*models.Domain, *apptheory.AppError) {
+func (s *Server) loadAttestationSubjectDomains(ctx context.Context, instanceSlug string) ([]*models.Domain, *apptheory.AppTheoryError) {
 	var domainItems []*models.Domain
 	err := s.store.DB.WithContext(ctx).
 		Model(&models.Domain{}).
@@ -140,7 +140,7 @@ func (s *Server) loadAttestationSubjectDomains(ctx context.Context, instanceSlug
 		Where("gsi1PK", "=", "INSTANCE_DOMAINS#"+instanceSlug).
 		All(&domainItems)
 	if err != nil && !theoryErrors.IsNotFound(err) {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	return domainItems, nil
 }

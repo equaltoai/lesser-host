@@ -19,7 +19,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
 
 	"github.com/stretchr/testify/mock"
 
@@ -1564,7 +1564,7 @@ func newWalletVerificationTestServer(t testing.TB, walletResult string, dialErr 
 	}
 }
 
-func assertWalletVerificationResult(t *testing.T, appErr *apptheory.AppError, wantCode string, wantMessage string) {
+func assertWalletVerificationResult(t *testing.T, appErr *apptheory.AppTheoryError, wantCode string, wantMessage string) {
 	t.Helper()
 	if wantCode == "" {
 		if appErr != nil {

@@ -16,7 +16,7 @@ import (
 	"github.com/stripe/stripe-go/v79"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
 
 	"github.com/stretchr/testify/mock"
 

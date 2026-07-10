@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -122,12 +123,91 @@ func TestMintConversationDeclarationsPromptAndSchema(t *testing.T) {
 	if got, ok := boundaries["maxItems"].(int); !ok || got != maxMintConversationBoundaryDrafts {
 		t.Fatalf("expected boundaries maxItems=%d, got %#v", maxMintConversationBoundaryDrafts, boundaries["maxItems"])
 	}
+	assertOpenAIStrictObjectSchema(t, schema)
 
 	if _, _, err := MintConversationDeclarationsOpenAI(t.Context(), "k", "unsupported:model", MintConversationDeclarationsInput{}); err == nil {
 		t.Fatalf("expected unsupported OpenAI declarations model error")
 	}
 	if _, _, err := MintConversationDeclarationsAnthropic(t.Context(), "k", "unsupported:model", MintConversationDeclarationsInput{}); err == nil {
 		t.Fatalf("expected unsupported Anthropic declarations model error")
+	}
+}
+
+func TestMintConversationDeclarationsOpenAI_OmitsTemperatureForGPT5(t *testing.T) {
+	outPayload := `{
+		"selfDescription":{"purpose":"Confirm hosted genesis","constraints":"stay scoped","commitments":"be concise","limitations":"test only","authoredBy":"agent","mintingModel":"openai:gpt-5-mini-2025-08-07"},
+		"capabilities":[{"capability":"hosted_genesis_confirmation","scope":"confirm API MicroVM turn","claimLevel":"self-declared","lastValidated":"","validationRef":"","degradesTo":""}],
+		"boundaries":[{"category":"scope_limit","statement":"Only confirm the API proof.","rationale":"test scope"}],
+		"transparency":{"modelProviderUncertainty":"unit-test","operationalNotes":"fake response"}
+	}`
+	respBytes, err := json.Marshal(map[string]any{
+		"id":      "chatcmpl_test",
+		"object":  "chat.completion",
+		"created": 123,
+		"model":   "gpt-5-mini-2025-08-07",
+		"choices": []any{map[string]any{
+			"index": 0,
+			"message": map[string]any{
+				"role":    "assistant",
+				"content": outPayload,
+			},
+		}},
+		"usage": map[string]any{
+			"prompt_tokens":     10,
+			"completion_tokens": 20,
+			"total_tokens":      30,
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal openai response: %v", err)
+	}
+
+	old := os.Getenv("OPENAI_BASE_URL")
+	t.Cleanup(func() { _ = os.Setenv("OPENAI_BASE_URL", old) })
+	_ = os.Setenv("OPENAI_BASE_URL", "https://openai.example.test")
+
+	var requestBody map[string]any
+	openAIHTTPClient = &http.Client{
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			if decodeErr := json.NewDecoder(r.Body).Decode(&requestBody); decodeErr != nil {
+				t.Fatalf("decode openai request: %v", decodeErr)
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(bytes.NewReader(respBytes)),
+				Request:    r,
+			}, nil
+		}),
+	}
+	t.Cleanup(func() { openAIHTTPClient = nil })
+
+	_, _, err = MintConversationDeclarationsOpenAI(t.Context(), "sk-test", "openai:gpt-5-mini-2025-08-07", MintConversationDeclarationsInput{
+		Registration: MintConversationRegistrationContext{AgentID: "agent_123"},
+		Messages: []MintConversationMessage{
+			{Role: "user", Content: "confirm"},
+			{Role: "assistant", Content: "confirmed"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("MintConversationDeclarationsOpenAI: %v", err)
+	}
+	if _, exists := requestBody["temperature"]; exists {
+		t.Fatalf("gpt-5-family requests must omit unsupported temperature, got body %#v", requestBody)
+	}
+}
+
+func TestOpenAIModelSupportsTemperature(t *testing.T) {
+	t.Parallel()
+	for _, model := range []string{"gpt-5-mini-2025-08-07", "gpt-5", "o1", "o3-mini", "o4-mini"} {
+		if openAIModelSupportsTemperature(model) {
+			t.Fatalf("expected %q to omit temperature", model)
+		}
+	}
+	for _, model := range []string{"gpt-4o-mini", "gpt-4.1-mini"} {
+		if !openAIModelSupportsTemperature(model) {
+			t.Fatalf("expected %q to support temperature", model)
+		}
 	}
 }
 
@@ -160,8 +240,9 @@ func TestAnthropicToolInputSchemaSanitizesPermissiveAdditionalProperties(t *test
 	capabilities := requireSchemaMap(t, props, "capabilities")
 	items := requireSchemaMap(t, capabilities, "items")
 	capProps := requireSchemaMap(t, items, "properties")
-	constraints := requireSchemaMap(t, capProps, "constraints")
-	assertSchemaBool(t, constraints, "additionalProperties", false)
+	if _, exists := capProps["constraints"]; exists {
+		t.Fatalf("strict mint declarations capability schema must not expose free-form constraints")
+	}
 
 	selfDescription := requireSchemaMap(t, props, "selfDescription")
 	assertSchemaBool(t, selfDescription, "additionalProperties", false)
@@ -368,6 +449,82 @@ func assertAnthropicUsage(t *testing.T, usage models.AIUsage) {
 	}
 	if usage.ToolCalls != 1 || usage.DurationMs <= 0 {
 		t.Fatalf("unexpected usage metadata: %#v", usage)
+	}
+}
+
+func assertOpenAIStrictObjectSchema(t *testing.T, schema map[string]any) {
+	t.Helper()
+	assertOpenAIStrictObjectSchemaAt(t, "root", schema)
+}
+
+func assertOpenAIStrictObjectSchemaAt(t *testing.T, path string, schema map[string]any) {
+	t.Helper()
+	if schema == nil {
+		return
+	}
+	if schemaType(schema) == "object" {
+		assertOpenAIStrictObjectRequired(t, path, schema)
+	}
+	for key, value := range schema {
+		assertOpenAIStrictSchemaValue(t, path, key, value)
+	}
+}
+
+func assertOpenAIStrictObjectRequired(t *testing.T, path string, schema map[string]any) {
+	t.Helper()
+	assertSchemaBool(t, schema, "additionalProperties", false)
+	props, _ := schema["properties"].(map[string]any)
+	required, ok := schemaRequiredSet(schema)
+	if !ok {
+		t.Fatalf("%s: object schema missing required list", path)
+	}
+	for name := range props {
+		if !required[name] {
+			t.Fatalf("%s: strict object property %q missing from required", path, name)
+		}
+	}
+}
+
+func assertOpenAIStrictSchemaValue(t *testing.T, path string, key string, value any) {
+	t.Helper()
+	switch typed := value.(type) {
+	case map[string]any:
+		assertOpenAIStrictObjectSchemaAt(t, path+"."+key, typed)
+	case []any:
+		for idx, item := range typed {
+			child, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			assertOpenAIStrictObjectSchemaAt(t, fmt.Sprintf("%s.%s[%d]", path, key, idx), child)
+		}
+	}
+}
+
+func schemaType(schema map[string]any) string {
+	typ, _ := schema["type"].(string)
+	return typ
+}
+
+func schemaRequiredSet(schema map[string]any) (map[string]bool, bool) {
+	switch req := schema["required"].(type) {
+	case []string:
+		out := make(map[string]bool, len(req))
+		for _, name := range req {
+			out[name] = true
+		}
+		return out, true
+	case []any:
+		out := make(map[string]bool, len(req))
+		for _, raw := range req {
+			name, ok := raw.(string)
+			if ok {
+				out[name] = true
+			}
+		}
+		return out, true
+	default:
+		return nil, false
 	}
 }
 

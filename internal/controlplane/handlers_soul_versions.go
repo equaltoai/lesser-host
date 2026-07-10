@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/httpx"
 	"github.com/equaltoai/lesser-host/internal/store/models"
@@ -31,7 +31,7 @@ func (s *Server) handleSoulPublicGetVersions(ctx *apptheory.Context) (*apptheory
 		return nil, appErr
 	}
 	if !s.cfg.SoulEnabled {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "not found"}
+		return nil, newAppTheoryError("app.not_found", "not found")
 	}
 
 	agentIDHex, _, appErr := parseSoulAgentIDHex(ctx.Param("agentId"))
@@ -54,7 +54,7 @@ func (s *Server) handleSoulPublicGetVersions(ctx *apptheory.Context) (*apptheory
 		NextCursor: nextCursor,
 	})
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	s.setSoulPublicHeaders(ctx, resp, "public, max-age=60")
 	return resp, nil
@@ -66,7 +66,7 @@ func soulVersionsPageLimit(ctx *apptheory.Context) int {
 
 const soulVersionsCursorPrefix = "version:"
 
-func (s *Server) loadSoulAgentVersions(ctx *apptheory.Context, agentIDHex string, cursor string, limit int) ([]models.SoulAgentVersion, bool, string, *apptheory.AppError) {
+func (s *Server) loadSoulAgentVersions(ctx *apptheory.Context, agentIDHex string, cursor string, limit int) ([]models.SoulAgentVersion, bool, string, *apptheory.AppTheoryError) {
 	if limit <= 0 {
 		limit = 50
 	}
@@ -79,7 +79,7 @@ func (s *Server) loadSoulAgentVersions(ctx *apptheory.Context, agentIDHex string
 		First(&identity); theoryErrors.IsNotFound(err) {
 		return []models.SoulAgentVersion{}, false, "", nil
 	} else if err != nil {
-		return nil, false, "", &apptheory.AppError{Code: "app.internal", Message: "failed to list versions"}
+		return nil, false, "", newAppTheoryError("app.internal", "failed to list versions")
 	}
 
 	startVersion, appErr := soulVersionsStartVersion(cursor, identity.SelfDescriptionVersion)
@@ -104,7 +104,7 @@ func (s *Server) loadSoulAgentVersions(ctx *apptheory.Context, agentIDHex string
 			First(&item); theoryErrors.IsNotFound(err) {
 			continue
 		} else if err != nil {
-			return nil, false, "", &apptheory.AppError{Code: "app.internal", Message: "failed to list versions"}
+			return nil, false, "", newAppTheoryError("app.internal", "failed to list versions")
 		}
 		versions = append(versions, item)
 	}
@@ -115,7 +115,7 @@ func (s *Server) loadSoulAgentVersions(ctx *apptheory.Context, agentIDHex string
 	return versions, false, "", nil
 }
 
-func soulVersionsStartVersion(cursor string, latestVersion int) (int, *apptheory.AppError) {
+func soulVersionsStartVersion(cursor string, latestVersion int) (int, *apptheory.AppTheoryError) {
 	if latestVersion <= 0 {
 		return 0, nil
 	}
@@ -127,7 +127,7 @@ func soulVersionsStartVersion(cursor string, latestVersion int) (int, *apptheory
 	raw = strings.TrimPrefix(raw, "VERSION#")
 	version, err := strconv.Atoi(strings.TrimSpace(raw))
 	if err != nil || version <= 0 {
-		return 0, &apptheory.AppError{Code: "app.bad_request", Message: "invalid cursor"}
+		return 0, newAppTheoryError("app.bad_request", "invalid cursor")
 	}
 	if version > latestVersion {
 		version = latestVersion

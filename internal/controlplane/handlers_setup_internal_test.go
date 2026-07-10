@@ -9,8 +9,8 @@ import (
 	"time"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
-	ttmocks "github.com/theory-cloud/tabletheory/pkg/mocks"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
+	ttmocks "github.com/theory-cloud/tabletheory/v2/pkg/mocks"
 
 	"github.com/stretchr/testify/mock"
 
@@ -474,9 +474,9 @@ func TestHandleSetupCreateAdmin_RejectsBootstrapWalletAsPrimaryAdmin(t *testing.
 	if resp != nil {
 		t.Fatalf("expected no response, got %#v", resp)
 	}
-	appErr, ok := err.(*apptheory.AppError)
+	appErr, ok := err.(*apptheory.AppTheoryError)
 	if !ok {
-		t.Fatalf("expected *apptheory.AppError, got %T: %v", err, err)
+		t.Fatalf("expected *apptheory.AppTheoryError, got %T: %v", err, err)
 	}
 	if appErr.Code != appErrCodeForbidden || !strings.Contains(appErr.Message, "one-time setup authority") {
 		t.Fatalf("expected explicit forbidden bootstrap wallet error, got %#v", appErr)
@@ -641,9 +641,9 @@ func TestHandleSetupFinalize_RequiresPrimaryAdminPasskey(t *testing.T) {
 	if resp != nil {
 		t.Fatalf("expected no response, got %#v", resp)
 	}
-	appErr, ok := err.(*apptheory.AppError)
+	appErr, ok := err.(*apptheory.AppTheoryError)
 	if !ok {
-		t.Fatalf("expected *apptheory.AppError, got %T: %v", err, err)
+		t.Fatalf("expected *apptheory.AppTheoryError, got %T: %v", err, err)
 	}
 	if appErr.Code != appErrCodeConflict || !strings.Contains(appErr.Message, "passkey is required") {
 		t.Fatalf("expected passkey conflict, got %#v", appErr)

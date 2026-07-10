@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted for Project 51 M3R implementation PR; lab deploy/run remains operator-owned.
+Accepted for Project 51 M3R implementation PR; later amended by the 2026-07-07 hosted-genesis MicroVM registry-boundary corrective. Lab/live deploys remain operator-owned.
 
 ## Context
 
@@ -23,7 +23,7 @@ Host wires AppTheory MicroVM behind explicit, fail-closed lab gates only:
 3. CDK uses AppTheory constructs directly for network connectors, image, and controller; Host glue only validates context, supplies lab-only auth/state-table environment, and packages the controller/authorizer Lambdas.
 4. The controller Lambda uses AppTheory `microvm.NewRealController`, `microvm.RegisterControllerRoutes`, `microvm.Provider`, `microvm.NewAWSLambdaMicroVMProvider`, and `microvm.NewReconstructingSessionRegistry`.
 5. Host's provisional dogfood adapter is retired; Host must not replace it with a framework fork, raw AWS SDK workaround, or local substitute for AppTheory MicroVM features.
-6. `HostedGenesisSession` remains Host business/source truth. AppTheory registry/session/cache/lifecycle state is reconstructible execution state only.
+6. `HostedGenesisSession` remains Host business/source truth. Registry/session/cache/lifecycle state is reconstructible execution state only and is persisted, when needed, through Host's repo-owned `HostedGenesisMicroVMExecution` model and `store.NewHostedGenesisMicroVMRegistry` adapter. Host deployed code must not initialize AppTheory's generic `runtimemicrovm.SessionRegistryRecord` TableTheory model or call `NewTableTheorySessionRegistry`.
 7. Token-producing controller responses remain internal/controller-scoped and tests assert only sanitized metadata; browser/public Host surfaces must not expose MicroVM endpoint tokens, auth tokens, shell tokens, raw Instance API keys, provider keys, SSM values, wallet signatures, AWS credentials, raw transcripts, or raw lifecycle payloads.
 
 ## Consequences
@@ -32,3 +32,15 @@ Host wires AppTheory MicroVM behind explicit, fail-closed lab gates only:
 - A real lab canary remains an operator follow-up after review and context provisioning.
 - Future MicroVM capability gaps must be source-proven and routed to AppTheory instead of patched locally in Host.
 - Any change to expose the controller beyond the lab-only guarded path requires a new governance/security review.
+
+## 2026-07-07 amendment: Host-owned registry cache boundary
+
+A lab rebuild exposed that directly registering AppTheory's generic `runtimemicrovm.SessionRegistryRecord` with Host's
+TableTheory state table fails Host's platform boundary: the generic model uses snake_case attribute tags and directly
+exposes table-row shape where Host requires repo-owned camelCase models and semantic repository methods. The corrective
+decision is to keep AppTheory's controller/provider/routes, but adapt its `SessionRegistry` interface through Host's
+`HostedGenesisMicroVMExecution` cache model. `HostedGenesisSession` remains source truth, and
+`microvm.NewReconstructingSessionRegistry` remains the reconstruction mechanism for absent/stale cache.
+
+This amendment is local to Host's registry persistence boundary. It is not a framework fork, not a raw AWS provider
+replacement, not an on-chain change, and not permission to coordinate framework feedback in this milestone.

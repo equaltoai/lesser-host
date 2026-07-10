@@ -15,7 +15,7 @@ import (
 	"time"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/httpx"
 	"github.com/equaltoai/lesser-host/internal/store/models"
@@ -186,7 +186,7 @@ func (s *Server) updateSoulMintInstanceReadKeyLastUsed(ctx *apptheory.Context, k
 	_ = s.store.DB.WithContext(ctx.Context()).Model(key).IfExists().Update("LastUsedAt")
 }
 
-func soulMintInstanceReadErrorFromAppError(appErr *apptheory.AppError) *apptheory.AppTheoryError {
+func soulMintInstanceReadErrorFromAppError(appErr *apptheory.AppTheoryError) *apptheory.AppTheoryError {
 	if appErr == nil {
 		return nil
 	}
@@ -204,7 +204,7 @@ func soulMintInstanceReadErrorFromAppError(appErr *apptheory.AppError) *apptheor
 	}
 }
 
-func soulMintInstanceReadAccessError(appErr *apptheory.AppError) *apptheory.AppTheoryError {
+func soulMintInstanceReadAccessError(appErr *apptheory.AppTheoryError) *apptheory.AppTheoryError {
 	if appErr == nil {
 		return nil
 	}

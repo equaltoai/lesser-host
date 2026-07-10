@@ -12,9 +12,9 @@ import (
 	"github.com/cyberphone/json-canonicalization/go/src/webpki.org/jsoncanonicalizer"
 	"github.com/ethereum/go-ethereum/crypto"
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	"github.com/theory-cloud/tabletheory/pkg/core"
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
-	ttquery "github.com/theory-cloud/tabletheory/pkg/query"
+	"github.com/theory-cloud/tabletheory/v2/pkg/core"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
+	ttquery "github.com/theory-cloud/tabletheory/v2/pkg/query"
 
 	"github.com/equaltoai/lesser-host/internal/httpx"
 	"github.com/equaltoai/lesser-host/internal/store/models"
@@ -125,7 +125,7 @@ func (s *Server) handleSoulPublicGetRelationships(ctx *apptheory.Context) (*appt
 		return nil, appErr
 	}
 	if !s.cfg.SoulEnabled {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "not found"}
+		return nil, newAppTheoryError("app.not_found", "not found")
 	}
 
 	agentIDHex, _, appErr := parseSoulAgentIDHex(ctx.Param("agentId"))
@@ -147,7 +147,7 @@ func (s *Server) handleSoulPublicGetRelationships(ctx *apptheory.Context) (*appt
 		NextCursor:    nextCursor,
 	})
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	s.setSoulPublicHeaders(ctx, resp, "public, max-age=60")
 	return resp, nil
@@ -167,15 +167,15 @@ func parseSoulCreateRelationshipInput(ctx *apptheory.Context) (soulCreateRelatio
 	}
 	fromAgentIDHex := strings.ToLower(strings.TrimSpace(req.FromAgentID))
 	if fromAgentIDHex == "" {
-		return soulCreateRelationshipInput{}, &apptheory.AppError{Code: "app.bad_request", Message: "from_agent_id is required"}
+		return soulCreateRelationshipInput{}, newAppTheoryError("app.bad_request", "from_agent_id is required")
 	}
 	if fromAgentIDHex == toAgentIDHex {
-		return soulCreateRelationshipInput{}, &apptheory.AppError{Code: "app.bad_request", Message: "cannot create self-relationship"}
+		return soulCreateRelationshipInput{}, newAppTheoryError("app.bad_request", "cannot create self-relationship")
 	}
 
 	relType := strings.ToLower(strings.TrimSpace(req.Type))
 	if !isValidRelationshipType(relType) {
-		return soulCreateRelationshipInput{}, &apptheory.AppError{Code: "app.bad_request", Message: "type must be one of: endorsement, delegation, collaboration, trust_grant, trust_revocation"}
+		return soulCreateRelationshipInput{}, newAppTheoryError("app.bad_request", "type must be one of: endorsement, delegation, collaboration, trust_grant, trust_revocation")
 	}
 
 	contextMap, _, taskType, appErr := parseRelationshipContext(req.Context)
@@ -184,11 +184,11 @@ func parseSoulCreateRelationshipInput(ctx *apptheory.Context) (soulCreateRelatio
 	}
 	message := strings.TrimSpace(req.Message)
 	if message == "" {
-		return soulCreateRelationshipInput{}, &apptheory.AppError{Code: "app.bad_request", Message: "message is required"}
+		return soulCreateRelationshipInput{}, newAppTheoryError("app.bad_request", "message is required")
 	}
 	signature := strings.TrimSpace(req.Signature)
 	if signature == "" {
-		return soulCreateRelationshipInput{}, &apptheory.AppError{Code: "app.bad_request", Message: "signature is required"}
+		return soulCreateRelationshipInput{}, newAppTheoryError("app.bad_request", "signature is required")
 	}
 	now := time.Now().UTC()
 	createdAt, createdAtCanonical, appErr := parseSoulRelationshipCreatedAt(strings.TrimSpace(req.CreatedAt), now)
@@ -209,22 +209,22 @@ func parseSoulCreateRelationshipInput(ctx *apptheory.Context) (soulCreateRelatio
 	}, nil
 }
 
-func parseSoulRelationshipCreatedAt(raw string, now time.Time) (time.Time, string, *apptheory.AppError) {
+func parseSoulRelationshipCreatedAt(raw string, now time.Time) (time.Time, string, *apptheory.AppTheoryError) {
 	return parseSoulSignedTimestamp(raw, now, "created_at")
 }
 
-func (s *Server) requireSoulRelationshipTarget(ctx context.Context, toAgentIDHex string) *apptheory.AppError {
+func (s *Server) requireSoulRelationshipTarget(ctx context.Context, toAgentIDHex string) *apptheory.AppTheoryError {
 	_, err := s.getSoulAgentIdentity(ctx, toAgentIDHex)
 	if theoryErrors.IsNotFound(err) {
-		return &apptheory.AppError{Code: "app.not_found", Message: "agent not found"}
+		return newAppTheoryError("app.not_found", "agent not found")
 	}
 	if err != nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return newAppTheoryError("app.internal", "internal error")
 	}
 	return nil
 }
 
-func verifySoulRelationshipCreateSignature(wallet string, input soulCreateRelationshipInput) *apptheory.AppError {
+func verifySoulRelationshipCreateSignature(wallet string, input soulCreateRelationshipInput) *apptheory.AppTheoryError {
 	contextForDigest := input.ContextMap
 	if len(contextForDigest) == 0 {
 		contextForDigest = nil
@@ -241,7 +241,7 @@ func verifySoulRelationshipCreateSignature(wallet string, input soulCreateRelati
 		return appErr
 	}
 	if err := verifyEthereumSignatureBytesNonMalleable(wallet, digest, input.Signature); err != nil {
-		return &apptheory.AppError{Code: "app.bad_request", Message: "invalid relationship signature"}
+		return newAppTheoryError("app.bad_request", "invalid relationship signature")
 	}
 	return nil
 }
@@ -277,16 +277,16 @@ func buildSoulRelationshipModels(input soulCreateRelationshipInput) (*models.Sou
 	return rel, fromIdx
 }
 
-func (s *Server) writeSoulRelationshipRecords(ctx context.Context, rel *models.SoulAgentRelationship, fromIdx *models.SoulRelationshipFromIndex) *apptheory.AppError {
+func (s *Server) writeSoulRelationshipRecords(ctx context.Context, rel *models.SoulAgentRelationship, fromIdx *models.SoulRelationshipFromIndex) *apptheory.AppTheoryError {
 	if err := s.store.DB.TransactWrite(ctx, func(tx core.TransactionBuilder) error {
 		tx.Create(rel)
 		tx.Create(fromIdx)
 		return nil
 	}); err != nil {
 		if theoryErrors.IsConditionFailed(err) {
-			return &apptheory.AppError{Code: "app.conflict", Message: "relationship already exists"}
+			return newAppTheoryError("app.conflict", "relationship already exists")
 		}
-		return &apptheory.AppError{Code: "app.internal", Message: "failed to create relationship"}
+		return newAppTheoryError("app.internal", "failed to create relationship")
 	}
 	return nil
 }
@@ -324,10 +324,10 @@ func parseSoulRelationshipListParams(ctx *apptheory.Context) soulRelationshipLis
 	}
 }
 
-func (s *Server) listSoulPublicRelationships(ctx context.Context, agentIDHex string, params soulRelationshipListParams) ([]models.SoulAgentRelationship, bool, string, *apptheory.AppError) {
+func (s *Server) listSoulPublicRelationships(ctx context.Context, agentIDHex string, params soulRelationshipListParams) ([]models.SoulAgentRelationship, bool, string, *apptheory.AppTheoryError) {
 	if legacyCursor, ok := legacyRelationshipEndorsementCursor(params.cursor); ok {
 		if !canUseLegacyRelationshipEndorsementCursor(params) {
-			return nil, false, "", &apptheory.AppError{Code: "app.bad_request", Message: "invalid cursor"}
+			return nil, false, "", newAppTheoryError("app.bad_request", "invalid cursor")
 		}
 		return s.listLegacyRelationshipEndorsementCursorPage(ctx, agentIDHex, legacyCursor, params.limit)
 	}
@@ -370,7 +370,7 @@ func (s *Server) appendLegacyRelationshipEndorsements(
 	out []models.SoulAgentRelationship,
 	hasMore bool,
 	nextCursor string,
-) ([]models.SoulAgentRelationship, bool, string, *apptheory.AppError) {
+) ([]models.SoulAgentRelationship, bool, string, *apptheory.AppTheoryError) {
 	remaining := limit - len(out)
 	if remaining <= 0 {
 		return out, hasMore, nextCursor, nil
@@ -387,7 +387,7 @@ func (s *Server) appendLegacyRelationshipEndorsements(
 	return out, hasMore, nextCursor, nil
 }
 
-func (s *Server) loadSoulRelationshipPage(ctx context.Context, agentIDHex string, cursor string, limit int) ([]*models.SoulAgentRelationship, *core.PaginatedResult, *apptheory.AppError) {
+func (s *Server) loadSoulRelationshipPage(ctx context.Context, agentIDHex string, cursor string, limit int) ([]*models.SoulAgentRelationship, *core.PaginatedResult, *apptheory.AppTheoryError) {
 	var items []*models.SoulAgentRelationship
 	qb := s.store.DB.WithContext(ctx).
 		Model(&models.SoulAgentRelationship{}).
@@ -401,12 +401,12 @@ func (s *Server) loadSoulRelationshipPage(ctx context.Context, agentIDHex string
 
 	paged, err := qb.AllPaginated(&items)
 	if err != nil {
-		return nil, nil, &apptheory.AppError{Code: "app.internal", Message: "failed to list relationships"}
+		return nil, nil, newAppTheoryError("app.internal", "failed to list relationships")
 	}
 	return items, paged, nil
 }
 
-func consumeSoulRelationshipPage(items []*models.SoulAgentRelationship, paged *core.PaginatedResult, params soulRelationshipListParams, existing []models.SoulAgentRelationship) ([]models.SoulAgentRelationship, string, bool, *apptheory.AppError) {
+func consumeSoulRelationshipPage(items []*models.SoulAgentRelationship, paged *core.PaginatedResult, params soulRelationshipListParams, existing []models.SoulAgentRelationship) ([]models.SoulAgentRelationship, string, bool, *apptheory.AppTheoryError) {
 	out := make([]models.SoulAgentRelationship, 0, len(items))
 	nextCursor := ""
 	hasMore := false
@@ -448,11 +448,11 @@ func relationshipMatchesFilters(item *models.SoulAgentRelationship, typeFilter s
 	return true
 }
 
-func resolveRelationshipPageCursor(items []*models.SoulAgentRelationship, idx int, item *models.SoulAgentRelationship, paged *core.PaginatedResult) (string, bool, *apptheory.AppError) {
+func resolveRelationshipPageCursor(items []*models.SoulAgentRelationship, idx int, item *models.SoulAgentRelationship, paged *core.PaginatedResult) (string, bool, *apptheory.AppTheoryError) {
 	if idx < len(items)-1 {
 		nextCursor := encodeSoulRelationshipCursor(item)
 		if nextCursor == "" {
-			return "", false, &apptheory.AppError{Code: "app.internal", Message: "failed to encode cursor"}
+			return "", false, newAppTheoryError("app.internal", "failed to encode cursor")
 		}
 		return nextCursor, true, nil
 	}
@@ -487,9 +487,9 @@ func encodeLegacyRelationshipEndorsementCursor(cursor string) string {
 	return soulRelationshipCursorLegacyEndorsementPrefix + cursor
 }
 
-func (s *Server) listLegacyRelationshipEndorsementCursorPage(ctx context.Context, agentIDHex string, legacyCursor string, limit int) ([]models.SoulAgentRelationship, bool, string, *apptheory.AppError) {
+func (s *Server) listLegacyRelationshipEndorsementCursorPage(ctx context.Context, agentIDHex string, legacyCursor string, limit int) ([]models.SoulAgentRelationship, bool, string, *apptheory.AppTheoryError) {
 	if strings.TrimSpace(legacyCursor) == "" {
-		return nil, false, "", &apptheory.AppError{Code: "app.bad_request", Message: "invalid cursor"}
+		return nil, false, "", newAppTheoryError("app.bad_request", "invalid cursor")
 	}
 	endorsements, hasMore, nextCursor, appErr := s.loadLegacyRelationshipEndorsements(ctx, agentIDHex, legacyCursor, limit)
 	if appErr != nil {
@@ -502,7 +502,7 @@ func (s *Server) listLegacyRelationshipEndorsementCursorPage(ctx context.Context
 	return endorsements, encodedNextCursor != "", encodedNextCursor, nil
 }
 
-func (s *Server) loadLegacyRelationshipEndorsements(ctx context.Context, agentIDHex string, cursor string, limit int) ([]models.SoulAgentRelationship, bool, string, *apptheory.AppError) {
+func (s *Server) loadLegacyRelationshipEndorsements(ctx context.Context, agentIDHex string, cursor string, limit int) ([]models.SoulAgentRelationship, bool, string, *apptheory.AppTheoryError) {
 	if limit <= 0 {
 		return nil, false, "", nil
 	}
@@ -517,7 +517,7 @@ func (s *Server) loadLegacyRelationshipEndorsements(ctx context.Context, agentID
 	}
 	paged, err := qb.AllPaginated(&endorsements)
 	if err != nil {
-		return nil, false, "", &apptheory.AppError{Code: "app.internal", Message: "failed to list endorsements"}
+		return nil, false, "", newAppTheoryError("app.internal", "failed to list endorsements")
 	}
 
 	out := make([]models.SoulAgentRelationship, 0, len(endorsements))
@@ -553,7 +553,7 @@ func isValidRelationshipType(relType string) bool {
 	return false
 }
 
-func parseRelationshipContext(raw json.RawMessage) (contextMap map[string]any, contextJSON string, taskType string, appErr *apptheory.AppError) {
+func parseRelationshipContext(raw json.RawMessage) (contextMap map[string]any, contextJSON string, taskType string, appErr *apptheory.AppTheoryError) {
 	rawStr := strings.TrimSpace(string(raw))
 	if rawStr == "" || rawStr == "null" {
 		return map[string]any{}, "", "", nil
@@ -568,14 +568,14 @@ func parseRelationshipContext(raw json.RawMessage) (contextMap map[string]any, c
 	// Legacy: context is a JSON string containing an object.
 	var legacyStr string
 	if err := json.Unmarshal(raw, &legacyStr); err != nil {
-		return nil, "", "", &apptheory.AppError{Code: "app.bad_request", Message: "context must be a JSON object"}
+		return nil, "", "", newAppTheoryError("app.bad_request", "context must be a JSON object")
 	}
 	legacyStr = strings.TrimSpace(legacyStr)
 	if legacyStr == "" {
 		return map[string]any{}, "", "", nil
 	}
 	if err := json.Unmarshal([]byte(legacyStr), &obj); err != nil {
-		return nil, "", "", &apptheory.AppError{Code: "app.bad_request", Message: "context must be a JSON object"}
+		return nil, "", "", newAppTheoryError("app.bad_request", "context must be a JSON object")
 	}
 	if obj == nil {
 		obj = map[string]any{}
@@ -612,14 +612,14 @@ func extractRelationshipTaskTypeFromMap(m map[string]any) string {
 	return strings.ToLower(strings.TrimSpace(raw))
 }
 
-func computeSoulRelationshipDigest(fromAgentIDHex string, toAgentIDHex string, relType string, context map[string]any, message string, createdAt string) ([]byte, *apptheory.AppError) {
+func computeSoulRelationshipDigest(fromAgentIDHex string, toAgentIDHex string, relType string, context map[string]any, message string, createdAt string) ([]byte, *apptheory.AppTheoryError) {
 	fromAgentIDHex = strings.ToLower(strings.TrimSpace(fromAgentIDHex))
 	toAgentIDHex = strings.ToLower(strings.TrimSpace(toAgentIDHex))
 	relType = strings.ToLower(strings.TrimSpace(relType))
 	message = strings.TrimSpace(message)
 	createdAt = strings.TrimSpace(createdAt)
 	if fromAgentIDHex == "" || toAgentIDHex == "" || relType == "" || message == "" || createdAt == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid relationship payload"}
+		return nil, newAppTheoryError("app.bad_request", "invalid relationship payload")
 	}
 	if len(context) == 0 {
 		context = nil
@@ -640,11 +640,11 @@ func computeSoulRelationshipDigest(fromAgentIDHex string, toAgentIDHex string, r
 
 	unsignedBytes, err := json.Marshal(unsigned)
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid relationship JSON"}
+		return nil, newAppTheoryError("app.bad_request", "invalid relationship JSON")
 	}
 	jcsBytes, err := jsoncanonicalizer.Transform(unsignedBytes)
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid relationship JSON"}
+		return nil, newAppTheoryError("app.bad_request", "invalid relationship JSON")
 	}
 	return crypto.Keccak256(jcsBytes), nil
 }

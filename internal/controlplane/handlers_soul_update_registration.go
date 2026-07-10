@@ -16,7 +16,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
 
 	"github.com/cyberphone/json-canonicalization/go/src/webpki.org/jsoncanonicalizer"
 
@@ -123,7 +123,7 @@ func (s *Server) UpdateSoulAgentRegistrationForInstance(
 	requestID string,
 	agentID string,
 	body []byte,
-) (*SoulAgentUpdateRegistrationResult, *apptheory.AppError) {
+) (*SoulAgentUpdateRegistrationResult, *apptheory.AppTheoryError) {
 	if appErr := s.requireSoulUpdateRegistrationInstancePrereqs(instanceSlug); appErr != nil {
 		return nil, appErr
 	}
@@ -159,7 +159,7 @@ func (s *Server) completeSoulAgentRegistrationUpdate(
 	identity *models.SoulAgentIdentity,
 	body []byte,
 	includeS3Key bool,
-) (*SoulAgentUpdateRegistrationResult, *apptheory.AppError) {
+) (*SoulAgentUpdateRegistrationResult, *apptheory.AppTheoryError) {
 	regBytes, reg, expectedVersion, appErr := parseSoulUpdateRegistrationBody(body)
 	if appErr != nil {
 		return nil, appErr
@@ -171,7 +171,7 @@ func (s *Server) completeSoulAgentRegistrationUpdate(
 	}
 	if err := verifyEthereumSignatureBytes(walletNorm, digest, selfSig); err != nil {
 		log.Printf("controlplane: soul_integrity invalid_registration_signature agent=%s request_id=%s", agentIDHex, strings.TrimSpace(requestID))
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid registration signature"}
+		return nil, newAppTheoryError("app.bad_request", "invalid registration signature")
 	}
 
 	schemaVersion, regV2, regV3, appErr := parseSoulUpdateRegistrationSchema(regBytes, reg)
@@ -220,7 +220,7 @@ func (s *Server) completeSoulAgentRegistrationUpdate(
 	return resp, nil
 }
 
-func (s *Server) requireSoulUpdateRegistrationPrereqs(ctx *apptheory.Context) *apptheory.AppError {
+func (s *Server) requireSoulUpdateRegistrationPrereqs(ctx *apptheory.Context) *apptheory.AppTheoryError {
 	if appErr := s.requireSoulRegistryConfigured(); appErr != nil {
 		return appErr
 	}
@@ -231,17 +231,17 @@ func (s *Server) requireSoulUpdateRegistrationPrereqs(ctx *apptheory.Context) *a
 		return appErr
 	}
 	if s == nil || s.store == nil || s.store.DB == nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return newAppTheoryError("app.internal", "internal error")
 	}
 	if s.soulPacks == nil {
-		return &apptheory.AppError{Code: "app.conflict", Message: "soul registry bucket is not configured"}
+		return newAppTheoryError("app.conflict", "soul registry bucket is not configured")
 	}
 	return nil
 }
 
-func (s *Server) requireSoulUpdateRegistrationInstancePrereqs(instanceSlug string) *apptheory.AppError {
+func (s *Server) requireSoulUpdateRegistrationInstancePrereqs(instanceSlug string) *apptheory.AppTheoryError {
 	if strings.TrimSpace(instanceSlug) == "" {
-		return &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
+		return newAppTheoryError("app.unauthorized", "unauthorized")
 	}
 	if appErr := s.requireSoulRegistryConfigured(); appErr != nil {
 		return appErr
@@ -250,20 +250,20 @@ func (s *Server) requireSoulUpdateRegistrationInstancePrereqs(instanceSlug strin
 		return appErr
 	}
 	if s == nil || s.store == nil || s.store.DB == nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return newAppTheoryError("app.internal", "internal error")
 	}
 	if s.soulPacks == nil {
-		return &apptheory.AppError{Code: "app.conflict", Message: "soul registry bucket is not configured"}
+		return newAppTheoryError("app.conflict", "soul registry bucket is not configured")
 	}
 	return nil
 }
 
-func (s *Server) validateSoulUpdateRegistrationPrincipalBinding(identity *models.SoulAgentIdentity, regV2 *soul.RegistrationFileV2, regV3 *soul.RegistrationFileV3) *apptheory.AppError {
+func (s *Server) validateSoulUpdateRegistrationPrincipalBinding(identity *models.SoulAgentIdentity, regV2 *soul.RegistrationFileV2, regV3 *soul.RegistrationFileV3) *apptheory.AppTheoryError {
 	if regV2 == nil && regV3 == nil {
 		return nil
 	}
 	if identity == nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return newAppTheoryError("app.internal", "internal error")
 	}
 
 	var principal *soul.PrincipalDeclarationV2
@@ -288,7 +288,7 @@ func (s *Server) validateSoulUpdateRegistrationPrincipalBinding(identity *models
 		if errors.Is(err, soul.ErrPrincipalBindingMissing) {
 			code = appErrCodeConflict
 		}
-		return &apptheory.AppError{Code: code, Message: err.Error()}
+		return newAppTheoryError(code, err.Error())
 	}
 
 	verifiedRegistration := &models.SoulAgentRegistration{
@@ -302,12 +302,12 @@ func (s *Server) validateSoulUpdateRegistrationPrincipalBinding(identity *models
 		return appErr
 	}
 	if err := verifyEthereumSignatureBytes(binding.Identifier, digest, binding.Signature); err != nil {
-		return &apptheory.AppError{Code: appErrCodeConflict, Message: "verified principal binding is invalid; re-verify agent principal"}
+		return newAppTheoryError(appErrCodeConflict, "verified principal binding is invalid; re-verify agent principal")
 	}
 	return nil
 }
 
-func parseSoulUpdateRegistrationSchema(regBytes []byte, reg map[string]any) (string, *soul.RegistrationFileV2, *soul.RegistrationFileV3, *apptheory.AppError) {
+func parseSoulUpdateRegistrationSchema(regBytes []byte, reg map[string]any) (string, *soul.RegistrationFileV2, *soul.RegistrationFileV3, *apptheory.AppTheoryError) {
 	schemaVersion := strings.TrimSpace(extractStringField(reg, "version"))
 	switch schemaVersion {
 	case "", "1":
@@ -315,23 +315,23 @@ func parseSoulUpdateRegistrationSchema(regBytes []byte, reg map[string]any) (str
 	case "2":
 		parsed, err := soul.ParseRegistrationFileV2(regBytes)
 		if err != nil {
-			return "", nil, nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid v2 registration schema"}
+			return "", nil, nil, newAppTheoryError("app.bad_request", "invalid v2 registration schema")
 		}
 		if err := parsed.Validate(); err != nil {
-			return "", nil, nil, &apptheory.AppError{Code: "app.bad_request", Message: err.Error()}
+			return "", nil, nil, newAppTheoryError("app.bad_request", err.Error())
 		}
 		return schemaVersion, parsed, nil, nil
 	case "3":
 		parsed, err := soul.ParseRegistrationFileV3(regBytes)
 		if err != nil {
-			return "", nil, nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid v3 registration schema"}
+			return "", nil, nil, newAppTheoryError("app.bad_request", "invalid v3 registration schema")
 		}
 		if err := parsed.Validate(); err != nil {
-			return "", nil, nil, &apptheory.AppError{Code: "app.bad_request", Message: err.Error()}
+			return "", nil, nil, newAppTheoryError("app.bad_request", err.Error())
 		}
 		return schemaVersion, nil, parsed, nil
 	default:
-		return "", nil, nil, &apptheory.AppError{Code: "app.bad_request", Message: "unsupported registration version"}
+		return "", nil, nil, newAppTheoryError("app.bad_request", "unsupported registration version")
 	}
 }
 
@@ -355,7 +355,7 @@ func (s *Server) publishSoulUpdateRegistration(
 	now time.Time,
 	regV2 *soul.RegistrationFileV2,
 	regV3 *soul.RegistrationFileV3,
-) (int, string, *apptheory.AppError) {
+) (int, string, *apptheory.AppTheoryError) {
 	changeSummary := extractStringField(reg, "changeSummary")
 	switch schemaVersion {
 	case "2":
@@ -386,7 +386,7 @@ func (s *Server) publishLegacySoulRegistration(
 	capsNorm []string,
 	claimLevels map[string]string,
 	now time.Time,
-) (int, string, *apptheory.AppError) {
+) (int, string, *apptheory.AppTheoryError) {
 	nextVersion, prevRegSHA256, appErr := s.getNextSoulAgentVersion(ctx, agentIDHex)
 	if appErr != nil {
 		return 0, "", appErr
@@ -399,10 +399,10 @@ func (s *Server) publishLegacySoulRegistration(
 	s3Key := soulRegistrationS3Key(agentIDHex)
 	versionedKey := soulRegistrationVersionedS3Key(agentIDHex, nextVersion)
 	if err := s.soulPacks.PutObject(ctx, versionedKey, regBytes, "application/json", "private, max-age=0"); err != nil {
-		return 0, "", &apptheory.AppError{Code: "app.internal", Message: "failed to publish versioned registration"}
+		return 0, "", newAppTheoryError("app.internal", "failed to publish versioned registration")
 	}
 	if err := s.soulPacks.PutObject(ctx, s3Key, regBytes, "application/json", "private, max-age=0"); err != nil {
-		return 0, "", &apptheory.AppError{Code: "app.internal", Message: "failed to publish registration"}
+		return 0, "", newAppTheoryError("app.internal", "failed to publish registration")
 	}
 	if appErr := s.updateSoulAgentCapabilities(ctx, identity, capsNorm, claimLevels, now, true); appErr != nil {
 		return 0, "", appErr
@@ -410,10 +410,10 @@ func (s *Server) publishLegacySoulRegistration(
 
 	versionRecord := buildSoulVersionRecord(agentIDHex, strings.TrimSpace(s.cfg.SoulPackBucketName), versionedKey, nextVersion, regSHA256, prevRegSHA256, changeSummary, selfSig, now)
 	if err := versionRecord.UpdateKeys(); err != nil {
-		return 0, "", &apptheory.AppError{Code: "app.internal", Message: "failed to record version history"}
+		return 0, "", newAppTheoryError("app.internal", "failed to record version history")
 	}
 	if err := s.store.DB.WithContext(ctx).Model(versionRecord).Create(); err != nil {
-		return 0, "", &apptheory.AppError{Code: "app.internal", Message: "failed to record version history"}
+		return 0, "", newAppTheoryError("app.internal", "failed to record version history")
 	}
 	return nextVersion, s3Key, nil
 }
@@ -441,9 +441,9 @@ func buildSoulVersionRecord(
 	}
 }
 
-func (s *Server) syncSoulV3StateFromRegistration(ctx context.Context, agentIDHex string, identity *models.SoulAgentIdentity, regV3 *soul.RegistrationFileV3, now time.Time) *apptheory.AppError {
+func (s *Server) syncSoulV3StateFromRegistration(ctx context.Context, agentIDHex string, identity *models.SoulAgentIdentity, regV3 *soul.RegistrationFileV3, now time.Time) *apptheory.AppTheoryError {
 	if s == nil || s.store == nil || s.store.DB == nil || identity == nil || regV3 == nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return newAppTheoryError("app.internal", "internal error")
 	}
 	agentIDHex = strings.ToLower(strings.TrimSpace(agentIDHex))
 
@@ -463,7 +463,7 @@ func (s *Server) syncSoulV3StateFromRegistration(ctx context.Context, agentIDHex
 	return s.syncSoulV3Channel(ctx, agentIDHex, identity, models.SoulChannelTypePhone, phoneDesired, nil, phoneIndex, nil)
 }
 
-func (s *Server) syncSoulV3ContactPreferences(ctx context.Context, agentIDHex string, prefs *soul.ContactPreferencesV3, now time.Time) *apptheory.AppError {
+func (s *Server) syncSoulV3ContactPreferences(ctx context.Context, agentIDHex string, prefs *soul.ContactPreferencesV3, now time.Time) *apptheory.AppTheoryError {
 	if prefs == nil {
 		pref := &models.SoulAgentContactPreferences{AgentID: agentIDHex}
 		_ = pref.UpdateKeys()
@@ -474,7 +474,7 @@ func (s *Server) syncSoulV3ContactPreferences(ctx context.Context, agentIDHex st
 	model := buildSoulV3ContactPreferencesModel(agentIDHex, prefs, now)
 	_ = model.UpdateKeys()
 	if err := s.store.DB.WithContext(ctx).Model(model).CreateOrUpdate(); err != nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "failed to update contact preferences"}
+		return newAppTheoryError("app.internal", "failed to update contact preferences")
 	}
 	return nil
 }
@@ -617,7 +617,7 @@ func (s *Server) syncSoulV3Channel(
 	desiredEmailIndex *models.SoulEmailAgentIndex,
 	desiredPhoneIndex *models.SoulPhoneAgentIndex,
 	desiredENS *models.SoulAgentENSResolution,
-) *apptheory.AppError {
+) *apptheory.AppTheoryError {
 	existing, err := s.loadExistingSoulChannel(ctx, agentIDHex, channelType)
 	if err != nil {
 		return err
@@ -627,7 +627,7 @@ func (s *Server) syncSoulV3Channel(
 		return appErr
 	}
 	if trustedManagedSoulChannelForIndex(existing) && !soulChannelsSameIdentifier(existing, desired) && legacyEmailAlias == nil {
-		return &apptheory.AppError{Code: "app.conflict", Message: "managed channel must be deprovisioned before changing identifier"}
+		return newAppTheoryError("app.conflict", "managed channel must be deprovisioned before changing identifier")
 	}
 	if legacyEmailAlias != nil {
 		preserveManagedSoulChannelProvisioningMetadata(desired, existing)
@@ -662,7 +662,7 @@ func (s *Server) buildLegacyEmailAliasForManagedMigration(
 	existing *models.SoulAgentChannel,
 	desired *models.SoulAgentChannel,
 	channelType string,
-) (*models.SoulEmailLegacyAliasIndex, *apptheory.AppError) {
+) (*models.SoulEmailLegacyAliasIndex, *apptheory.AppTheoryError) {
 	if channelType != models.SoulChannelTypeEmail || existing == nil || desired == nil {
 		return nil, nil
 	}
@@ -714,11 +714,11 @@ func expectedLegacyBareSoulEmailAlias(identity *models.SoulAgentIdentity) (strin
 	return localID + "@" + soulManagedEmailDomain, true
 }
 
-func (s *Server) loadExistingSoulChannel(ctx context.Context, agentIDHex string, channelType string) (*models.SoulAgentChannel, *apptheory.AppError) {
+func (s *Server) loadExistingSoulChannel(ctx context.Context, agentIDHex string, channelType string) (*models.SoulAgentChannel, *apptheory.AppTheoryError) {
 	sk := fmt.Sprintf("CHANNEL#%s", channelType)
 	existing, err := getSoulAgentItemBySK[models.SoulAgentChannel](s, ctx, agentIDHex, sk)
 	if err != nil && !theoryErrors.IsNotFound(err) {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to read channel"}
+		return nil, newAppTheoryError("app.internal", "failed to read channel")
 	}
 	return existing, nil
 }
@@ -757,7 +757,7 @@ func preserveManagedSoulChannelProvisioningMetadata(desired *models.SoulAgentCha
 	}
 }
 
-func (s *Server) cleanupSoulV3ChannelIndexes(ctx context.Context, agentIDHex string, channelType string, identity *models.SoulAgentIdentity, existing *models.SoulAgentChannel, desired *models.SoulAgentChannel) *apptheory.AppError {
+func (s *Server) cleanupSoulV3ChannelIndexes(ctx context.Context, agentIDHex string, channelType string, identity *models.SoulAgentIdentity, existing *models.SoulAgentChannel, desired *models.SoulAgentChannel) *apptheory.AppTheoryError {
 	if existing == nil || strings.TrimSpace(existing.Identifier) == "" || (desired != nil && strings.EqualFold(strings.TrimSpace(existing.Identifier), strings.TrimSpace(desired.Identifier))) {
 		return nil
 	}
@@ -766,19 +766,19 @@ func (s *Server) cleanupSoulV3ChannelIndexes(ctx context.Context, agentIDHex str
 		old := &models.SoulEmailAgentIndex{Email: existing.Identifier, AgentID: agentIDHex}
 		_ = old.UpdateKeys()
 		if err := s.deleteSoulEmailAgentIndexIfOwned(ctx, old); err != nil {
-			return &apptheory.AppError{Code: "app.internal", Message: "failed to delete email index"}
+			return newAppTheoryError("app.internal", "failed to delete email index")
 		}
 	case models.SoulChannelTypePhone:
 		old := &models.SoulPhoneAgentIndex{Phone: existing.Identifier, AgentID: agentIDHex}
 		_ = old.UpdateKeys()
 		if err := s.deleteSoulPhoneAgentIndexIfOwned(ctx, old); err != nil {
-			return &apptheory.AppError{Code: "app.internal", Message: "failed to delete phone index"}
+			return newAppTheoryError("app.internal", "failed to delete phone index")
 		}
 	case models.SoulChannelTypeENS:
 		old := &models.SoulAgentENSResolution{ENSName: existing.Identifier, AgentID: agentIDHex}
 		_ = old.UpdateKeys()
 		if err := s.deleteSoulENSResolutionIfOwned(ctx, old); err != nil {
-			return &apptheory.AppError{Code: "app.internal", Message: "failed to delete ens resolution"}
+			return newAppTheoryError("app.internal", "failed to delete ens resolution")
 		}
 	}
 	if desired == nil {
@@ -787,14 +787,14 @@ func (s *Server) cleanupSoulV3ChannelIndexes(ctx context.Context, agentIDHex str
 	return nil
 }
 
-func (s *Server) deleteSoulV3Channel(ctx context.Context, identity *models.SoulAgentIdentity, channelType string, existing *models.SoulAgentChannel) *apptheory.AppError {
+func (s *Server) deleteSoulV3Channel(ctx context.Context, identity *models.SoulAgentIdentity, channelType string, existing *models.SoulAgentChannel) *apptheory.AppTheoryError {
 	if existing != nil {
 		_ = s.store.DB.WithContext(ctx).Model(existing).Delete()
 	}
 	return s.deleteSoulChannelAgentIndex(ctx, identity, channelType, strings.TrimSpace(identity.AgentID))
 }
 
-func (s *Server) deleteSoulChannelAgentIndex(ctx context.Context, identity *models.SoulAgentIdentity, channelType string, agentIDHex string) *apptheory.AppError {
+func (s *Server) deleteSoulChannelAgentIndex(ctx context.Context, identity *models.SoulAgentIdentity, channelType string, agentIDHex string) *apptheory.AppTheoryError {
 	if channelType != models.SoulChannelTypeEmail && channelType != models.SoulChannelTypePhone {
 		return nil
 	}
@@ -820,10 +820,10 @@ func (s *Server) upsertSoulV3Channel(
 	desiredEmailIndex *models.SoulEmailAgentIndex,
 	desiredPhoneIndex *models.SoulPhoneAgentIndex,
 	desiredENS *models.SoulAgentENSResolution,
-) *apptheory.AppError {
+) *apptheory.AppTheoryError {
 	_ = desired.UpdateKeys()
 	if err := s.store.DB.WithContext(ctx).Model(desired).CreateOrUpdate(); err != nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "failed to update channel"}
+		return newAppTheoryError("app.internal", "failed to update channel")
 	}
 	if appErr := s.upsertSoulV3ChannelIndexes(ctx, identity, channelType, desired, desiredEmailIndex, desiredPhoneIndex, desiredENS); appErr != nil {
 		return appErr
@@ -839,7 +839,7 @@ func (s *Server) upsertSoulV3ChannelIndexes(
 	desiredEmailIndex *models.SoulEmailAgentIndex,
 	desiredPhoneIndex *models.SoulPhoneAgentIndex,
 	desiredENS *models.SoulAgentENSResolution,
-) *apptheory.AppError {
+) *apptheory.AppTheoryError {
 	trustedManaged := trustedManagedSoulChannelForIndex(desired)
 	if trustedManaged {
 		if appErr := s.ensureTrustedSoulContactIndexes(ctx, desiredEmailIndex, desiredPhoneIndex); appErr != nil {
@@ -868,12 +868,12 @@ func (s *Server) upsertSoulV3ChannelIndexes(
 	}
 	_ = idx.UpdateKeys()
 	if err := s.store.DB.WithContext(ctx).Model(idx).CreateOrUpdate(); err != nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "failed to update channel index"}
+		return newAppTheoryError("app.internal", "failed to update channel index")
 	}
 	return nil
 }
 
-func (s *Server) ensureTrustedSoulContactIndexes(ctx context.Context, emailIdx *models.SoulEmailAgentIndex, phoneIdx *models.SoulPhoneAgentIndex) *apptheory.AppError {
+func (s *Server) ensureTrustedSoulContactIndexes(ctx context.Context, emailIdx *models.SoulEmailAgentIndex, phoneIdx *models.SoulPhoneAgentIndex) *apptheory.AppTheoryError {
 	if emailIdx != nil {
 		if appErr := s.ensureSoulEmailAgentIndex(ctx, emailIdx); appErr != nil {
 			return appErr
@@ -921,7 +921,7 @@ func trustedManagedSoulChannelForIndex(ch *models.SoulAgentChannel) bool {
 	}
 }
 
-func (s *Server) ensureSoulEmailAgentIndex(ctx context.Context, idx *models.SoulEmailAgentIndex) *apptheory.AppError {
+func (s *Server) ensureSoulEmailAgentIndex(ctx context.Context, idx *models.SoulEmailAgentIndex) *apptheory.AppTheoryError {
 	if idx == nil {
 		return nil
 	}
@@ -936,7 +936,7 @@ func (s *Server) ensureSoulEmailAgentIndex(ctx context.Context, idx *models.Soul
 	})
 }
 
-func (s *Server) ensureSoulPhoneAgentIndex(ctx context.Context, idx *models.SoulPhoneAgentIndex) *apptheory.AppError {
+func (s *Server) ensureSoulPhoneAgentIndex(ctx context.Context, idx *models.SoulPhoneAgentIndex) *apptheory.AppTheoryError {
 	if idx == nil {
 		return nil
 	}
@@ -951,13 +951,13 @@ func (s *Server) ensureSoulPhoneAgentIndex(ctx context.Context, idx *models.Soul
 	})
 }
 
-func (s *Server) ensureSoulEmailLegacyAliasIndex(ctx context.Context, idx *models.SoulEmailLegacyAliasIndex) *apptheory.AppError {
+func (s *Server) ensureSoulEmailLegacyAliasIndex(ctx context.Context, idx *models.SoulEmailLegacyAliasIndex) *apptheory.AppTheoryError {
 	if idx == nil {
 		return nil
 	}
 	_ = idx.UpdateKeys()
 	if strings.TrimSpace(idx.AliasEmail) == "" || strings.TrimSpace(idx.CanonicalEmail) == "" || strings.TrimSpace(idx.AgentID) == "" {
-		return &apptheory.AppError{Code: "app.bad_request", Message: "legacy email alias is invalid"}
+		return newAppTheoryError("app.bad_request", "legacy email alias is invalid")
 	}
 	var existing models.SoulEmailLegacyAliasIndex
 	err := s.store.DB.WithContext(ctx).
@@ -969,20 +969,20 @@ func (s *Server) ensureSoulEmailLegacyAliasIndex(ctx context.Context, idx *model
 		if strings.EqualFold(strings.TrimSpace(existing.AgentID), strings.TrimSpace(idx.AgentID)) &&
 			strings.EqualFold(strings.TrimSpace(existing.CanonicalEmail), strings.TrimSpace(idx.CanonicalEmail)) {
 			if updateErr := s.store.DB.WithContext(ctx).Model(idx).CreateOrUpdate(); updateErr != nil {
-				return &apptheory.AppError{Code: "app.internal", Message: "failed to update legacy email alias"}
+				return newAppTheoryError("app.internal", "failed to update legacy email alias")
 			}
 			return nil
 		}
-		return &apptheory.AppError{Code: "app.conflict", Message: "legacy email alias is already assigned"}
+		return newAppTheoryError("app.conflict", "legacy email alias is already assigned")
 	}
 	if !theoryErrors.IsNotFound(err) {
-		return &apptheory.AppError{Code: "app.internal", Message: "failed to validate legacy email alias"}
+		return newAppTheoryError("app.internal", "failed to validate legacy email alias")
 	}
 	if err := s.store.DB.WithContext(ctx).Model(idx).Create(); err != nil {
 		if theoryErrors.IsConditionFailed(err) {
-			return &apptheory.AppError{Code: "app.conflict", Message: "legacy email alias is already assigned"}
+			return newAppTheoryError("app.conflict", "legacy email alias is already assigned")
 		}
-		return &apptheory.AppError{Code: "app.internal", Message: "failed to update legacy email alias"}
+		return newAppTheoryError("app.internal", "failed to update legacy email alias")
 	}
 	return nil
 }
@@ -1000,9 +1000,9 @@ func (s *Server) ensureSoulContactAgentIndex(
 	updateMessage string,
 	newExisting func() any,
 	owner func(any) string,
-) *apptheory.AppError {
+) *apptheory.AppTheoryError {
 	if strings.TrimSpace(identifier) == "" || strings.TrimSpace(agentID) == "" {
-		return &apptheory.AppError{Code: "app.bad_request", Message: invalidMessage}
+		return newAppTheoryError("app.bad_request", invalidMessage)
 	}
 	existing := newExisting()
 	err := s.store.DB.WithContext(ctx).
@@ -1014,27 +1014,27 @@ func (s *Server) ensureSoulContactAgentIndex(
 		if strings.EqualFold(strings.TrimSpace(owner(existing)), strings.TrimSpace(agentID)) {
 			return nil
 		}
-		return &apptheory.AppError{Code: "app.conflict", Message: conflictMessage}
+		return newAppTheoryError("app.conflict", conflictMessage)
 	}
 	if !theoryErrors.IsNotFound(err) {
-		return &apptheory.AppError{Code: "app.internal", Message: validateMessage}
+		return newAppTheoryError("app.internal", validateMessage)
 	}
 	if createErr := s.store.DB.WithContext(ctx).Model(idx).Create(); createErr != nil {
 		if theoryErrors.IsConditionFailed(createErr) {
-			return &apptheory.AppError{Code: "app.conflict", Message: conflictMessage}
+			return newAppTheoryError("app.conflict", conflictMessage)
 		}
-		return &apptheory.AppError{Code: "app.internal", Message: updateMessage}
+		return newAppTheoryError("app.internal", updateMessage)
 	}
 	return nil
 }
 
-func (s *Server) ensureSoulENSResolution(ctx context.Context, idx *models.SoulAgentENSResolution) *apptheory.AppError {
+func (s *Server) ensureSoulENSResolution(ctx context.Context, idx *models.SoulAgentENSResolution) *apptheory.AppTheoryError {
 	if idx == nil {
 		return nil
 	}
 	_ = idx.UpdateKeys()
 	if strings.TrimSpace(idx.ENSName) == "" || strings.TrimSpace(idx.AgentID) == "" {
-		return &apptheory.AppError{Code: "app.bad_request", Message: "ens resolution is invalid"}
+		return newAppTheoryError("app.bad_request", "ens resolution is invalid")
 	}
 	var existing models.SoulAgentENSResolution
 	err := s.store.DB.WithContext(ctx).
@@ -1045,32 +1045,32 @@ func (s *Server) ensureSoulENSResolution(ctx context.Context, idx *models.SoulAg
 	if err == nil {
 		if strings.EqualFold(strings.TrimSpace(existing.AgentID), strings.TrimSpace(idx.AgentID)) {
 			if updateErr := s.store.DB.WithContext(ctx).Model(idx).CreateOrUpdate(); updateErr != nil {
-				return &apptheory.AppError{Code: "app.internal", Message: "failed to update ens resolution"}
+				return newAppTheoryError("app.internal", "failed to update ens resolution")
 			}
 			return nil
 		}
-		return &apptheory.AppError{Code: "app.conflict", Message: "ens name is already provisioned"}
+		return newAppTheoryError("app.conflict", "ens name is already provisioned")
 	}
 	if !theoryErrors.IsNotFound(err) {
-		return &apptheory.AppError{Code: "app.internal", Message: "failed to validate ens resolution"}
+		return newAppTheoryError("app.internal", "failed to validate ens resolution")
 	}
 	if err := s.store.DB.WithContext(ctx).Model(idx).Create(); err != nil {
 		if theoryErrors.IsConditionFailed(err) {
-			return &apptheory.AppError{Code: "app.conflict", Message: "ens name is already provisioned"}
+			return newAppTheoryError("app.conflict", "ens name is already provisioned")
 		}
-		return &apptheory.AppError{Code: "app.internal", Message: "failed to update ens resolution"}
+		return newAppTheoryError("app.internal", "failed to update ens resolution")
 	}
 	return nil
 }
 
-func (s *Server) preflightSoulENSResolutionAssignable(ctx context.Context, idx *models.SoulAgentENSResolution) *apptheory.AppError {
+func (s *Server) preflightSoulENSResolutionAssignable(ctx context.Context, idx *models.SoulAgentENSResolution) *apptheory.AppTheoryError {
 	if idx == nil {
 		return nil
 	}
 	probe := *idx
 	_ = probe.UpdateKeys()
 	if strings.TrimSpace(probe.ENSName) == "" || strings.TrimSpace(probe.AgentID) == "" {
-		return &apptheory.AppError{Code: "app.bad_request", Message: "ens resolution is invalid"}
+		return newAppTheoryError("app.bad_request", "ens resolution is invalid")
 	}
 	var existing models.SoulAgentENSResolution
 	err := s.store.DB.WithContext(ctx).
@@ -1082,10 +1082,10 @@ func (s *Server) preflightSoulENSResolutionAssignable(ctx context.Context, idx *
 		if strings.EqualFold(strings.TrimSpace(existing.AgentID), strings.TrimSpace(probe.AgentID)) {
 			return nil
 		}
-		return &apptheory.AppError{Code: "app.conflict", Message: "ens name is already provisioned"}
+		return newAppTheoryError("app.conflict", "ens name is already provisioned")
 	}
 	if !theoryErrors.IsNotFound(err) {
-		return &apptheory.AppError{Code: "app.internal", Message: "failed to validate ens resolution"}
+		return newAppTheoryError("app.internal", "failed to validate ens resolution")
 	}
 	return nil
 }
@@ -1173,24 +1173,24 @@ func parseRFC3339Loose(raw string) (time.Time, bool) {
 	return time.Time{}, false
 }
 
-func (s *Server) requireActiveSoulAgentWithDomainAccess(ctx *apptheory.Context, agentIDHex string) (*models.SoulAgentIdentity, *apptheory.AppError) {
+func (s *Server) requireActiveSoulAgentWithDomainAccess(ctx *apptheory.Context, agentIDHex string) (*models.SoulAgentIdentity, *apptheory.AppTheoryError) {
 	if s == nil || s.store == nil || s.store.DB == nil || ctx == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	identity, err := s.getSoulAgentIdentity(ctx.Context(), agentIDHex)
 	if theoryErrors.IsNotFound(err) {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "agent not found"}
+		return nil, newAppTheoryError("app.not_found", "agent not found")
 	}
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	effectiveStatus := strings.TrimSpace(identity.LifecycleStatus)
 	if effectiveStatus == "" {
 		effectiveStatus = strings.TrimSpace(identity.Status)
 	}
 	if effectiveStatus != models.SoulAgentStatusActive {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "agent is not active"}
+		return nil, newAppTheoryError("app.conflict", "agent is not active")
 	}
 
 	if _, _, accessErr := s.requireSoulDomainAccess(ctx, strings.TrimSpace(identity.Domain)); accessErr != nil {
@@ -1199,17 +1199,17 @@ func (s *Server) requireActiveSoulAgentWithDomainAccess(ctx *apptheory.Context, 
 	return identity, nil
 }
 
-func (s *Server) requireActiveSoulAgentForInstance(ctx context.Context, agentIDHex string, instanceSlug string) (*models.SoulAgentIdentity, *apptheory.AppError) {
+func (s *Server) requireActiveSoulAgentForInstance(ctx context.Context, agentIDHex string, instanceSlug string) (*models.SoulAgentIdentity, *apptheory.AppTheoryError) {
 	if s == nil || s.store == nil || s.store.DB == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	identity, err := s.getSoulAgentIdentity(ctx, agentIDHex)
 	if theoryErrors.IsNotFound(err) {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "agent not found"}
+		return nil, newAppTheoryError("app.not_found", "agent not found")
 	}
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	effectiveStatus := strings.TrimSpace(identity.LifecycleStatus)
@@ -1217,7 +1217,7 @@ func (s *Server) requireActiveSoulAgentForInstance(ctx context.Context, agentIDH
 		effectiveStatus = strings.TrimSpace(identity.Status)
 	}
 	if effectiveStatus != models.SoulAgentStatusActive {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "agent is not active"}
+		return nil, newAppTheoryError("app.conflict", "agent is not active")
 	}
 
 	if appErr := s.requireSoulAgentInstanceAccess(ctx, instanceSlug, identity); appErr != nil {
@@ -1227,37 +1227,37 @@ func (s *Server) requireActiveSoulAgentForInstance(ctx context.Context, agentIDH
 	return identity, nil
 }
 
-func (s *Server) requireSoulAgentInstanceAccess(ctx context.Context, instanceSlug string, identity *models.SoulAgentIdentity) *apptheory.AppError {
+func (s *Server) requireSoulAgentInstanceAccess(ctx context.Context, instanceSlug string, identity *models.SoulAgentIdentity) *apptheory.AppTheoryError {
 	if s == nil || s.store == nil || s.store.DB == nil || identity == nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return newAppTheoryError("app.internal", "internal error")
 	}
 	instanceSlug = strings.TrimSpace(instanceSlug)
 	if instanceSlug == "" {
-		return &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
+		return newAppTheoryError("app.unauthorized", "unauthorized")
 	}
 
 	normalizedDomain := strings.ToLower(strings.TrimSpace(identity.Domain))
 	if normalizedDomain == "" {
-		return &apptheory.AppError{Code: "app.conflict", Message: "agent domain is invalid"}
+		return newAppTheoryError("app.conflict", "agent domain is invalid")
 	}
 
 	d, err := s.loadManagedStageAwareDomain(ctx, normalizedDomain)
 	if theoryErrors.IsNotFound(err) {
-		return &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
+		return newAppTheoryError("app.unauthorized", "unauthorized")
 	}
 	if err != nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return newAppTheoryError("app.internal", "internal error")
 	}
 	if d == nil || !domainIsVerifiedOrActive(d.Status) {
-		return &apptheory.AppError{Code: "app.conflict", Message: "agent domain is not verified"}
+		return newAppTheoryError("app.conflict", "agent domain is not verified")
 	}
 	if !strings.EqualFold(strings.TrimSpace(d.InstanceSlug), instanceSlug) {
-		return &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
+		return newAppTheoryError("app.unauthorized", "unauthorized")
 	}
 	return nil
 }
 
-func parseSoulUpdateRegistrationBody(body []byte) ([]byte, map[string]any, *int, *apptheory.AppError) {
+func parseSoulUpdateRegistrationBody(body []byte) ([]byte, map[string]any, *int, *apptheory.AppTheoryError) {
 	regBytes := body
 
 	var wrapper struct {
@@ -1277,7 +1277,7 @@ func parseSoulUpdateRegistrationBody(body []byte) ([]byte, map[string]any, *int,
 
 	var reg map[string]any
 	if unmarshalErr := json.Unmarshal(regBytes, &reg); unmarshalErr != nil {
-		return nil, nil, nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid JSON"}
+		return nil, nil, nil, newAppTheoryError("app.bad_request", "invalid JSON")
 	}
 	return regBytes, reg, expectedVersion, nil
 }
@@ -1288,9 +1288,9 @@ func (s *Server) validateSoulUpdateRegistrationDocument(
 	agentIDHex string,
 	agentInt *big.Int,
 	identity *models.SoulAgentIdentity,
-) (walletNorm string, capsNorm []string, selfSig string, digest []byte, appErr *apptheory.AppError) {
+) (walletNorm string, capsNorm []string, selfSig string, digest []byte, appErr *apptheory.AppTheoryError) {
 	if s == nil || identity == nil {
-		return "", nil, "", nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return "", nil, "", nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	if validateErr := validateSoulUpdateRegistrationIdentityFields(reg, agentIDHex, identity); validateErr != nil {
@@ -1326,9 +1326,9 @@ func (s *Server) validateSoulUpdateRegistrationDocument(
 	return walletNorm, capsNorm, selfSig, digest, nil
 }
 
-func validateSoulUpdateRegistrationIdentityFields(reg map[string]any, agentIDHex string, identity *models.SoulAgentIdentity) *apptheory.AppError {
+func validateSoulUpdateRegistrationIdentityFields(reg map[string]any, agentIDHex string, identity *models.SoulAgentIdentity) *apptheory.AppTheoryError {
 	if identity == nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return newAppTheoryError("app.internal", "internal error")
 	}
 
 	bodyAgentID := strings.ToLower(extractStringField(reg, "agentId"))
@@ -1336,12 +1336,12 @@ func validateSoulUpdateRegistrationIdentityFields(reg map[string]any, agentIDHex
 		bodyAgentID = strings.ToLower(extractStringField(reg, "agent_id"))
 	}
 	if !strings.EqualFold(bodyAgentID, agentIDHex) {
-		return &apptheory.AppError{Code: "app.bad_request", Message: "agentId does not match path"}
+		return newAppTheoryError("app.bad_request", "agentId does not match path")
 	}
 
 	bodyDomain := strings.ToLower(extractStringField(reg, "domain"))
 	if bodyDomain == "" || !strings.EqualFold(bodyDomain, strings.TrimSpace(identity.Domain)) {
-		return &apptheory.AppError{Code: "app.bad_request", Message: "domain does not match agent"}
+		return newAppTheoryError("app.bad_request", "domain does not match agent")
 	}
 
 	bodyLocal := extractStringField(reg, "localId")
@@ -1350,49 +1350,49 @@ func validateSoulUpdateRegistrationIdentityFields(reg map[string]any, agentIDHex
 	}
 	localNorm, err := soul.ValidateManagedHandle(bodyLocal)
 	if err != nil {
-		return &apptheory.AppError{Code: "app.bad_request", Message: err.Error()}
+		return newAppTheoryError("app.bad_request", err.Error())
 	}
 	if !strings.EqualFold(localNorm, strings.TrimSpace(identity.LocalID)) {
-		return &apptheory.AppError{Code: "app.bad_request", Message: "localId does not match agent"}
+		return newAppTheoryError("app.bad_request", "localId does not match agent")
 	}
 
 	return nil
 }
 
-func extractSoulUpdateRegistrationSelfAttestation(reg map[string]any) (att map[string]any, selfSig string, appErr *apptheory.AppError) {
+func extractSoulUpdateRegistrationSelfAttestation(reg map[string]any) (att map[string]any, selfSig string, appErr *apptheory.AppTheoryError) {
 	attAny, ok := reg["attestations"]
 	if !ok {
-		return nil, "", &apptheory.AppError{Code: "app.bad_request", Message: "attestations are required"}
+		return nil, "", newAppTheoryError("app.bad_request", "attestations are required")
 	}
 	att, ok = attAny.(map[string]any)
 	if !ok {
-		return nil, "", &apptheory.AppError{Code: "app.bad_request", Message: "attestations must be an object"}
+		return nil, "", newAppTheoryError("app.bad_request", "attestations must be an object")
 	}
 	selfSig = extractStringField(att, "selfAttestation")
 	if selfSig == "" {
-		return nil, "", &apptheory.AppError{Code: "app.bad_request", Message: "attestations.selfAttestation is required"}
+		return nil, "", newAppTheoryError("app.bad_request", "attestations.selfAttestation is required")
 	}
 	return att, selfSig, nil
 }
 
-func computeSoulUpdateRegistrationDigest(reg map[string]any, att map[string]any) ([]byte, *apptheory.AppError) {
+func computeSoulUpdateRegistrationDigest(reg map[string]any, att map[string]any) ([]byte, *apptheory.AppTheoryError) {
 	// Compute canonical digest over the full JSON document, omitting attestations.selfAttestation.
 	delete(att, "selfAttestation")
 
 	unsignedBytes, err := json.Marshal(reg)
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid registration JSON"}
+		return nil, newAppTheoryError("app.bad_request", "invalid registration JSON")
 	}
 	jcsBytes, err := jsoncanonicalizer.Transform(unsignedBytes)
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid registration JSON"}
+		return nil, newAppTheoryError("app.bad_request", "invalid registration JSON")
 	}
 	return crypto.Keccak256(jcsBytes), nil
 }
 
-func (s *Server) verifySoulAgentWalletOnChain(ctx context.Context, agentInt *big.Int, walletNorm string, identity *models.SoulAgentIdentity) *apptheory.AppError {
+func (s *Server) verifySoulAgentWalletOnChain(ctx context.Context, agentInt *big.Int, walletNorm string, identity *models.SoulAgentIdentity) *apptheory.AppTheoryError {
 	if s == nil || identity == nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return newAppTheoryError("app.internal", "internal error")
 	}
 
 	contractAddr, _, appErr := s.soulRegistryContractAddress()
@@ -1406,22 +1406,22 @@ func (s *Server) verifySoulAgentWalletOnChain(ctx context.Context, agentInt *big
 	}
 	client, err := dial(ctx, s.cfg.SoulRPCURL)
 	if err != nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "failed to connect to rpc"}
+		return newAppTheoryError("app.internal", "failed to connect to rpc")
 	}
 	defer client.Close()
 
 	onChainWallet, err := s.soulRegistryGetAgentWallet(ctx, client, contractAddr, agentInt)
 	if err != nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "failed to read agent wallet"}
+		return newAppTheoryError("app.internal", "failed to read agent wallet")
 	}
 	if (onChainWallet == common.Address{}) {
-		return &apptheory.AppError{Code: "app.conflict", Message: "agent is not minted"}
+		return newAppTheoryError("app.conflict", "agent is not minted")
 	}
 	if !strings.EqualFold(onChainWallet.Hex(), walletNorm) {
-		return &apptheory.AppError{Code: "app.bad_request", Message: "wallet does not match on-chain state"}
+		return newAppTheoryError("app.bad_request", "wallet does not match on-chain state")
 	}
 	if !strings.EqualFold(walletNorm, strings.TrimSpace(identity.Wallet)) {
-		return &apptheory.AppError{Code: "app.conflict", Message: "agent wallet is out of sync; record operation execution first"}
+		return newAppTheoryError("app.conflict", "agent wallet is out of sync; record operation execution first")
 	}
 	return nil
 }
@@ -1496,9 +1496,9 @@ func recordCapabilityClaimLevel(out map[string]string, item any) {
 
 // getNextSoulAgentVersion returns the next version number, plus the sha256 digest
 // recorded for the current "latest" version (if present) to allow building a tamper-evident chain.
-func (s *Server) getNextSoulAgentVersion(ctx context.Context, agentIDHex string) (nextVersion int, prevRegistrationSHA256 string, appErr *apptheory.AppError) {
+func (s *Server) getNextSoulAgentVersion(ctx context.Context, agentIDHex string) (nextVersion int, prevRegistrationSHA256 string, appErr *apptheory.AppTheoryError) {
 	if s == nil || s.store == nil || s.store.DB == nil {
-		return 0, "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return 0, "", newAppTheoryError("app.internal", "internal error")
 	}
 
 	var items []*models.SoulAgentVersion
@@ -1508,7 +1508,7 @@ func (s *Server) getNextSoulAgentVersion(ctx context.Context, agentIDHex string)
 		Where("SK", "BEGINS_WITH", "VERSION#").
 		All(&items)
 	if err != nil {
-		return 0, "", &apptheory.AppError{Code: "app.internal", Message: "failed to read version history"}
+		return 0, "", newAppTheoryError("app.internal", "failed to read version history")
 	}
 
 	max := 0
@@ -1525,18 +1525,18 @@ func (s *Server) getNextSoulAgentVersion(ctx context.Context, agentIDHex string)
 	return max + 1, prevHash, nil
 }
 
-func (s *Server) validateSoulRegistrationPreviousVersionURI(reg *soul.RegistrationFileV2, agentIDHex string, nextVersion int) *apptheory.AppError {
+func (s *Server) validateSoulRegistrationPreviousVersionURI(reg *soul.RegistrationFileV2, agentIDHex string, nextVersion int) *apptheory.AppTheoryError {
 	if s == nil || reg == nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return newAppTheoryError("app.internal", "internal error")
 	}
 	return validateSoulRegistrationPreviousVersionURIValue(strings.TrimSpace(s.cfg.SoulPackBucketName), agentIDHex, nextVersion, reg.PreviousVersionURI)
 }
 
-func validateSoulRegistrationPreviousVersionURIValue(bucketName string, agentIDHex string, nextVersion int, previousVersionURI *string) *apptheory.AppError {
+func validateSoulRegistrationPreviousVersionURIValue(bucketName string, agentIDHex string, nextVersion int, previousVersionURI *string) *apptheory.AppTheoryError {
 	if nextVersion <= 1 {
 		if strings.TrimSpace(ptrString(previousVersionURI)) != "" {
 			log.Printf("controlplane: soul_integrity version_chain_violation agent=%s next_version=%d reason=prev_uri_set_on_first", agentIDHex, nextVersion)
-			return &apptheory.AppError{Code: "app.bad_request", Message: "previousVersionUri must be null for the first version"}
+			return newAppTheoryError("app.bad_request", "previousVersionUri must be null for the first version")
 		}
 		return nil
 	}
@@ -1544,13 +1544,13 @@ func validateSoulRegistrationPreviousVersionURIValue(bucketName string, agentIDH
 	currentURI := strings.TrimSpace(ptrString(previousVersionURI))
 	if currentURI == "" {
 		log.Printf("controlplane: soul_integrity version_chain_violation agent=%s next_version=%d reason=missing_prev_uri", agentIDHex, nextVersion)
-		return &apptheory.AppError{Code: "app.bad_request", Message: "previousVersionUri is required for subsequent versions"}
+		return newAppTheoryError("app.bad_request", "previousVersionUri is required for subsequent versions")
 	}
 
 	expectedURI := fmt.Sprintf("s3://%s/%s", bucketName, soulRegistrationVersionedS3Key(agentIDHex, nextVersion-1))
 	if currentURI != expectedURI {
 		log.Printf("controlplane: soul_integrity version_chain_violation agent=%s next_version=%d reason=prev_uri_mismatch expected=%s got=%s", agentIDHex, nextVersion, expectedURI, currentURI)
-		return &apptheory.AppError{Code: "app.bad_request", Message: "previousVersionUri does not match the expected previous version"}
+		return newAppTheoryError("app.bad_request", "previousVersionUri does not match the expected previous version")
 	}
 	return nil
 }
@@ -1562,9 +1562,9 @@ func ptrString(v *string) string {
 	return *v
 }
 
-func (s *Server) updateSoulAgentCapabilities(ctx context.Context, identity *models.SoulAgentIdentity, capsNorm []string, claimLevels map[string]string, now time.Time, skipTransitionValidation bool) *apptheory.AppError {
+func (s *Server) updateSoulAgentCapabilities(ctx context.Context, identity *models.SoulAgentIdentity, capsNorm []string, claimLevels map[string]string, now time.Time, skipTransitionValidation bool) *apptheory.AppTheoryError {
 	if s == nil || s.store == nil || s.store.DB == nil || identity == nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return newAppTheoryError("app.internal", "internal error")
 	}
 
 	oldCaps := normalizeSoulCapabilitiesLoose(identity.Capabilities)
@@ -1582,7 +1582,7 @@ func (s *Server) updateSoulAgentCapabilities(ctx context.Context, identity *mode
 	_ = identity.UpdateKeys()
 
 	if err := s.store.DB.WithContext(ctx).Model(identity).IfExists().Update("Capabilities", "UpdatedAt"); err != nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "failed to update identity"}
+		return newAppTheoryError("app.internal", "failed to update identity")
 	}
 
 	// Capability index maintenance (best-effort).
@@ -1644,9 +1644,9 @@ func claimLevelRank(cl string) int {
 	}
 }
 
-func (s *Server) getExistingCapabilityClaimLevel(ctx context.Context, identity *models.SoulAgentIdentity, capability string) (string, *apptheory.AppError) {
+func (s *Server) getExistingCapabilityClaimLevel(ctx context.Context, identity *models.SoulAgentIdentity, capability string) (string, *apptheory.AppTheoryError) {
 	if s == nil || s.store == nil || s.store.DB == nil || identity == nil {
-		return "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return "", newAppTheoryError("app.internal", "internal error")
 	}
 
 	idx := &models.SoulCapabilityAgentIndex{
@@ -1667,7 +1667,7 @@ func (s *Server) getExistingCapabilityClaimLevel(ctx context.Context, identity *
 		return soulClaimLevelSelfDeclared, nil
 	}
 	if err != nil {
-		return "", &apptheory.AppError{Code: "app.internal", Message: "failed to read capability index"}
+		return "", newAppTheoryError("app.internal", "failed to read capability index")
 	}
 
 	cl := strings.ToLower(strings.TrimSpace(existing.ClaimLevel))
@@ -1677,9 +1677,9 @@ func (s *Server) getExistingCapabilityClaimLevel(ctx context.Context, identity *
 	return cl, nil
 }
 
-func (s *Server) validateCapabilityClaimLevelTransitions(ctx context.Context, identity *models.SoulAgentIdentity, caps []string, claimLevels map[string]string) *apptheory.AppError {
+func (s *Server) validateCapabilityClaimLevelTransitions(ctx context.Context, identity *models.SoulAgentIdentity, caps []string, claimLevels map[string]string) *apptheory.AppTheoryError {
 	if s == nil || identity == nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return newAppTheoryError("app.internal", "internal error")
 	}
 
 	for _, cap := range caps {
@@ -1689,7 +1689,7 @@ func (s *Server) validateCapabilityClaimLevelTransitions(ctx context.Context, id
 		}
 		normNew, ok := normalizeCapabilityClaimLevel(newLevel)
 		if !ok {
-			return &apptheory.AppError{Code: "app.bad_request", Message: "invalid claimLevel for capability: " + cap}
+			return newAppTheoryError("app.bad_request", "invalid claimLevel for capability: "+cap)
 		}
 
 		oldLevel, appErr := s.getExistingCapabilityClaimLevel(ctx, identity, cap)
@@ -1702,17 +1702,14 @@ func (s *Server) validateCapabilityClaimLevelTransitions(ctx context.Context, id
 		}
 
 		if normOld == soulClaimLevelDeprecated && normNew != soulClaimLevelDeprecated {
-			return &apptheory.AppError{Code: "app.bad_request", Message: "cannot un-deprecate capability: " + cap}
+			return newAppTheoryError("app.bad_request", "cannot un-deprecate capability: "+cap)
 		}
 		if normNew == soulClaimLevelDeprecated {
 			continue
 		}
 
 		if claimLevelRank(normNew) < claimLevelRank(normOld) {
-			return &apptheory.AppError{
-				Code:    "app.bad_request",
-				Message: fmt.Sprintf("invalid claimLevel transition for capability %s: %s -> %s", cap, normOld, normNew),
-			}
+			return newAppTheoryError("app.bad_request", fmt.Sprintf("invalid claimLevel transition for capability %s: %s -> %s", cap, normOld, normNew))
 		}
 	}
 

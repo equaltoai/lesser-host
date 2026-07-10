@@ -6,14 +6,14 @@ import (
 	"strings"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
-func (s *Server) validateNotPrivilegedWalletAddress(ctx context.Context, walletType string, address string, field string) *apptheory.AppError {
+func (s *Server) validateNotPrivilegedWalletAddress(ctx context.Context, walletType string, address string, field string) *apptheory.AppTheoryError {
 	if s == nil || s.store == nil || s.store.DB == nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return newAppTheoryError("app.internal", "internal error")
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -25,7 +25,7 @@ func (s *Server) validateNotPrivilegedWalletAddress(ctx context.Context, walletT
 	}
 	address = strings.ToLower(strings.TrimSpace(address))
 	if address == "" {
-		return &apptheory.AppError{Code: "app.bad_request", Message: "wallet address is required"}
+		return newAppTheoryError("app.bad_request", "wallet address is required")
 	}
 
 	var index models.WalletIndex
@@ -38,7 +38,7 @@ func (s *Server) validateNotPrivilegedWalletAddress(ctx context.Context, walletT
 		return nil
 	}
 	if err != nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return newAppTheoryError("app.internal", "internal error")
 	}
 
 	username := strings.TrimSpace(index.Username)
@@ -55,10 +55,10 @@ func (s *Server) validateNotPrivilegedWalletAddress(ctx context.Context, walletT
 		First(&user)
 	if theoryErrors.IsNotFound(err) {
 		// Wallet index without a user profile is unexpected and indicates store drift.
-		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return newAppTheoryError("app.internal", "internal error")
 	}
 	if err != nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return newAppTheoryError("app.internal", "internal error")
 	}
 
 	role := strings.ToLower(strings.TrimSpace(user.Role))
@@ -71,5 +71,5 @@ func (s *Server) validateNotPrivilegedWalletAddress(ctx context.Context, walletT
 	if field != "" {
 		msg = field + " is not allowed"
 	}
-	return &apptheory.AppError{Code: "app.bad_request", Message: msg}
+	return newAppTheoryError("app.bad_request", msg)
 }

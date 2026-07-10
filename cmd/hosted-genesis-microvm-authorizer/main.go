@@ -29,11 +29,15 @@ func main() {
 func handle(ctx context.Context, event events.APIGatewayV2CustomAuthorizerV2Request) (events.APIGatewayV2CustomAuthorizerSimpleResponse, error) {
 	_ = ctx
 	allowed := authorize(event, os.Getenv)
+	scope := "hosted-genesis-microvm"
+	if stage := authorizedStage(os.Getenv("STAGE")); stage != "" {
+		scope += "-" + stage
+	}
 	return events.APIGatewayV2CustomAuthorizerSimpleResponse{
 		IsAuthorized: allowed,
 		Context: map[string]interface{}{
 			"authenticated": allowed,
-			"scope":         "hosted-genesis-microvm-lab",
+			"scope":         scope,
 		},
 	}, nil
 }
@@ -42,7 +46,7 @@ func authorize(event events.APIGatewayV2CustomAuthorizerV2Request, getenv func(s
 	if getenv == nil {
 		getenv = os.Getenv
 	}
-	if strings.TrimSpace(getenv("STAGE")) != "lab" {
+	if authorizedStage(getenv("STAGE")) == "" {
 		return false
 	}
 	expected := normalizeSHA256(getenv("HOSTED_GENESIS_MICROVM_AUTH_TOKEN_SHA256"))
@@ -60,6 +64,17 @@ func authorize(event events.APIGatewayV2CustomAuthorizerV2Request, getenv func(s
 	sum := sha256.Sum256([]byte(token))
 	got := hex.EncodeToString(sum[:])
 	return subtle.ConstantTimeCompare([]byte(got), []byte(expected)) == 1
+}
+
+func authorizedStage(stage string) string {
+	switch strings.ToLower(strings.TrimSpace(stage)) {
+	case "lab":
+		return "lab"
+	case "live":
+		return "live"
+	default:
+		return ""
+	}
 }
 
 func normalizeSHA256(value string) string {

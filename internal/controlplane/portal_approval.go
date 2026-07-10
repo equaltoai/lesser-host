@@ -8,9 +8,9 @@ import (
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
-func (s *Server) requirePortalApproved(ctx *apptheory.Context) *apptheory.AppError {
+func (s *Server) requirePortalApproved(ctx *apptheory.Context) *apptheory.AppTheoryError {
 	if s == nil || ctx == nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return newAppTheoryError("app.internal", "internal error")
 	}
 	if isOperator(ctx) {
 		return nil
@@ -18,18 +18,18 @@ func (s *Server) requirePortalApproved(ctx *apptheory.Context) *apptheory.AppErr
 
 	username := strings.TrimSpace(ctx.AuthIdentity)
 	if username == "" {
-		return &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
+		return newAppTheoryError("app.unauthorized", "unauthorized")
 	}
 
 	user, found, err := s.getUserProfile(ctx, username)
 	if err != nil {
-		if appErr, ok := err.(*apptheory.AppError); ok {
+		if appErr, ok := err.(*apptheory.AppTheoryError); ok {
 			return appErr
 		}
-		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return newAppTheoryError("app.internal", "internal error")
 	}
 	if !found {
-		return &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
+		return newAppTheoryError("app.unauthorized", "unauthorized")
 	}
 
 	status := strings.ToLower(strings.TrimSpace(user.ApprovalStatus))
@@ -37,15 +37,15 @@ func (s *Server) requirePortalApproved(ctx *apptheory.Context) *apptheory.AppErr
 		if user.Approved {
 			return nil
 		}
-		return &apptheory.AppError{Code: "app.forbidden", Message: "approval required"}
+		return newAppTheoryError("app.forbidden", "approval required")
 	}
 
 	switch status {
 	case models.UserApprovalStatusApproved:
 		return nil
 	case models.UserApprovalStatusRejected:
-		return &apptheory.AppError{Code: "app.forbidden", Message: "approval rejected"}
+		return newAppTheoryError("app.forbidden", "approval rejected")
 	default:
-		return &apptheory.AppError{Code: "app.forbidden", Message: "approval required"}
+		return newAppTheoryError("app.forbidden", "approval required")
 	}
 }

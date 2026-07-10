@@ -7,14 +7,14 @@ import (
 	"time"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/ai"
 	"github.com/equaltoai/lesser-host/internal/billing"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
-func (s *Server) precheckAIBudget(ctx context.Context, instanceSlug string, baseCredits int64, pricingMultiplierBps int64, allowOverage bool) (*ai.BudgetDecision, *apptheory.AppError) {
+func (s *Server) precheckAIBudget(ctx context.Context, instanceSlug string, baseCredits int64, pricingMultiplierBps int64, allowOverage bool) (*ai.BudgetDecision, *apptheory.AppTheoryError) {
 	instanceSlug = strings.TrimSpace(instanceSlug)
 	creditsRequested := billing.PricedCredits(baseCredits, pricingMultiplierBps)
 	month := time.Now().UTC().Format("2006-01")
@@ -29,7 +29,7 @@ func (s *Server) precheckAIBudget(ctx context.Context, instanceSlug string, base
 		}, nil
 	}
 	if s == nil || s.store == nil || s.store.DB == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	var budget models.InstanceBudgetMonth
@@ -50,7 +50,7 @@ func (s *Server) precheckAIBudget(ctx context.Context, instanceSlug string, base
 		}, nil
 	}
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	remaining := budget.IncludedCredits - budget.UsedCredits

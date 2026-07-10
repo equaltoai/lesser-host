@@ -9,7 +9,7 @@ import (
 	"time"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/domains"
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
@@ -31,14 +31,14 @@ const (
 	soulInstanceBootstrapBoundaryInstanceDomain  = "instance_domain"
 )
 
-// appErrCodeMicroVMUnavailable is the control-plane AppError code emitted when
+// appErrCodeMicroVMUnavailable is the control-plane AppTheoryError code emitted when
 // the hosted genesis accept path cannot dispatch the M16 MicroVM controller
 // run. It maps to a loud 5xx at every public surface so MicroVM-unavailable is
 // never confused with a generic internal error or silently downgraded to a
 // synchronous control-plane LLM call.
 const appErrCodeMicroVMUnavailable = "app.microvm_unavailable"
 
-// appErrCodeAssistantTurnFailed is the control-plane AppError code emitted when
+// appErrCodeAssistantTurnFailed is the control-plane AppTheoryError code emitted when
 // a hosted genesis assistant turn failed (the LLM provider errored or returned
 // an empty response on the retained non-production sync path). H1.4 (kills G10a)
 // makes a failed turn surface as a loud non-2xx typed failure instead of HTTP
@@ -286,10 +286,7 @@ func (s *Server) requireSoulInstanceBootstrapContext(ctx *apptheory.Context) (so
 		return soulInstanceBootstrapContext{}, appErr
 	}
 	if !s.cfg.SoulEnabled {
-		return soulInstanceBootstrapContext{}, soulInstanceBootstrapErrorFromAppError(&apptheory.AppError{
-			Code:    appErrCodeConflict,
-			Message: "soul registry is not configured",
-		})
+		return soulInstanceBootstrapContext{}, soulInstanceBootstrapErrorFromAppError(newAppTheoryError(appErrCodeConflict, "soul registry is not configured"))
 	}
 	return soulInstanceBootstrapContext{key: key, instanceSlug: strings.TrimSpace(key.InstanceSlug)}, nil
 }
@@ -352,14 +349,14 @@ func (s *Server) requireSoulInstanceBootstrapConversationContext(ctx *apptheory.
 
 func (s *Server) loadSoulInstanceMintConversationFinalizeContext(ctx *apptheory.Context, convCtx soulInstanceBootstrapConversationContext) (mintConversationFinalizeContext, *apptheory.AppTheoryError) {
 	if s == nil || s.soulPacks == nil || strings.TrimSpace(s.cfg.SoulPackBucketName) == "" {
-		return mintConversationFinalizeContext{}, soulInstanceBootstrapConversationErrorFromAppError(&apptheory.AppError{Code: "app.conflict", Message: "soul registry bucket is not configured"})
+		return mintConversationFinalizeContext{}, soulInstanceBootstrapConversationErrorFromAppError(newAppTheoryError("app.conflict", "soul registry bucket is not configured"))
 	}
 	if appErr := requireHostedGenesisSessionReadyForFinalize(convCtx.session, "conversation is not completed", "conversation has no produced declarations"); appErr != nil {
 		return mintConversationFinalizeContext{}, soulInstanceBootstrapConversationErrorFromAppError(appErr)
 	}
 	identity, err := s.getSoulAgentIdentity(ctx.Context(), convCtx.agentIDHex)
 	if theoryErrors.IsNotFound(err) {
-		return mintConversationFinalizeContext{}, soulInstanceBootstrapConversationErrorFromAppError(&apptheory.AppError{Code: "app.conflict", Message: "registration is not yet verified"})
+		return mintConversationFinalizeContext{}, soulInstanceBootstrapConversationErrorFromAppError(newAppTheoryError("app.conflict", "registration is not yet verified"))
 	}
 	if err != nil {
 		return mintConversationFinalizeContext{}, soulInstanceBootstrapError(soulInstanceBootstrapCodeInternal, "internal error", http.StatusInternalServerError, nil)
@@ -380,7 +377,7 @@ func (s *Server) loadSoulInstanceMintConversationFinalizeContext(ctx *apptheory.
 		strings.TrimSpace(identity.PrincipalSignature) == "" ||
 		strings.TrimSpace(identity.PrincipalDeclaration) == "" ||
 		strings.TrimSpace(identity.PrincipalDeclaredAt) == "" {
-		return mintConversationFinalizeContext{}, soulInstanceBootstrapConversationErrorFromAppError(&apptheory.AppError{Code: "app.conflict", Message: "principal declaration is missing; re-verify registration"})
+		return mintConversationFinalizeContext{}, soulInstanceBootstrapConversationErrorFromAppError(newAppTheoryError("app.conflict", "principal declaration is missing; re-verify registration"))
 	}
 	return mintConversationFinalizeContext{
 		reg:            convCtx.reg,
@@ -547,7 +544,7 @@ func (s *Server) replaySoulInstanceCompletedRegistration(
 	if op != nil {
 		safeTx = parseSafeTxPayload(op.SafePayloadJSON)
 	} else {
-		var opErr *apptheory.AppError
+		var opErr *apptheory.AppTheoryError
 		op, safeTx, _, opErr = s.createSoulMintOperation(ctx.Context(), reg, principalAddr, principalSig, principalDeclaration, declaredAt)
 		if opErr != nil {
 			return soulAgentRegistrationVerifyResponse{}, soulInstanceBootstrapErrorFromAppError(opErr)
@@ -668,7 +665,7 @@ func soulInstanceMintConversationCompletionConflictFromSession(session *models.H
 	)
 }
 
-func soulInstanceBootstrapErrorFromAppError(appErr *apptheory.AppError) *apptheory.AppTheoryError {
+func soulInstanceBootstrapErrorFromAppError(appErr *apptheory.AppTheoryError) *apptheory.AppTheoryError {
 	if appErr == nil {
 		return nil
 	}
@@ -696,18 +693,17 @@ func soulInstanceBootstrapErrorFromError(err error) error {
 	if err == nil {
 		return nil
 	}
-	var theoryErr *apptheory.AppTheoryError
-	if errors.As(err, &theoryErr) {
-		return theoryErr
-	}
-	var appErr *apptheory.AppError
+	var appErr *apptheory.AppTheoryError
 	if errors.As(err, &appErr) {
+		if isSoulInstanceBootstrapCode(appErr.Code) {
+			return appErr
+		}
 		return soulInstanceBootstrapErrorFromAppError(appErr)
 	}
 	return err
 }
 
-func soulInstanceBootstrapConversationErrorFromAppError(appErr *apptheory.AppError) *apptheory.AppTheoryError {
+func soulInstanceBootstrapConversationErrorFromAppError(appErr *apptheory.AppTheoryError) *apptheory.AppTheoryError {
 	if appErr == nil {
 		return nil
 	}
@@ -735,15 +731,18 @@ func soulInstanceBootstrapConversationErrorFromError(err error) error {
 	if err == nil {
 		return nil
 	}
-	var theoryErr *apptheory.AppTheoryError
-	if errors.As(err, &theoryErr) {
-		return theoryErr
-	}
-	var appErr *apptheory.AppError
+	var appErr *apptheory.AppTheoryError
 	if errors.As(err, &appErr) {
+		if isSoulInstanceBootstrapCode(appErr.Code) {
+			return appErr
+		}
 		return soulInstanceBootstrapConversationErrorFromAppError(appErr)
 	}
 	return err
+}
+
+func isSoulInstanceBootstrapCode(code string) bool {
+	return strings.HasPrefix(strings.TrimSpace(code), "soul_instance.")
 }
 
 func soulInstanceBootstrapError(code string, message string, status int, details map[string]any) *apptheory.AppTheoryError {

@@ -7,8 +7,8 @@ import (
 	"time"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
-	ttmocks "github.com/theory-cloud/tabletheory/pkg/mocks"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
+	ttmocks "github.com/theory-cloud/tabletheory/v2/pkg/mocks"
 
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -59,8 +59,8 @@ func newPortalHandlerDB() portalHandlerDB {
 func requirePortalAppErrorCode(t *testing.T, err error, code string) {
 	t.Helper()
 
-	appErr, ok := err.(*apptheory.AppError)
-	require.True(t, ok, "expected *apptheory.AppError, got %T", err)
+	appErr, ok := err.(*apptheory.AppTheoryError)
+	require.True(t, ok, "expected *apptheory.AppTheoryError, got %T", err)
 	require.Equal(t, code, appErr.Code)
 }
 

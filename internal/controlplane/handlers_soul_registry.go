@@ -22,7 +22,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/domains"
 	"github.com/equaltoai/lesser-host/internal/httpx"
@@ -117,7 +117,7 @@ func normalizeSoulCapabilitiesLoose(caps []string) []string {
 	return out
 }
 
-func parseSoulRegistrationBeginCapabilities(raw []any) ([]string, *apptheory.AppError) {
+func parseSoulRegistrationBeginCapabilities(raw []any) ([]string, *apptheory.AppTheoryError) {
 	if raw == nil {
 		return nil, nil
 	}
@@ -130,7 +130,7 @@ func parseSoulRegistrationBeginCapabilities(raw []any) ([]string, *apptheory.App
 		case map[string]any:
 			cap := extractStringField(v, "capability")
 			if cap == "" {
-				return nil, &apptheory.AppError{Code: "app.bad_request", Message: "capability objects must include capability"}
+				return nil, newAppTheoryError("app.bad_request", "capability objects must include capability")
 			}
 
 			claimLevel := extractStringField(v, "claimLevel")
@@ -142,35 +142,35 @@ func parseSoulRegistrationBeginCapabilities(raw []any) ([]string, *apptheory.App
 				claimLevel = soulClaimLevelSelfDeclared
 			}
 			if claimLevel != soulClaimLevelSelfDeclared {
-				return nil, &apptheory.AppError{Code: "app.bad_request", Message: "capability claimLevel must be self-declared at registration begin"}
+				return nil, newAppTheoryError("app.bad_request", "capability claimLevel must be self-declared at registration begin")
 			}
 
 			out = append(out, cap)
 		default:
-			return nil, &apptheory.AppError{Code: "app.bad_request", Message: "capabilities must be an array of strings or objects"}
+			return nil, newAppTheoryError("app.bad_request", "capabilities must be an array of strings or objects")
 		}
 	}
 
 	return out, nil
 }
 
-func (s *Server) normalizeSoulWalletAddress(ctx context.Context, walletAddr string) (string, *apptheory.AppError) {
+func (s *Server) normalizeSoulWalletAddress(ctx context.Context, walletAddr string) (string, *apptheory.AppTheoryError) {
 	return s.normalizeSoulEVMAddress(ctx, walletAddr, "wallet_address")
 }
 
-func (s *Server) normalizeSoulEVMAddress(ctx context.Context, addr string, field string) (string, *apptheory.AppError) {
+func (s *Server) normalizeSoulEVMAddress(ctx context.Context, addr string, field string) (string, *apptheory.AppTheoryError) {
 	addr = strings.TrimSpace(addr)
 	if addr == "" {
 		if field == "" {
-			return "", &apptheory.AppError{Code: "app.bad_request", Message: "address is required"}
+			return "", newAppTheoryError("app.bad_request", "address is required")
 		}
-		return "", &apptheory.AppError{Code: "app.bad_request", Message: field + " is required"}
+		return "", newAppTheoryError("app.bad_request", field+" is required")
 	}
 	if !common.IsHexAddress(addr) {
 		if field == "" {
-			return "", &apptheory.AppError{Code: "app.bad_request", Message: "invalid address"}
+			return "", newAppTheoryError("app.bad_request", "invalid address")
 		}
-		return "", &apptheory.AppError{Code: "app.bad_request", Message: "invalid " + field}
+		return "", newAppTheoryError("app.bad_request", "invalid "+field)
 	}
 	addr = strings.ToLower(addr)
 	if appErr := validateNotReservedWalletAddress(addr, field); appErr != nil {
@@ -182,30 +182,30 @@ func (s *Server) normalizeSoulEVMAddress(ctx context.Context, addr string, field
 	return addr, nil
 }
 
-func (s *Server) soulRegistryContractAddress() (common.Address, string, *apptheory.AppError) {
+func (s *Server) soulRegistryContractAddress() (common.Address, string, *apptheory.AppTheoryError) {
 	contractAddrRaw := strings.TrimSpace(s.cfg.SoulRegistryContractAddress)
 	if !common.IsHexAddress(contractAddrRaw) {
-		return common.Address{}, "", &apptheory.AppError{Code: "app.conflict", Message: "soul registry is not configured"}
+		return common.Address{}, "", newAppTheoryError("app.conflict", "soul registry is not configured")
 	}
 	contractAddr := common.HexToAddress(contractAddrRaw)
 	txTo := strings.ToLower(contractAddr.Hex())
 	return contractAddr, txTo, nil
 }
 
-func (s *Server) soulRegistrySafeAddress() (string, *apptheory.AppError) {
+func (s *Server) soulRegistrySafeAddress() (string, *apptheory.AppTheoryError) {
 	safeAddr := strings.ToLower(strings.TrimSpace(s.cfg.SoulAdminSafeAddress))
 	if strings.ToLower(strings.TrimSpace(s.cfg.SoulTxMode)) == tipTxModeSafe && !common.IsHexAddress(safeAddr) {
-		return "", &apptheory.AppError{Code: "app.conflict", Message: "soul registry safe is not configured"}
+		return "", newAppTheoryError("app.conflict", "soul registry safe is not configured")
 	}
 	return safeAddr, nil
 }
 
-func (s *Server) requireSoulPortalPrereqs(ctx *apptheory.Context) *apptheory.AppError {
+func (s *Server) requireSoulPortalPrereqs(ctx *apptheory.Context) *apptheory.AppTheoryError {
 	if err := requireAuthenticated(ctx); err != nil {
-		if appErr, ok := err.(*apptheory.AppError); ok {
+		if appErr, ok := err.(*apptheory.AppTheoryError); ok {
 			return appErr
 		}
-		return &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
+		return newAppTheoryError("app.unauthorized", "unauthorized")
 	}
 	if appErr := s.requirePortalApproved(ctx); appErr != nil {
 		return appErr
@@ -216,14 +216,14 @@ func (s *Server) requireSoulPortalPrereqs(ctx *apptheory.Context) *apptheory.App
 func (s *Server) resolveSoulDomainAccess(
 	ctx *apptheory.Context,
 	normalizedDomain string,
-) (*models.Domain, *models.Instance, bool, *apptheory.AppError) {
+) (*models.Domain, *models.Instance, bool, *apptheory.AppTheoryError) {
 	if s == nil || s.store == nil || s.store.DB == nil || ctx == nil {
-		return nil, nil, false, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, nil, false, newAppTheoryError("app.internal", "internal error")
 	}
 
 	normalizedDomain = strings.ToLower(strings.TrimSpace(normalizedDomain))
 	if normalizedDomain == "" {
-		return nil, nil, false, &apptheory.AppError{Code: "app.bad_request", Message: "domain is required"}
+		return nil, nil, false, newAppTheoryError("app.bad_request", "domain is required")
 	}
 
 	var d models.Domain
@@ -234,21 +234,21 @@ func (s *Server) resolveSoulDomainAccess(
 		First(&d)
 	if err == nil {
 		if !domainIsVerifiedOrActive(d.Status) {
-			return nil, nil, false, &apptheory.AppError{Code: "app.bad_request", Message: "domain is not verified"}
+			return nil, nil, false, newAppTheoryError("app.bad_request", "domain is not verified")
 		}
 
 		inst, instErr := s.requireInstanceAccess(ctx, strings.TrimSpace(d.InstanceSlug))
 		if instErr != nil {
-			if appErr, ok := instErr.(*apptheory.AppError); ok {
+			if appErr, ok := instErr.(*apptheory.AppTheoryError); ok {
 				return nil, nil, false, appErr
 			}
-			return nil, nil, false, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+			return nil, nil, false, newAppTheoryError("app.internal", "internal error")
 		}
 
 		return &d, inst, false, nil
 	}
 	if err != nil && !theoryErrors.IsNotFound(err) {
-		return nil, nil, false, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, nil, false, newAppTheoryError("app.internal", "internal error")
 	}
 
 	managedAccess := s.resolveManagedSoulStageDomainAccess(ctx, normalizedDomain)
@@ -256,10 +256,10 @@ func (s *Server) resolveSoulDomainAccess(
 		return managedAccess.domain, managedAccess.instance, true, nil
 	}
 
-	return nil, nil, false, &apptheory.AppError{Code: "app.bad_request", Message: "domain is not registered"}
+	return nil, nil, false, newAppTheoryError("app.bad_request", "domain is not registered")
 }
 
-func (s *Server) requireSoulDomainAccess(ctx *apptheory.Context, normalizedDomain string) (*models.Domain, *models.Instance, *apptheory.AppError) {
+func (s *Server) requireSoulDomainAccess(ctx *apptheory.Context, normalizedDomain string) (*models.Domain, *models.Instance, *apptheory.AppTheoryError) {
 	d, inst, _, appErr := s.resolveSoulDomainAccess(ctx, normalizedDomain)
 	return d, inst, appErr
 }
@@ -363,9 +363,9 @@ func (s *Server) beginSoulAgentRegistration(
 	domainAccessAutoVerified bool,
 	actor string,
 	allowInstanceTrustNoWallet bool,
-) (soulAgentRegistrationBeginResponse, *apptheory.AppError) {
+) (soulAgentRegistrationBeginResponse, *apptheory.AppTheoryError) {
 	if ctx == nil {
-		return soulAgentRegistrationBeginResponse{}, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return soulAgentRegistrationBeginResponse{}, newAppTheoryError("app.internal", "internal error")
 	}
 
 	rawDomain := strings.TrimSpace(req.Domain)
@@ -392,7 +392,7 @@ func (s *Server) beginSoulAgentRegistration(
 
 	agentIDHex, err := soul.DeriveAgentIDHex(domainNormalized, local)
 	if err != nil {
-		return soulAgentRegistrationBeginResponse{}, &apptheory.AppError{Code: "app.internal", Message: "failed to derive agent_id"}
+		return soulAgentRegistrationBeginResponse{}, newAppTheoryError("app.internal", "failed to derive agent_id")
 	}
 
 	now := time.Now().UTC()
@@ -481,7 +481,7 @@ func (s *Server) buildSoulRegistrationBeginWalletMaterial(authorityModel string,
 	return expiresAt, msg
 }
 
-func (s *Server) prepareSoulRegistrationBeginHostedAuthority(ctx context.Context, reg *models.SoulAgentRegistration, promotion *models.SoulAgentPromotion, now time.Time) (*models.SoulAgentPromotion, *apptheory.AppError) {
+func (s *Server) prepareSoulRegistrationBeginHostedAuthority(ctx context.Context, reg *models.SoulAgentRegistration, promotion *models.SoulAgentPromotion, now time.Time) (*models.SoulAgentPromotion, *apptheory.AppTheoryError) {
 	if normalizeSoulAuthorityModel(reg.AuthorityModel) != models.SoulAuthorityModelInstanceTrust {
 		return promotion, nil
 	}
@@ -525,7 +525,7 @@ func (s *Server) buildSoulAgentRegistrationBeginResponse(
 	return out
 }
 
-func (s *Server) replaySoulRegistrationBeginIfHostedInstanceTrust(ctx context.Context, authorityModel string, agentIDHex string) (soulAgentRegistrationBeginResponse, bool, *apptheory.AppError) {
+func (s *Server) replaySoulRegistrationBeginIfHostedInstanceTrust(ctx context.Context, authorityModel string, agentIDHex string) (soulAgentRegistrationBeginResponse, bool, *apptheory.AppTheoryError) {
 	if authorityModel != models.SoulAuthorityModelInstanceTrust {
 		return soulAgentRegistrationBeginResponse{}, false, nil
 	}
@@ -548,11 +548,11 @@ func buildSoulRegistrationProofInstructions(domainNormalized string, proofToken 
 	}
 }
 
-func (s *Server) normalizeSoulRegistrationBeginDomain(ctx *apptheory.Context, rawDomain string) (string, bool, *apptheory.AppError) {
+func (s *Server) normalizeSoulRegistrationBeginDomain(ctx *apptheory.Context, rawDomain string) (string, bool, *apptheory.AppTheoryError) {
 	rawDomain = strings.TrimSpace(rawDomain)
 	domainNormalized, err := domains.NormalizeDomain(rawDomain)
 	if err != nil {
-		return "", false, &apptheory.AppError{Code: "app.bad_request", Message: err.Error()}
+		return "", false, newAppTheoryError("app.bad_request", err.Error())
 	}
 	_, _, autoVerified, accessErr := s.resolveSoulDomainAccess(ctx, domainNormalized)
 	if accessErr != nil {
@@ -561,20 +561,20 @@ func (s *Server) normalizeSoulRegistrationBeginDomain(ctx *apptheory.Context, ra
 	return domainNormalized, autoVerified, nil
 }
 
-func (s *Server) resolveSoulRegistrationBeginAuthority(ctx context.Context, req soulAgentRegistrationBeginRequest, allowInstanceTrustNoWallet bool) (authorityModel string, wallet string, appErr *apptheory.AppError) {
+func (s *Server) resolveSoulRegistrationBeginAuthority(ctx context.Context, req soulAgentRegistrationBeginRequest, allowInstanceTrustNoWallet bool) (authorityModel string, wallet string, appErr *apptheory.AppTheoryError) {
 	requestedAuthority := normalizeSoulAuthorityModel(req.AuthorityModel)
 	if strings.TrimSpace(req.AuthorityModel) != "" && requestedAuthority == "" {
-		return "", "", &apptheory.AppError{Code: "app.bad_request", Message: "authority_model is invalid"}
+		return "", "", newAppTheoryError("app.bad_request", "authority_model is invalid")
 	}
 
 	rawWallet := strings.TrimSpace(req.Wallet)
 	switch {
 	case requestedAuthority == models.SoulAuthorityModelInstanceTrust:
 		if !allowInstanceTrustNoWallet {
-			return "", "", &apptheory.AppError{Code: "app.forbidden", Message: "authority_model is not allowed on this route"}
+			return "", "", newAppTheoryError("app.forbidden", "authority_model is not allowed on this route")
 		}
 		if rawWallet != "" {
-			return "", "", &apptheory.AppError{Code: "app.bad_request", Message: "wallet_address must be omitted for authority_model=instance_trust"}
+			return "", "", newAppTheoryError("app.bad_request", "wallet_address must be omitted for authority_model=instance_trust")
 		}
 		return models.SoulAuthorityModelInstanceTrust, "", nil
 	case requestedAuthority == models.SoulAuthorityModelWalletPrincipal:
@@ -585,7 +585,7 @@ func (s *Server) resolveSoulRegistrationBeginAuthority(ctx context.Context, req 
 		return models.SoulAuthorityModelWalletPrincipal, wallet, nil
 	case rawWallet == "":
 		if !allowInstanceTrustNoWallet {
-			return "", "", &apptheory.AppError{Code: "app.bad_request", Message: "wallet_address is required"}
+			return "", "", newAppTheoryError("app.bad_request", "wallet_address is required")
 		}
 		return models.SoulAuthorityModelInstanceTrust, "", nil
 	default:
@@ -597,51 +597,51 @@ func (s *Server) resolveSoulRegistrationBeginAuthority(ctx context.Context, req 
 	}
 }
 
-func normalizeSoulRegistrationBeginLocalID(rawLocal string) (string, *apptheory.AppError) {
+func normalizeSoulRegistrationBeginLocalID(rawLocal string) (string, *apptheory.AppTheoryError) {
 	local, err := soul.ValidateManagedHandle(rawLocal)
 	if err != nil {
-		return "", &apptheory.AppError{Code: "app.bad_request", Message: err.Error()}
+		return "", newAppTheoryError("app.bad_request", err.Error())
 	}
 	return local, nil
 }
 
-func (s *Server) ensureSoulAgentNotActive(ctx context.Context, agentIDHex string) *apptheory.AppError {
+func (s *Server) ensureSoulAgentNotActive(ctx context.Context, agentIDHex string) *apptheory.AppTheoryError {
 	existing, err := s.getSoulAgentIdentity(ctx, agentIDHex)
 	if err == nil && existing != nil && strings.TrimSpace(existing.Status) == models.SoulAgentStatusActive {
-		return &apptheory.AppError{Code: "app.conflict", Message: "agent is already registered"}
+		return newAppTheoryError("app.conflict", "agent is already registered")
 	}
 	if err != nil && !theoryErrors.IsNotFound(err) {
-		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return newAppTheoryError("app.internal", "internal error")
 	}
 	return nil
 }
 
-func newSoulAgentRegistrationBeginTokens() (proofToken string, nonce string, registrationID string, appErr *apptheory.AppError) {
+func newSoulAgentRegistrationBeginTokens() (proofToken string, nonce string, registrationID string, appErr *apptheory.AppTheoryError) {
 	proofToken, err := newToken(16)
 	if err != nil {
-		return "", "", "", &apptheory.AppError{Code: "app.internal", Message: "failed to create proof token"}
+		return "", "", "", newAppTheoryError("app.internal", "failed to create proof token")
 	}
 
 	nonce, err = generateNonce()
 	if err != nil {
-		return "", "", "", &apptheory.AppError{Code: "app.internal", Message: "failed to create nonce"}
+		return "", "", "", newAppTheoryError("app.internal", "failed to create nonce")
 	}
 
 	registrationID, err = newToken(16)
 	if err != nil {
-		return "", "", "", &apptheory.AppError{Code: "app.internal", Message: "failed to create registration id"}
+		return "", "", "", newAppTheoryError("app.internal", "failed to create registration id")
 	}
 
 	return proofToken, nonce, registrationID, nil
 }
 
-func (s *Server) createSoulAgentRegistration(ctx context.Context, reg *models.SoulAgentRegistration) *apptheory.AppError {
+func (s *Server) createSoulAgentRegistration(ctx context.Context, reg *models.SoulAgentRegistration) *apptheory.AppTheoryError {
 	if s == nil || s.store == nil || s.store.DB == nil || reg == nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return newAppTheoryError("app.internal", "internal error")
 	}
 	_ = reg.UpdateKeys()
 	if err := s.store.DB.WithContext(ctx).Model(reg).IfNotExists().Create(); err != nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "failed to create registration"}
+		return newAppTheoryError("app.internal", "failed to create registration")
 	}
 	return nil
 }
@@ -696,20 +696,20 @@ func (s *Server) getSoulAgentRegistration(ctx context.Context, id string) (*mode
 	return &reg, nil
 }
 
-func (s *Server) loadSoulAgentRegistrationForVerify(ctx *apptheory.Context, id string) (*models.SoulAgentRegistration, *apptheory.AppError) {
+func (s *Server) loadSoulAgentRegistrationForVerify(ctx *apptheory.Context, id string) (*models.SoulAgentRegistration, *apptheory.AppTheoryError) {
 	reg, err := s.getSoulAgentRegistration(ctx.Context(), id)
 	if theoryErrors.IsNotFound(err) {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "registration not found"}
+		return nil, newAppTheoryError("app.not_found", "registration not found")
 	}
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	if !reg.ExpiresAt.IsZero() && time.Now().After(reg.ExpiresAt) {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "registration expired"}
+		return nil, newAppTheoryError("app.bad_request", "registration expired")
 	}
 	if reg.Status == models.SoulAgentRegistrationStatusCompleted {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "registration already completed"}
+		return nil, newAppTheoryError("app.conflict", "registration already completed")
 	}
 
 	return reg, nil
@@ -769,19 +769,19 @@ func verifySoulRegistryHTTPS(ctx context.Context, domainNormalized, proofToken s
 	return v == proofToken || v == expectedLegacy
 }
 
-func verifySoulAgentRegistrationWallet(reg *models.SoulAgentRegistration, signature string) *apptheory.AppError {
+func verifySoulAgentRegistrationWallet(reg *models.SoulAgentRegistration, signature string) *apptheory.AppTheoryError {
 	if reg == nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return newAppTheoryError("app.internal", "internal error")
 	}
 	if verifyErr := verifyEthereumSignature(reg.Wallet, reg.WalletMessage, strings.TrimSpace(signature)); verifyErr != nil {
-		return &apptheory.AppError{Code: "app.forbidden", Message: "invalid signature"}
+		return newAppTheoryError("app.forbidden", "invalid signature")
 	}
 	return nil
 }
 
-func verifySoulAgentRegistrationProofs(ctx context.Context, reg *models.SoulAgentRegistration) (bool, bool, *apptheory.AppError) {
+func verifySoulAgentRegistrationProofs(ctx context.Context, reg *models.SoulAgentRegistration) (bool, bool, *apptheory.AppTheoryError) {
 	if reg == nil {
-		return false, false, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return false, false, newAppTheoryError("app.internal", "internal error")
 	}
 
 	proofToken := strings.TrimSpace(reg.ProofToken)
@@ -791,13 +791,13 @@ func verifySoulAgentRegistrationProofs(ctx context.Context, reg *models.SoulAgen
 
 	if !verifiedDNS {
 		if ok := verifySoulRegistryDNS(ctx, reg.DomainNormalized, proofValue); !ok {
-			return false, false, &apptheory.AppError{Code: "app.bad_request", Message: "dns proof not found"}
+			return false, false, newAppTheoryError("app.bad_request", "dns proof not found")
 		}
 		verifiedDNS = true
 	}
 	if !verifiedHTTPS {
 		if ok := verifySoulRegistryHTTPS(ctx, reg.DomainNormalized, proofToken); !ok {
-			return false, false, &apptheory.AppError{Code: "app.bad_request", Message: "https proof not found"}
+			return false, false, newAppTheoryError("app.bad_request", "https proof not found")
 		}
 		verifiedHTTPS = true
 	}
@@ -805,12 +805,12 @@ func verifySoulAgentRegistrationProofs(ctx context.Context, reg *models.SoulAgen
 	return verifiedDNS, verifiedHTTPS, nil
 }
 
-func (s *Server) completeSoulAgentRegistration(ctx *apptheory.Context, reg *models.SoulAgentRegistration, verifiedDNS bool, verifiedHTTPS bool, now time.Time) (*models.SoulAgentRegistration, *apptheory.AppError) {
+func (s *Server) completeSoulAgentRegistration(ctx *apptheory.Context, reg *models.SoulAgentRegistration, verifiedDNS bool, verifiedHTTPS bool, now time.Time) (*models.SoulAgentRegistration, *apptheory.AppTheoryError) {
 	if s == nil || s.store == nil || s.store.DB == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	if ctx == nil || reg == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	update := &models.SoulAgentRegistration{
@@ -849,7 +849,7 @@ func (s *Server) completeSoulAgentRegistration(ctx *apptheory.Context, reg *mode
 		"UpdatedAt",
 		"CompletedAt",
 	); err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to update registration"}
+		return nil, newAppTheoryError("app.internal", "failed to update registration")
 	}
 
 	return update, nil
@@ -917,12 +917,12 @@ func (s *Server) soulMetaURI(agentIDHex string) string {
 	return "https://" + host + "/api/v1/soul/agents/" + url.PathEscape(agentIDHex) + "/registration"
 }
 
-func (s *Server) createSoulMintOperation(ctx context.Context, reg *models.SoulAgentRegistration, principalAddress string, principalSignature string, principalDeclaration string, principalDeclaredAt string) (*models.SoulOperation, *safeTxPayload, string, *apptheory.AppError) {
+func (s *Server) createSoulMintOperation(ctx context.Context, reg *models.SoulAgentRegistration, principalAddress string, principalSignature string, principalDeclaration string, principalDeclaredAt string) (*models.SoulOperation, *safeTxPayload, string, *apptheory.AppTheoryError) {
 	if s == nil || s.store == nil || s.store.DB == nil {
-		return nil, nil, "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, nil, "", newAppTheoryError("app.internal", "internal error")
 	}
 	if reg == nil {
-		return nil, nil, "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, nil, "", newAppTheoryError("app.internal", "internal error")
 	}
 
 	payload, metaURI, now, appErr := s.buildSoulMintPayload(reg, principalAddress)
@@ -1106,12 +1106,12 @@ func (s *Server) handleSoulAgentRegistrationVerify(ctx *apptheory.Context) (*app
 	})
 }
 
-func (s *Server) buildSoulMintPayload(reg *models.SoulAgentRegistration, principalAddress string) (*safeTxPayload, string, time.Time, *apptheory.AppError) {
+func (s *Server) buildSoulMintPayload(reg *models.SoulAgentRegistration, principalAddress string) (*safeTxPayload, string, time.Time, *apptheory.AppTheoryError) {
 	if reg == nil {
-		return nil, "", time.Time{}, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, "", time.Time{}, newAppTheoryError("app.internal", "internal error")
 	}
 	if !common.IsHexAddress(principalAddress) {
-		return nil, "", time.Time{}, &apptheory.AppError{Code: "app.bad_request", Message: "invalid principal_address"}
+		return nil, "", time.Time{}, newAppTheoryError("app.bad_request", "invalid principal_address")
 	}
 
 	contractAddr, txTo, appErr := s.soulRegistryContractAddress()
@@ -1121,16 +1121,16 @@ func (s *Server) buildSoulMintPayload(reg *models.SoulAgentRegistration, princip
 
 	signerKey := strings.TrimSpace(s.cfg.SoulMintSignerKey)
 	if signerKey == "" {
-		return nil, "", time.Time{}, &apptheory.AppError{Code: "app.conflict", Message: "mint signer key is not configured"}
+		return nil, "", time.Time{}, newAppTheoryError("app.conflict", "mint signer key is not configured")
 	}
 
 	metaURI := s.soulMetaURI(reg.AgentID)
 	if metaURI == "" {
-		return nil, "", time.Time{}, &apptheory.AppError{Code: "app.internal", Message: "failed to derive meta_uri"}
+		return nil, "", time.Time{}, newAppTheoryError("app.internal", "failed to derive meta_uri")
 	}
 
 	if !common.IsHexAddress(reg.Wallet) {
-		return nil, "", time.Time{}, &apptheory.AppError{Code: "app.bad_request", Message: "invalid wallet address"}
+		return nil, "", time.Time{}, newAppTheoryError("app.bad_request", "invalid wallet address")
 	}
 	to := common.HexToAddress(reg.Wallet)
 	principal := common.HexToAddress(principalAddress)
@@ -1140,7 +1140,7 @@ func (s *Server) buildSoulMintPayload(reg *models.SoulAgentRegistration, princip
 
 	agentInt, ok := new(big.Int).SetString(strings.TrimPrefix(strings.TrimSpace(reg.AgentID), "0x"), 16)
 	if !ok {
-		return nil, "", time.Time{}, &apptheory.AppError{Code: "app.bad_request", Message: "invalid agent_id"}
+		return nil, "", time.Time{}, newAppTheoryError("app.bad_request", "invalid agent_id")
 	}
 
 	now := time.Now().UTC()
@@ -1149,7 +1149,7 @@ func (s *Server) buildSoulMintPayload(reg *models.SoulAgentRegistration, princip
 
 	attestation, err := soul.SignSelfMintAttestation(signerKey, s.cfg.SoulChainID, contractAddr, to, agentInt, metaURI, 0, principal, deadline, submitter)
 	if err != nil {
-		return nil, "", time.Time{}, &apptheory.AppError{Code: "app.internal", Message: "failed to sign mint attestation"}
+		return nil, "", time.Time{}, newAppTheoryError("app.internal", "failed to sign mint attestation")
 	}
 
 	// Default mint fee: 0.0005 ETH = 500000000000000 wei.
@@ -1157,7 +1157,7 @@ func (s *Server) buildSoulMintPayload(reg *models.SoulAgentRegistration, princip
 
 	data, err := soul.EncodeSelfMintSoulCall(to, agentInt, metaURI, 0, principal, deadline, attestation)
 	if err != nil {
-		return nil, "", time.Time{}, &apptheory.AppError{Code: "app.internal", Message: "failed to encode transaction"}
+		return nil, "", time.Time{}, newAppTheoryError("app.internal", "failed to encode transaction")
 	}
 
 	payload := &safeTxPayload{
@@ -1170,14 +1170,14 @@ func (s *Server) buildSoulMintPayload(reg *models.SoulAgentRegistration, princip
 	return payload, metaURI, now, nil
 }
 
-func (s *Server) createOrLoadSoulOperation(ctx context.Context, op *models.SoulOperation) (*models.SoulOperation, *apptheory.AppError) {
+func (s *Server) createOrLoadSoulOperation(ctx context.Context, op *models.SoulOperation) (*models.SoulOperation, *apptheory.AppTheoryError) {
 	if s == nil || s.store == nil || s.store.DB == nil || op == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	if err := s.store.DB.WithContext(ctx).Model(op).IfNotExists().Create(); err != nil {
 		if !theoryErrors.IsConditionFailed(err) {
-			return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to create operation"}
+			return nil, newAppTheoryError("app.internal", "failed to create operation")
 		}
 
 		existing, getErr := s.getSoulOperation(ctx, op.OperationID)
@@ -1189,9 +1189,9 @@ func (s *Server) createOrLoadSoulOperation(ctx context.Context, op *models.SoulO
 	return op, nil
 }
 
-func (s *Server) ensureSoulPendingAgentIdentity(ctx context.Context, reg *models.SoulAgentRegistration, metaURI string, principalAddress string, principalSignature string, principalDeclaration string, principalDeclaredAt string, now time.Time) *apptheory.AppError {
+func (s *Server) ensureSoulPendingAgentIdentity(ctx context.Context, reg *models.SoulAgentRegistration, metaURI string, principalAddress string, principalSignature string, principalDeclaration string, principalDeclaredAt string, now time.Time) *apptheory.AppTheoryError {
 	if s == nil || s.store == nil || s.store.DB == nil || reg == nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return newAppTheoryError("app.internal", "internal error")
 	}
 
 	identity := buildSoulPendingAgentIdentity(reg, metaURI, principalAddress, principalSignature, principalDeclaration, principalDeclaredAt, now)
@@ -1199,7 +1199,7 @@ func (s *Server) ensureSoulPendingAgentIdentity(ctx context.Context, reg *models
 
 	if err := s.store.DB.WithContext(ctx).Model(identity).IfNotExists().Create(); err != nil {
 		if !theoryErrors.IsConditionFailed(err) {
-			return &apptheory.AppError{Code: "app.internal", Message: "failed to create agent identity"}
+			return newAppTheoryError("app.internal", "failed to create agent identity")
 		}
 		if appErr := s.reconcileSoulPendingIdentity(ctx, reg.AgentID, principalAddress, principalSignature, principalDeclaration, principalDeclaredAt, now); appErr != nil {
 			return appErr
@@ -1209,29 +1209,29 @@ func (s *Server) ensureSoulPendingAgentIdentity(ctx context.Context, reg *models
 	return nil
 }
 
-func (s *Server) ensureSoulHostedInstanceTrustIdentity(ctx context.Context, reg *models.SoulAgentRegistration, now time.Time) *apptheory.AppError {
+func (s *Server) ensureSoulHostedInstanceTrustIdentity(ctx context.Context, reg *models.SoulAgentRegistration, now time.Time) *apptheory.AppTheoryError {
 	if s == nil || s.store == nil || s.store.DB == nil || reg == nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return newAppTheoryError("app.internal", "internal error")
 	}
 	if normalizeSoulAuthorityModel(reg.AuthorityModel) != models.SoulAuthorityModelInstanceTrust {
-		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return newAppTheoryError("app.internal", "internal error")
 	}
 
 	identity := buildSoulHostedInstanceTrustIdentity(reg, s.soulMetaURI(reg.AgentID), now)
 	_ = identity.UpdateKeys()
 	if err := s.store.DB.WithContext(ctx).Model(identity).IfNotExists().Create(); err != nil {
 		if !theoryErrors.IsConditionFailed(err) {
-			return &apptheory.AppError{Code: "app.internal", Message: "failed to create hosted agent identity"}
+			return newAppTheoryError("app.internal", "failed to create hosted agent identity")
 		}
 		existing, getErr := s.getSoulAgentIdentity(ctx, reg.AgentID)
 		if getErr != nil {
-			return &apptheory.AppError{Code: "app.internal", Message: "failed to load hosted agent identity"}
+			return newAppTheoryError("app.internal", "failed to load hosted agent identity")
 		}
 		if strings.EqualFold(strings.TrimSpace(existing.Status), models.SoulAgentStatusActive) || existing.SelfDescriptionVersion > 0 {
-			return &apptheory.AppError{Code: "app.conflict", Message: "agent is already registered"}
+			return newAppTheoryError("app.conflict", "agent is already registered")
 		}
 		if normalizeSoulAuthorityModel(existing.AuthorityModel) != models.SoulAuthorityModelInstanceTrust {
-			return &apptheory.AppError{Code: "app.conflict", Message: "agent namespace is already reserved by another authority model"}
+			return newAppTheoryError("app.conflict", "agent namespace is already reserved by another authority model")
 		}
 	}
 	return nil
@@ -1285,22 +1285,22 @@ func buildSoulHostedInstanceTrustIdentity(reg *models.SoulAgentRegistration, met
 	return identity
 }
 
-func (s *Server) replaySoulHostedInstanceTrustBegin(ctx context.Context, agentIDHex string) (soulAgentRegistrationBeginResponse, bool, *apptheory.AppError) {
+func (s *Server) replaySoulHostedInstanceTrustBegin(ctx context.Context, agentIDHex string) (soulAgentRegistrationBeginResponse, bool, *apptheory.AppTheoryError) {
 	identity, err := s.getSoulAgentIdentity(ctx, agentIDHex)
 	if theoryErrors.IsNotFound(err) {
 		return soulAgentRegistrationBeginResponse{}, false, nil
 	}
 	if err != nil {
-		return soulAgentRegistrationBeginResponse{}, false, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return soulAgentRegistrationBeginResponse{}, false, newAppTheoryError("app.internal", "internal error")
 	}
 	if identity == nil {
 		return soulAgentRegistrationBeginResponse{}, false, nil
 	}
 	if strings.EqualFold(strings.TrimSpace(identity.Status), models.SoulAgentStatusActive) || identity.SelfDescriptionVersion > 0 {
-		return soulAgentRegistrationBeginResponse{}, false, &apptheory.AppError{Code: "app.conflict", Message: "agent is already registered"}
+		return soulAgentRegistrationBeginResponse{}, false, newAppTheoryError("app.conflict", "agent is already registered")
 	}
 	if normalizeSoulAuthorityModel(identity.AuthorityModel) != models.SoulAuthorityModelInstanceTrust {
-		return soulAgentRegistrationBeginResponse{}, false, &apptheory.AppError{Code: "app.conflict", Message: "agent namespace is already reserved by another authority model"}
+		return soulAgentRegistrationBeginResponse{}, false, newAppTheoryError("app.conflict", "agent namespace is already reserved by another authority model")
 	}
 
 	promotion, err := s.getSoulAgentPromotion(ctx, agentIDHex)
@@ -1315,7 +1315,7 @@ func (s *Server) replaySoulHostedInstanceTrustBegin(ctx context.Context, agentID
 		return soulAgentRegistrationBeginResponse{}, false, nil
 	}
 	if err != nil {
-		return soulAgentRegistrationBeginResponse{}, false, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return soulAgentRegistrationBeginResponse{}, false, newAppTheoryError("app.internal", "internal error")
 	}
 	if normalizeSoulAuthorityModel(reg.AuthorityModel) != models.SoulAuthorityModelInstanceTrust {
 		return soulAgentRegistrationBeginResponse{}, false, nil
@@ -1335,16 +1335,16 @@ func (s *Server) reconcileSoulPendingIdentity(
 	principalDeclaration string,
 	principalDeclaredAt string,
 	now time.Time,
-) *apptheory.AppError {
+) *apptheory.AppTheoryError {
 	existing, getErr := s.getSoulAgentIdentity(ctx, agentID)
 	if getErr != nil && !theoryErrors.IsNotFound(getErr) {
-		return &apptheory.AppError{Code: "app.internal", Message: "failed to load agent identity"}
+		return newAppTheoryError("app.internal", "failed to load agent identity")
 	}
 	if existing == nil {
 		return nil
 	}
 	if strings.TrimSpace(existing.Status) == models.SoulAgentStatusActive {
-		return &apptheory.AppError{Code: "app.conflict", Message: "agent is already registered"}
+		return newAppTheoryError("app.conflict", "agent is already registered")
 	}
 	if appErr := validateExistingSoulPendingIdentity(existing, principalAddress, principalDeclaration, principalDeclaredAt); appErr != nil {
 		return appErr
@@ -1363,26 +1363,26 @@ func (s *Server) reconcileSoulPendingIdentity(
 	}
 	_ = update.UpdateKeys()
 	if updErr := s.store.DB.WithContext(ctx).Model(update).IfExists().Update("PrincipalAddress", "PrincipalSignature", "PrincipalDeclaration", "PrincipalDeclaredAt", "UpdatedAt"); updErr != nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "failed to update agent identity"}
+		return newAppTheoryError("app.internal", "failed to update agent identity")
 	}
 	return nil
 }
 
-func validateExistingSoulPendingIdentity(existing *models.SoulAgentIdentity, principalAddress string, principalDeclaration string, principalDeclaredAt string) *apptheory.AppError {
+func validateExistingSoulPendingIdentity(existing *models.SoulAgentIdentity, principalAddress string, principalDeclaration string, principalDeclaredAt string) *apptheory.AppTheoryError {
 	wantPrincipal := strings.ToLower(strings.TrimSpace(principalAddress))
 	havePrincipal := strings.ToLower(strings.TrimSpace(existing.PrincipalAddress))
 	if havePrincipal != "" && wantPrincipal != "" && !strings.EqualFold(havePrincipal, wantPrincipal) {
-		return &apptheory.AppError{Code: "app.conflict", Message: "principal_address mismatch for existing identity"}
+		return newAppTheoryError("app.conflict", "principal_address mismatch for existing identity")
 	}
 	wantDecl := strings.TrimSpace(principalDeclaration)
 	haveDecl := strings.TrimSpace(existing.PrincipalDeclaration)
 	if haveDecl != "" && wantDecl != "" && haveDecl != wantDecl {
-		return &apptheory.AppError{Code: "app.conflict", Message: "principal_declaration mismatch for existing identity"}
+		return newAppTheoryError("app.conflict", "principal_declaration mismatch for existing identity")
 	}
 	wantDeclaredAt := strings.TrimSpace(principalDeclaredAt)
 	haveDeclaredAt := strings.TrimSpace(existing.PrincipalDeclaredAt)
 	if haveDeclaredAt != "" && wantDeclaredAt != "" && haveDeclaredAt != wantDeclaredAt {
-		return &apptheory.AppError{Code: "app.conflict", Message: "declared_at mismatch for existing identity"}
+		return newAppTheoryError("app.conflict", "declared_at mismatch for existing identity")
 	}
 	return nil
 }
@@ -1403,40 +1403,40 @@ func (s *Server) validateSoulRegistrationVerifyPrincipalInputs(
 	principalDeclarationRaw string,
 	principalSigRaw string,
 	declaredAtRaw string,
-) (string, string, string, string, *apptheory.AppError) {
+) (string, string, string, string, *apptheory.AppTheoryError) {
 	principalAddr, principalDeclaration, declaredAtCanonical, appErr := s.normalizeSoulRegistrationPrincipalDeclarationInputs(ctx, principalAddrRaw, principalDeclarationRaw, declaredAtRaw)
 	if appErr != nil {
 		return "", "", "", "", appErr
 	}
 	principalSig := strings.TrimSpace(principalSigRaw)
 	if principalSig == "" {
-		return "", "", "", "", &apptheory.AppError{Code: "app.bad_request", Message: "principal_signature is required"}
+		return "", "", "", "", newAppTheoryError("app.bad_request", "principal_signature is required")
 	}
 	principalDigest, appErr := s.computeSoulPrincipalDeclarationDigest(reg, principalAddr, principalDeclaration, declaredAtCanonical)
 	if appErr != nil {
 		return "", "", "", "", appErr
 	}
 	if err := verifyEthereumSignatureBytes(principalAddr, principalDigest, principalSig); err != nil {
-		return "", "", "", "", &apptheory.AppError{Code: "app.bad_request", Message: "invalid principal_signature"}
+		return "", "", "", "", newAppTheoryError("app.bad_request", "invalid principal_signature")
 	}
 	return principalAddr, principalDeclaration, principalSig, declaredAtCanonical, nil
 }
 
-func (s *Server) normalizeSoulRegistrationPrincipalDeclarationInputs(ctx context.Context, principalAddrRaw string, principalDeclarationRaw string, declaredAtRaw string) (string, string, string, *apptheory.AppError) {
+func (s *Server) normalizeSoulRegistrationPrincipalDeclarationInputs(ctx context.Context, principalAddrRaw string, principalDeclarationRaw string, declaredAtRaw string) (string, string, string, *apptheory.AppTheoryError) {
 	principalAddr, appErr := s.normalizeSoulEVMAddress(ctx, principalAddrRaw, "principal_address")
 	if appErr != nil {
 		return "", "", "", appErr
 	}
 	principalDeclaration := strings.TrimSpace(principalDeclarationRaw)
 	if principalDeclaration == "" || len(principalDeclaration) < 10 {
-		return "", "", "", &apptheory.AppError{Code: "app.bad_request", Message: "principal_declaration is required"}
+		return "", "", "", newAppTheoryError("app.bad_request", "principal_declaration is required")
 	}
 	if len(principalDeclaration) > 8192 {
-		return "", "", "", &apptheory.AppError{Code: "app.bad_request", Message: "principal_declaration is too long"}
+		return "", "", "", newAppTheoryError("app.bad_request", "principal_declaration is too long")
 	}
 	declaredAt := strings.TrimSpace(declaredAtRaw)
 	if declaredAt == "" {
-		return "", "", "", &apptheory.AppError{Code: "app.bad_request", Message: "declared_at is required"}
+		return "", "", "", newAppTheoryError("app.bad_request", "declared_at is required")
 	}
 	_, declaredAtCanonical, tsErr := parseSoulSignedTimestamp(declaredAt, time.Now().UTC(), "declared_at")
 	if tsErr != nil {
@@ -1453,7 +1453,7 @@ type soulPrincipalDeclarationSigningMaterial struct {
 	canonicalJSON string
 }
 
-func (s *Server) computeSoulPrincipalDeclarationDigest(reg *models.SoulAgentRegistration, principalAddr string, principalDeclaration string, declaredAt string) ([]byte, *apptheory.AppError) {
+func (s *Server) computeSoulPrincipalDeclarationDigest(reg *models.SoulAgentRegistration, principalAddr string, principalDeclaration string, declaredAt string) ([]byte, *apptheory.AppTheoryError) {
 	material, appErr := s.computeSoulPrincipalDeclarationSigningMaterial(reg, principalAddr, principalDeclaration, declaredAt)
 	if appErr != nil {
 		return nil, appErr
@@ -1461,12 +1461,12 @@ func (s *Server) computeSoulPrincipalDeclarationDigest(reg *models.SoulAgentRegi
 	return material.digest, nil
 }
 
-func (s *Server) computeSoulPrincipalDeclarationSigningMaterial(reg *models.SoulAgentRegistration, principalAddr string, principalDeclaration string, declaredAt string) (soulPrincipalDeclarationSigningMaterial, *apptheory.AppError) {
+func (s *Server) computeSoulPrincipalDeclarationSigningMaterial(reg *models.SoulAgentRegistration, principalAddr string, principalDeclaration string, declaredAt string) (soulPrincipalDeclarationSigningMaterial, *apptheory.AppTheoryError) {
 	if s == nil || reg == nil {
-		return soulPrincipalDeclarationSigningMaterial{}, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return soulPrincipalDeclarationSigningMaterial{}, newAppTheoryError("app.internal", "internal error")
 	}
 	if s.cfg.SoulChainID <= 0 || strings.TrimSpace(s.cfg.SoulRegistryContractAddress) == "" {
-		return soulPrincipalDeclarationSigningMaterial{}, &apptheory.AppError{Code: "app.conflict", Message: "soul registry is not configured"}
+		return soulPrincipalDeclarationSigningMaterial{}, newAppTheoryError("app.conflict", "soul registry is not configured")
 	}
 	unsigned := map[string]any{
 		"kind":             "soul_principal_declaration",
@@ -1483,11 +1483,11 @@ func (s *Server) computeSoulPrincipalDeclarationSigningMaterial(reg *models.Soul
 	}
 	unsignedBytes, err := json.Marshal(unsigned)
 	if err != nil {
-		return soulPrincipalDeclarationSigningMaterial{}, &apptheory.AppError{Code: "app.bad_request", Message: "invalid principal declaration JSON"}
+		return soulPrincipalDeclarationSigningMaterial{}, newAppTheoryError("app.bad_request", "invalid principal declaration JSON")
 	}
 	jcsBytes, err := jsoncanonicalizer.Transform(unsignedBytes)
 	if err != nil {
-		return soulPrincipalDeclarationSigningMaterial{}, &apptheory.AppError{Code: "app.bad_request", Message: "invalid principal declaration JSON"}
+		return soulPrincipalDeclarationSigningMaterial{}, newAppTheoryError("app.bad_request", "invalid principal declaration JSON")
 	}
 	return soulPrincipalDeclarationSigningMaterial{
 		digest:        crypto.Keccak256(jcsBytes),
@@ -1525,12 +1525,12 @@ func (s *Server) upsertSoulAgentIndexes(ctx context.Context, reg *models.SoulAge
 
 func parseSoulAgentRegistrationVerifyInput(ctx *apptheory.Context) (id string, sig string, principalAddr string, principalDeclaration string, principalSig string, declaredAt string, err error) {
 	if ctx == nil {
-		return "", "", "", "", "", "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return "", "", "", "", "", "", newAppTheoryError("app.internal", "internal error")
 	}
 
 	id = strings.TrimSpace(ctx.Param("id"))
 	if id == "" {
-		return "", "", "", "", "", "", &apptheory.AppError{Code: "app.bad_request", Message: "id is required"}
+		return "", "", "", "", "", "", newAppTheoryError("app.bad_request", "id is required")
 	}
 
 	var req soulAgentRegistrationVerifyRequest
@@ -1540,7 +1540,7 @@ func parseSoulAgentRegistrationVerifyInput(ctx *apptheory.Context) (id string, s
 
 	sig = strings.TrimSpace(req.Signature)
 	if sig == "" {
-		return "", "", "", "", "", "", &apptheory.AppError{Code: "app.bad_request", Message: "signature is required"}
+		return "", "", "", "", "", "", newAppTheoryError("app.bad_request", "signature is required")
 	}
 
 	principalAddr = strings.TrimSpace(req.PrincipalAddress)
@@ -1553,12 +1553,12 @@ func parseSoulAgentRegistrationVerifyInput(ctx *apptheory.Context) (id string, s
 
 func parseSoulAgentRegistrationPrincipalDeclarationPreflightInput(ctx *apptheory.Context) (id string, principalAddr string, principalDeclaration string, declaredAt string, err error) {
 	if ctx == nil {
-		return "", "", "", "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return "", "", "", "", newAppTheoryError("app.internal", "internal error")
 	}
 
 	id = strings.TrimSpace(ctx.Param("id"))
 	if id == "" {
-		return "", "", "", "", &apptheory.AppError{Code: "app.bad_request", Message: "id is required"}
+		return "", "", "", "", newAppTheoryError("app.bad_request", "id is required")
 	}
 
 	var req soulAgentRegistrationPrincipalDeclarationPreflightRequest

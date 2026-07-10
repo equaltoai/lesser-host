@@ -6,16 +6,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/aws/aws-lambda-go/events"
-	"github.com/aws/aws-sdk-go-v2/service/lambdamicrovms"
-	lambdatypes "github.com/aws/aws-sdk-go-v2/service/lambdamicrovms/types"
 	runtimemicrovm "github.com/theory-cloud/apptheory/runtime/microvm"
 	microvmtestkit "github.com/theory-cloud/apptheory/testkit/microvm"
 
@@ -88,6 +84,25 @@ func TestControllerEventGateNoLongerLabOnly(t *testing.T) {
 	}
 }
 
+func TestRuntimeControllerUsesHostOwnedMicroVMRegistry(t *testing.T) {
+	t.Parallel()
+	src := mustReadControllerSource(t, "main.go")
+	if strings.Contains(src, "tabletheory.LambdaInit(&runtimemicrovm.SessionRegistryRecord{})") ||
+		strings.Contains(src, "NewTableTheorySessionRegistry") ||
+		strings.Contains(src, "runtimemicrovm.NewMemorySessionRegistry()") {
+		t.Fatalf("hosted-genesis controller must use Host's cache adapter, not the generic AppTheory TableTheory or in-memory registry")
+	}
+	if strings.Contains(src, "github.com/theory-cloud/tabletheory/v2") {
+		t.Fatalf("hosted-genesis controller must not import TableTheory directly; store owns the TableTheory boundary")
+	}
+	if !strings.Contains(src, "store.NewHostedGenesisMicroVMRegistry") {
+		t.Fatalf("expected controller to use the Host-owned MicroVM registry adapter")
+	}
+	if !strings.Contains(src, "HostedGenesisMicroVMReconstructionHook") {
+		t.Fatalf("expected missing/stale MicroVM registry cache to reconstruct from Host HostedGenesisSession truth")
+	}
+}
+
 func TestControllerAppRegistersAppTheoryM16Routes(t *testing.T) {
 	t.Parallel()
 	app := testControllerApp(t)
@@ -97,14 +112,20 @@ func TestControllerAppRegistersAppTheoryM16Routes(t *testing.T) {
 		t.Fatalf("expected missing auth to fail closed with 401, got %d body=%s", unauthorized.StatusCode, unauthorized.Body)
 	}
 
-	// P52 H1: POST /microvms now executes the turn via the MicroVM endpoint
-	// (RunTurnViaEndpoint) instead of only starting the MicroVM. The fake SDK
-	// client + test HTTP server in testControllerApp simulate the workload's
-	// run hook, so the run response still carries the run command, the session
-	// id, and the running state.
+	// AppTheory v1.17.0: POST /microvms starts the MicroVM through the
+	// framework controller. The actual hosted-genesis turn is then dispatched
+	// through AppTheory's canonical invoke route below.
 	run := invokeOK(t, app, "POST", "/microvms", runBody("conv_123"))
 	if run.Command != runtimemicrovm.CommandRun || run.SessionID != "conv_123" || run.State != runtimemicrovm.StateRunning {
 		t.Fatalf("unexpected run response: %#v", run)
+	}
+
+	invoked := invoke(t, app, "POST", "/microvms/conv_123/invoke/hosted-genesis/turn", `{"request_id":"req-route"}`, true)
+	if invoked.StatusCode != http.StatusOK {
+		t.Fatalf("expected AppTheory invoke route to proxy workload response, got %d body=%s", invoked.StatusCode, invoked.Body)
+	}
+	if !strings.Contains(invoked.Body, "fake-microvm") || !strings.Contains(invoked.Body, "hosted-genesis/turn") {
+		t.Fatalf("expected fake MicroVM invoke response, got %s", invoked.Body)
 	}
 
 	for _, route := range microVMRouteCases() {
@@ -113,6 +134,54 @@ func TestControllerAppRegistersAppTheoryM16Routes(t *testing.T) {
 			assertControllerRoute(t, app, route)
 		})
 	}
+}
+
+func TestControllerStagePathNormalizationSupportsDeployedHTTPAPIStages(t *testing.T) {
+	t.Parallel()
+	app := testControllerApp(t)
+
+	event := controllerRequestEvent("POST", "/lab/microvms", runBody("conv_stage"), true)
+	event = normalizeControllerStagePath(event, "lab")
+	if event.RawPath != "/microvms" || event.RequestContext.HTTP.Path != "/microvms" || event.RouteKey != "POST /microvms" {
+		t.Fatalf("stage normalization mismatch: route=%q raw=%q path=%q", event.RouteKey, event.RawPath, event.RequestContext.HTTP.Path)
+	}
+	response := app.ServeAPIGatewayV2(context.Background(), event)
+	if response.StatusCode != 200 {
+		t.Fatalf("expected normalized deployed-stage path to route, got %d body=%s", response.StatusCode, response.Body)
+	}
+	var payload runtimemicrovm.ControllerResponse
+	if err := json.Unmarshal([]byte(response.Body), &payload); err != nil {
+		t.Fatalf("invalid JSON response: %v body=%s", err, response.Body)
+	}
+	if payload.Command != runtimemicrovm.CommandRun || payload.SessionID != "conv_stage" {
+		t.Fatalf("unexpected normalized run response: %#v", payload)
+	}
+
+	unchanged := normalizeControllerStagePath(controllerRequestEvent("GET", "/labyrinth/microvms", "", true), "lab")
+	if unchanged.RawPath != "/labyrinth/microvms" || unchanged.RequestContext.HTTP.Path != "/labyrinth/microvms" {
+		t.Fatalf("stage normalization stripped a non-stage segment: raw=%q path=%q", unchanged.RawPath, unchanged.RequestContext.HTTP.Path)
+	}
+	root := normalizeControllerStagePath(controllerRequestEvent("GET", "/lab", "", true), "lab")
+	if root.RawPath != "/" || root.RequestContext.HTTP.Path != "/" {
+		t.Fatalf("stage root normalization mismatch: raw=%q path=%q", root.RawPath, root.RequestContext.HTTP.Path)
+	}
+}
+
+func TestControllerRoutesFailClosedForMalformedOrMismatchedBinding(t *testing.T) {
+	t.Parallel()
+	app := testControllerApp(t)
+
+	malformed := invoke(t, app, "POST", "/microvms", "{", true)
+	if malformed.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected malformed run-turn request to fail with 400, got %d body=%s", malformed.StatusCode, malformed.Body)
+	}
+	assertControllerSafeError(t, malformed, runtimemicrovm.ErrorCodeInvalidControllerRequest)
+
+	mismatch := invoke(t, app, "POST", "/microvms/conv_123/suspend", `{"session_id":"other"}`, true)
+	if mismatch.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected mismatched route/body session binding to fail with 403, got %d body=%s", mismatch.StatusCode, mismatch.Body)
+	}
+	assertControllerSafeError(t, mismatch, runtimemicrovm.ErrorCodeTenantBindingViolation)
 }
 
 type microVMRouteCase struct {
@@ -162,6 +231,17 @@ func assertTokenResponseSanitized(t *testing.T, got runtimemicrovm.ControllerRes
 	}
 }
 
+func assertControllerSafeError(t *testing.T, response events.APIGatewayV2HTTPResponse, code string) {
+	t.Helper()
+	var payload runtimemicrovm.ControllerResponse
+	if err := json.Unmarshal([]byte(response.Body), &payload); err != nil {
+		t.Fatalf("invalid JSON response: %v body=%s", err, response.Body)
+	}
+	if payload.Error == nil || payload.Error.Code != code {
+		t.Fatalf("expected safe error %q, got %#v", code, payload.Error)
+	}
+}
+
 func TestControllerAuthHookRequiresHashedBearerAndTenantHeaders(t *testing.T) {
 	t.Parallel()
 	getenv := func(key string) string {
@@ -181,11 +261,27 @@ func TestControllerAuthHookRequiresHashedBearerAndTenantHeaders(t *testing.T) {
 	}
 }
 
+func TestControllerCSVAndFirstStringNormalize(t *testing.T) {
+	t.Parallel()
+
+	if got := firstString([]string{"", "  ", " egress-ref ", "other"}); got != "egress-ref" {
+		t.Fatalf("firstString trimmed first non-empty value incorrectly: %q", got)
+	}
+	if got := firstString(nil); got != "" {
+		t.Fatalf("firstString nil = %q, want empty", got)
+	}
+	if got := csv(" ingress-ref, ,egress-ref "); len(got) != 2 || got[0] != "ingress-ref" || got[1] != "egress-ref" {
+		t.Fatalf("csv normalization mismatch: %#v", got)
+	}
+	if got := csv(""); len(got) != 0 {
+		t.Fatalf("csv empty = %#v, want none", got)
+	}
+}
+
 func testControllerApp(t *testing.T) interface {
 	ServeAPIGatewayV2(context.Context, events.APIGatewayV2HTTPRequest) events.APIGatewayV2HTTPResponse
 } {
 	t.Helper()
-	endpoint := newEndpointTurnTestServer(t)
 	runtime, err := hostedgenesis.NewMicroVMControllerRuntime(hostedgenesis.MicroVMControllerRuntimeConfig{
 		Provider:            microvmtestkit.NewFakeProviderWithTime(time.Date(2026, 6, 25, 20, 0, 0, 0, time.UTC)),
 		Registry:            runtimemicrovm.NewMemorySessionRegistry(),
@@ -195,10 +291,6 @@ func testControllerApp(t *testing.T) interface {
 			"ingress-ref",
 		},
 		EgressNetworkConnectorRefs: []string{"egress-ref"},
-		EndpointTurnClient: hostedgenesis.EndpointTurnClient{
-			SDKClient:  &fakeEndpointSDK{endpoint: endpoint},
-			HTTPClient: &http.Client{},
-		},
 	})
 	if err != nil {
 		t.Fatalf("NewMicroVMControllerRuntime: %v", err)
@@ -214,68 +306,6 @@ func testControllerApp(t *testing.T) interface {
 	}
 	return app
 }
-
-// fakeEndpointSDK is the test lambda-microvms SDK client. It returns a RUNNING
-// MicroVM at the test HTTP server's endpoint (so RunTurnViaEndpoint's
-// get-microvm poll resolves immediately) and a fixed X-aws-proxy-auth token.
-// It is the framework-gap bridge test double: the real SDK client loads the
-// controller Lambda's execution-role AWS config.
-type fakeEndpointSDK struct {
-	endpoint string
-	getCalls atomic.Int32
-}
-
-func (f *fakeEndpointSDK) GetMicrovm(_ context.Context, _ *lambdamicrovms.GetMicrovmInput, _ ...func(*lambdamicrovms.Options)) (*lambdamicrovms.GetMicrovmOutput, error) {
-	f.getCalls.Add(1)
-	return &lambdamicrovms.GetMicrovmOutput{
-		Endpoint:  ptrString(f.endpoint),
-		State:     lambdatypes.MicrovmStateRunning,
-		MicrovmId: ptrString("microvm-000001"),
-	}, nil
-}
-
-func (f *fakeEndpointSDK) CreateMicrovmAuthToken(_ context.Context, _ *lambdamicrovms.CreateMicrovmAuthTokenInput, _ ...func(*lambdamicrovms.Options)) (*lambdamicrovms.CreateMicrovmAuthTokenOutput, error) {
-	return &lambdamicrovms.CreateMicrovmAuthTokenOutput{
-		AuthToken: map[string]string{"X-aws-proxy-auth": "test-proxy-token"},
-	}, nil
-}
-
-// newEndpointTurnTestServer stands up the workload's run hook in-process for
-// the endpoint-POST turn tests. It asserts the proxy-auth + proxy-port headers
-// arrive and returns a running LifecycleResult.
-func newEndpointTurnTestServer(t *testing.T) string {
-	t.Helper()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/aws/lambda-microvms/runtime/v1/run" {
-			w.WriteHeader(http.StatusNotFound)
-			return
-		}
-		if r.Header.Get("X-aws-proxy-auth") != "test-proxy-token" {
-			w.WriteHeader(http.StatusUnauthorized)
-			return
-		}
-		if r.Header.Get("X-aws-proxy-port") != "8080" {
-			w.WriteHeader(http.StatusBadRequest)
-			return
-		}
-		var event runtimemicrovm.LifecycleEvent
-		_ = json.NewDecoder(r.Body).Decode(&event)
-		w.Header().Set("content-type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(runtimemicrovm.LifecycleResult{
-			RequestID: event.RequestID,
-			TenantID:  event.TenantID,
-			Namespace: event.Namespace,
-			SessionID: event.SessionID,
-			Hook:      runtimemicrovm.HookRun,
-			State:     runtimemicrovm.StateRunning,
-		})
-	}))
-	t.Cleanup(srv.Close)
-	return srv.URL
-}
-
-func ptrString(s string) *string { return &s }
 
 func invokeOK(t *testing.T, app interface {
 	ServeAPIGatewayV2(context.Context, events.APIGatewayV2HTTPRequest) events.APIGatewayV2HTTPResponse
@@ -299,6 +329,10 @@ func invoke(t *testing.T, app interface {
 	ServeAPIGatewayV2(context.Context, events.APIGatewayV2HTTPRequest) events.APIGatewayV2HTTPResponse
 }, method string, path string, body string, authorized bool) events.APIGatewayV2HTTPResponse {
 	t.Helper()
+	return app.ServeAPIGatewayV2(context.Background(), controllerRequestEvent(method, path, body, authorized))
+}
+
+func controllerRequestEvent(method string, path string, body string, authorized bool) events.APIGatewayV2HTTPRequest {
 	headers := map[string]string{
 		"content-type":   "application/json",
 		"x-request-id":   "req-route",
@@ -308,7 +342,7 @@ func invoke(t *testing.T, app interface {
 	if authorized {
 		headers["authorization"] = "Bearer lab-token"
 	}
-	return app.ServeAPIGatewayV2(context.Background(), events.APIGatewayV2HTTPRequest{
+	return events.APIGatewayV2HTTPRequest{
 		RouteKey: method + " " + path,
 		RawPath:  path,
 		RequestContext: events.APIGatewayV2HTTPRequestContext{
@@ -320,7 +354,7 @@ func invoke(t *testing.T, app interface {
 		},
 		Headers: headers,
 		Body:    body,
-	})
+	}
 }
 
 func runBody(sessionID string) string {
