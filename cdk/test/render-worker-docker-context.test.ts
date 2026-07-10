@@ -46,6 +46,14 @@ type DockerAsset = {
   files: string[];
 };
 
+type AssetStagingInspection = {
+  fingerprintOptions?: { ignoreMode?: unknown };
+};
+
+type DockerImageAssetInspection = {
+  dockerfilePath?: unknown;
+};
+
 function repoRoot(): string {
   return resolve(process.cwd(), "..");
 }
@@ -144,6 +152,28 @@ function synthesizeStackRenderWorkerAsset(outdir: string): DockerAsset {
     env: webStackEnv,
     appConfigPath,
   });
+  const renderAssets = stack.node.findAll().filter(
+    (child): child is ecrassets.DockerImageAsset =>
+      child instanceof ecrassets.DockerImageAsset &&
+      (child as unknown as DockerImageAssetInspection).dockerfilePath ===
+        renderWorkerDockerfile,
+  );
+  assert.equal(
+    renderAssets.length,
+    1,
+    "expected exactly one RenderWorker DockerImageAsset construct",
+  );
+  const staging = renderAssets[0]!.node.tryFindChild("Staging");
+  assert.ok(
+    staging instanceof cdk.AssetStaging,
+    "expected RenderWorker AssetStaging child",
+  );
+  assert.equal(
+    (staging as unknown as AssetStagingInspection).fingerprintOptions
+      ?.ignoreMode,
+    cdk.IgnoreMode.DOCKER,
+    "RenderWorker asset must pin Docker ignore semantics",
+  );
   const assembly = app.synth();
   return parseRenderWorkerDockerAsset(assembly.directory, stack.artifactId);
 }
@@ -243,8 +273,8 @@ test(
       );
       assert.match(
         renderAssetCall[1]!,
-        /ignoreMode:\s*cdk\.IgnoreMode\.DOCKER/,
-        "repo-root Docker asset must explicitly use Docker ignore semantics",
+        /^\s*ignoreMode:\s*cdk\.IgnoreMode\.DOCKER,?\s*$/m,
+        "repo-root Docker asset must explicitly pin Docker ignore semantics",
       );
 
       const dockerIgnoreRules = readFileSync(
