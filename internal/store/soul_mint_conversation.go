@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
@@ -70,6 +70,7 @@ func (s *Store) GetSoulAgentMintConversation(ctx context.Context, agentID string
 		Model(&models.SoulAgentMintConversation{}).
 		Where("PK", "=", fmt.Sprintf("SOUL#AGENT#%s", strings.ToLower(strings.TrimSpace(agentID)))).
 		Where("SK", "=", fmt.Sprintf("MINT_CONVERSATION#%s", strings.TrimSpace(conversationID))).
+		ConsistentRead().
 		First(&item); err != nil {
 		return nil, err
 	}
@@ -113,6 +114,7 @@ func (s *Store) GetSoulMintConversationIdempotency(ctx context.Context, instance
 		Model(&models.SoulMintConversationIdempotency{}).
 		Where("PK", "=", models.SoulMintConversationIdempotencyPK(instanceSlug, registrationID, idempotencyKey)).
 		Where("SK", "=", "STATE").
+		ConsistentRead().
 		First(&item); err != nil {
 		return nil, err
 	}

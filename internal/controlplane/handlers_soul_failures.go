@@ -67,28 +67,28 @@ func (s *Server) handleSoulRecordFailure(ctx *apptheory.Context) (*apptheory.Res
 
 	failureID := strings.TrimSpace(req.FailureID)
 	if failureID == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "failure_id is required"}
+		return nil, newAppTheoryError("app.bad_request", "failure_id is required")
 	}
 	if len(failureID) > 128 {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "failure_id is too long"}
+		return nil, newAppTheoryError("app.bad_request", "failure_id is too long")
 	}
 	failureType := strings.ToLower(strings.TrimSpace(req.FailureType))
 	if failureType == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "failure_type is required"}
+		return nil, newAppTheoryError("app.bad_request", "failure_type is required")
 	}
 	if len(failureType) > 64 {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "failure_type is too long"}
+		return nil, newAppTheoryError("app.bad_request", "failure_type is too long")
 	}
 	description := strings.TrimSpace(req.Description)
 	if description == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "description is required"}
+		return nil, newAppTheoryError("app.bad_request", "description is required")
 	}
 	if len(description) > 8192 {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "description is too long"}
+		return nil, newAppTheoryError("app.bad_request", "description is too long")
 	}
 	impact := strings.TrimSpace(req.Impact)
 	if len(impact) > 8192 {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "impact is too long"}
+		return nil, newAppTheoryError("app.bad_request", "impact is too long")
 	}
 
 	now := time.Now().UTC()
@@ -104,7 +104,7 @@ func (s *Server) handleSoulRecordFailure(ctx *apptheory.Context) (*apptheory.Res
 	_ = failure.UpdateKeys()
 
 	if err := s.store.DB.WithContext(ctx.Context()).Model(failure).IfNotExists().Create(); err != nil {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "failure with this ID already exists"}
+		return nil, newAppTheoryError("app.conflict", "failure with this ID already exists")
 	}
 
 	// Audit log.
@@ -148,29 +148,29 @@ func (s *Server) handleSoulRecordRecovery(ctx *apptheory.Context) (*apptheory.Re
 
 	failureID := strings.TrimSpace(req.FailureID)
 	if failureID == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "failure_id is required"}
+		return nil, newAppTheoryError("app.bad_request", "failure_id is required")
 	}
 	if len(failureID) > 128 {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "failure_id is too long"}
+		return nil, newAppTheoryError("app.bad_request", "failure_id is too long")
 	}
 	recoveryRef := strings.TrimSpace(req.RecoveryRef)
 	if len(recoveryRef) > 1024 {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "recovery_ref is too long"}
+		return nil, newAppTheoryError("app.bad_request", "recovery_ref is too long")
 	}
 
 	target := s.findSoulFailureByID(ctx, agentIDHex, failureID)
 	if target == nil {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "failure not found"}
+		return nil, newAppTheoryError("app.not_found", "failure not found")
 	}
 	if target.Status == "recovered" {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "failure is already recovered"}
+		return nil, newAppTheoryError("app.conflict", "failure is already recovered")
 	}
 
 	target.Status = "recovered"
 	target.RecoveryRef = recoveryRef
 	_ = target.UpdateKeys()
 	if err := s.store.DB.WithContext(ctx.Context()).Model(target).IfExists().Update("Status", "RecoveryRef"); err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to record recovery"}
+		return nil, newAppTheoryError("app.internal", "failed to record recovery")
 	}
 
 	// Audit log.
@@ -223,7 +223,7 @@ func (s *Server) handleSoulPublicGetFailures(ctx *apptheory.Context) (*apptheory
 		NextCursor: nextCursor,
 	})
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	s.setSoulPublicHeaders(ctx, resp, "public, max-age=60")
 	return resp, nil

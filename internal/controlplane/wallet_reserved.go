@@ -35,7 +35,7 @@ func isReservedWalletAddress(addr string) bool {
 	return ok
 }
 
-func validateNotReservedWalletAddress(addr string, field string) *apptheory.AppError {
+func validateNotReservedWalletAddress(addr string, field string) *apptheory.AppTheoryError {
 	if !isReservedWalletAddress(addr) {
 		return nil
 	}
@@ -44,10 +44,10 @@ func validateNotReservedWalletAddress(addr string, field string) *apptheory.AppE
 	if field != "" {
 		msg = field + " is reserved"
 	}
-	return &apptheory.AppError{Code: "app.bad_request", Message: msg}
+	return newAppTheoryError("app.bad_request", msg)
 }
 
-func validateNotReservedWalletUsername(username string) *apptheory.AppError {
+func validateNotReservedWalletUsername(username string) *apptheory.AppTheoryError {
 	addr := walletAddressFromUsername(username)
 	if addr == "" {
 		return nil

@@ -10,7 +10,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/route53"
 	r53types "github.com/aws/aws-sdk-go-v2/service/route53/types"
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/domains"
 	"github.com/equaltoai/lesser-host/internal/store/models"
@@ -120,7 +120,7 @@ func (s *Server) handlePortalUpsertDomainVerificationRoute53(ctx *apptheory.Cont
 
 	domain, err := domains.NormalizeDomain(ctx.Param("domain"))
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: err.Error()}
+		return nil, newAppTheoryError("app.bad_request", err.Error())
 	}
 
 	var item models.Domain
@@ -130,18 +130,18 @@ func (s *Server) handlePortalUpsertDomainVerificationRoute53(ctx *apptheory.Cont
 		Where("SK", "=", models.SKMetadata).
 		First(&item)
 	if theoryErrors.IsNotFound(err) {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "domain not found"}
+		return nil, newAppTheoryError("app.not_found", "domain not found")
 	}
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	if strings.TrimSpace(item.InstanceSlug) != slug {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "domain not found"}
+		return nil, newAppTheoryError("app.not_found", "domain not found")
 	}
 
 	token := strings.TrimSpace(item.VerificationToken)
 	if token == "" || strings.TrimSpace(item.Status) != models.DomainStatusPending {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "domain is not eligible for DNS assist"}
+		return nil, newAppTheoryError("app.conflict", "domain is not eligible for DNS assist")
 	}
 
 	txtName := domainVerificationRecordPrefix + domain
@@ -150,7 +150,7 @@ func (s *Server) handlePortalUpsertDomainVerificationRoute53(ctx *apptheory.Cont
 	zoneID := strings.TrimSpace(s.cfg.ManagedParentHostedZoneID)
 	zoneID = strings.TrimPrefix(zoneID, "/hostedzone/")
 	if zoneID == "" {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "Route53 DNS assist is not configured"}
+		return nil, newAppTheoryError("app.conflict", "Route53 DNS assist is not configured")
 	}
 
 	parentDomain := strings.TrimSpace(s.cfg.ManagedParentDomain)
@@ -158,16 +158,16 @@ func (s *Server) handlePortalUpsertDomainVerificationRoute53(ctx *apptheory.Cont
 		parentDomain = defaultManagedParentDomain
 	}
 	if !domainInZone(domain, parentDomain) {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "Route53 DNS assist is only available for managed domains"}
+		return nil, newAppTheoryError("app.conflict", "Route53 DNS assist is only available for managed domains")
 	}
 
 	if s.r53 == nil {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "Route53 DNS assist is not configured"}
+		return nil, newAppTheoryError("app.conflict", "Route53 DNS assist is not configured")
 	}
 
 	client, err := s.r53.get(ctx.Context())
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	_, err = client.ChangeResourceRecordSets(ctx.Context(), &route53.ChangeResourceRecordSetsInput{
@@ -189,7 +189,7 @@ func (s *Server) handlePortalUpsertDomainVerificationRoute53(ctx *apptheory.Cont
 		},
 	})
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to update Route53 record"}
+		return nil, newAppTheoryError("app.internal", "failed to update Route53 record")
 	}
 
 	now := time.Now().UTC()

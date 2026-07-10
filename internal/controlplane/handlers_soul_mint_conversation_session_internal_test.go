@@ -13,7 +13,7 @@ import (
 	"github.com/equaltoai/lesser-host/internal/store"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 	"github.com/stretchr/testify/mock"
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
 )
 
 func TestHostedGenesisSessionProjectionFallbackAndTraceNil(t *testing.T) {

@@ -9,7 +9,7 @@ import (
 	"time"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	ttmocks "github.com/theory-cloud/tabletheory/pkg/mocks"
+	ttmocks "github.com/theory-cloud/tabletheory/v2/pkg/mocks"
 
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -294,7 +294,7 @@ func TestHandleOperatorReleases_Unauthorized(t *testing.T) {
 	ctx := portalUserCtx()
 	_, err := s.handleOperatorReleases(ctx)
 	require.Error(t, err)
-	appErr, ok := err.(*apptheory.AppError)
+	appErr, ok := err.(*apptheory.AppTheoryError)
 	require.True(t, ok, "expected AppError, got %T: %v", err, err)
 	require.Equal(t, "app.forbidden", appErr.Code)
 
@@ -695,7 +695,7 @@ func TestHandleOperatorInstancesDrift_Unauthorized(t *testing.T) {
 	ctx := portalUserCtx()
 	_, err := s.handleOperatorInstancesDrift(ctx)
 	require.Error(t, err)
-	appErr, ok := err.(*apptheory.AppError)
+	appErr, ok := err.(*apptheory.AppTheoryError)
 	require.True(t, ok)
 	require.Equal(t, "app.forbidden", appErr.Code)
 
@@ -1370,7 +1370,7 @@ func TestHandleOperatorRemediateMCPDrift_Unauthorized(t *testing.T) {
 	ctx := portalUserCtx()
 	_, err := s.handleOperatorRemediateMCPDrift(ctx)
 	require.Error(t, err)
-	appErr, ok := err.(*apptheory.AppError)
+	appErr, ok := err.(*apptheory.AppTheoryError)
 	require.True(t, ok)
 	require.Equal(t, "app.forbidden", appErr.Code)
 }

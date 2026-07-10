@@ -77,7 +77,7 @@ func (s *Server) handleOperatorRemediateMCPDrift(ctx *apptheory.Context) (*appth
 	// Check for existing active MCP-only jobs (idempotency via GSI2 UPDATE_ACTIVE).
 	activeJobs, listErr := s.store.ListActiveUpdateJobs(ctx.Context(), 500)
 	if listErr != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to list active update jobs"}
+		return nil, newAppTheoryError("app.internal", "failed to list active update jobs")
 	}
 
 	activeMCPSlugs := map[string]bool{}
@@ -101,7 +101,7 @@ func (s *Server) handleOperatorRemediateMCPDrift(ctx *apptheory.Context) (*appth
 	// Emit operator audit event AFTER remediation so we can include the
 	// affected slug list and created job IDs.
 	if auditErr := s.emitRemediationAudit(ctx, remediatedSlugs, createdJobIDs, now, actor); auditErr != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to persist remediation audit log"}
+		return nil, newAppTheoryError("app.internal", "failed to persist remediation audit log")
 	}
 
 	return apptheory.JSON(http.StatusOK, remediateMCPDriftResponse{

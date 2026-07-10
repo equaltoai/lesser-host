@@ -14,6 +14,7 @@ import (
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis/completion"
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis/mintprompt"
 	"github.com/equaltoai/lesser-host/internal/secrets"
+	"github.com/equaltoai/lesser-host/internal/soul"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
@@ -23,26 +24,31 @@ import (
 type turnStore interface {
 	GetHostedGenesisSession(ctx context.Context, instanceSlug string, conversationID string) (*models.HostedGenesisSession, error)
 	GetSoulAgentMintConversation(ctx context.Context, agentID string, conversationID string) (*models.SoulAgentMintConversation, error)
+	PutSoulAgentMintConversation(ctx context.Context, item *models.SoulAgentMintConversation) error
 	GetSoulAgentRegistration(ctx context.Context, id string) (*models.SoulAgentRegistration, error)
 }
 
-// turnRunner is the in-VM hosted-genesis workload's assistant-turn +
+// turnRunner is the in-VM hosted-genesis workload's assistant-turn and
 // declaration-extraction executor. It loads the authoritative conversation
-// transcript + registration through the existing store layer, runs the assistant
-// turn and declaration extraction through the existing internal/ai/llm clients
-// (which carry an explicit HTTP timeout configured at process startup), and
-// durably records the outcome to HostedGenesisSession truth through the
-// completion writer. It never receives a raw AWS SDK client, a bearer token, or
-// a raw lifecycle hook payload.
+// transcript + registration through the existing store layer, runs exactly the
+// step represented by HostedGenesisSession truth (in_progress => assistant turn,
+// declaration_extraction_pending => declaration extraction) through the existing
+// internal/ai/llm clients (which carry an explicit HTTP timeout configured at
+// process startup), and durably records the outcome through the completion
+// writer. It never receives a raw AWS SDK client, a bearer token, or a raw
+// lifecycle hook payload.
 //
 // The runner is fail-closed: a missing session/conversation/registration, a
 // missing provider key, an empty assistant response, or a declaration-extraction
 // failure surfaces as a typed completion failure written to session truth —
 // never as a silent HTTP 200 or a swallowed error.
+type turnStoreFactory func(context.Context) (turnStore, *completion.CompletionWriter, error)
+
 type turnRunner struct {
-	store   turnStore
-	writer  *completion.CompletionWriter
-	nowFunc func() time.Time
+	store        turnStore
+	writer       *completion.CompletionWriter
+	storeFactory turnStoreFactory
+	nowFunc      func() time.Time
 }
 
 // turnInput is the resolved, prompt-ready input for one assistant turn. It is
@@ -113,19 +119,14 @@ func (r *turnRunner) runAssistantTurn(ctx context.Context, in turnInput) (string
 	}
 }
 
-// runDeclarationExtraction extracts structured declarations from the post-turn
-// transcript (accepted user messages + produced assistant message) through the
-// existing internal/ai/llm declaration clients. Returns a draft + a
-// publish-ready DeclarationCheckpoint.
-func (r *turnRunner) runDeclarationExtraction(ctx context.Context, in turnInput, assistantContent string) (llm.MintConversationDeclarationsDraft, models.AIUsage, error) {
+// runDeclarationExtraction extracts structured declarations from the supplied
+// post-turn transcript (accepted user messages + produced assistant message)
+// through the existing internal/ai/llm declaration clients.
+func (r *turnRunner) runDeclarationExtraction(ctx context.Context, in turnInput, messages []llm.MintConversationMessage) (llm.MintConversationDeclarationsDraft, models.AIUsage, error) {
 	apiKey, err := providerAPIKey(ctx, in.modelSet)
 	if err != nil {
 		return llm.MintConversationDeclarationsDraft{}, models.AIUsage{}, err
 	}
-	extractionMessages := append(append([]llm.MintConversationMessage(nil), in.messages...), llm.MintConversationMessage{
-		Role:    "assistant",
-		Content: strings.TrimSpace(assistantContent),
-	})
 	declInput := llm.MintConversationDeclarationsInput{
 		Registration: llm.MintConversationRegistrationContext{
 			Domain:               in.registration.DomainNormalized,
@@ -133,7 +134,7 @@ func (r *turnRunner) runDeclarationExtraction(ctx context.Context, in turnInput,
 			AgentID:              in.registration.AgentID,
 			DeclaredCapabilities: in.registration.Capabilities,
 		},
-		Messages: extractionMessages,
+		Messages: append([]llm.MintConversationMessage(nil), messages...),
 	}
 	modelSet := strings.ToLower(strings.TrimSpace(in.modelSet))
 	switch {
@@ -146,19 +147,79 @@ func (r *turnRunner) runDeclarationExtraction(ctx context.Context, in turnInput,
 	}
 }
 
-// runTurnAndPersist is the run-hook's durable execution path. It runs the
-// assistant turn, persists assistant_turn_ready, runs declaration extraction,
-// and persists declaration_ready — or persists a typed failure at any point the
-// path cannot continue. Every completion write is idempotent per turn ID and
-// conditional on the session's status + version; a replay against an already-
-// advanced session is recorded as a conflict (not a silent re-apply).
+// runTurnAndPersist is the run-hook's durable execution path. It executes one
+// step according to HostedGenesisSession truth: assistant turn for in_progress,
+// declaration extraction for declaration_extraction_pending. Every completion
+// write is idempotent per turn ID and conditional on the session's status +
+// version; a replay against an already-advanced session is recorded as a
+// conflict (not a silent re-apply).
 func (r *turnRunner) runTurnAndPersist(ctx context.Context, turn completion.CompletionTurn) error {
-	in, err := r.loadTurnInput(ctx, turn)
+	runner, in, err := r.prepareTurn(ctx, turn)
 	if err != nil {
-		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeInvalidCompletionState, err.Error())
+		if runner == nil {
+			return fmt.Errorf("initialize hosted genesis microvm turn store: %w", err)
+		}
+		return runner.recordFailure(ctx, turn, hostedgenesis.FailureCodeInvalidCompletionState, err.Error())
 	}
+	return runner.runPreparedTurnAndPersist(ctx, turn, in)
+}
 
-	assistantContent, _, err := r.runAssistantTurn(ctx, in)
+// prepareTurn initializes a fresh turn-scoped store and performs the first
+// authoritative DynamoDB reads before the controller acknowledges the workload
+// invocation. AWS credential providers retrieve lazily, so constructing the
+// TableTheory client alone is not a sufficient readiness check. Returning the
+// prepared runner + input lets the endpoint detach only provider work, while a
+// credential/store failure remains visible to the controller and AI worker.
+func (r *turnRunner) prepareTurn(ctx context.Context, turn completion.CompletionTurn) (*turnRunner, turnInput, error) {
+	runner, err := r.withTurnStore(ctx)
+	if err != nil {
+		return nil, turnInput{}, err
+	}
+	in, err := runner.loadTurnInput(ctx, turn)
+	if err != nil {
+		return runner, turnInput{}, err
+	}
+	return runner, in, nil
+}
+
+func (r *turnRunner) runPreparedTurnAndPersist(ctx context.Context, turn completion.CompletionTurn, in turnInput) error {
+	switch hostedgenesis.NormalizeStatus(in.session.Status) {
+	case hostedgenesis.StatusInProgress:
+		return r.runAssistantTurnAndPersist(ctx, turn, in)
+	case hostedgenesis.StatusDeclarationExtractionPending:
+		return r.runDeclarationExtractionAndPersist(ctx, turn, in)
+	case hostedgenesis.StatusAssistantTurnReady, hostedgenesis.StatusDeclarationReady:
+		return nil
+	default:
+		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeInvalidCompletionState, "session is not ready for hosted genesis microvm work")
+	}
+}
+
+func (r *turnRunner) withTurnStore(ctx context.Context) (*turnRunner, error) {
+	if r == nil {
+		return nil, errors.New("turn runner is not configured")
+	}
+	if r.store != nil && r.writer != nil {
+		return r, nil
+	}
+	if r.storeFactory == nil {
+		return nil, errors.New("turn store factory is not configured")
+	}
+	st, writer, err := r.storeFactory(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if st == nil || writer == nil {
+		return nil, errors.New("turn store factory returned incomplete store")
+	}
+	copy := *r
+	copy.store = st
+	copy.writer = writer
+	return &copy, nil
+}
+
+func (r *turnRunner) runAssistantTurnAndPersist(ctx context.Context, turn completion.CompletionTurn, in turnInput) error {
+	assistantContent, assistantUsage, err := r.runAssistantTurn(ctx, in)
 	if err != nil || strings.TrimSpace(assistantContent) == "" {
 		msg := "assistant turn failed"
 		if err != nil {
@@ -168,6 +229,13 @@ func (r *turnRunner) runTurnAndPersist(ctx context.Context, turn completion.Comp
 	}
 
 	postTurnMessageCount := len(in.messages) + 1
+	postTurnMessages := append(append([]llm.MintConversationMessage(nil), in.messages...), llm.MintConversationMessage{
+		Role:    "assistant",
+		Content: strings.TrimSpace(assistantContent),
+	})
+	if persistErr := r.persistConversationAssistantTurn(ctx, &in, turn, postTurnMessages, assistantUsage); persistErr != nil {
+		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeAssistantTurnFailed, "persist assistant turn: "+persistErr.Error())
+	}
 	if _, werr := r.writer.RecordAssistantTurnReady(ctx, turn, completion.AssistantTurnCompletion{
 		AssistantContent: assistantContent,
 		MessageCount:     postTurnMessageCount,
@@ -176,12 +244,25 @@ func (r *turnRunner) runTurnAndPersist(ctx context.Context, turn completion.Comp
 		// a concurrent recovery). Do not overwrite; surface the conflict.
 		return fmt.Errorf("record assistant turn ready: %w", werr)
 	}
+	return nil
+}
 
-	draft, _, err := r.runDeclarationExtraction(ctx, in, assistantContent)
+func (r *turnRunner) runDeclarationExtractionAndPersist(ctx context.Context, turn completion.CompletionTurn, in turnInput) error {
+	if !hasAssistantMessage(in.messages) {
+		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeInvalidCompletionState, "declaration extraction requires an assistant transcript")
+	}
+	draft, declarationUsage, err := r.runDeclarationExtraction(ctx, in, in.messages)
 	if err != nil {
 		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeDeclarationExtractionFailed, err.Error())
 	}
-	checkpoint, err := r.buildDeclarationCheckpoint(turn, in, draft)
+	declarationsJSON, err := r.buildProducedDeclarationsJSON(draft, in.modelSet)
+	if err != nil {
+		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeInvalidProducedDeclarations, err.Error())
+	}
+	if persistErr := r.persistConversationDeclarationReady(ctx, &in, turn, declarationsJSON, declarationUsage); persistErr != nil {
+		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeInvalidProducedDeclarations, "persist declarations: "+persistErr.Error())
+	}
+	checkpoint, err := r.buildDeclarationCheckpoint(turn, in, declarationsJSON)
 	if err != nil {
 		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeInvalidProducedDeclarations, err.Error())
 	}
@@ -191,21 +272,135 @@ func (r *turnRunner) runTurnAndPersist(ctx context.Context, turn completion.Comp
 	return nil
 }
 
-// buildDeclarationCheckpoint assembles a publish-ready DeclarationCheckpoint
-// from the extracted draft. The declaration id + hash are derived from the
-// conversation + turn identity so a replay produces the same checkpoint
-// (idempotent declaration_ready).
-func (r *turnRunner) buildDeclarationCheckpoint(turn completion.CompletionTurn, in turnInput, draft llm.MintConversationDeclarationsDraft) (hostedgenesis.DeclarationCheckpoint, error) {
+func hasAssistantMessage(messages []llm.MintConversationMessage) bool {
+	for _, msg := range messages {
+		if strings.EqualFold(strings.TrimSpace(msg.Role), "assistant") && strings.TrimSpace(msg.Content) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+type producedDeclarations struct {
+	SelfDescription soul.SelfDescriptionV2 `json:"selfDescription"`
+	Capabilities    []soul.CapabilityV2    `json:"capabilities"`
+	Boundaries      []soul.BoundaryV2      `json:"boundaries"`
+	Transparency    map[string]any         `json:"transparency"`
+}
+
+func (r *turnRunner) persistConversationAssistantTurn(ctx context.Context, in *turnInput, turn completion.CompletionTurn, messages []llm.MintConversationMessage, usage models.AIUsage) error {
+	if r == nil || r.store == nil || in.conv == nil {
+		return errors.New("conversation store is not initialized")
+	}
+	body, err := json.Marshal(messages)
+	if err != nil {
+		return fmt.Errorf("marshal assistant transcript: %w", err)
+	}
 	now := r.now()
-	declarationID := fmt.Sprintf("decl:%s:%s:%s", in.session.InstanceSlug, in.session.ConversationID, turn.TurnID)
-	declarationHash, err := hashDeclarationDraft(draft)
+	conv := *in.conv
+	conv.Messages = models.EncodeSoulMintConversationBlob(string(body))
+	conv.Usage = addAIUsage(conv.Usage, usage)
+	conv.Status = models.SoulMintConversationStatusAssistantTurnReady
+	conv.StatusReason = ""
+	conv.LatestTurnID = strings.TrimSpace(turn.TurnID)
+	conv.RequestID = firstNonEmpty(strings.TrimSpace(turn.RequestID), conv.RequestID)
+	conv.UpdatedAt = now
+	if err := conv.UpdateKeys(); err != nil {
+		return err
+	}
+	if err := r.store.PutSoulAgentMintConversation(ctx, &conv); err != nil {
+		return err
+	}
+	in.conv = &conv
+	return nil
+}
+
+func (r *turnRunner) persistConversationDeclarationReady(ctx context.Context, in *turnInput, turn completion.CompletionTurn, declarationsJSON string, usage models.AIUsage) error {
+	if r == nil || r.store == nil || in.conv == nil {
+		return errors.New("conversation store is not initialized")
+	}
+	now := r.now()
+	conv := *in.conv
+	conv.ProducedDeclarations = models.EncodeSoulMintConversationBlob(strings.TrimSpace(declarationsJSON))
+	conv.Usage = addAIUsage(conv.Usage, usage)
+	conv.Status = models.SoulMintConversationStatusDeclarationReady
+	conv.StatusReason = ""
+	conv.LatestTurnID = strings.TrimSpace(turn.TurnID)
+	conv.RequestID = firstNonEmpty(strings.TrimSpace(turn.RequestID), conv.RequestID)
+	conv.CompletedAt = now
+	conv.UpdatedAt = now
+	if err := conv.UpdateKeys(); err != nil {
+		return err
+	}
+	if err := r.store.PutSoulAgentMintConversation(ctx, &conv); err != nil {
+		return err
+	}
+	in.conv = &conv
+	return nil
+}
+
+func (r *turnRunner) buildProducedDeclarationsJSON(draft llm.MintConversationDeclarationsDraft, modelSet string) (string, error) {
+	now := r.now()
+	decl := producedDeclarations{
+		SelfDescription: draft.SelfDescription,
+		Capabilities:    []soul.CapabilityV2{},
+		Boundaries:      []soul.BoundaryV2{},
+		Transparency:    draft.Transparency,
+	}
+	decl.SelfDescription.AuthoredBy = "agent"
+	decl.SelfDescription.MintingModel = strings.TrimSpace(modelSet)
+	if err := decl.SelfDescription.Validate(); err != nil {
+		return "", fmt.Errorf("invalid extracted selfDescription: %w", err)
+	}
+	for _, c := range draft.Capabilities {
+		c.ClaimLevel = "self-declared"
+		if strings.TrimSpace(c.Capability) == "" || strings.TrimSpace(c.Scope) == "" {
+			continue
+		}
+		if err := c.Validate(); err != nil {
+			continue
+		}
+		decl.Capabilities = append(decl.Capabilities, c)
+	}
+	for i, b := range draft.Boundaries {
+		entry := soul.BoundaryV2{
+			ID:             fmt.Sprintf("mint-%d-%02d", now.Unix(), i+1),
+			Category:       strings.ToLower(strings.TrimSpace(b.Category)),
+			Statement:      strings.TrimSpace(b.Statement),
+			Rationale:      strings.TrimSpace(b.Rationale),
+			AddedAt:        now.UTC().Format(time.RFC3339),
+			AddedInVersion: "1",
+			Signature:      "0x00",
+		}
+		if err := entry.Validate(); err != nil {
+			continue
+		}
+		decl.Boundaries = append(decl.Boundaries, entry)
+	}
+	if decl.Transparency == nil {
+		decl.Transparency = map[string]any{}
+	}
+	body, err := json.Marshal(decl)
+	if err != nil {
+		return "", fmt.Errorf("marshal produced declarations: %w", err)
+	}
+	return string(body), nil
+}
+
+// buildDeclarationCheckpoint assembles a publish-ready DeclarationCheckpoint
+// over the exact ProducedDeclarations JSON persisted to the conversation. The
+// checkpoint hash must match that stored blob byte-for-byte; otherwise the
+// instance API correctly refuses to project declarations.
+func (r *turnRunner) buildDeclarationCheckpoint(turn completion.CompletionTurn, in turnInput, declarationsJSON string) (hostedgenesis.DeclarationCheckpoint, error) {
+	now := r.now()
+	declarationHash, hashHex, err := hashDeclarationJSON(declarationsJSON)
 	if err != nil {
 		return hostedgenesis.DeclarationCheckpoint{}, err
 	}
 	return hostedgenesis.DeclarationCheckpoint{
-		DeclarationID:   declarationID,
+		DeclarationID:   "decl_" + hashHex[:16],
 		DeclarationHash: declarationHash,
-		CheckpointRef:   hostedgenesis.CheckpointRef("declaration", in.session.ConversationID, turn.TurnID),
+		CheckpointRef:   hostedgenesis.CheckpointRef("declaration", in.session.ConversationID, hashHex[:16]),
 		ProducedAt:      now,
 		RegistrationID:  in.session.RegistrationID,
 		ConversationID:  in.session.ConversationID,
@@ -214,6 +409,35 @@ func (r *turnRunner) buildDeclarationCheckpoint(turn completion.CompletionTurn, 
 		Model:           in.modelSet,
 		RequestID:       turn.RequestID,
 	}, nil
+}
+
+func addAIUsage(existing models.AIUsage, delta models.AIUsage) models.AIUsage {
+	out := existing
+	if strings.TrimSpace(out.Provider) == "" {
+		out.Provider = strings.TrimSpace(delta.Provider)
+	}
+	if strings.TrimSpace(out.Model) == "" {
+		out.Model = strings.TrimSpace(delta.Model)
+	}
+	out.InputTokens += delta.InputTokens
+	out.OutputTokens += delta.OutputTokens
+	total := delta.TotalTokens
+	if total == 0 && (delta.InputTokens != 0 || delta.OutputTokens != 0) {
+		total = delta.InputTokens + delta.OutputTokens
+	}
+	out.TotalTokens += total
+	out.DurationMs += delta.DurationMs
+	out.ToolCalls += delta.ToolCalls
+	return out
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }
 
 func (r *turnRunner) recordFailure(ctx context.Context, turn completion.CompletionTurn, code hostedgenesis.FailureCode, message string) error {
@@ -279,7 +503,7 @@ func recoveryActionFor(code hostedgenesis.FailureCode) hostedgenesis.RecoveryAct
 // (OpenAIServiceKey / ClaudeAPIKey), which read the same unscoped SecureString
 // params the control plane reads (/lesser-host/api/openai/service and
 // /lesser-host/api/claude). The in-VM workload can reach SSM because the
-// host-owned MicroVM execution role (AppTheory v1.15.2 executionRole
+// host-owned MicroVM execution role (AppTheory executionRole
 // propagation) grants ssm:GetParameter + kms:Decrypt on exactly those params.
 type ssmKeyLoader func(ctx context.Context, client secrets.SSMAPI) (string, error)
 
@@ -295,9 +519,9 @@ var providerSSMLoaders = map[string]ssmKeyLoader{
 // resolution: OPENAI_API_KEY / ANTHROPIC_API_KEY (or CLAUDE_API_KEY) win when
 // set; otherwise the loader reads the provider-key SecureString from SSM.
 //
-// P52 H1.5 corrective (AppTheory v1.15.2): the prior comment held that SSM
+// P52 H1.5 corrective: the prior comment held that SSM
 // fallback was "a control-plane concern and not available in the MicroVM image
-// env" — that was true when the in-VM workload had no IAM identity. With v1.15.2
+// env" — that was true when the in-VM workload had no IAM identity. With
 // execution-role propagation, the MicroVM assumes the host-owned execution role
 // (DynamoDB + SSM provider-key grants), so SSM fallback is now available and is
 // the production path: the image env never carries raw provider keys (the

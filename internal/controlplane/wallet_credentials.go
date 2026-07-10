@@ -5,20 +5,20 @@ import (
 	"strings"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
 func (s *Server) getWalletCredential(ctx *apptheory.Context, username string, walletAddr string) (*models.WalletCredential, error) {
 	if s == nil || s.store == nil || s.store.DB == nil || ctx == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	username = strings.TrimSpace(username)
 	walletAddr = strings.ToLower(strings.TrimSpace(walletAddr))
 	if username == "" || walletAddr == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "wallet not linked"}
+		return nil, newAppTheoryError("app.bad_request", "wallet not linked")
 	}
 
 	var cred models.WalletCredential
@@ -34,9 +34,9 @@ func (s *Server) getWalletCredential(ctx *apptheory.Context, username string, wa
 	return &cred, nil
 }
 
-func (s *Server) credentialForWalletUsername(ctx *apptheory.Context, username string) (*models.WalletCredential, *apptheory.AppError) {
+func (s *Server) credentialForWalletUsername(ctx *apptheory.Context, username string) (*models.WalletCredential, *apptheory.AppTheoryError) {
 	if s == nil || s.store == nil || s.store.DB == nil || ctx == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	addr := walletAddressFromUsername(username)
@@ -49,7 +49,7 @@ func (s *Server) credentialForWalletUsername(ctx *apptheory.Context, username st
 		return cred, nil
 	}
 	if err != nil && !theoryErrors.IsNotFound(err) {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	return nil, nil
 }
@@ -70,14 +70,14 @@ func mostRecentlyUsedWalletCredential(creds []*models.WalletCredential) *models.
 	return best
 }
 
-func (s *Server) requireUserWalletCredential(ctx *apptheory.Context, username string) (*models.WalletCredential, *apptheory.AppError) {
+func (s *Server) requireUserWalletCredential(ctx *apptheory.Context, username string) (*models.WalletCredential, *apptheory.AppTheoryError) {
 	if s == nil || s.store == nil || s.store.DB == nil || ctx == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	username = strings.TrimSpace(username)
 	if username == "" {
-		return nil, &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
+		return nil, newAppTheoryError("app.unauthorized", "unauthorized")
 	}
 
 	// Happy path: wallet-derived username with a matching credential record.
@@ -97,12 +97,12 @@ func (s *Server) requireUserWalletCredential(ctx *apptheory.Context, username st
 		Where("SK", "BEGINS_WITH", "WALLET#").
 		Limit(25).
 		All(&creds); err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	best := mostRecentlyUsedWalletCredential(creds)
 	if best == nil {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "wallet not linked"}
+		return nil, newAppTheoryError("app.conflict", "wallet not linked")
 	}
 
 	return best, nil

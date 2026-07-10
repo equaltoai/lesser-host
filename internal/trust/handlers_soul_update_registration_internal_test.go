@@ -17,7 +17,7 @@ type fakeSoulRegistrationUpdater struct {
 	agentID      string
 	body         []byte
 	result       *controlplane.SoulAgentUpdateRegistrationResult
-	appErr       *apptheory.AppError
+	appErr       *apptheory.AppTheoryError
 }
 
 func (f *fakeSoulRegistrationUpdater) UpdateSoulAgentRegistrationForInstance(
@@ -26,7 +26,7 @@ func (f *fakeSoulRegistrationUpdater) UpdateSoulAgentRegistrationForInstance(
 	requestID string,
 	agentID string,
 	body []byte,
-) (*controlplane.SoulAgentUpdateRegistrationResult, *apptheory.AppError) {
+) (*controlplane.SoulAgentUpdateRegistrationResult, *apptheory.AppTheoryError) {
 	f.instanceSlug = instanceSlug
 	f.requestID = requestID
 	f.agentID = agentID
@@ -39,7 +39,7 @@ func TestHandleSoulAgentUpdateRegistration_RequiresInstanceAuth(t *testing.T) {
 
 	s := &Server{soul: &fakeSoulRegistrationUpdater{}}
 	_, err := s.handleSoulAgentUpdateRegistration(&apptheory.Context{})
-	appErr, ok := err.(*apptheory.AppError)
+	appErr, ok := err.(*apptheory.AppTheoryError)
 	if !ok || appErr.Code != "app.unauthorized" || appErr.Message != "unauthorized" {
 		t.Fatalf("expected unauthorized app error, got %v", err)
 	}

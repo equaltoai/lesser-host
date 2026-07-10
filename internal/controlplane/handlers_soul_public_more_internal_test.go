@@ -10,8 +10,8 @@ import (
 	"time"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	"github.com/theory-cloud/tabletheory/pkg/core"
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
+	"github.com/theory-cloud/tabletheory/v2/pkg/core"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
 
 	"github.com/stretchr/testify/mock"
 
@@ -650,7 +650,7 @@ func TestHandleSoulPublicSearch_BareLocalFailsClosedWithoutTrustedHost(t *testin
 		Query:   map[string][]string{"q": {"medic"}},
 	}}
 	_, err := s.handleSoulPublicSearch(ctx)
-	appErr, ok := err.(*apptheory.AppError)
+	appErr, ok := err.(*apptheory.AppTheoryError)
 	if !ok || appErr.Code != appErrCodeBadRequest || appErr.Message != "q must include a domain unless the request host maps to a verified instance domain (or provide domain=)" {
 		t.Fatalf("unexpected err: %#v", err)
 	}

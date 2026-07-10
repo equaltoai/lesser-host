@@ -58,19 +58,19 @@ func (s *Server) handlePortalGetInstanceActivity(ctx *apptheory.Context) (*appth
 
 	apiKey, keyErr := s.resolvePortalCostInstanceKey(ctx.Context(), inst)
 	if keyErr != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to resolve instance metrics access"}
+		return nil, newAppTheoryError("app.internal", "failed to resolve instance metrics access")
 	}
 
 	baseURL, urlErr := s.resolvePortalCostMetricsBaseURL(inst)
 	if urlErr != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to resolve instance activity endpoint"}
+		return nil, newAppTheoryError("app.internal", "failed to resolve instance activity endpoint")
 	}
 
 	endpoint := fmt.Sprintf("%s/api/v1/instance/activity", strings.TrimRight(baseURL, "/"))
 
 	req, reqErr := http.NewRequestWithContext(ctx.Context(), http.MethodGet, endpoint, nil)
 	if reqErr != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to create instance activity request"}
+		return nil, newAppTheoryError("app.internal", "failed to create instance activity request")
 	}
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	req.Header.Set("Accept", "application/json")
@@ -79,18 +79,18 @@ func (s *Server) handlePortalGetInstanceActivity(ctx *apptheory.Context) (*appth
 
 	resp, respErr := client.Do(req) //nolint:gosec // URL is derived from managed instance metadata, not from browser input.
 	if respErr != nil {
-		return nil, &apptheory.AppError{Code: "app.upstream_unavailable", Message: "failed to reach instance activity"}
+		return nil, newAppTheoryError("app.upstream_unavailable", "failed to reach instance activity")
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1024))
-		return nil, &apptheory.AppError{Code: "app.upstream_error", Message: "failed to fetch instance activity"}
+		return nil, newAppTheoryError("app.upstream_error", "failed to fetch instance activity")
 	}
 
 	var entries []lesserActivityEntry
 	if decErr := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&entries); decErr != nil {
-		return nil, &apptheory.AppError{Code: "app.upstream_error", Message: "failed to decode instance activity"}
+		return nil, newAppTheoryError("app.upstream_error", "failed to decode instance activity")
 	}
 
 	now := time.Now().UTC()

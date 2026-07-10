@@ -26,10 +26,10 @@ func (s *Server) handleSoulPublicGetTransparency(ctx *apptheory.Context) (*appth
 		return nil, appErr
 	}
 	if !s.cfg.SoulEnabled {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "not found"}
+		return nil, newAppTheoryError("app.not_found", "not found")
 	}
 	if s.soulPacks == nil {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "not found"}
+		return nil, newAppTheoryError("app.not_found", "not found")
 	}
 
 	agentIDHex, _, appErr := parseSoulAgentIDHex(ctx.Param("agentId"))
@@ -43,15 +43,15 @@ func (s *Server) handleSoulPublicGetTransparency(ctx *apptheory.Context) (*appth
 	if err != nil {
 		var nsk *s3types.NoSuchKey
 		if errors.As(err, &nsk) {
-			return nil, &apptheory.AppError{Code: "app.not_found", Message: "not found"}
+			return nil, newAppTheoryError("app.not_found", "not found")
 		}
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to fetch registration"}
+		return nil, newAppTheoryError("app.internal", "failed to fetch registration")
 	}
 
 	var reg map[string]any
 	unmarshalErr := json.Unmarshal(body, &reg)
 	if unmarshalErr != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to parse registration"}
+		return nil, newAppTheoryError("app.internal", "failed to parse registration")
 	}
 
 	// Extract transparency section from registration file.
@@ -62,7 +62,7 @@ func (s *Server) handleSoulPublicGetTransparency(ctx *apptheory.Context) (*appth
 		Transparency: transparency,
 	})
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	s.setSoulPublicHeaders(ctx, resp, "public, max-age=60")
 	return resp, nil

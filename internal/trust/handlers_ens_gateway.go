@@ -16,7 +16,7 @@ import (
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/crypto"
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/httpx"
 	"github.com/equaltoai/lesser-host/internal/soul"
@@ -34,7 +34,7 @@ func (s *Server) handleENSGatewayHealth(ctx *apptheory.Context) (*apptheory.Resp
 		"service": "ens-gateway",
 	})
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	if resp.Headers == nil {
 		resp.Headers = map[string][]string{}
@@ -45,18 +45,18 @@ func (s *Server) handleENSGatewayHealth(ctx *apptheory.Context) (*apptheory.Resp
 
 func (s *Server) handleENSGatewayResolve(ctx *apptheory.Context) (*apptheory.Response, error) {
 	if s == nil || ctx == nil || s.store == nil || s.store.DB == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	if !s.cfg.ENSGatewayEnabled {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "not found"}
+		return nil, newAppTheoryError("app.not_found", "not found")
 	}
 
 	signer, signerErr := s.ensureENSGatewaySigner(ctx.Context())
 	if signerErr != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	if signer == nil {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "not found"}
+		return nil, newAppTheoryError("app.not_found", "not found")
 	}
 
 	target, callData, ensName, innerData, err := s.parseENSGatewayResolveQuery(ctx)
@@ -100,10 +100,10 @@ func (s *Server) parseENSGatewayResolveQuery(ctx *apptheory.Context) (common.Add
 func (s *Server) resolveENSGatewayTarget(query map[string][]string) (common.Address, error) {
 	resolverAddress := strings.TrimSpace(s.cfg.ENSGatewayResolverAddress)
 	if resolverAddress == "" {
-		return common.Address{}, &apptheory.AppError{Code: "app.not_found", Message: "not found"}
+		return common.Address{}, newAppTheoryError("app.not_found", "not found")
 	}
 	if !common.IsHexAddress(resolverAddress) {
-		return common.Address{}, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return common.Address{}, newAppTheoryError("app.internal", "internal error")
 	}
 
 	targetRaw := strings.TrimSpace(httpx.FirstQueryValue(query, "sender"))
@@ -127,7 +127,7 @@ func buildENSGatewayResolveResponse(ctx context.Context, signer ensGatewaySigner
 	validUntilUnix := time.Now().UTC().Add(time.Duration(ttlSeconds) * time.Second).Unix()
 	validUntil, validUntilErr := checkedUnixUint64(validUntilUnix)
 	if validUntilErr != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	sigHash := makeENSSignatureHash(target, validUntil, callData, result)
@@ -136,18 +136,18 @@ func buildENSGatewayResolveResponse(ctx context.Context, signer ensGatewaySigner
 
 	sigCompact, err := signer.SignDigest(ctx, digest)
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	responseBytes, err := ensGatewayResponseABI.Pack(result, validUntil, sigCompact)
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	out := ensGatewayResolveJSON{Data: "0x" + hex.EncodeToString(responseBytes)}
 	resp, err := apptheory.JSON(http.StatusOK, out)
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	if resp.Headers == nil {
 		resp.Headers = map[string][]string{}
@@ -201,7 +201,7 @@ func (s *Server) answerENSAddrQuery(ctx context.Context, ensName string, node co
 
 	material, ok, err := s.loadENSGatewayMaterial(ctx, ensName)
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	if !ok || !common.IsHexAddress(material.Wallet) {
 		return packENSAddress(common.Address{})
@@ -228,7 +228,7 @@ func (s *Server) answerENSAddrCoinQuery(ctx context.Context, ensName string, nod
 
 	material, ok, err := s.loadENSGatewayMaterial(ctx, ensName)
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	if !ok || !common.IsHexAddress(material.Wallet) {
 		return packENSBytes(nil)
@@ -252,7 +252,7 @@ func (s *Server) answerENSTextQuery(ctx context.Context, ensName string, node co
 
 	material, ok, err := s.loadENSGatewayMaterial(ctx, ensName)
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	value := ""
 	if ok {
@@ -276,7 +276,7 @@ func answerENSContenthashQuery(node common.Hash, args []byte) ([]byte, error) {
 func packENSAddress(addr common.Address) ([]byte, error) {
 	out, packErr := ensAddrOutputs.Pack(addr)
 	if packErr != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	return out, nil
 }
@@ -284,7 +284,7 @@ func packENSAddress(addr common.Address) ([]byte, error) {
 func packENSBytes(value []byte) ([]byte, error) {
 	out, packErr := ensBytesOutputs.Pack(value)
 	if packErr != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	return out, nil
 }
@@ -292,7 +292,7 @@ func packENSBytes(value []byte) ([]byte, error) {
 func packENSString(value string) ([]byte, error) {
 	out, packErr := ensStringOutputs.Pack(value)
 	if packErr != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	return out, nil
 }
@@ -575,7 +575,7 @@ func parseENSGatewayRequest(nameParam string, dataParam string) (callData []byte
 
 	packed, err := ensResolveInputs.Pack(nameBytes, data)
 	if err != nil {
-		return nil, nil, nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, nil, nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	callData = append(append([]byte(nil), ensResolveSelector...), packed...)

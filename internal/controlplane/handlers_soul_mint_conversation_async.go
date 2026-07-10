@@ -11,9 +11,9 @@ import (
 	"time"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	"github.com/theory-cloud/tabletheory"
-	"github.com/theory-cloud/tabletheory/pkg/core"
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
+	"github.com/theory-cloud/tabletheory/v2"
+	"github.com/theory-cloud/tabletheory/v2/pkg/core"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/ai/llm"
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
@@ -71,7 +71,7 @@ func (s *Server) handleSoulMintConversationForRegistrationAsync(ctx *apptheory.C
 		return nil, loadErr
 	}
 	if session.modelSet == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "model is required"}
+		return nil, newAppTheoryError("app.bad_request", "model is required")
 	}
 	if session.replayed {
 		if hostedGenesisReplayedTurnNeedsProgression(session) {
@@ -112,7 +112,7 @@ func (s *Server) handleSoulMintConversationForRegistrationAsync(ctx *apptheory.C
 
 	updatedMessages, messagesJSON, err := serializeHostedGenesisAcceptedTurn(session, message)
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to serialize conversation"}
+		return nil, newAppTheoryError("app.internal", "failed to serialize conversation")
 	}
 	idem := buildHostedGenesisIdempotency(instanceSlug, regCtx, session, req, session.requestHash, now, strings.TrimSpace(ctx.RequestID))
 	if appErr := s.persistHostedGenesisAcceptedTurn(ctx.Context(), regCtx, session, updatedMessages, messagesJSON, idem, firstNonEmpty(req.IdempotencyKey, ctx.RequestID), strings.TrimSpace(ctx.RequestID), now); appErr != nil {
@@ -173,63 +173,62 @@ type hostedGenesisAssistantRunResult struct {
 	usage        models.AIUsage
 }
 
-func (s *Server) progressHostedGenesisAcceptedTurn(ctx context.Context, regCtx mintConversationRegistrationContext, session hostedGenesisTurnSession, conv *models.SoulAgentMintConversation, acceptedMessages []soulMintConversationMessage, apiKey string, requestID string) (*models.HostedGenesisSession, *models.SoulAgentMintConversation, int, *apptheory.AppError) {
+func (s *Server) progressHostedGenesisAcceptedTurn(ctx context.Context, regCtx mintConversationRegistrationContext, session hostedGenesisTurnSession, conv *models.SoulAgentMintConversation, acceptedMessages []soulMintConversationMessage, apiKey string, requestID string) (*models.HostedGenesisSession, *models.SoulAgentMintConversation, int, *apptheory.AppTheoryError) {
 	if session.session == nil || conv == nil {
-		return nil, nil, 0, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, nil, 0, newAppTheoryError("app.internal", "internal error")
 	}
-	// H1.2: the production accept path dispatches the AppTheory M16 MicroVM
-	// controller run command and returns 202 accepted-pending. The control plane
-	// never makes a synchronous LLM HTTP call on this path; the assistant turn
-	// runs inside the MicroVM and completion is reconstructed from Host truth.
-	// The synchronous assistant runner is retained only behind an explicit
-	// non-production/test guard (hostedGenesisSyncAssistantFallbackEnabled) until
-	// H2.1 deletes it; production never sets that guard.
-	if s.hostedGenesisMicroVMDispatcher == nil {
-		if s.hostedGenesisSyncAssistantFallbackEnabled && s.hostedGenesisAssistantRunner != nil {
-			return s.progressHostedGenesisAcceptedTurnSync(ctx, regCtx, session, conv, acceptedMessages, apiKey, requestID)
-		}
-		log.Printf("controlplane: hosted genesis microvm dispatcher unavailable agent_hash=%s conversation_hash=%s", soulMintInstanceReadAuditHash(regCtx.agentIDHex), soulMintInstanceReadAuditHash(session.conversationID))
-		failedSession, failedConv, appErr := s.persistHostedGenesisAcceptedTurnFailure(ctx, session, conv, acceptedMessages, hostedGenesisFailureMicroVMUnavailable, requestID, time.Now().UTC())
-		if appErr != nil {
-			return nil, nil, 0, appErr
-		}
-		// H1.5 (carries forward G10a's explicit-status posture): the MicroVM-
-		// unavailable accept-path returns an explicit 503, matching the error
-		// mapper's 503 for appErrCodeMicroVMUnavailable. The returned int is the
-		// response status used when the caller builds a non-error body; the typed
-		// AppError is the authoritative surface and also maps to 503.
-		return failedSession, failedConv, http.StatusServiceUnavailable, &apptheory.AppError{Code: appErrCodeMicroVMUnavailable, Message: "MicroVM execution dispatch is unavailable"}
+	// Provider key resolution already happened before this function is called. The
+	// key value is deliberately not used here: the accepted turn is handed to the
+	// MicroVM worker via non-authoritative SQS ids only, and the in-VM workload
+	// resolves provider credentials from its own least-privilege SSM path.
+	_ = apiKey
+	if s.hostedGenesisSyncAssistantFallbackEnabled && s.hostedGenesisMicroVMDispatcher == nil && s.hostedGenesisAssistantRunner != nil {
+		return s.progressHostedGenesisAcceptedTurnSync(ctx, regCtx, session, conv, acceptedMessages, apiKey, requestID)
 	}
-
-	binding := session.session.MicroVMSessionBinding()
-	if err := binding.Validate(); err != nil {
+	if err := session.session.MicroVMSessionBinding().Validate(); err != nil {
 		log.Printf("controlplane: hosted genesis microvm binding invalid agent_hash=%s conversation_hash=%s err=%v", soulMintInstanceReadAuditHash(regCtx.agentIDHex), soulMintInstanceReadAuditHash(session.conversationID), err)
 		failedSession, failedConv, appErr := s.persistHostedGenesisAcceptedTurnFailure(ctx, session, conv, acceptedMessages, hostedGenesisFailureMicroVMUnavailable, requestID, time.Now().UTC())
 		if appErr != nil {
 			return nil, nil, 0, appErr
 		}
-		// H1.5: explicit 503 (matches the error mapper), not a silent 200.
-		return failedSession, failedConv, http.StatusServiceUnavailable, &apptheory.AppError{Code: appErrCodeMicroVMUnavailable, Message: "MicroVM execution dispatch is unavailable"}
+		return failedSession, failedConv, http.StatusServiceUnavailable, newAppTheoryError(appErrCodeMicroVMUnavailable, "MicroVM execution dispatch is unavailable")
 	}
-
-	runCtx, cancel := context.WithTimeout(detachedMintConversationContext(ctx), hostedGenesisAcceptedTurnDispatchTimeout)
-	defer cancel()
-	dispatch, dispatchErr := s.hostedGenesisMicroVMDispatcher.DispatchMicroVMRun(runCtx, strings.TrimSpace(requestID), binding)
-	if dispatchErr != nil {
-		log.Printf("controlplane: hosted genesis microvm dispatch failed agent_hash=%s conversation_hash=%s err=%v", soulMintInstanceReadAuditHash(regCtx.agentIDHex), soulMintInstanceReadAuditHash(session.conversationID), dispatchErr)
+	if s.enqueueHostedGenesisMessage == nil {
+		log.Printf("controlplane: hosted genesis microvm dispatch queue unavailable agent_hash=%s conversation_hash=%s", soulMintInstanceReadAuditHash(regCtx.agentIDHex), soulMintInstanceReadAuditHash(session.conversationID))
 		failedSession, failedConv, appErr := s.persistHostedGenesisAcceptedTurnFailure(ctx, session, conv, acceptedMessages, hostedGenesisFailureMicroVMUnavailable, requestID, time.Now().UTC())
 		if appErr != nil {
 			return nil, nil, 0, appErr
 		}
-		// H1.5: explicit 503 (matches the error mapper), not a silent 200.
-		return failedSession, failedConv, http.StatusServiceUnavailable, &apptheory.AppError{Code: appErrCodeMicroVMUnavailable, Message: "MicroVM execution dispatch failed"}
+		return failedSession, failedConv, http.StatusServiceUnavailable, newAppTheoryError(appErrCodeMicroVMUnavailable, "MicroVM execution dispatch queue is unavailable")
 	}
+	msg := hostedGenesisMicroVMDispatchQueueMessage(regCtx, session, requestID)
+	if err := s.enqueueHostedGenesisMessage(ctx, msg); err != nil {
+		log.Printf("controlplane: hosted genesis microvm dispatch enqueue failed agent_hash=%s conversation_hash=%s err=%v", soulMintInstanceReadAuditHash(regCtx.agentIDHex), soulMintInstanceReadAuditHash(session.conversationID), err)
+		failedSession, failedConv, appErr := s.persistHostedGenesisAcceptedTurnFailure(ctx, session, conv, acceptedMessages, hostedGenesisFailureMicroVMUnavailable, requestID, time.Now().UTC())
+		if appErr != nil {
+			return nil, nil, 0, appErr
+		}
+		return failedSession, failedConv, http.StatusServiceUnavailable, newAppTheoryError(appErrCodeMicroVMUnavailable, "MicroVM execution dispatch enqueue failed")
+	}
+	return cloneHostedGenesisSession(session.session), cloneSoulAgentMintConversation(conv), http.StatusAccepted, nil
+}
 
-	progressedSession, progressedConv, appErr := s.persistHostedGenesisAcceptedMicroVMDispatch(ctx, session, conv, acceptedMessages, dispatch, requestID, time.Now().UTC())
-	if appErr != nil {
-		return nil, nil, 0, appErr
+func hostedGenesisMicroVMDispatchQueueMessage(regCtx mintConversationRegistrationContext, session hostedGenesisTurnSession, requestID string) hostedgenesis.QueueMessage {
+	msg := hostedgenesis.QueueMessage{
+		Kind:           hostedgenesis.QueueMessageKind,
+		Step:           hostedgenesis.StepMicroVMDispatch,
+		RegistrationID: strings.TrimSpace(regCtx.reg.ID),
+		InstanceSlug:   strings.TrimSpace(regCtx.inst.Slug),
+		AgentID:        strings.TrimSpace(regCtx.agentIDHex),
+		ConversationID: strings.TrimSpace(session.conversationID),
+		TurnID:         strings.TrimSpace(session.turnID),
+		RequestID:      strings.TrimSpace(requestID),
 	}
-	return progressedSession, progressedConv, http.StatusAccepted, nil
+	if session.idempotency != nil {
+		msg.IdempotencyKey = strings.TrimSpace(session.idempotency.IdempotencyKey)
+		msg.CorrelationID = strings.TrimSpace(session.idempotency.CorrelationID)
+	}
+	return msg
 }
 
 // progressHostedGenesisAcceptedTurnSync is the retained non-production/test-only
@@ -237,7 +236,7 @@ func (s *Server) progressHostedGenesisAcceptedTurn(ctx context.Context, regCtx m
 // hostedGenesisSyncAssistantFallbackEnabled is explicitly true AND no MicroVM
 // dispatcher is wired; production never sets that guard. H2.1 deletes this path
 // and the hostedGenesisAssistantRunner field.
-func (s *Server) progressHostedGenesisAcceptedTurnSync(ctx context.Context, regCtx mintConversationRegistrationContext, session hostedGenesisTurnSession, conv *models.SoulAgentMintConversation, acceptedMessages []soulMintConversationMessage, apiKey string, requestID string) (*models.HostedGenesisSession, *models.SoulAgentMintConversation, int, *apptheory.AppError) {
+func (s *Server) progressHostedGenesisAcceptedTurnSync(ctx context.Context, regCtx mintConversationRegistrationContext, session hostedGenesisTurnSession, conv *models.SoulAgentMintConversation, acceptedMessages []soulMintConversationMessage, apiKey string, requestID string) (*models.HostedGenesisSession, *models.SoulAgentMintConversation, int, *apptheory.AppTheoryError) {
 	runCtx, cancel := context.WithTimeout(detachedMintConversationContext(ctx), hostedGenesisAcceptedTurnRunTimeout)
 	defer cancel()
 
@@ -257,7 +256,7 @@ func (s *Server) progressHostedGenesisAcceptedTurnSync(ctx context.Context, regC
 		// failure, not HTTP 200 with a failed body. The durable session is
 		// persisted as a retryable failed turn above; the returned typed error
 		// makes the public surface emit 502, never a silent 200-on-failure.
-		return failedSession, failedConv, http.StatusBadGateway, &apptheory.AppError{Code: appErrCodeAssistantTurnFailed, Message: "hosted genesis assistant turn failed"}
+		return failedSession, failedConv, http.StatusBadGateway, newAppTheoryError(appErrCodeAssistantTurnFailed, "hosted genesis assistant turn failed")
 	}
 
 	progressedSession, progressedConv, appErr := s.persistHostedGenesisAcceptedAssistantTurn(ctx, session, conv, acceptedMessages, result, requestID, time.Now().UTC())
@@ -275,12 +274,12 @@ func (s *Server) progressHostedGenesisAcceptedTurnSync(ctx context.Context, regC
 // the authoritative Host row. The conversation stays in_progress with no inline
 // assistant message: the turn is pending inside the MicroVM and completion is
 // reconstructed from Host truth by the recovery/stuck-turn path.
-func (s *Server) persistHostedGenesisAcceptedMicroVMDispatch(ctx context.Context, session hostedGenesisTurnSession, conv *models.SoulAgentMintConversation, acceptedMessages []soulMintConversationMessage, dispatch hostedgenesis.MicroVMDispatchResult, requestID string, now time.Time) (*models.HostedGenesisSession, *models.SoulAgentMintConversation, *apptheory.AppError) {
+func (s *Server) persistHostedGenesisAcceptedMicroVMDispatch(ctx context.Context, session hostedGenesisTurnSession, conv *models.SoulAgentMintConversation, acceptedMessages []soulMintConversationMessage, dispatch hostedgenesis.MicroVMDispatchResult, requestID string, now time.Time) (*models.HostedGenesisSession, *models.SoulAgentMintConversation, *apptheory.AppTheoryError) {
 	progressedSession := cloneHostedGenesisSession(session.session)
 	progressedConv := cloneSoulAgentMintConversation(conv)
 	if err := progressedSession.ApplyMicroVMLifecycleRef(dispatch.LifecycleRef); err != nil {
 		log.Printf("controlplane: hosted genesis microvm lifecycle ref rejected agent_hash=%s conversation_hash=%s err=%v", soulMintInstanceReadAuditHash(conv.AgentID), soulMintInstanceReadAuditHash(conv.ConversationID), err)
-		return nil, nil, &apptheory.AppError{Code: "app.internal", Message: "failed to record microvm dispatch"}
+		return nil, nil, newAppTheoryError("app.internal", "failed to record microvm dispatch")
 	}
 	progressedSession.Status = string(hostedgenesis.StatusInProgress)
 	progressedSession.RequestID = strings.TrimSpace(requestID)
@@ -318,12 +317,12 @@ func (s *Server) runHostedGenesisAcceptedAssistant(ctx context.Context, in hoste
 	}
 }
 
-func (s *Server) persistHostedGenesisAcceptedAssistantTurn(ctx context.Context, session hostedGenesisTurnSession, conv *models.SoulAgentMintConversation, acceptedMessages []soulMintConversationMessage, result hostedGenesisAssistantRunResult, requestID string, now time.Time) (*models.HostedGenesisSession, *models.SoulAgentMintConversation, *apptheory.AppError) {
+func (s *Server) persistHostedGenesisAcceptedAssistantTurn(ctx context.Context, session hostedGenesisTurnSession, conv *models.SoulAgentMintConversation, acceptedMessages []soulMintConversationMessage, result hostedGenesisAssistantRunResult, requestID string, now time.Time) (*models.HostedGenesisSession, *models.SoulAgentMintConversation, *apptheory.AppTheoryError) {
 	assistantMessage := soulMintConversationMessage{Role: "assistant", Content: strings.TrimSpace(result.fullResponse)}
 	updatedMessages := append(append([]soulMintConversationMessage(nil), acceptedMessages...), assistantMessage)
 	messagesJSON, err := json.Marshal(updatedMessages)
 	if err != nil {
-		return nil, nil, &apptheory.AppError{Code: "app.internal", Message: "failed to serialize conversation"}
+		return nil, nil, newAppTheoryError("app.internal", "failed to serialize conversation")
 	}
 	progressedSession := cloneHostedGenesisSession(session.session)
 	progressedConv := cloneSoulAgentMintConversation(conv)
@@ -348,10 +347,10 @@ func (s *Server) persistHostedGenesisAcceptedAssistantTurn(ctx context.Context, 
 	return progressedSession, progressedConv, nil
 }
 
-func (s *Server) persistHostedGenesisAcceptedTurnFailure(ctx context.Context, session hostedGenesisTurnSession, conv *models.SoulAgentMintConversation, acceptedMessages []soulMintConversationMessage, reason string, requestID string, now time.Time) (*models.HostedGenesisSession, *models.SoulAgentMintConversation, *apptheory.AppError) {
+func (s *Server) persistHostedGenesisAcceptedTurnFailure(ctx context.Context, session hostedGenesisTurnSession, conv *models.SoulAgentMintConversation, acceptedMessages []soulMintConversationMessage, reason string, requestID string, now time.Time) (*models.HostedGenesisSession, *models.SoulAgentMintConversation, *apptheory.AppTheoryError) {
 	messagesJSON, err := json.Marshal(acceptedMessages)
 	if err != nil {
-		return nil, nil, &apptheory.AppError{Code: "app.internal", Message: "failed to serialize conversation"}
+		return nil, nil, newAppTheoryError("app.internal", "failed to serialize conversation")
 	}
 	failedSession := cloneHostedGenesisSession(session.session)
 	failedConv := cloneSoulAgentMintConversation(conv)
@@ -373,9 +372,9 @@ func (s *Server) persistHostedGenesisAcceptedTurnFailure(ctx context.Context, se
 	return failedSession, failedConv, nil
 }
 
-func (s *Server) persistHostedGenesisProgression(ctx context.Context, accepted hostedGenesisTurnSession, session *models.HostedGenesisSession, conv *models.SoulAgentMintConversation, messagesJSON string, statusReason string, usage models.AIUsage, now time.Time) *apptheory.AppError {
+func (s *Server) persistHostedGenesisProgression(ctx context.Context, accepted hostedGenesisTurnSession, session *models.HostedGenesisSession, conv *models.SoulAgentMintConversation, messagesJSON string, statusReason string, usage models.AIUsage, now time.Time) *apptheory.AppTheoryError {
 	if s == nil || s.store == nil || s.store.DB == nil || session == nil || conv == nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return newAppTheoryError("app.internal", "internal error")
 	}
 	updateConv := &models.SoulAgentMintConversation{
 		AgentID:        conv.AgentID,
@@ -402,7 +401,7 @@ func (s *Server) persistHostedGenesisProgression(ctx context.Context, accepted h
 		return nil
 	}); err != nil {
 		log.Printf("controlplane: hosted genesis progression persist failed agent_hash=%s conversation_hash=%s status=%s err=%v", soulMintInstanceReadAuditHash(conv.AgentID), soulMintInstanceReadAuditHash(conv.ConversationID), conv.Status, err)
-		return &apptheory.AppError{Code: "app.internal", Message: "failed to update conversation"}
+		return newAppTheoryError("app.internal", "failed to update conversation")
 	}
 	return nil
 }
@@ -489,7 +488,7 @@ func buildHostedGenesisAcceptedConversation(regCtx mintConversationRegistrationC
 	return conv
 }
 
-func (s *Server) saveHostedGenesisAcceptedPromotion(ctx context.Context, regCtx mintConversationRegistrationContext, session hostedGenesisTurnSession, requestID string, now time.Time) *apptheory.AppError {
+func (s *Server) saveHostedGenesisAcceptedPromotion(ctx context.Context, regCtx mintConversationRegistrationContext, session hostedGenesisTurnSession, requestID string, now time.Time) *apptheory.AppTheoryError {
 	promotion := s.loadOrFallbackSoulAgentPromotion(ctx, regCtx.agentIDHex, buildSoulAgentPromotionFromRegistration(regCtx.reg, now))
 	previousPromotion := cloneSoulAgentPromotion(promotion)
 	promotion = updateSoulAgentPromotionForConversation(promotion, session.conversationID, models.SoulMintConversationStatusInProgress, now)
@@ -529,13 +528,13 @@ func validateHostedGenesisRequestIDs(req *soulMintConversationRequest) error {
 	return nil
 }
 
-func (s *Server) loadHostedGenesisTurnSession(ctx context.Context, regCtx mintConversationRegistrationContext, instanceSlug string, req soulMintConversationRequest, message string, requestID string, now time.Time) (hostedGenesisTurnSession, *apptheory.AppError) {
+func (s *Server) loadHostedGenesisTurnSession(ctx context.Context, regCtx mintConversationRegistrationContext, instanceSlug string, req soulMintConversationRequest, message string, requestID string, now time.Time) (hostedGenesisTurnSession, *apptheory.AppTheoryError) {
 	session := hostedGenesisTurnSession{
 		conversationID: strings.TrimSpace(req.ConversationID),
 		modelSet:       strings.TrimSpace(req.Model),
 	}
 	if strings.TrimSpace(instanceSlug) == "" {
-		return hostedGenesisTurnSession{}, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return hostedGenesisTurnSession{}, newAppTheoryError("app.internal", "internal error")
 	}
 	if appErr := s.applyHostedGenesisIdempotencyLookup(ctx, &session, instanceSlug, regCtx, req); appErr != nil {
 		return hostedGenesisTurnSession{}, appErr
@@ -549,44 +548,44 @@ func (s *Server) loadHostedGenesisTurnSession(ctx context.Context, regCtx mintCo
 	return s.loadExistingHostedGenesisTurnSession(ctx, session, regCtx, instanceSlug, req, message, requestID, now)
 }
 
-func (s *Server) applyHostedGenesisIdempotencyLookup(ctx context.Context, session *hostedGenesisTurnSession, instanceSlug string, regCtx mintConversationRegistrationContext, req soulMintConversationRequest) *apptheory.AppError {
+func (s *Server) applyHostedGenesisIdempotencyLookup(ctx context.Context, session *hostedGenesisTurnSession, instanceSlug string, regCtx mintConversationRegistrationContext, req soulMintConversationRequest) *apptheory.AppTheoryError {
 	if session == nil || strings.TrimSpace(req.IdempotencyKey) == "" {
 		return nil
 	}
 	item, err := s.getHostedGenesisIdempotency(ctx, instanceSlug, regCtx.reg.ID, req.IdempotencyKey)
 	if err != nil && !theoryErrors.IsNotFound(err) {
-		return &apptheory.AppError{Code: "app.internal", Message: "failed to load idempotency key"}
+		return newAppTheoryError("app.internal", "failed to load idempotency key")
 	}
 	if item == nil || err != nil {
 		return nil
 	}
 	if session.conversationID != "" && session.conversationID != strings.TrimSpace(item.ConversationID) {
-		return &apptheory.AppError{Code: "app.conflict", Message: "idempotency key already used for a different conversation"}
+		return newAppTheoryError("app.conflict", "idempotency key already used for a different conversation")
 	}
 	session.conversationID = strings.TrimSpace(item.ConversationID)
 	session.idempotency = item
 	return nil
 }
 
-func assignHostedGenesisTurnID(session *hostedGenesisTurnSession) *apptheory.AppError {
+func assignHostedGenesisTurnID(session *hostedGenesisTurnSession) *apptheory.AppTheoryError {
 	if session == nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return newAppTheoryError("app.internal", "internal error")
 	}
 	turn, err := newToken(16)
 	if err != nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "failed to create turn id"}
+		return newAppTheoryError("app.internal", "failed to create turn id")
 	}
 	session.turnID = "turn_" + turn
 	return nil
 }
 
-func newHostedGenesisTurnSession(session hostedGenesisTurnSession, regCtx mintConversationRegistrationContext, instanceSlug string, req soulMintConversationRequest, message string, requestID string, now time.Time) (hostedGenesisTurnSession, *apptheory.AppError) {
+func newHostedGenesisTurnSession(session hostedGenesisTurnSession, regCtx mintConversationRegistrationContext, instanceSlug string, req soulMintConversationRequest, message string, requestID string, now time.Time) (hostedGenesisTurnSession, *apptheory.AppTheoryError) {
 	if session.modelSet == "" {
 		session.modelSet = defaultSoulMintConversationModel
 	}
 	token, err := newToken(16)
 	if err != nil {
-		return hostedGenesisTurnSession{}, &apptheory.AppError{Code: "app.internal", Message: "failed to create conversation id"}
+		return hostedGenesisTurnSession{}, newAppTheoryError("app.internal", "failed to create conversation id")
 	}
 	session.conversationID = token
 	session.sessionIsNew = true
@@ -604,13 +603,13 @@ func newHostedGenesisTurnSession(session hostedGenesisTurnSession, regCtx mintCo
 	return finishHostedGenesisTurnSession(regCtx.reg.ID, session, req, message, requestID, now)
 }
 
-func (s *Server) loadExistingHostedGenesisTurnSession(ctx context.Context, session hostedGenesisTurnSession, regCtx mintConversationRegistrationContext, instanceSlug string, req soulMintConversationRequest, message string, requestID string, now time.Time) (hostedGenesisTurnSession, *apptheory.AppError) {
+func (s *Server) loadExistingHostedGenesisTurnSession(ctx context.Context, session hostedGenesisTurnSession, regCtx mintConversationRegistrationContext, instanceSlug string, req soulMintConversationRequest, message string, requestID string, now time.Time) (hostedGenesisTurnSession, *apptheory.AppTheoryError) {
 	hostSession, err := s.store.GetHostedGenesisSession(ctx, instanceSlug, session.conversationID)
 	if err != nil {
 		if theoryErrors.IsNotFound(err) {
-			return hostedGenesisTurnSession{}, &apptheory.AppError{Code: "app.not_found", Message: "conversation not found"}
+			return hostedGenesisTurnSession{}, newAppTheoryError("app.not_found", "conversation not found")
 		}
-		return hostedGenesisTurnSession{}, &apptheory.AppError{Code: "app.internal", Message: "failed to load conversation"}
+		return hostedGenesisTurnSession{}, newAppTheoryError("app.internal", "failed to load conversation")
 	}
 	session.session = hostSession
 	session.expectedStatus = hostedgenesis.NormalizeStatus(hostSession.Status)
@@ -628,20 +627,20 @@ func (s *Server) loadExistingHostedGenesisTurnSession(ctx context.Context, sessi
 	return finishHostedGenesisTurnSession(regCtx.reg.ID, session, req, message, requestID, now)
 }
 
-func requireHostedGenesisSessionAcceptsTurn(session *models.HostedGenesisSession) *apptheory.AppError {
+func requireHostedGenesisSessionAcceptsTurn(session *models.HostedGenesisSession) *apptheory.AppTheoryError {
 	status := hostedgenesis.NormalizeStatus(session.Status)
 	if status == hostedgenesis.StatusInProgress || status == hostedgenesis.StatusAssistantTurnReady || status == hostedgenesis.StatusCreated {
 		return nil
 	}
-	return &apptheory.AppError{Code: "app.conflict", Message: "conversation cannot accept a new turn"}
+	return newAppTheoryError("app.conflict", "conversation cannot accept a new turn")
 }
 
-func applyHostedGenesisSessionModel(session *hostedGenesisTurnSession, storedModel string) *apptheory.AppError {
+func applyHostedGenesisSessionModel(session *hostedGenesisTurnSession, storedModel string) *apptheory.AppTheoryError {
 	if session == nil || strings.TrimSpace(storedModel) == "" {
 		return nil
 	}
 	if session.modelSet != "" && !strings.EqualFold(storedModel, session.modelSet) {
-		return &apptheory.AppError{Code: "app.conflict", Message: "cannot change model for an existing conversation"}
+		return newAppTheoryError("app.conflict", "cannot change model for an existing conversation")
 	}
 	session.modelSet = strings.TrimSpace(storedModel)
 	return nil
@@ -677,7 +676,7 @@ func (s *Server) hydrateHostedGenesisCompatibilityConversation(ctx context.Conte
 	session.conv = conv
 }
 
-func finishHostedGenesisTurnSession(registrationID string, session hostedGenesisTurnSession, req soulMintConversationRequest, message string, requestID string, now time.Time) (hostedGenesisTurnSession, *apptheory.AppError) {
+func finishHostedGenesisTurnSession(registrationID string, session hostedGenesisTurnSession, req soulMintConversationRequest, message string, requestID string, now time.Time) (hostedGenesisTurnSession, *apptheory.AppTheoryError) {
 	session.requestHash = hostedGenesisRequestHash(registrationID, session.conversationID, session.modelSet, message)
 	if appErr := validateHostedGenesisIdempotencyRequestHash(registrationID, &session, req, message); appErr != nil {
 		return hostedGenesisTurnSession{}, appErr
@@ -685,7 +684,7 @@ func finishHostedGenesisTurnSession(registrationID string, session hostedGenesis
 	return applyHostedGenesisAcceptedTurnToSession(session, req, session.requestHash, requestID, now)
 }
 
-func validateHostedGenesisIdempotencyRequestHash(registrationID string, session *hostedGenesisTurnSession, req soulMintConversationRequest, message string) *apptheory.AppError {
+func validateHostedGenesisIdempotencyRequestHash(registrationID string, session *hostedGenesisTurnSession, req soulMintConversationRequest, message string) *apptheory.AppTheoryError {
 	if session == nil || session.idempotency == nil {
 		return nil
 	}
@@ -700,12 +699,12 @@ func validateHostedGenesisIdempotencyRequestHash(registrationID string, session 
 		session.requestHash = storedHash
 		return nil
 	}
-	return &apptheory.AppError{Code: "app.conflict", Message: "idempotency key already used for a different request"}
+	return newAppTheoryError("app.conflict", "idempotency key already used for a different request")
 }
 
-func applyHostedGenesisAcceptedTurnToSession(session hostedGenesisTurnSession, req soulMintConversationRequest, reqHash string, requestID string, now time.Time) (hostedGenesisTurnSession, *apptheory.AppError) {
+func applyHostedGenesisAcceptedTurnToSession(session hostedGenesisTurnSession, req soulMintConversationRequest, reqHash string, requestID string, now time.Time) (hostedGenesisTurnSession, *apptheory.AppTheoryError) {
 	if session.session == nil {
-		return hostedGenesisTurnSession{}, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return hostedGenesisTurnSession{}, newAppTheoryError("app.internal", "internal error")
 	}
 	incoming := hostedgenesis.TurnLedgerEntry{
 		TurnID:             strings.TrimSpace(session.turnID),
@@ -723,9 +722,9 @@ func applyHostedGenesisAcceptedTurnToSession(session hostedGenesisTurnSession, r
 	decision, err := hostedgenesis.ApplyTurnLedger(session.session.TurnLedger, incoming)
 	if err != nil {
 		if errors.Is(err, hostedgenesis.ErrIdempotencyConflict) {
-			return hostedGenesisTurnSession{}, &apptheory.AppError{Code: "app.conflict", Message: "idempotency key already used for a different request"}
+			return hostedGenesisTurnSession{}, newAppTheoryError("app.conflict", "idempotency key already used for a different request")
 		}
-		return hostedGenesisTurnSession{}, &apptheory.AppError{Code: "app.conflict", Message: "conversation cannot accept a new turn"}
+		return hostedGenesisTurnSession{}, newAppTheoryError("app.conflict", "conversation cannot accept a new turn")
 	}
 	session.turnID = decision.Turn.TurnID
 	session.replayed = decision.Replayed
@@ -786,7 +785,7 @@ func (s *Server) getHostedGenesisIdempotency(ctx context.Context, instanceSlug s
 	return &item, nil
 }
 
-func (s *Server) persistHostedGenesisAcceptedTurn(ctx context.Context, regCtx mintConversationRegistrationContext, session hostedGenesisTurnSession, updatedMessages []soulMintConversationMessage, messagesJSON string, idem *models.SoulMintConversationIdempotency, ledgerRequestID string, hostRequestID string, now time.Time) *apptheory.AppError {
+func (s *Server) persistHostedGenesisAcceptedTurn(ctx context.Context, regCtx mintConversationRegistrationContext, session hostedGenesisTurnSession, updatedMessages []soulMintConversationMessage, messagesJSON string, idem *models.SoulMintConversationIdempotency, ledgerRequestID string, hostRequestID string, now time.Time) *apptheory.AppTheoryError {
 	extraWrites := func(tx core.TransactionBuilder, creditsRequested int64) error {
 		sessionForWrite := cloneHostedGenesisSession(session.session)
 		if len(sessionForWrite.TurnLedger) > 0 {
@@ -925,7 +924,7 @@ func addHostedGenesisSessionWrite(tx core.TransactionBuilder, session *models.Ho
 
 func (s *Server) startHostedGenesisDeclarationExtraction(ctx *apptheory.Context, convCtx soulInstanceBootstrapConversationContext) error {
 	if convCtx.session == nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return newAppTheoryError("app.internal", "internal error")
 	}
 	now := time.Now().UTC()
 	// H1.3 (kills G7): the pending extraction is serviced by dispatching a
@@ -937,9 +936,9 @@ func (s *Server) startHostedGenesisDeclarationExtraction(ctx *apptheory.Context,
 	// pending status is no longer a permanent trap: the VM services the
 	// extraction or the session fails loudly. An unwired dispatcher is
 	// fail-closed and loud; there is no silent fallback to a non-MicroVM
-	// extraction path. M4 demotes hosted-genesis SQS to operator/backfill
-	// recovery only; this path does not rely on queue delivery, DLQ state, or
-	// AI-worker liveness.
+	// extraction path. Hosted-genesis SQS may carry non-authoritative MicroVM
+	// dispatch/backfill/janitor commands, but declaration extraction does not
+	// rely on queue delivery, DLQ state, or AI-worker liveness.
 	transitioned := hostedgenesis.NormalizeStatus(convCtx.session.Status) != hostedgenesis.StatusDeclarationExtractionPending
 	if !transitioned {
 		return nil
@@ -979,6 +978,11 @@ func (s *Server) startHostedGenesisDeclarationExtraction(ctx *apptheory.Context,
 	if appErr != nil {
 		return appErr
 	}
+	// The debit transaction above advances the HostedGenesisSession version by
+	// one while transitioning to declaration_extraction_pending. Keep the
+	// in-memory source-of-truth copy aligned before the follow-on dispatch
+	// refreshes lifecycle refs under optimistic locking.
+	convCtx.session.Version = expectedVersion + 1
 	if convCtx.conv != nil {
 		convCtx.conv.ChargedCredits += creditsDebited
 		convCtx.conv.Status = models.SoulMintConversationStatusDeclarationExtractionPending
@@ -999,24 +1003,24 @@ func (s *Server) startHostedGenesisDeclarationExtraction(ctx *apptheory.Context,
 func (s *Server) dispatchHostedGenesisDeclarationExtraction(ctx *apptheory.Context, convCtx soulInstanceBootstrapConversationContext, now time.Time) error {
 	if s.hostedGenesisMicroVMDispatcher == nil {
 		log.Printf("controlplane: hosted genesis extraction dispatch unavailable agent_hash=%s conversation_hash=%s", soulMintInstanceReadAuditHash(convCtx.agentIDHex), soulMintInstanceReadAuditHash(convCtx.conversationID))
-		return &apptheory.AppError{Code: appErrCodeMicroVMUnavailable, Message: "MicroVM extraction dispatch is unavailable"}
+		return newAppTheoryError(appErrCodeMicroVMUnavailable, "MicroVM extraction dispatch is unavailable")
 	}
 	binding := convCtx.session.MicroVMSessionBinding()
 	if err := binding.Validate(); err != nil {
 		log.Printf("controlplane: hosted genesis extraction binding invalid agent_hash=%s conversation_hash=%s err=%v", soulMintInstanceReadAuditHash(convCtx.agentIDHex), soulMintInstanceReadAuditHash(convCtx.conversationID), err)
-		return &apptheory.AppError{Code: appErrCodeMicroVMUnavailable, Message: "MicroVM extraction binding is invalid"}
+		return newAppTheoryError(appErrCodeMicroVMUnavailable, "MicroVM extraction binding is invalid")
 	}
 	runCtx, cancel := context.WithTimeout(detachedMintConversationContext(ctx.Context()), hostedGenesisAcceptedTurnDispatchTimeout)
 	defer cancel()
 	dispatch, dispatchErr := s.hostedGenesisMicroVMDispatcher.DispatchMicroVMRun(runCtx, strings.TrimSpace(ctx.RequestID), binding)
 	if dispatchErr != nil {
 		log.Printf("controlplane: hosted genesis extraction dispatch failed agent_hash=%s conversation_hash=%s err=%v", soulMintInstanceReadAuditHash(convCtx.agentIDHex), soulMintInstanceReadAuditHash(convCtx.conversationID), dispatchErr)
-		return &apptheory.AppError{Code: appErrCodeMicroVMUnavailable, Message: "MicroVM extraction dispatch failed"}
+		return newAppTheoryError(appErrCodeMicroVMUnavailable, "MicroVM extraction dispatch failed")
 	}
 	progressedSession := cloneHostedGenesisSession(convCtx.session)
 	if err := progressedSession.ApplyMicroVMLifecycleRef(dispatch.LifecycleRef); err != nil {
 		log.Printf("controlplane: hosted genesis extraction lifecycle ref rejected agent_hash=%s conversation_hash=%s err=%v", soulMintInstanceReadAuditHash(convCtx.agentIDHex), soulMintInstanceReadAuditHash(convCtx.conversationID), err)
-		return &apptheory.AppError{Code: "app.internal", Message: "failed to record microvm extraction dispatch"}
+		return newAppTheoryError("app.internal", "failed to record microvm extraction dispatch")
 	}
 	progressedSession.RequestID = strings.TrimSpace(ctx.RequestID)
 	progressedSession.UpdatedAt = now
@@ -1032,15 +1036,15 @@ func (s *Server) dispatchHostedGenesisDeclarationExtraction(ctx *apptheory.Conte
 // extraction run dispatch. The durable status stays
 // declaration_extraction_pending; only the non-authoritative execution/cache
 // ref is refreshed under expected-version/expected-status optimistic locking.
-func (s *Server) persistHostedGenesisExtractionDispatch(ctx context.Context, accepted *models.HostedGenesisSession, progressed *models.HostedGenesisSession, expectedVersion int64, now time.Time) *apptheory.AppError {
+func (s *Server) persistHostedGenesisExtractionDispatch(ctx context.Context, accepted *models.HostedGenesisSession, progressed *models.HostedGenesisSession, expectedVersion int64, now time.Time) *apptheory.AppTheoryError {
 	if s == nil || s.store == nil || s.store.DB == nil || accepted == nil || progressed == nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return newAppTheoryError("app.internal", "internal error")
 	}
 	if err := s.store.DB.TransactWrite(ctx, func(tx core.TransactionBuilder) error {
 		return addHostedGenesisSessionWrite(tx, progressed, false, expectedVersion, hostedgenesis.StatusDeclarationExtractionPending)
 	}); err != nil {
 		log.Printf("controlplane: hosted genesis extraction dispatch persist failed agent_hash=%s conversation_hash=%s err=%v", soulMintInstanceReadAuditHash(progressed.AgentID), soulMintInstanceReadAuditHash(progressed.ConversationID), err)
-		return &apptheory.AppError{Code: "app.internal", Message: "failed to persist microvm extraction dispatch"}
+		return newAppTheoryError("app.internal", "failed to persist microvm extraction dispatch")
 	}
 	return nil
 }

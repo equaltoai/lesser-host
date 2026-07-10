@@ -10,13 +10,13 @@ import (
 
 func requireAdmin(ctx *apptheory.Context) error {
 	if ctx == nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return newAppTheoryError("app.internal", "internal error")
 	}
 	if strings.TrimSpace(ctx.AuthIdentity) == "" {
-		return &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
+		return newAppTheoryError("app.unauthorized", "unauthorized")
 	}
 	if operatorRoleFromContext(ctx) != models.RoleAdmin {
-		return &apptheory.AppError{Code: "app.forbidden", Message: "admin required"}
+		return newAppTheoryError("app.forbidden", "admin required")
 	}
 	return nil
 }
@@ -31,10 +31,10 @@ func isOperator(ctx *apptheory.Context) bool {
 
 func requireAuthenticated(ctx *apptheory.Context) error {
 	if ctx == nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return newAppTheoryError("app.internal", "internal error")
 	}
 	if strings.TrimSpace(ctx.AuthIdentity) == "" {
-		return &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
+		return newAppTheoryError("app.unauthorized", "unauthorized")
 	}
 	return nil
 }
@@ -44,7 +44,7 @@ func requireOperator(ctx *apptheory.Context) error {
 		return err
 	}
 	if !isOperator(ctx) {
-		return &apptheory.AppError{Code: "app.forbidden", Message: "operator required"}
+		return newAppTheoryError("app.forbidden", "operator required")
 	}
 	return nil
 }

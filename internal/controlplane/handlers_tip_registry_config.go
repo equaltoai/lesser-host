@@ -15,12 +15,12 @@ type tipRegistryConfigResponse struct {
 
 func (s *Server) handleTipRegistryConfig(ctx *apptheory.Context) (*apptheory.Response, error) {
 	if s == nil || ctx == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	contractAddr := strings.TrimSpace(s.cfg.TipContractAddress)
 	if !s.cfg.TipEnabled || s.cfg.TipChainID <= 0 || contractAddr == "" {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "not found"}
+		return nil, newAppTheoryError("app.not_found", "not found")
 	}
 
 	resp, err := apptheory.JSON(http.StatusOK, tipRegistryConfigResponse{
@@ -29,7 +29,7 @@ func (s *Server) handleTipRegistryConfig(ctx *apptheory.Context) (*apptheory.Res
 		ContractAddress: contractAddr,
 	})
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	if resp.Headers == nil {

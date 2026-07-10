@@ -9,8 +9,8 @@ import (
 	"time"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	"github.com/theory-cloud/tabletheory/pkg/core"
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
+	"github.com/theory-cloud/tabletheory/v2/pkg/core"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/domains"
 	"github.com/equaltoai/lesser-host/internal/httpx"
@@ -47,20 +47,20 @@ func (s *Server) requireInstanceAccess(ctx *apptheory.Context, slug string) (*mo
 		return nil, err
 	}
 	if s == nil || s.store == nil || s.store.DB == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	slug = strings.ToLower(strings.TrimSpace(slug))
 	if slug == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "slug is required"}
+		return nil, newAppTheoryError("app.bad_request", "slug is required")
 	}
 
 	inst, err := s.getInstance(ctx, slug)
 	if theoryErrors.IsNotFound(err) {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "instance not found"}
+		return nil, newAppTheoryError("app.not_found", "instance not found")
 	}
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	if isOperator(ctx) {
@@ -69,15 +69,15 @@ func (s *Server) requireInstanceAccess(ctx *apptheory.Context, slug string) (*mo
 
 	owner := strings.TrimSpace(inst.Owner)
 	if owner == "" || owner != strings.TrimSpace(ctx.AuthIdentity) {
-		return nil, &apptheory.AppError{Code: "app.forbidden", Message: "forbidden"}
+		return nil, newAppTheoryError("app.forbidden", "forbidden")
 	}
 
 	return inst, nil
 }
 
-func (s *Server) maybeReturnExistingPortalInstance(ctx *apptheory.Context, slug string, username string) (*models.Instance, bool, *apptheory.AppError) {
+func (s *Server) maybeReturnExistingPortalInstance(ctx *apptheory.Context, slug string, username string) (*models.Instance, bool, *apptheory.AppTheoryError) {
 	if s == nil || s.store == nil || s.store.DB == nil || ctx == nil {
-		return nil, false, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, false, newAppTheoryError("app.internal", "internal error")
 	}
 
 	existing, err := s.getInstance(ctx, slug)
@@ -85,21 +85,21 @@ func (s *Server) maybeReturnExistingPortalInstance(ctx *apptheory.Context, slug 
 		if isOperator(ctx) || strings.TrimSpace(existing.Owner) == strings.TrimSpace(username) {
 			return existing, true, nil
 		}
-		return nil, false, &apptheory.AppError{Code: "app.conflict", Message: "instance already exists"}
+		return nil, false, newAppTheoryError("app.conflict", "instance already exists")
 	}
 	if err != nil && !theoryErrors.IsNotFound(err) {
-		return nil, false, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, false, newAppTheoryError("app.internal", "internal error")
 	}
 
 	return nil, false, nil
 }
 
-func (s *Server) requirePortalCreateInstancePrereqs(ctx *apptheory.Context) *apptheory.AppError {
+func (s *Server) requirePortalCreateInstancePrereqs(ctx *apptheory.Context) *apptheory.AppTheoryError {
 	if err := requireAuthenticated(ctx); err != nil {
-		if appErr, ok := err.(*apptheory.AppError); ok {
+		if appErr, ok := err.(*apptheory.AppTheoryError); ok {
 			return appErr
 		}
-		return &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
+		return newAppTheoryError("app.unauthorized", "unauthorized")
 	}
 	if appErr := requireStoreDB(s); appErr != nil {
 		return appErr
@@ -147,27 +147,27 @@ func (s *Server) handlePortalCreateInstance(ctx *apptheory.Context) (*apptheory.
 	return apptheory.JSON(http.StatusCreated, s.portalInstanceResponseFromModel(inst))
 }
 
-func parsePortalCreateInstanceSlug(ctx *apptheory.Context) (string, *apptheory.AppError) {
+func parsePortalCreateInstanceSlug(ctx *apptheory.Context) (string, *apptheory.AppTheoryError) {
 	var req createInstanceRequest
 	if err := httpx.ParseJSON(ctx, &req); err != nil {
-		if appErr, ok := err.(*apptheory.AppError); ok {
+		if appErr, ok := err.(*apptheory.AppTheoryError); ok {
 			return "", appErr
 		}
-		return "", &apptheory.AppError{Code: "app.bad_request", Message: "invalid request"}
+		return "", newAppTheoryError("app.bad_request", "invalid request")
 	}
 
 	slug := strings.ToLower(strings.TrimSpace(req.Slug))
 	if slug == "" {
-		return "", &apptheory.AppError{Code: "app.bad_request", Message: "slug is required"}
+		return "", newAppTheoryError("app.bad_request", "slug is required")
 	}
 	if !instanceSlugRE.MatchString(slug) {
-		return "", &apptheory.AppError{Code: "app.bad_request", Message: "invalid slug"}
+		return "", newAppTheoryError("app.bad_request", "invalid slug")
 	}
 
 	return slug, nil
 }
 
-func buildPortalInstanceDefaults(slug string, owner string, now time.Time) (*models.Instance, *apptheory.AppError) {
+func buildPortalInstanceDefaults(slug string, owner string, now time.Time) (*models.Instance, *apptheory.AppTheoryError) {
 	hostedPreviewsEnabled := true
 	linkSafetyEnabled := true
 	rendersEnabled := true
@@ -205,7 +205,7 @@ func buildPortalInstanceDefaults(slug string, owner string, now time.Time) (*mod
 		CreatedAt:              now,
 	}
 	if err := inst.UpdateKeys(); err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	return inst, nil
 }
@@ -232,9 +232,9 @@ func (s *Server) buildPortalPrimaryDomain(slug string, now time.Time) *models.Do
 	return primaryDomain
 }
 
-func (s *Server) createPortalInstanceTx(ctx *apptheory.Context, inst *models.Instance, primaryDomain *models.Domain, username string, now time.Time) *apptheory.AppError {
+func (s *Server) createPortalInstanceTx(ctx *apptheory.Context, inst *models.Instance, primaryDomain *models.Domain, username string, now time.Time) *apptheory.AppTheoryError {
 	if s == nil || s.store == nil || s.store.DB == nil || ctx == nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return newAppTheoryError("app.internal", "internal error")
 	}
 
 	auditInstance := &models.AuditLogEntry{
@@ -257,10 +257,10 @@ func (s *Server) createPortalInstanceTx(ctx *apptheory.Context, inst *models.Ins
 
 	tipOp, auditTipOp, err := s.buildAutoTipRegistryOperation(ctx.Context(), primaryDomain.Domain, primaryDomain.DomainRaw, username, ctx.RequestID, now)
 	if err != nil {
-		if appErr, ok := err.(*apptheory.AppError); ok {
+		if appErr, ok := err.(*apptheory.AppTheoryError); ok {
 			return appErr
 		}
-		return &apptheory.AppError{Code: "app.internal", Message: "failed to create tip registry operation"}
+		return newAppTheoryError("app.internal", "failed to create tip registry operation")
 	}
 
 	if err := s.store.DB.TransactWrite(ctx.Context(), func(tx core.TransactionBuilder) error {
@@ -277,9 +277,9 @@ func (s *Server) createPortalInstanceTx(ctx *apptheory.Context, inst *models.Ins
 		return nil
 	}); err != nil {
 		if theoryErrors.IsConditionFailed(err) {
-			return &apptheory.AppError{Code: "app.conflict", Message: "instance already exists"}
+			return newAppTheoryError("app.conflict", "instance already exists")
 		}
-		return &apptheory.AppError{Code: "app.internal", Message: "failed to create instance"}
+		return newAppTheoryError("app.internal", "failed to create instance")
 	}
 
 	return nil
@@ -290,7 +290,7 @@ func (s *Server) handlePortalListInstances(ctx *apptheory.Context) (*apptheory.R
 		return nil, err
 	}
 	if s == nil || s.store == nil || s.store.DB == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	username := strings.TrimSpace(ctx.AuthIdentity)
@@ -303,7 +303,7 @@ func (s *Server) handlePortalListInstances(ctx *apptheory.Context) (*apptheory.R
 		Where("gsi1PK", "=", pk).
 		All(&items)
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to list instances"}
+		return nil, newAppTheoryError("app.internal", "failed to list instances")
 	}
 
 	out := make([]instanceResponse, 0, len(items))
@@ -345,13 +345,13 @@ func (s *Server) handlePortalUpdateInstanceConfig(ctx *apptheory.Context) (*appt
 		return nil, err
 	}
 	if updateErr := update.UpdateKeys(); updateErr != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	if dbErr := s.store.DB.WithContext(ctx.Context()).Model(update).IfExists().Update(fields...); dbErr != nil {
 		if theoryErrors.IsConditionFailed(dbErr) {
-			return nil, &apptheory.AppError{Code: "app.not_found", Message: "instance not found"}
+			return nil, newAppTheoryError("app.not_found", "instance not found")
 		}
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to update instance"}
+		return nil, newAppTheoryError("app.internal", "failed to update instance")
 	}
 
 	now := time.Now().UTC()
@@ -366,31 +366,31 @@ func (s *Server) handlePortalUpdateInstanceConfig(ctx *apptheory.Context) (*appt
 
 	updated, err := s.getInstance(ctx, slug)
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	return apptheory.JSON(http.StatusOK, s.portalInstanceDetailResponse(ctx, updated))
 }
 
-func validatePortalInstanceConfigUpdateRequest(req updateInstanceConfigRequest) *apptheory.AppError {
+func validatePortalInstanceConfigUpdateRequest(req updateInstanceConfigRequest) *apptheory.AppTheoryError {
 	if req.SoulEnabled != nil {
-		return &apptheory.AppError{Code: "app.forbidden", Message: "soul_enabled is operator-managed"}
+		return newAppTheoryError("app.forbidden", "soul_enabled is operator-managed")
 	}
 	return nil
 }
 
-func (s *Server) verifyPortalStartProvisionConsent(ctx *apptheory.Context, slug string, req startInstanceProvisionRequest) (startInstanceProvisionRequest, *models.ProvisionConsentChallenge, *apptheory.AppError) {
+func (s *Server) verifyPortalStartProvisionConsent(ctx *apptheory.Context, slug string, req startInstanceProvisionRequest) (startInstanceProvisionRequest, *models.ProvisionConsentChallenge, *apptheory.AppTheoryError) {
 	consentChallengeID := strings.TrimSpace(req.ConsentChallengeID)
 	consentMessage := req.ConsentMessage
 	consentSignature := strings.TrimSpace(req.ConsentSignature)
 	if consentChallengeID == "" {
-		return req, nil, &apptheory.AppError{Code: "app.bad_request", Message: "consent_challenge_id is required"}
+		return req, nil, newAppTheoryError("app.bad_request", "consent_challenge_id is required")
 	}
 	if strings.TrimSpace(consentMessage) == "" {
-		return req, nil, &apptheory.AppError{Code: "app.bad_request", Message: "consent_message is required"}
+		return req, nil, newAppTheoryError("app.bad_request", "consent_message is required")
 	}
 	if consentSignature == "" {
-		return req, nil, &apptheory.AppError{Code: "app.bad_request", Message: "consent_signature is required"}
+		return req, nil, newAppTheoryError("app.bad_request", "consent_signature is required")
 	}
 
 	chall, loadErr := s.getProvisionConsentChallenge(ctx, consentChallengeID)
@@ -407,13 +407,13 @@ func (s *Server) verifyPortalStartProvisionConsent(ctx *apptheory.Context, slug 
 		return req, nil, appErr
 	}
 	if reqAdmin := strings.ToLower(strings.TrimSpace(req.AdminUsername)); reqAdmin != "" && reqAdmin != strings.ToLower(strings.TrimSpace(chall.AdminUsername)) {
-		return req, nil, &apptheory.AppError{Code: "app.bad_request", Message: "admin_username does not match consent challenge"}
+		return req, nil, newAppTheoryError("app.bad_request", "admin_username does not match consent challenge")
 	}
 	if reservedErr := validateNotReservedWalletAddress(strings.TrimSpace(chall.WalletAddr), "wallet"); reservedErr != nil {
 		return req, nil, reservedErr
 	}
 	if verifyErr := verifyEthereumSignature(strings.TrimSpace(chall.WalletAddr), strings.TrimSpace(chall.Message), consentSignature); verifyErr != nil {
-		return req, nil, &apptheory.AppError{Code: "app.forbidden", Message: "invalid signature"}
+		return req, nil, newAppTheoryError("app.forbidden", "invalid signature")
 	}
 
 	// Canonicalize consent artifacts from the stored challenge message.
@@ -493,15 +493,15 @@ func (s *Server) handlePortalGetInstanceProvisioning(ctx *apptheory.Context) (*a
 
 	jobID := strings.TrimSpace(inst.ProvisionJobID)
 	if jobID == "" {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "no provisioning job"}
+		return nil, newAppTheoryError("app.not_found", "no provisioning job")
 	}
 
 	job, err := s.store.GetProvisionJob(ctx.Context(), jobID)
 	if theoryErrors.IsNotFound(err) {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "provisioning job not found"}
+		return nil, newAppTheoryError("app.not_found", "provisioning job not found")
 	}
 	if err != nil || job == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	if status := strings.ToLower(strings.TrimSpace(job.Status)); status == models.ProvisionJobStatusQueued || status == models.ProvisionJobStatusRunning {
@@ -530,7 +530,7 @@ func (s *Server) handlePortalListInstanceBudgets(ctx *apptheory.Context) (*appth
 		Limit(120).
 		All(&items)
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to list budgets"}
+		return nil, newAppTheoryError("app.internal", "failed to list budgets")
 	}
 
 	out := make([]budgetMonthResponse, 0, len(items))
@@ -556,10 +556,10 @@ func (s *Server) handlePortalGetInstanceBudgetMonth(ctx *apptheory.Context) (*ap
 
 	month := strings.TrimSpace(ctx.Param("month"))
 	if month == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "month is required"}
+		return nil, newAppTheoryError("app.bad_request", "month is required")
 	}
 	if _, parseErr := time.Parse("2006-01", month); parseErr != nil {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "month must be YYYY-MM"}
+		return nil, newAppTheoryError("app.bad_request", "month must be YYYY-MM")
 	}
 
 	var item models.InstanceBudgetMonth
@@ -576,7 +576,7 @@ func (s *Server) handlePortalGetInstanceBudgetMonth(ctx *apptheory.Context) (*ap
 		})
 	}
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	return apptheory.JSON(http.StatusOK, budgetMonthResponse{
@@ -602,10 +602,10 @@ func (s *Server) handlePortalSetInstanceBudgetMonth(ctx *apptheory.Context) (*ap
 	slug := strings.ToLower(strings.TrimSpace(inst.Slug))
 	month := strings.TrimSpace(ctx.Param("month"))
 	if month == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "month is required"}
+		return nil, newAppTheoryError("app.bad_request", "month is required")
 	}
 	if _, parseErr := time.Parse("2006-01", month); parseErr != nil {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "month must be YYYY-MM"}
+		return nil, newAppTheoryError("app.bad_request", "month must be YYYY-MM")
 	}
 
 	var req setBudgetMonthRequest
@@ -613,7 +613,7 @@ func (s *Server) handlePortalSetInstanceBudgetMonth(ctx *apptheory.Context) (*ap
 		return nil, parseErr
 	}
 	if req.IncludedCredits < 0 {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "included_credits must be >= 0"}
+		return nil, newAppTheoryError("app.bad_request", "included_credits must be >= 0")
 	}
 
 	// Preserve used credits if the record already exists.
@@ -628,10 +628,10 @@ func (s *Server) handlePortalSetInstanceBudgetMonth(ctx *apptheory.Context) (*ap
 	if err == nil {
 		used = existing.UsedCredits
 	} else if err != nil && !theoryErrors.IsNotFound(err) {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	if req.IncludedCredits < used {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "included_credits cannot be less than used_credits"}
+		return nil, newAppTheoryError("app.conflict", "included_credits cannot be less than used_credits")
 	}
 
 	now := time.Now().UTC()
@@ -643,10 +643,10 @@ func (s *Server) handlePortalSetInstanceBudgetMonth(ctx *apptheory.Context) (*ap
 		UpdatedAt:       now,
 	}
 	if err := budget.UpdateKeys(); err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	if err := s.store.DB.WithContext(ctx.Context()).Model(budget).CreateOrUpdate(); err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to set budget"}
+		return nil, newAppTheoryError("app.internal", "failed to set budget")
 	}
 
 	audit := &models.AuditLogEntry{
@@ -677,10 +677,10 @@ func (s *Server) handlePortalListInstanceUsage(ctx *apptheory.Context) (*apptheo
 	slug := strings.ToLower(strings.TrimSpace(inst.Slug))
 	month := strings.TrimSpace(ctx.Param("month"))
 	if month == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "month is required"}
+		return nil, newAppTheoryError("app.bad_request", "month is required")
 	}
 	if _, parseErr := time.Parse("2006-01", month); parseErr != nil {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "month must be YYYY-MM"}
+		return nil, newAppTheoryError("app.bad_request", "month must be YYYY-MM")
 	}
 
 	pk := fmt.Sprintf("USAGE#%s#%s", slug, month)
@@ -691,7 +691,7 @@ func (s *Server) handlePortalListInstanceUsage(ctx *apptheory.Context) (*apptheo
 		Limit(500).
 		All(&items)
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to list usage"}
+		return nil, newAppTheoryError("app.internal", "failed to list usage")
 	}
 
 	return apptheory.JSON(http.StatusOK, listUsageResponse{
@@ -709,10 +709,10 @@ func (s *Server) handlePortalGetInstanceUsageSummary(ctx *apptheory.Context) (*a
 	slug := strings.ToLower(strings.TrimSpace(inst.Slug))
 	month := strings.TrimSpace(ctx.Param("month"))
 	if month == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "month is required"}
+		return nil, newAppTheoryError("app.bad_request", "month is required")
 	}
 	if _, err := time.Parse("2006-01", month); err != nil {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "month must be YYYY-MM"}
+		return nil, newAppTheoryError("app.bad_request", "month must be YYYY-MM")
 	}
 
 	pk := fmt.Sprintf("USAGE#%s#%s", slug, month)
@@ -722,7 +722,7 @@ func (s *Server) handlePortalGetInstanceUsageSummary(ctx *apptheory.Context) (*a
 		Where("PK", "=", pk).
 		Limit(2000).
 		All(&items); err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to load usage"}
+		return nil, newAppTheoryError("app.internal", "failed to load usage")
 	}
 
 	var (
@@ -802,7 +802,7 @@ func (s *Server) handlePortalListInstanceDomains(ctx *apptheory.Context) (*appth
 		Where("gsi1PK", "=", fmt.Sprintf("INSTANCE_DOMAINS#%s", slug)).
 		All(&items)
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to list domains"}
+		return nil, newAppTheoryError("app.internal", "failed to list domains")
 	}
 
 	out := make([]domainResponse, 0, len(items))
@@ -829,7 +829,7 @@ func (s *Server) handlePortalAddInstanceDomain(ctx *apptheory.Context) (*apptheo
 	rawDomain := strings.TrimSpace(req.Domain)
 	domain, err := domains.NormalizeDomain(rawDomain)
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: err.Error()}
+		return nil, newAppTheoryError("app.bad_request", err.Error())
 	}
 
 	parentDomain := strings.TrimSpace(s.cfg.ManagedParentDomain)
@@ -838,12 +838,12 @@ func (s *Server) handlePortalAddInstanceDomain(ctx *apptheory.Context) (*apptheo
 	}
 	primary := fmt.Sprintf("%s.%s", slug, strings.TrimPrefix(parentDomain, "."))
 	if domain == primary {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "domain is already managed as the primary domain"}
+		return nil, newAppTheoryError("app.conflict", "domain is already managed as the primary domain")
 	}
 
 	token, err := newToken(16)
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to create verification token"}
+		return nil, newAppTheoryError("app.internal", "failed to create verification token")
 	}
 
 	now := time.Now().UTC()
@@ -862,9 +862,9 @@ func (s *Server) handlePortalAddInstanceDomain(ctx *apptheory.Context) (*apptheo
 
 	if err := s.store.DB.WithContext(ctx.Context()).Model(item).IfNotExists().Create(); err != nil {
 		if theoryErrors.IsConditionFailed(err) {
-			return nil, &apptheory.AppError{Code: "app.conflict", Message: "domain already exists"}
+			return nil, newAppTheoryError("app.conflict", "domain already exists")
 		}
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to add domain"}
+		return nil, newAppTheoryError("app.internal", "failed to add domain")
 	}
 
 	audit := &models.AuditLogEntry{
@@ -899,7 +899,7 @@ func (s *Server) handlePortalVerifyInstanceDomain(ctx *apptheory.Context) (*appt
 
 	domain, err := domains.NormalizeDomain(ctx.Param("domain"))
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: err.Error()}
+		return nil, newAppTheoryError("app.bad_request", err.Error())
 	}
 
 	item, err := s.loadInstanceDomain(ctx, domain, slug)
@@ -913,7 +913,7 @@ func (s *Server) handlePortalVerifyInstanceDomain(ctx *apptheory.Context) (*appt
 
 	token := strings.TrimSpace(item.VerificationToken)
 	if token == "" {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "domain is not eligible for verification"}
+		return nil, newAppTheoryError("app.conflict", "domain is not eligible for verification")
 	}
 
 	want := domainVerificationValuePrefix + token
@@ -944,9 +944,9 @@ func (s *Server) handlePortalVerifyInstanceDomain(ctx *apptheory.Context) (*appt
 		"UpdatedAt",
 	); err != nil {
 		if theoryErrors.IsConditionFailed(err) {
-			return nil, &apptheory.AppError{Code: "app.not_found", Message: "domain not found"}
+			return nil, newAppTheoryError("app.not_found", "domain not found")
 		}
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to verify domain"}
+		return nil, newAppTheoryError("app.internal", "failed to verify domain")
 	}
 
 	audit := &models.AuditLogEntry{
@@ -999,10 +999,10 @@ func domainIsVerifiedOrActive(status string) bool {
 
 func (s *Server) loadInstanceDomain(ctx *apptheory.Context, domain string, slug string) (*models.Domain, error) {
 	if s == nil || s.store == nil || s.store.DB == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	if ctx == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	var item models.Domain
@@ -1012,13 +1012,13 @@ func (s *Server) loadInstanceDomain(ctx *apptheory.Context, domain string, slug 
 		Where("SK", "=", models.SKMetadata).
 		First(&item)
 	if theoryErrors.IsNotFound(err) {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "domain not found"}
+		return nil, newAppTheoryError("app.not_found", "domain not found")
 	}
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	if strings.TrimSpace(item.InstanceSlug) != strings.TrimSpace(slug) {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "domain not found"}
+		return nil, newAppTheoryError("app.not_found", "domain not found")
 	}
 
 	return &item, nil
@@ -1035,7 +1035,7 @@ func verifyDomainTXT(ctx context.Context, name string, want string) error {
 
 	records, err := net.DefaultResolver.LookupTXT(rc, name)
 	if err != nil {
-		return &apptheory.AppError{Code: "app.bad_request", Message: "verification record not found"}
+		return newAppTheoryError("app.bad_request", "verification record not found")
 	}
 
 	for _, record := range records {
@@ -1043,7 +1043,7 @@ func verifyDomainTXT(ctx context.Context, name string, want string) error {
 			return nil
 		}
 	}
-	return &apptheory.AppError{Code: "app.bad_request", Message: "verification record not found"}
+	return newAppTheoryError("app.bad_request", "verification record not found")
 }
 
 func (s *Server) handlePortalRotateInstanceDomain(ctx *apptheory.Context) (*apptheory.Response, error) {
@@ -1055,7 +1055,7 @@ func (s *Server) handlePortalRotateInstanceDomain(ctx *apptheory.Context) (*appt
 
 	domain, err := domains.NormalizeDomain(ctx.Param("domain"))
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: err.Error()}
+		return nil, newAppTheoryError("app.bad_request", err.Error())
 	}
 
 	var item models.Domain
@@ -1065,21 +1065,21 @@ func (s *Server) handlePortalRotateInstanceDomain(ctx *apptheory.Context) (*appt
 		Where("SK", "=", models.SKMetadata).
 		First(&item)
 	if theoryErrors.IsNotFound(err) {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "domain not found"}
+		return nil, newAppTheoryError("app.not_found", "domain not found")
 	}
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	if strings.TrimSpace(item.InstanceSlug) != slug {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "domain not found"}
+		return nil, newAppTheoryError("app.not_found", "domain not found")
 	}
 	if strings.TrimSpace(item.Type) == models.DomainTypePrimary {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "primary domain cannot be rotated"}
+		return nil, newAppTheoryError("app.conflict", "primary domain cannot be rotated")
 	}
 
 	token, err := newToken(16)
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to create verification token"}
+		return nil, newAppTheoryError("app.internal", "failed to create verification token")
 	}
 
 	now := time.Now().UTC()
@@ -1103,9 +1103,9 @@ func (s *Server) handlePortalRotateInstanceDomain(ctx *apptheory.Context) (*appt
 		"UpdatedAt",
 	); err != nil {
 		if theoryErrors.IsConditionFailed(err) {
-			return nil, &apptheory.AppError{Code: "app.not_found", Message: "domain not found"}
+			return nil, newAppTheoryError("app.not_found", "domain not found")
 		}
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to rotate domain"}
+		return nil, newAppTheoryError("app.internal", "failed to rotate domain")
 	}
 
 	audit := &models.AuditLogEntry{
@@ -1145,7 +1145,7 @@ func (s *Server) handlePortalDisableInstanceDomain(ctx *apptheory.Context) (*app
 
 	domain, err := domains.NormalizeDomain(ctx.Param("domain"))
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: err.Error()}
+		return nil, newAppTheoryError("app.bad_request", err.Error())
 	}
 
 	var item models.Domain
@@ -1155,16 +1155,16 @@ func (s *Server) handlePortalDisableInstanceDomain(ctx *apptheory.Context) (*app
 		Where("SK", "=", models.SKMetadata).
 		First(&item)
 	if theoryErrors.IsNotFound(err) {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "domain not found"}
+		return nil, newAppTheoryError("app.not_found", "domain not found")
 	}
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	if strings.TrimSpace(item.InstanceSlug) != slug {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "domain not found"}
+		return nil, newAppTheoryError("app.not_found", "domain not found")
 	}
 	if strings.TrimSpace(item.Type) == models.DomainTypePrimary {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "primary domain cannot be disabled"}
+		return nil, newAppTheoryError("app.conflict", "primary domain cannot be disabled")
 	}
 
 	now := time.Now().UTC()
@@ -1179,9 +1179,9 @@ func (s *Server) handlePortalDisableInstanceDomain(ctx *apptheory.Context) (*app
 
 	if err := s.store.DB.WithContext(ctx.Context()).Model(update).IfExists().Update("Status", "UpdatedAt"); err != nil {
 		if theoryErrors.IsConditionFailed(err) {
-			return nil, &apptheory.AppError{Code: "app.not_found", Message: "domain not found"}
+			return nil, newAppTheoryError("app.not_found", "domain not found")
 		}
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to disable domain"}
+		return nil, newAppTheoryError("app.internal", "failed to disable domain")
 	}
 
 	audit := &models.AuditLogEntry{
@@ -1208,7 +1208,7 @@ func (s *Server) handlePortalDeleteInstanceDomain(ctx *apptheory.Context) (*appt
 	slug := strings.ToLower(strings.TrimSpace(inst.Slug))
 	domain, err := domains.NormalizeDomain(ctx.Param("domain"))
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: err.Error()}
+		return nil, newAppTheoryError("app.bad_request", err.Error())
 	}
 
 	var item models.Domain
@@ -1218,17 +1218,17 @@ func (s *Server) handlePortalDeleteInstanceDomain(ctx *apptheory.Context) (*appt
 		Where("SK", "=", models.SKMetadata).
 		First(&item)
 	if theoryErrors.IsNotFound(err) {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "domain not found"}
+		return nil, newAppTheoryError("app.not_found", "domain not found")
 	}
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	if strings.TrimSpace(item.InstanceSlug) != slug {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "domain not found"}
+		return nil, newAppTheoryError("app.not_found", "domain not found")
 	}
 
 	if strings.TrimSpace(item.Type) == models.DomainTypePrimary {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "primary domain cannot be removed"}
+		return nil, newAppTheoryError("app.conflict", "primary domain cannot be removed")
 	}
 
 	if err := s.store.DB.WithContext(ctx.Context()).
@@ -1236,7 +1236,7 @@ func (s *Server) handlePortalDeleteInstanceDomain(ctx *apptheory.Context) (*appt
 		Where("PK", "=", item.PK).
 		Where("SK", "=", item.SK).
 		Delete(); err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to delete domain"}
+		return nil, newAppTheoryError("app.internal", "failed to delete domain")
 	}
 
 	now := time.Now().UTC()

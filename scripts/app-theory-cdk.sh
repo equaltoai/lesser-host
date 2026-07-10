@@ -83,6 +83,22 @@ if [ -z "${AWS_DEFAULT_REGION:-}" ] && [ -n "${AWS_REGION:-}" ]; then
   export AWS_DEFAULT_REGION="$AWS_REGION"
 fi
 
+# CDK's Node credential provider can fail to load an SSO profile even when the
+# AWS CLI can still vend cached role credentials for it. Export short-lived
+# credentials from the already-validated profile inside the deploy wrapper so
+# the AppTheory deploy contract remains the only deploy path. Values are sourced
+# into the process environment and never echoed.
+if command -v aws >/dev/null 2>&1; then
+  cdk_credential_env="$(mktemp "${TMPDIR:-/tmp}/lesser-host-cdk-creds.XXXXXX")"
+  if aws configure export-credentials --profile "$aws_profile" --format env-no-export >"$cdk_credential_env" 2>/dev/null; then
+    set -a
+    # shellcheck disable=SC1090
+    . "$cdk_credential_env"
+    set +a
+  fi
+  rm -f "$cdk_credential_env"
+fi
+
 cd "$cdk_dir"
 
 npm ci

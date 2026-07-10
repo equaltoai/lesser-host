@@ -66,7 +66,7 @@ func (s *Server) handlePortalGetInstanceCost(ctx *apptheory.Context) (*apptheory
 
 	apiKey, keyErr := s.resolvePortalCostInstanceKey(ctx.Context(), inst)
 	if keyErr != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to resolve instance metrics access"}
+		return nil, newAppTheoryError("app.internal", "failed to resolve instance metrics access")
 	}
 
 	metrics, metricsErr := s.fetchManagedInstanceMetrics(ctx.Context(), inst, apiKey, from, to)
@@ -80,7 +80,7 @@ func (s *Server) handlePortalGetInstanceCost(ctx *apptheory.Context) (*apptheory
 
 // parseCostDateWindow extracts and validates the from/to date query params.
 // Defaults to the past 30 days inclusive when neither is supplied.
-func parseCostDateWindow(ctx *apptheory.Context) (from, to string, appErr *apptheory.AppError) {
+func parseCostDateWindow(ctx *apptheory.Context) (from, to string, appErr *apptheory.AppTheoryError) {
 	from = strings.TrimSpace(httpx.FirstQueryValue(ctx.Request.Query, "from"))
 	to = strings.TrimSpace(httpx.FirstQueryValue(ctx.Request.Query, "to"))
 
@@ -91,22 +91,22 @@ func parseCostDateWindow(ctx *apptheory.Context) (from, to string, appErr *appth
 			nil
 	}
 	if from == "" || to == "" {
-		return "", "", &apptheory.AppError{Code: "app.bad_request", Message: "from and to are required when either is supplied"}
+		return "", "", newAppTheoryError("app.bad_request", "from and to are required when either is supplied")
 	}
 
 	fromTime, err := time.Parse("2006-01-02", from)
 	if err != nil {
-		return "", "", &apptheory.AppError{Code: "app.bad_request", Message: "from must be YYYY-MM-DD"}
+		return "", "", newAppTheoryError("app.bad_request", "from must be YYYY-MM-DD")
 	}
 	toTime, err := time.Parse("2006-01-02", to)
 	if err != nil {
-		return "", "", &apptheory.AppError{Code: "app.bad_request", Message: "to must be YYYY-MM-DD"}
+		return "", "", newAppTheoryError("app.bad_request", "to must be YYYY-MM-DD")
 	}
 	if fromTime.After(toTime) {
-		return "", "", &apptheory.AppError{Code: "app.bad_request", Message: "from must not be after to"}
+		return "", "", newAppTheoryError("app.bad_request", "from must not be after to")
 	}
 	if toTime.Sub(fromTime) > time.Duration(costQueryMaxDays)*24*time.Hour {
-		return "", "", &apptheory.AppError{Code: "app.bad_request", Message: "date range must not exceed 366 days"}
+		return "", "", newAppTheoryError("app.bad_request", "date range must not exceed 366 days")
 	}
 
 	return from, to, nil

@@ -85,7 +85,7 @@ func TestProviderAPIKey_EnvFirst(t *testing.T) {
 
 // TestProviderAPIKey_SSMFallback verifies that when env is empty, the SSM loader
 // is the production path (the in-VM execution role grants ssm:GetParameter on
-// the provider-key SecureString params). This is the AppTheory v1.15.2
+// the provider-key SecureString params). This is the AppTheory
 // execution-role correction: raw provider keys no longer need to live in the
 // MicroVM image env.
 func TestProviderAPIKey_SSMFallback(t *testing.T) {

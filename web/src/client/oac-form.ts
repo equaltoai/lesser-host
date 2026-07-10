@@ -2,7 +2,7 @@
  * OAC-safe form transport bootstrap (host web/)
  *
  * Idempotent client-side bootstrap that wires
- * `startAwsOacFormTransport()` from `@theory-cloud/facetheory` once per
+ * `startAwsOacFormTransport()` from `@theory-cloud/facetheory/oac-form` once per
  * document. The transport listens for `submit` events on any
  * `<form data-facetheory-oac-form>` and rewrites the request so:
  *   - The URL-encoded body is hashed (SHA-256) and the digest is set as
@@ -37,7 +37,7 @@
 import {
 	startAwsOacFormTransport,
 	type AwsOacFormTransportController,
-} from '@theory-cloud/facetheory';
+} from '@theory-cloud/facetheory/oac-form';
 
 let controller: AwsOacFormTransportController | null = null;
 

@@ -81,7 +81,7 @@ func (b MicroVMSessionBinding) Metadata() map[string]string {
 	return metadata
 }
 
-// NewMicroVMRunRequest builds the AppTheory v1.15 M16 MicroVM run envelope Host
+// NewMicroVMRunRequest builds the AppTheory M16 MicroVM run envelope Host
 // uses after a HostedGenesisSession row has been committed in DynamoDB. The
 // function is compile-safe and does not call AWS, enqueue SQS, or mutate Host
 // state.
@@ -161,7 +161,7 @@ func NewMicroVMOperationRequest(
 	}
 }
 
-// ValidateAppTheoryMicroVMContracts validates the AppTheory v1.15 M16 operation
+// ValidateAppTheoryMicroVMContracts validates the AppTheory M16 operation
 // contract and registry contract Host depends on for the active lab path.
 func ValidateAppTheoryMicroVMContracts() error {
 	if err := runtimemicrovm.ValidateOperationContract(runtimemicrovm.DefaultOperationContract()); err != nil {

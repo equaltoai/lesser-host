@@ -9,7 +9,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/httpx"
 	"github.com/equaltoai/lesser-host/internal/soul"
@@ -47,7 +47,7 @@ type provisionInitAdminConsentV1 struct {
 func parseProvisionConsentChallengeRequest(ctx *apptheory.Context) (provisionConsentChallengeRequest, error) {
 	var req provisionConsentChallengeRequest
 	if ctx == nil {
-		return req, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return req, newAppTheoryError("app.internal", "internal error")
 	}
 	if len(ctx.Request.Body) == 0 {
 		return req, nil
@@ -66,22 +66,22 @@ func normalizeControlPlaneStage(stage string) string {
 	return stage
 }
 
-func normalizeProvisionAdminUsername(slug, adminUsername string) (string, *apptheory.AppError) {
+func normalizeProvisionAdminUsername(slug, adminUsername string) (string, *apptheory.AppTheoryError) {
 	slug = strings.ToLower(strings.TrimSpace(slug))
 	if strings.TrimSpace(adminUsername) == "" {
 		adminUsername = slug
 	}
 	normalized, err := soul.ValidateManagedHandle(adminUsername)
 	if err != nil || normalized == "" {
-		return "", &apptheory.AppError{Code: "app.bad_request", Message: "invalid admin_username"}
+		return "", newAppTheoryError("app.bad_request", "invalid admin_username")
 	}
 	return normalized, nil
 }
 
-func normalizeLinkedWalletAddress(cred *models.WalletCredential) (string, *apptheory.AppError) {
+func normalizeLinkedWalletAddress(cred *models.WalletCredential) (string, *apptheory.AppTheoryError) {
 	walletAddr := strings.ToLower(strings.TrimSpace(cred.Address))
 	if !common.IsHexAddress(walletAddr) {
-		return "", &apptheory.AppError{Code: "app.conflict", Message: "wallet is not linked"}
+		return "", newAppTheoryError("app.conflict", "wallet is not linked")
 	}
 	if reservedErr := validateNotReservedWalletAddress(walletAddr, "wallet"); reservedErr != nil {
 		return "", reservedErr
@@ -157,11 +157,11 @@ func (s *Server) handlePortalProvisionConsentChallenge(ctx *apptheory.Context) (
 
 	nonce, err := generateNonce()
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to create nonce"}
+		return nil, newAppTheoryError("app.internal", "failed to create nonce")
 	}
 	id, err := newToken(16)
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to create challenge id"}
+		return nil, newAppTheoryError("app.internal", "failed to create challenge id")
 	}
 
 	now := time.Now().UTC()
@@ -187,7 +187,7 @@ func (s *Server) handlePortalProvisionConsentChallenge(ctx *apptheory.Context) (
 	_ = challenge.UpdateKeys()
 
 	if err := s.store.DB.WithContext(ctx.Context()).Model(challenge).IfNotExists().Create(); err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to create consent challenge"}
+		return nil, newAppTheoryError("app.internal", "failed to create consent challenge")
 	}
 
 	return apptheory.JSON(http.StatusOK, provisionConsentChallengeResponse{
@@ -209,11 +209,11 @@ func (s *Server) handlePortalProvisionConsentChallenge(ctx *apptheory.Context) (
 
 func (s *Server) getProvisionConsentChallenge(ctx *apptheory.Context, id string) (*models.ProvisionConsentChallenge, error) {
 	if s == nil || s.store == nil || s.store.DB == nil || ctx == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	id = strings.TrimSpace(id)
 	if id == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "consent_challenge_id is required"}
+		return nil, newAppTheoryError("app.bad_request", "consent_challenge_id is required")
 	}
 
 	var chall models.ProvisionConsentChallenge
@@ -229,18 +229,18 @@ func (s *Server) getProvisionConsentChallenge(ctx *apptheory.Context, id string)
 	return &chall, nil
 }
 
-func (s *Server) consumeProvisionConsentChallenge(ctx *apptheory.Context, chall *models.ProvisionConsentChallenge, message string, now time.Time) *apptheory.AppError {
+func (s *Server) consumeProvisionConsentChallenge(ctx *apptheory.Context, chall *models.ProvisionConsentChallenge, message string, now time.Time) *apptheory.AppTheoryError {
 	if s == nil || s.store == nil || s.store.DB == nil || ctx == nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return newAppTheoryError("app.internal", "internal error")
 	}
 	if chall == nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return newAppTheoryError("app.internal", "internal error")
 	}
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
 	if strings.TrimSpace(message) == "" {
-		return &apptheory.AppError{Code: "app.bad_request", Message: "consent_message is required"}
+		return newAppTheoryError("app.bad_request", "consent_message is required")
 	}
 
 	update := &models.ProvisionConsentChallenge{
@@ -265,10 +265,10 @@ func (s *Server) consumeProvisionConsentChallenge(ctx *apptheory.Context, chall 
 		WithCondition("Consumed", "=", false).
 		Update("Consumed", "ConsumedAt", "Message", "MessageHash")
 	if theoryErrors.IsConditionFailed(err) || theoryErrors.IsNotFound(err) {
-		return &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
+		return newAppTheoryError("app.unauthorized", "unauthorized")
 	}
 	if err != nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "failed to consume consent challenge"}
+		return newAppTheoryError("app.internal", "failed to consume consent challenge")
 	}
 
 	chall.Consumed = true
@@ -277,15 +277,15 @@ func (s *Server) consumeProvisionConsentChallenge(ctx *apptheory.Context, chall 
 	return nil
 }
 
-func validateProvisionConsentChallenge(ctx *apptheory.Context, chall *models.ProvisionConsentChallenge, slug string, stage string, message string) *apptheory.AppError {
+func validateProvisionConsentChallenge(ctx *apptheory.Context, chall *models.ProvisionConsentChallenge, slug string, stage string, message string) *apptheory.AppTheoryError {
 	if ctx == nil || chall == nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return newAppTheoryError("app.internal", "internal error")
 	}
 	if chall.Consumed {
-		return &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
+		return newAppTheoryError("app.unauthorized", "unauthorized")
 	}
 	if !chall.ExpiresAt.IsZero() && time.Now().After(chall.ExpiresAt) {
-		return &apptheory.AppError{Code: "app.bad_request", Message: "consent challenge expired"}
+		return newAppTheoryError("app.bad_request", "consent challenge expired")
 	}
 	if appErr := validateProvisionConsentChallengeScope(ctx, chall, slug, stage); appErr != nil {
 		return appErr
@@ -293,36 +293,36 @@ func validateProvisionConsentChallenge(ctx *apptheory.Context, chall *models.Pro
 	return validateProvisionConsentChallengeMessage(chall, message)
 }
 
-func validateProvisionConsentChallengeScope(ctx *apptheory.Context, chall *models.ProvisionConsentChallenge, slug string, stage string) *apptheory.AppError {
+func validateProvisionConsentChallengeScope(ctx *apptheory.Context, chall *models.ProvisionConsentChallenge, slug string, stage string) *apptheory.AppTheoryError {
 	if strings.TrimSpace(chall.Username) == "" || strings.TrimSpace(ctx.AuthIdentity) == "" || strings.TrimSpace(chall.Username) != strings.TrimSpace(ctx.AuthIdentity) {
-		return &apptheory.AppError{Code: "app.forbidden", Message: "consent challenge user mismatch"}
+		return newAppTheoryError("app.forbidden", "consent challenge user mismatch")
 	}
 	if strings.TrimSpace(chall.InstanceSlug) != strings.TrimSpace(slug) {
-		return &apptheory.AppError{Code: "app.forbidden", Message: "consent challenge slug mismatch"}
+		return newAppTheoryError("app.forbidden", "consent challenge slug mismatch")
 	}
 	if strings.TrimSpace(chall.Stage) != strings.TrimSpace(stage) {
-		return &apptheory.AppError{Code: "app.forbidden", Message: "consent challenge stage mismatch"}
+		return newAppTheoryError("app.forbidden", "consent challenge stage mismatch")
 	}
 	return nil
 }
 
-func validateProvisionConsentChallengeMessage(chall *models.ProvisionConsentChallenge, message string) *apptheory.AppError {
+func validateProvisionConsentChallengeMessage(chall *models.ProvisionConsentChallenge, message string) *apptheory.AppTheoryError {
 	if strings.TrimSpace(message) == "" || strings.TrimSpace(chall.Message) == "" || message != chall.Message {
-		return &apptheory.AppError{Code: "app.forbidden", Message: "consent challenge message mismatch"}
+		return newAppTheoryError("app.forbidden", "consent challenge message mismatch")
 	}
 	if msgHash := strings.TrimSpace(chall.MessageHash); msgHash != "" && msgHash != sha256Hex(message) {
-		return &apptheory.AppError{Code: "app.forbidden", Message: "consent challenge message hash mismatch"}
+		return newAppTheoryError("app.forbidden", "consent challenge message hash mismatch")
 	}
 
 	return nil
 }
 
-func normalizeNotFound(err error) *apptheory.AppError {
+func normalizeNotFound(err error) *apptheory.AppTheoryError {
 	if theoryErrors.IsNotFound(err) {
-		return &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
+		return newAppTheoryError("app.unauthorized", "unauthorized")
 	}
-	if appErr, ok := err.(*apptheory.AppError); ok {
+	if appErr, ok := err.(*apptheory.AppTheoryError); ok {
 		return appErr
 	}
-	return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	return newAppTheoryError("app.internal", "internal error")
 }

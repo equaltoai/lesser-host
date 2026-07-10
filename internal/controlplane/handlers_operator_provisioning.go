@@ -10,9 +10,9 @@ import (
 	"time"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	"github.com/theory-cloud/tabletheory"
-	"github.com/theory-cloud/tabletheory/pkg/core"
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
+	"github.com/theory-cloud/tabletheory/v2"
+	"github.com/theory-cloud/tabletheory/v2/pkg/core"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/httpx"
 	"github.com/equaltoai/lesser-host/internal/provisioning"
@@ -239,57 +239,57 @@ func isAWSAccountID(raw string) bool {
 	return true
 }
 
-func parseAdoptProvisionJobAccountRequest(ctx *apptheory.Context) (adoptProvisionJobAccountRequest, *apptheory.AppError) {
+func parseAdoptProvisionJobAccountRequest(ctx *apptheory.Context) (adoptProvisionJobAccountRequest, *apptheory.AppTheoryError) {
 	var req adoptProvisionJobAccountRequest
 	if err := httpx.ParseJSON(ctx, &req); err != nil {
-		if appErr, ok := err.(*apptheory.AppError); ok {
+		if appErr, ok := err.(*apptheory.AppTheoryError); ok {
 			return req, appErr
 		}
-		return req, &apptheory.AppError{Code: "app.bad_request", Message: "invalid request"}
+		return req, newAppTheoryError("app.bad_request", "invalid request")
 	}
 	req.AccountID = strings.TrimSpace(req.AccountID)
 	req.AccountEmail = strings.ToLower(strings.TrimSpace(req.AccountEmail))
 	req.Note = strings.TrimSpace(req.Note)
 	if !isAWSAccountID(req.AccountID) {
-		return req, &apptheory.AppError{Code: "app.bad_request", Message: "account_id must be a 12-digit AWS account id"}
+		return req, newAppTheoryError("app.bad_request", "account_id must be a 12-digit AWS account id")
 	}
 	if req.AccountEmail == "" {
-		return req, &apptheory.AppError{Code: "app.bad_request", Message: "account_email is required for adoption validation"}
+		return req, newAppTheoryError("app.bad_request", "account_email is required for adoption validation")
 	}
 	return req, nil
 }
 
-func validateAdoptableProvisionJob(job *models.ProvisionJob) *apptheory.AppError {
+func validateAdoptableProvisionJob(job *models.ProvisionJob) *apptheory.AppTheoryError {
 	if job == nil {
-		return &apptheory.AppError{Code: "app.not_found", Message: "job not found"}
+		return newAppTheoryError("app.not_found", "job not found")
 	}
 	status := strings.ToLower(strings.TrimSpace(job.Status))
 	if status == models.ProvisionJobStatusOK {
-		return &apptheory.AppError{Code: "app.conflict", Message: "job already ok"}
+		return newAppTheoryError("app.conflict", "job already ok")
 	}
 	if status != models.ProvisionJobStatusError {
-		return &apptheory.AppError{Code: "app.conflict", Message: "job must be in error state to adopt an account"}
+		return newAppTheoryError("app.conflict", "job must be in error state to adopt an account")
 	}
 	mode := strings.ToLower(strings.TrimSpace(job.Mode))
 	if mode != "" && mode != "managed" {
-		return &apptheory.AppError{Code: "app.conflict", Message: "job is not a managed provisioning job"}
+		return newAppTheoryError("app.conflict", "job is not a managed provisioning job")
 	}
 	return nil
 }
 
-func (s *Server) validateAdoptProvisionJobAccountRequest(job *models.ProvisionJob, req adoptProvisionJobAccountRequest) *apptheory.AppError {
+func (s *Server) validateAdoptProvisionJobAccountRequest(job *models.ProvisionJob, req adoptProvisionJobAccountRequest) *apptheory.AppTheoryError {
 	if job == nil {
-		return &apptheory.AppError{Code: "app.not_found", Message: "job not found"}
+		return newAppTheoryError("app.not_found", "job not found")
 	}
 	expectedEmail := strings.ToLower(strings.TrimSpace(expandManagedAccountEmailTemplate(s.cfg.ManagedAccountEmailTemplate, job.InstanceSlug)))
 	if expectedEmail == "" {
-		return &apptheory.AppError{Code: "app.conflict", Message: "managed account email template is required for account adoption"}
+		return newAppTheoryError("app.conflict", "managed account email template is required for account adoption")
 	}
 	if strings.ToLower(strings.TrimSpace(req.AccountEmail)) != expectedEmail {
-		return &apptheory.AppError{Code: "app.forbidden", Message: "account_email does not match expected managed account email"}
+		return newAppTheoryError("app.forbidden", "account_email does not match expected managed account email")
 	}
 	if existingAccountID := strings.TrimSpace(job.AccountID); existingAccountID != "" && existingAccountID != strings.TrimSpace(req.AccountID) {
-		return &apptheory.AppError{Code: "app.conflict", Message: "job already references a different account_id"}
+		return newAppTheoryError("app.conflict", "job already references a different account_id")
 	}
 	return nil
 }
@@ -306,18 +306,18 @@ func buildAdoptAccountNote(existingNote string, actor string, accountID string, 
 	return noteLine
 }
 
-func (s *Server) loadProvisionJobForOperator(ctx *apptheory.Context, id string) (*models.ProvisionJob, *apptheory.AppError) {
+func (s *Server) loadProvisionJobForOperator(ctx *apptheory.Context, id string) (*models.ProvisionJob, *apptheory.AppTheoryError) {
 	job, err := s.store.GetProvisionJob(ctx.Context(), id)
 	if theoryErrors.IsNotFound(err) || job == nil {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "job not found"}
+		return nil, newAppTheoryError("app.not_found", "job not found")
 	}
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	return job, nil
 }
 
-func (s *Server) adoptProvisionJobAccountTx(ctx *apptheory.Context, job *models.ProvisionJob, req adoptProvisionJobAccountRequest, note string, now time.Time) *apptheory.AppError {
+func (s *Server) adoptProvisionJobAccountTx(ctx *apptheory.Context, job *models.ProvisionJob, req adoptProvisionJobAccountRequest, note string, now time.Time) *apptheory.AppTheoryError {
 	actor := strings.TrimSpace(ctx.AuthIdentity)
 
 	jobKey := &models.ProvisionJob{
@@ -369,7 +369,7 @@ func (s *Server) adoptProvisionJobAccountTx(ctx *apptheory.Context, job *models.
 		tx.Put(audit)
 		return nil
 	}); err != nil && !theoryErrors.IsConditionFailed(err) {
-		return &apptheory.AppError{Code: "app.internal", Message: "failed to adopt account"}
+		return newAppTheoryError("app.internal", "failed to adopt account")
 	}
 	return nil
 }
@@ -379,7 +379,7 @@ func (s *Server) handleListOperatorProvisionJobs(ctx *apptheory.Context) (*appth
 		return nil, err
 	}
 	if s == nil || s.store == nil || s.store.DB == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	status := strings.ToLower(strings.TrimSpace(queryFirst(ctx, "status")))
@@ -408,7 +408,7 @@ func (s *Server) handleListOperatorProvisionJobs(ctx *apptheory.Context) (*appth
 			All(&items)
 	}
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to list provisioning jobs"}
+		return nil, newAppTheoryError("app.internal", "failed to list provisioning jobs")
 	}
 
 	filtered := make([]*models.ProvisionJob, 0, len(items))
@@ -443,20 +443,20 @@ func (s *Server) handleGetOperatorProvisionJob(ctx *apptheory.Context) (*apptheo
 		return nil, err
 	}
 	if s == nil || s.store == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	id := strings.TrimSpace(ctx.Param("id"))
 	if id == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "job id is required"}
+		return nil, newAppTheoryError("app.bad_request", "job id is required")
 	}
 
 	job, err := s.store.GetProvisionJob(ctx.Context(), id)
 	if theoryErrors.IsNotFound(err) || job == nil {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "job not found"}
+		return nil, newAppTheoryError("app.not_found", "job not found")
 	}
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	if status := strings.ToLower(strings.TrimSpace(job.Status)); status == models.ProvisionJobStatusQueued || status == models.ProvisionJobStatusRunning {
@@ -479,20 +479,20 @@ func (s *Server) handleRetryOperatorProvisionJob(ctx *apptheory.Context) (*appth
 
 	id := strings.TrimSpace(ctx.Param("id"))
 	if id == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "job id is required"}
+		return nil, newAppTheoryError("app.bad_request", "job id is required")
 	}
 
 	job, err := s.store.GetProvisionJob(ctx.Context(), id)
 	if theoryErrors.IsNotFound(err) || job == nil {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "job not found"}
+		return nil, newAppTheoryError("app.not_found", "job not found")
 	}
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	status := strings.ToLower(strings.TrimSpace(job.Status))
 	if status == models.ProvisionJobStatusOK {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "job already ok"}
+		return nil, newAppTheoryError("app.conflict", "job already ok")
 	}
 
 	now := time.Now().UTC()
@@ -555,7 +555,7 @@ func (s *Server) handleRetryOperatorProvisionJob(ctx *apptheory.Context) (*appth
 			tx.Put(audit)
 			return nil
 		}); err != nil && !theoryErrors.IsConditionFailed(err) {
-			return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to retry job"}
+			return nil, newAppTheoryError("app.internal", "failed to retry job")
 		}
 	} else {
 		if !shouldNudgeAsyncJob(now, job.UpdatedAt) || job.HasActiveLease(now) {
@@ -591,7 +591,7 @@ func (s *Server) handleAdoptOperatorProvisionJobAccount(ctx *apptheory.Context) 
 
 	id := strings.TrimSpace(ctx.Param("id"))
 	if id == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "job id is required"}
+		return nil, newAppTheoryError("app.bad_request", "job id is required")
 	}
 
 	req, appErr := parseAdoptProvisionJobAccountRequest(ctx)
@@ -625,12 +625,12 @@ func (s *Server) handleAdoptOperatorProvisionJobAccount(ctx *apptheory.Context) 
 	return apptheory.JSON(http.StatusOK, operatorProvisionJobDetailFromModelForRole(updated, operatorRoleFromContext(ctx)))
 }
 
-func (s *Server) requireProvisionRetryReady() *apptheory.AppError {
+func (s *Server) requireProvisionRetryReady() *apptheory.AppTheoryError {
 	if s == nil || s.store == nil || s.store.DB == nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return newAppTheoryError("app.internal", "internal error")
 	}
 	if s.queues == nil || strings.TrimSpace(s.cfg.ProvisionQueueURL) == "" {
-		return &apptheory.AppError{Code: "app.conflict", Message: "provision queue not configured"}
+		return newAppTheoryError("app.conflict", "provision queue not configured")
 	}
 	return nil
 }
@@ -640,12 +640,12 @@ func (s *Server) handleAppendOperatorProvisionJobNote(ctx *apptheory.Context) (*
 		return nil, err
 	}
 	if s == nil || s.store == nil || s.store.DB == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	id := strings.TrimSpace(ctx.Param("id"))
 	if id == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "job id is required"}
+		return nil, newAppTheoryError("app.bad_request", "job id is required")
 	}
 
 	var req appendProvisionJobNoteRequest
@@ -654,15 +654,15 @@ func (s *Server) handleAppendOperatorProvisionJobNote(ctx *apptheory.Context) (*
 	}
 	note := strings.TrimSpace(req.Note)
 	if note == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "note is required"}
+		return nil, newAppTheoryError("app.bad_request", "note is required")
 	}
 
 	job, err := s.store.GetProvisionJob(ctx.Context(), id)
 	if theoryErrors.IsNotFound(err) || job == nil {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "job not found"}
+		return nil, newAppTheoryError("app.not_found", "job not found")
 	}
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	now := time.Now().UTC()
@@ -703,7 +703,7 @@ func (s *Server) handleAppendOperatorProvisionJobNote(ctx *apptheory.Context) (*
 		tx.Put(audit)
 		return nil
 	}); err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to append note"}
+		return nil, newAppTheoryError("app.internal", "failed to append note")
 	}
 
 	updated, _ := s.store.GetProvisionJob(ctx.Context(), strings.TrimSpace(job.ID))

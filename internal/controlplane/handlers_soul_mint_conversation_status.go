@@ -558,6 +558,6 @@ func hostedGenesisSafeToken(value string, maxLen int) (string, bool) {
 	return value, true
 }
 
-func hostedGenesisBadRequest(field string) *apptheory.AppError {
-	return &apptheory.AppError{Code: "app.bad_request", Message: fmt.Sprintf("%s is invalid", field)}
+func hostedGenesisBadRequest(field string) *apptheory.AppTheoryError {
+	return newAppTheoryError("app.bad_request", fmt.Sprintf("%s is invalid", field))
 }

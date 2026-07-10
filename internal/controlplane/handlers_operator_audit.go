@@ -42,7 +42,7 @@ type operatorAuditLogFilters struct {
 	Limit     int
 }
 
-func parseOperatorAuditLogFilters(ctx *apptheory.Context) (operatorAuditLogFilters, *apptheory.AppError) {
+func parseOperatorAuditLogFilters(ctx *apptheory.Context) (operatorAuditLogFilters, *apptheory.AppTheoryError) {
 	filters := operatorAuditLogFilters{
 		Target:    strings.TrimSpace(queryFirst(ctx, "target")),
 		Actor:     strings.TrimSpace(queryFirst(ctx, "actor")),
@@ -53,20 +53,20 @@ func parseOperatorAuditLogFilters(ctx *apptheory.Context) (operatorAuditLogFilte
 
 	since, err := parseRFC3339Time(queryFirst(ctx, "since"))
 	if err != nil {
-		return operatorAuditLogFilters{}, &apptheory.AppError{Code: "app.bad_request", Message: "since must be RFC3339"}
+		return operatorAuditLogFilters{}, newAppTheoryError("app.bad_request", "since must be RFC3339")
 	}
 	filters.Since = since
 
 	until, err := parseRFC3339Time(queryFirst(ctx, "until"))
 	if err != nil {
-		return operatorAuditLogFilters{}, &apptheory.AppError{Code: "app.bad_request", Message: "until must be RFC3339"}
+		return operatorAuditLogFilters{}, newAppTheoryError("app.bad_request", "until must be RFC3339")
 	}
 	filters.Until = until
 
 	return filters, nil
 }
 
-func (s *Server) listOperatorAuditLogEntries(ctx *apptheory.Context, filters operatorAuditLogFilters) ([]*models.AuditLogEntry, *apptheory.AppError) {
+func (s *Server) listOperatorAuditLogEntries(ctx *apptheory.Context, filters operatorAuditLogFilters) ([]*models.AuditLogEntry, *apptheory.AppTheoryError) {
 	var items []*models.AuditLogEntry
 
 	if filters.Target != "" {
@@ -88,7 +88,7 @@ func (s *Server) listOperatorAuditLogEntries(ctx *apptheory.Context, filters ope
 		}
 
 		if err := q.All(&items); err != nil {
-			return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to list audit log"}
+			return nil, newAppTheoryError("app.internal", "failed to list audit log")
 		}
 		return items, nil
 	}
@@ -98,7 +98,7 @@ func (s *Server) listOperatorAuditLogEntries(ctx *apptheory.Context, filters ope
 		Where("SK", "BEGINS_WITH", "EVENT#").
 		Limit(200).
 		All(&items); err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to list audit log"}
+		return nil, newAppTheoryError("app.internal", "failed to list audit log")
 	}
 
 	return items, nil

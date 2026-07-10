@@ -3,8 +3,8 @@ package trust
 import (
 	"time"
 
-	"github.com/theory-cloud/tabletheory"
-	"github.com/theory-cloud/tabletheory/pkg/core"
+	"github.com/theory-cloud/tabletheory/v2"
+	"github.com/theory-cloud/tabletheory/v2/pkg/core"
 
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )

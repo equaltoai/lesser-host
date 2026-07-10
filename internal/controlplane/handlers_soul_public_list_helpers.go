@@ -16,7 +16,7 @@ func listSoulPublicItems[T any](
 	model any,
 	skPrefix string,
 	listFailureMessage string,
-) (itemsOut []T, hasMore bool, nextCursor string, appErr *apptheory.AppError) {
+) (itemsOut []T, hasMore bool, nextCursor string, appErr *apptheory.AppTheoryError) {
 	cursor := strings.TrimSpace(httpx.FirstQueryValue(ctx.Request.Query, "cursor"))
 	limit := envIntPositiveClampedFromString(httpx.FirstQueryValue(ctx.Request.Query, "limit"), 50, 200)
 
@@ -33,7 +33,7 @@ func listSoulPublicItems[T any](
 
 	paged, err := qb.AllPaginated(&items)
 	if err != nil {
-		return nil, false, "", &apptheory.AppError{Code: "app.internal", Message: listFailureMessage}
+		return nil, false, "", newAppTheoryError("app.internal", listFailureMessage)
 	}
 
 	itemsOut = make([]T, 0, len(items))
@@ -57,12 +57,12 @@ func listSoulPublicAgentItems[T any](
 	model any,
 	skPrefix string,
 	listFailureMessage string,
-) (itemsOut []T, hasMore bool, nextCursor string, appErr *apptheory.AppError) {
+) (itemsOut []T, hasMore bool, nextCursor string, appErr *apptheory.AppTheoryError) {
 	if appErr := requireStoreDB(s); appErr != nil {
 		return nil, false, "", appErr
 	}
 	if !s.cfg.SoulEnabled {
-		return nil, false, "", &apptheory.AppError{Code: "app.not_found", Message: "not found"}
+		return nil, false, "", newAppTheoryError("app.not_found", "not found")
 	}
 
 	agentIDHex, _, parseErr := parseSoulAgentIDHex(ctx.Param("agentId"))

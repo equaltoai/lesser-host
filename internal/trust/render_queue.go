@@ -5,26 +5,26 @@ import (
 	"time"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/rendering"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
-func requireQueueRenderDeps(s *Server, ctx *apptheory.Context) *apptheory.AppError {
+func requireQueueRenderDeps(s *Server, ctx *apptheory.Context) *apptheory.AppTheoryError {
 	if s == nil || s.store == nil || s.store.DB == nil || s.queues == nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return newAppTheoryError("app.internal", "internal error")
 	}
 	if ctx == nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return newAppTheoryError("app.internal", "internal error")
 	}
 	return nil
 }
 
-func normalizeQueueRenderURL(raw string) (string, *apptheory.AppError) {
+func normalizeQueueRenderURL(raw string) (string, *apptheory.AppTheoryError) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
-		return "", &apptheory.AppError{Code: "app.bad_request", Message: "url is required"}
+		return "", newAppTheoryError("app.bad_request", "url is required")
 	}
 	return raw, nil
 }
@@ -61,9 +61,9 @@ func maybeExtendRenderArtifact(existing *models.RenderArtifact, desiredExpiresAt
 	return true
 }
 
-func (s *Server) getRenderArtifactIfExists(ctx *apptheory.Context, renderID string, instanceSlug string) (*models.RenderArtifact, bool, *apptheory.AppError) {
+func (s *Server) getRenderArtifactIfExists(ctx *apptheory.Context, renderID string, instanceSlug string) (*models.RenderArtifact, bool, *apptheory.AppTheoryError) {
 	if ctx == nil {
-		return nil, false, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, false, newAppTheoryError("app.internal", "internal error")
 	}
 	existing, err := s.store.GetRenderArtifact(ctx.Context(), renderID)
 	if err == nil {
@@ -75,12 +75,12 @@ func (s *Server) getRenderArtifactIfExists(ctx *apptheory.Context, renderID stri
 	if theoryErrors.IsNotFound(err) {
 		return nil, false, nil
 	}
-	return nil, false, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	return nil, false, newAppTheoryError("app.internal", "internal error")
 }
 
-func (s *Server) createRenderArtifactIfNotExists(ctx *apptheory.Context, placeholder *models.RenderArtifact, renderID string) (*models.RenderArtifact, *apptheory.AppError) {
+func (s *Server) createRenderArtifactIfNotExists(ctx *apptheory.Context, placeholder *models.RenderArtifact, renderID string) (*models.RenderArtifact, *apptheory.AppTheoryError) {
 	if ctx == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	if err := s.store.DB.WithContext(ctx.Context()).Model(placeholder).IfNotExists().Create(); err != nil {
 		if theoryErrors.IsConditionFailed(err) {
@@ -89,12 +89,12 @@ func (s *Server) createRenderArtifactIfNotExists(ctx *apptheory.Context, placeho
 				return existing, nil
 			}
 		}
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to queue render"}
+		return nil, newAppTheoryError("app.internal", "failed to queue render")
 	}
 	return placeholder, nil
 }
 
-func (s *Server) enqueueRenderJobOrRecordFailure(ctx *apptheory.Context, placeholder *models.RenderArtifact, msg rendering.RenderJobMessage) *apptheory.AppError {
+func (s *Server) enqueueRenderJobOrRecordFailure(ctx *apptheory.Context, placeholder *models.RenderArtifact, msg rendering.RenderJobMessage) *apptheory.AppTheoryError {
 	if err := s.queues.enqueueRenderJob(ctx.Context(), msg); err == nil {
 		return nil
 	}
@@ -103,7 +103,7 @@ func (s *Server) enqueueRenderJobOrRecordFailure(ctx *apptheory.Context, placeho
 	placeholder.ErrorMessage = "failed to enqueue render job"
 	_ = placeholder.UpdateKeys()
 	_ = s.store.PutRenderArtifact(ctx.Context(), placeholder)
-	return &apptheory.AppError{Code: "app.internal", Message: "failed to queue render"}
+	return newAppTheoryError("app.internal", "failed to queue render")
 }
 
 func (s *Server) queueRender(ctx *apptheory.Context, normalizedURL string, retentionClass string, retentionDays int) (*models.RenderArtifact, bool, error) {

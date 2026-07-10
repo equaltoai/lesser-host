@@ -6,7 +6,7 @@ import (
 	"time"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/httpx"
 	"github.com/equaltoai/lesser-host/internal/store/models"
@@ -37,7 +37,7 @@ func operatorMethodFromContext(ctx *apptheory.Context) string {
 // OperatorAuthHook authenticates an operator request using a bearer token.
 func (s *Server) OperatorAuthHook(ctx *apptheory.Context) (string, error) {
 	if s == nil || s.store == nil || s.store.DB == nil {
-		return "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return "", newAppTheoryError("app.internal", "internal error")
 	}
 	httpx.SetTrustedSource(ctx)
 
@@ -65,7 +65,7 @@ func (s *Server) OperatorAuthHook(ctx *apptheory.Context) (string, error) {
 			continue
 		}
 		if err != nil {
-			return "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+			return "", newAppTheoryError("app.internal", "internal error")
 		}
 		found = true
 		break

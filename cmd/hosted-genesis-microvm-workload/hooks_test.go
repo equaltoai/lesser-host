@@ -247,8 +247,8 @@ func TestHookServer_ReadyHookEmptyBody200(t *testing.T) {
 }
 
 // TestHookServer_RunHookExecutesTurn proves the /run hook drives the adapter to
-// running and executes the assistant turn + declaration extraction, persisting
-// declaration_ready to session truth.
+// running and executes the assistant turn for an in_progress session,
+// persisting assistant_turn_ready to session truth.
 func TestHookServer_RunHookExecutesTurn(t *testing.T) {
 	assistantChunk := "data: " + mustMarshal(map[string]any{
 		"id": "chatcmpl_test", "object": "chat.completion.chunk", "created": 1, "model": "gpt-test",
@@ -296,9 +296,107 @@ func TestHookServer_RunHookExecutesTurn(t *testing.T) {
 	if result.State != runtimemicrovm.StateRunning {
 		t.Fatalf("expected running state from run hook, got %q (err=%v)", result.State, result.Error)
 	}
-	if got := hostedgenesis.NormalizeStatus(compStore.session.Status); got != hostedgenesis.StatusDeclarationReady {
-		t.Fatalf("expected session declaration_ready after run hook, got %q", got)
+	if got := hostedgenesis.NormalizeStatus(compStore.session.Status); got != hostedgenesis.StatusAssistantTurnReady {
+		t.Fatalf("expected session assistant_turn_ready after run hook, got %q", got)
 	}
+}
+
+// TestHookServer_TurnEndpointExecutesTurn proves Host's application-level
+// MicroVM turn endpoint reaches the same run handler as the lifecycle /run path
+// without using the AWS-reserved lifecycle URL as the externally proxied
+// application endpoint.
+func TestHookServer_TurnEndpointExecutesTurn(t *testing.T) {
+	assistantChunk := "data: " + mustMarshal(map[string]any{
+		"id": "chatcmpl_test", "object": "chat.completion.chunk", "created": 1, "model": "gpt-test",
+		"choices": []any{map[string]any{"index": 0, "delta": map[string]any{"role": "assistant", "content": "I am acme."}, "finish_reason": nil}},
+	}) + "\n\ndata: [DONE]\n\n"
+	declBody := mustMarshal(map[string]any{
+		"id": "chatcmpl_test", "object": "chat.completion", "created": 1, "model": "gpt-test",
+		"choices": []any{map[string]any{"index": 0, "message": map[string]any{"role": "assistant", "content": mustMarshal(validDeclarationDraft())}}},
+		"usage":   map[string]any{"prompt_tokens": 5, "completion_tokens": 7, "total_tokens": 12},
+	})
+	llmSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		bodyBytes, _ := io.ReadAll(r.Body)
+		_ = r.Body.Close()
+		if strings.Contains(string(bodyBytes), `"stream":true`) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte(assistantChunk))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(declBody))
+	}))
+	t.Cleanup(llmSrv.Close)
+	withOpenAIBaseURL(t, llmSrv.URL, "sk-test")
+	llm.ConfigureProviderHTTPClient(&http.Client{Timeout: 5 * time.Second})
+	t.Cleanup(func() { llm.ConfigureProviderHTTPClient(nil) })
+
+	turnStore, compStore, _ := baseTurnInput()
+	writer := completion.NewCompletionWriter(compStore, func() time.Time { return time.Unix(3100, 0).UTC() })
+	runner := &turnRunner{store: turnStore, writer: writer, nowFunc: func() time.Time { return time.Unix(3100, 0).UTC() }}
+	srv := newTestHookServer(t, runner)
+
+	event := validEvent(runtimemicrovm.HookRun, runtimemicrovm.StateRunning)
+	body, _ := json.Marshal(event)
+	req := httptest.NewRequest(http.MethodPost, hostedgenesis.MicroVMTurnEndpointPath, bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var result runtimemicrovm.LifecycleResult
+	if err := json.NewDecoder(rec.Body).Decode(&result); err != nil {
+		t.Fatalf("decode result: %v", err)
+	}
+	if result.State != runtimemicrovm.StateRunning || result.Hook != runtimemicrovm.HookRun {
+		t.Fatalf("expected run/running result, got hook=%q state=%q err=%v", result.Hook, result.State, result.Error)
+	}
+	waitForHostedGenesisStatus(t, compStore, hostedgenesis.StatusAssistantTurnReady)
+}
+
+// TestHookServer_TurnEndpointStorePreflightFailureIsControllerVisible proves a
+// turn is not acknowledged to the controller until the per-turn store can read
+// Host truth. The AI worker treats a failed LifecycleResult as an invoke error
+// and persists microvm_unavailable using its own store, so a workload that cannot
+// initialize/access DynamoDB cannot leave the conversation stuck in_progress.
+func TestHookServer_TurnEndpointStorePreflightFailureIsControllerVisible(t *testing.T) {
+	failingStore, compStore, _ := baseTurnInput()
+	failingStore.session = nil
+	runner := &turnRunner{storeFactory: func(context.Context) (turnStore, *completion.CompletionWriter, error) {
+		return failingStore, completion.NewCompletionWriter(compStore, nil), nil
+	}}
+	srv := newTestHookServer(t, runner)
+
+	event := validEvent(runtimemicrovm.HookRun, runtimemicrovm.StateRunning)
+	body, _ := json.Marshal(event)
+	req := httptest.NewRequest(http.MethodPost, hostedgenesis.MicroVMTurnEndpointPath, bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected controller envelope status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var result runtimemicrovm.LifecycleResult
+	if err := json.NewDecoder(rec.Body).Decode(&result); err != nil {
+		t.Fatalf("decode result: %v", err)
+	}
+	if result.State != runtimemicrovm.StateFailed || result.Error == nil || result.Error.Code != hookErrorCode {
+		t.Fatalf("expected controller-visible store preflight failure, got state=%q error=%#v", result.State, result.Error)
+	}
+}
+
+func waitForHostedGenesisStatus(t *testing.T, compStore *fakeCompletionStore, want hostedgenesis.Status) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if got := hostedgenesis.NormalizeStatus(compStore.session.Status); got == want {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	got := hostedgenesis.NormalizeStatus(compStore.session.Status)
+	t.Fatalf("expected session %q after async turn, got %q", want, got)
 }
 
 // TestHookServer_RunHookMissingBindingFails proves the /run hook fails closed

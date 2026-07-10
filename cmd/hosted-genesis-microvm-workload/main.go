@@ -34,6 +34,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	apptheory "github.com/theory-cloud/apptheory/runtime"
 
 	"github.com/equaltoai/lesser-host/internal/ai/llm"
@@ -63,6 +65,44 @@ func main() {
 	}
 }
 
+// loadMicroVMDefaultConfig is a test seam around the AWS SDK's default config
+// loader. Production always uses awsconfig.LoadDefaultConfig.
+var loadMicroVMDefaultConfig = awsconfig.LoadDefaultConfig
+
+// microVMExecutionCredentialsProvider reloads the credentials supplied by the
+// Lambda MicroVM execution role for every turn. RunMicrovm already causes the
+// guest to assume executionRoleArn, and Lambda refreshes compute-role
+// credentials; re-assuming the same role is both unnecessary and denied unless
+// the role is explicitly configured for self-assumption. The turn-scoped load is
+// still required so an image-build/startup credential snapshot is never retained
+// in a process-global TableTheory client.
+func microVMExecutionCredentialsProvider(ctx context.Context) (aws.CredentialsProvider, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	cfg, err := loadMicroVMDefaultConfig(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.Credentials == nil {
+		return nil, errors.New("microvm execution-role credentials are unavailable")
+	}
+	return cfg.Credentials, nil
+}
+
+func newMicroVMTurnStore(ctx context.Context) (turnStore, *completion.CompletionWriter, error) {
+	credentials, err := microVMExecutionCredentialsProvider(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	stateDB, err := store.MicroVMInit(ctx, credentials)
+	if err != nil {
+		return nil, nil, err
+	}
+	st := store.New(stateDB)
+	return st, completion.NewCompletionWriter(st, nil), nil
+}
+
 func run() error {
 	// Install the explicit-timeout provider HTTP client before any provider call
 	// so every llm.StreamMintConversation* / MintConversationDeclarations* call
@@ -70,13 +110,7 @@ func run() error {
 	// (kills G8).
 	llm.ConfigureDefaultProviderHTTPClient()
 
-	stateDB, err := store.LambdaInit()
-	if err != nil {
-		return errors.Join(errors.New("store init"), err)
-	}
-	st := store.New(stateDB)
-	writer := completion.NewCompletionWriter(st, nil)
-	runner := &turnRunner{store: st, writer: writer}
+	runner := &turnRunner{storeFactory: newMicroVMTurnStore}
 
 	server, err := newHookServer(runner, hostedgenesis.MicroVMNamespace)
 	if err != nil {

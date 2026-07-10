@@ -8,7 +8,7 @@ import (
 	"time"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
@@ -76,21 +76,21 @@ func (s *Server) handleSoulAgentRecordMintOperationExecution(ctx *apptheory.Cont
 	return apptheory.JSON(http.StatusOK, buildSoulAgentMintOperationResponse(updated))
 }
 
-func (s *Server) loadSoulMintOperationForIdentity(ctx context.Context, identity *models.SoulAgentIdentity) (*models.SoulOperation, *apptheory.AppError) {
+func (s *Server) loadSoulMintOperationForIdentity(ctx context.Context, identity *models.SoulAgentIdentity) (*models.SoulOperation, *apptheory.AppTheoryError) {
 	opID := s.soulMintOperationID(identity)
 	if opID == "" {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "mint operation not found"}
+		return nil, newAppTheoryError("app.not_found", "mint operation not found")
 	}
 
 	op, err := s.getSoulOperation(ctx, opID)
 	if theoryErrors.IsNotFound(err) {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "mint operation not found"}
+		return nil, newAppTheoryError("app.not_found", "mint operation not found")
 	}
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	if strings.ToLower(strings.TrimSpace(op.Kind)) != models.SoulOperationKindMint {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "mint operation not found"}
+		return nil, newAppTheoryError("app.not_found", "mint operation not found")
 	}
 	return s.maybeMigrateLegacySoulMintOperation(ctx, identity, op)
 }
@@ -99,9 +99,9 @@ func (s *Server) maybeMigrateLegacySoulMintOperation(
 	ctx context.Context,
 	identity *models.SoulAgentIdentity,
 	op *models.SoulOperation,
-) (*models.SoulOperation, *apptheory.AppError) {
+) (*models.SoulOperation, *apptheory.AppTheoryError) {
 	if s == nil || s.store == nil || s.store.DB == nil || identity == nil || op == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	if strings.ToLower(strings.TrimSpace(op.Kind)) != models.SoulOperationKindMint {
 		return op, nil
@@ -125,7 +125,7 @@ func (s *Server) maybeMigrateLegacySoulMintOperation(
 
 	encoded, err := json.Marshal(directPayload)
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to encode mint transaction"}
+		return nil, newAppTheoryError("app.internal", "failed to encode mint transaction")
 	}
 	encodedJSON := strings.TrimSpace(string(encoded))
 	if encodedJSON == strings.TrimSpace(op.SafePayloadJSON) {
@@ -150,7 +150,7 @@ func (s *Server) maybeMigrateLegacySoulMintOperation(
 	_ = updated.UpdateKeys()
 
 	if err := s.store.DB.WithContext(ctx).Model(updated).IfExists().Update("SafePayloadJSON", "UpdatedAt"); err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to update mint operation"}
+		return nil, newAppTheoryError("app.internal", "failed to update mint operation")
 	}
 
 	return updated, nil

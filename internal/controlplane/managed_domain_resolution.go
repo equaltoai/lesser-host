@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/manageddomain"
 	"github.com/equaltoai/lesser-host/internal/store/models"

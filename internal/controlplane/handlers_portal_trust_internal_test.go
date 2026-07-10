@@ -12,8 +12,8 @@ import (
 	"time"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
-	ttmocks "github.com/theory-cloud/tabletheory/pkg/mocks"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
+	ttmocks "github.com/theory-cloud/tabletheory/v2/pkg/mocks"
 
 	"github.com/equaltoai/lesser-host/internal/config"
 	"github.com/equaltoai/lesser-host/internal/store"
@@ -139,7 +139,7 @@ func TestHandlePortalGetTrustData_Unauthenticated(t *testing.T) {
 
 	_, err := s.handlePortalGetTrustData(ctx)
 	require.Error(t, err)
-	appErr, ok := err.(*apptheory.AppError)
+	appErr, ok := err.(*apptheory.AppTheoryError)
 	require.True(t, ok)
 	require.Equal(t, "app.unauthorized", appErr.Code)
 }
@@ -158,7 +158,7 @@ func TestHandlePortalGetTrustData_Forbidden(t *testing.T) {
 
 	_, err := s.handlePortalGetTrustData(ctx)
 	require.Error(t, err)
-	appErr, ok := err.(*apptheory.AppError)
+	appErr, ok := err.(*apptheory.AppTheoryError)
 	require.True(t, ok)
 	require.Equal(t, "app.forbidden", appErr.Code)
 }
@@ -177,7 +177,7 @@ func TestHandlePortalGetTrustData_NotFound(t *testing.T) {
 
 	_, err := s.handlePortalGetTrustData(ctx)
 	require.Error(t, err)
-	appErr, ok := err.(*apptheory.AppError)
+	appErr, ok := err.(*apptheory.AppTheoryError)
 	require.True(t, ok)
 	require.Equal(t, "app.not_found", appErr.Code)
 }
@@ -217,7 +217,7 @@ func TestHandlePortalGetTrustData_EmptySlug(t *testing.T) {
 
 	_, err := s.handlePortalGetTrustData(ctx)
 	require.Error(t, err)
-	appErr, ok := err.(*apptheory.AppError)
+	appErr, ok := err.(*apptheory.AppTheoryError)
 	require.True(t, ok)
 	require.Equal(t, "app.bad_request", appErr.Code)
 }
@@ -232,7 +232,7 @@ func TestHandlePortalGetTrustData_NilServer(t *testing.T) {
 
 	_, err := (*Server)(nil).handlePortalGetTrustData(ctx)
 	require.Error(t, err)
-	appErr, ok := err.(*apptheory.AppError)
+	appErr, ok := err.(*apptheory.AppTheoryError)
 	require.True(t, ok)
 	require.Equal(t, "app.internal", appErr.Code)
 }
@@ -248,7 +248,7 @@ func TestHandlePortalGetTrustData_NilStore(t *testing.T) {
 
 	_, err := s.handlePortalGetTrustData(ctx)
 	require.Error(t, err)
-	appErr, ok := err.(*apptheory.AppError)
+	appErr, ok := err.(*apptheory.AppTheoryError)
 	require.True(t, ok)
 	require.Equal(t, "app.internal", appErr.Code)
 }
@@ -325,7 +325,7 @@ func TestHandlePortalGetTrustData_TenantIsolation(t *testing.T) {
 		}
 		_, err := s.handlePortalGetTrustData(ctx)
 		require.Error(t, err)
-		appErr, ok := err.(*apptheory.AppError)
+		appErr, ok := err.(*apptheory.AppTheoryError)
 		require.True(t, ok)
 		require.Equal(t, "app.forbidden", appErr.Code)
 	})
@@ -550,7 +550,7 @@ func TestHandlePortalGetTrustData_ForbiddenDoesNotCallFederation(t *testing.T) {
 
 	_, err := s.handlePortalGetTrustData(&apptheory.Context{AuthIdentity: "alice", Params: map[string]string{"slug": "bob-instance"}})
 	require.Error(t, err)
-	appErr, ok := err.(*apptheory.AppError)
+	appErr, ok := err.(*apptheory.AppTheoryError)
 	require.True(t, ok)
 	require.Equal(t, "app.forbidden", appErr.Code)
 	require.False(t, called, "not-owned instances must not trigger upstream federation fetches")

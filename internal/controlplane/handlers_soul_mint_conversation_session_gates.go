@@ -47,24 +47,24 @@ func hostedGenesisSessionCompletionReplayReady(session *models.HostedGenesisSess
 	}
 }
 
-func requireHostedGenesisSessionReadyForFinalize(session *models.HostedGenesisSession, statusMessage string, emptyDeclMessage string) *apptheory.AppError {
+func requireHostedGenesisSessionReadyForFinalize(session *models.HostedGenesisSession, statusMessage string, emptyDeclMessage string) *apptheory.AppTheoryError {
 	if session == nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return newAppTheoryError("app.internal", "internal error")
 	}
 	status := hostedgenesis.NormalizeStatus(session.Status)
 	if status != hostedgenesis.StatusDeclarationReady {
 		if status == hostedgenesis.StatusFailed && session.Failure != nil {
 			switch session.Failure.Code {
 			case hostedgenesis.FailureCodeMissingProducedDeclarations:
-				return &apptheory.AppError{Code: "app.conflict", Message: emptyDeclMessage}
+				return newAppTheoryError("app.conflict", emptyDeclMessage)
 			case hostedgenesis.FailureCodeInvalidProducedDeclarations:
-				return &apptheory.AppError{Code: "app.conflict", Message: "conversation has invalid produced declarations"}
+				return newAppTheoryError("app.conflict", "conversation has invalid produced declarations")
 			}
 		}
-		return &apptheory.AppError{Code: "app.conflict", Message: statusMessage}
+		return newAppTheoryError("app.conflict", statusMessage)
 	}
 	if session.DeclarationCheckpoint == nil {
-		return &apptheory.AppError{Code: "app.conflict", Message: emptyDeclMessage}
+		return newAppTheoryError("app.conflict", emptyDeclMessage)
 	}
 	if err := hostedgenesis.CanPublish(hostedgenesis.PublishGateInput{
 		Status:                hostedgenesis.StatusDeclarationReady,
@@ -73,12 +73,12 @@ func requireHostedGenesisSessionReadyForFinalize(session *models.HostedGenesisSe
 		AgentID:               session.AgentID,
 		DeclarationCheckpoint: session.DeclarationCheckpoint,
 	}); err != nil {
-		return &apptheory.AppError{Code: "app.conflict", Message: "conversation has invalid produced declarations"}
+		return newAppTheoryError("app.conflict", "conversation has invalid produced declarations")
 	}
 	return nil
 }
 
-func requireHostedGenesisFinalizeDeclarationsMatchSession(session *models.HostedGenesisSession, conv *models.SoulAgentMintConversation) *apptheory.AppError {
+func requireHostedGenesisFinalizeDeclarationsMatchSession(session *models.HostedGenesisSession, conv *models.SoulAgentMintConversation) *apptheory.AppTheoryError {
 	if session == nil {
 		return nil
 	}
@@ -86,15 +86,15 @@ func requireHostedGenesisFinalizeDeclarationsMatchSession(session *models.Hosted
 		return appErr
 	}
 	if conv == nil {
-		return &apptheory.AppError{Code: "app.conflict", Message: "conversation has no produced declarations"}
+		return newAppTheoryError("app.conflict", "conversation has no produced declarations")
 	}
 	raw := strings.TrimSpace(models.DecodeSoulMintConversationBlob(conv.ProducedDeclarations))
 	if raw == "" {
-		return &apptheory.AppError{Code: "app.conflict", Message: "conversation has no produced declarations"}
+		return newAppTheoryError("app.conflict", "conversation has no produced declarations")
 	}
 	sum := sha256.Sum256([]byte(raw))
 	if session.DeclarationCheckpoint == nil || !strings.EqualFold(session.DeclarationCheckpoint.DeclarationHash, "sha256:"+hex.EncodeToString(sum[:])) {
-		return &apptheory.AppError{Code: "app.conflict", Message: "conversation has invalid produced declarations"}
+		return newAppTheoryError("app.conflict", "conversation has invalid produced declarations")
 	}
 	if _, appErr := parseAndValidateMintConversationDeclarations(raw); appErr != nil {
 		return appErr

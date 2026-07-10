@@ -7,7 +7,7 @@ import (
 	"time"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	ttmocks "github.com/theory-cloud/tabletheory/pkg/mocks"
+	ttmocks "github.com/theory-cloud/tabletheory/v2/pkg/mocks"
 
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -377,7 +377,7 @@ func TestHandlePortalCreateInstanceUpdateJob_RejectsMalformedReleaseTags(t *test
 
 			_, err := s.handlePortalCreateInstanceUpdateJob(ctx)
 			require.Error(t, err)
-			appErr, ok := err.(*apptheory.AppError)
+			appErr, ok := err.(*apptheory.AppTheoryError)
 			require.True(t, ok)
 			require.Equal(t, "app.bad_request", appErr.Code)
 			require.Contains(t, appErr.Message, "must be \"latest\" or a final tag like v1.2.3")
@@ -536,7 +536,7 @@ func TestHandlePortalCreateInstanceUpdateJob_BodyOnlyRejectsRotateInstanceKey(t 
 
 	_, err := s.handlePortalCreateInstanceUpdateJob(ctx)
 	require.Error(t, err)
-	appErr, ok := err.(*apptheory.AppError)
+	appErr, ok := err.(*apptheory.AppTheoryError)
 	require.True(t, ok)
 	require.Equal(t, "app.bad_request", appErr.Code)
 }
@@ -571,7 +571,7 @@ func TestHandlePortalCreateInstanceUpdateJob_BodyOnlyRequiresBodyVersionWhenNoDe
 
 	_, err := s.handlePortalCreateInstanceUpdateJob(ctx)
 	require.Error(t, err)
-	appErr, ok := err.(*apptheory.AppError)
+	appErr, ok := err.(*apptheory.AppTheoryError)
 	require.True(t, ok)
 	require.Equal(t, "app.bad_request", appErr.Code)
 }
@@ -680,7 +680,7 @@ func TestHandlePortalCreateInstanceUpdateJob_ConflictsWhenDifferentActiveKindExi
 
 	_, err := s.handlePortalCreateInstanceUpdateJob(ctx)
 	require.Error(t, err)
-	appErr, ok := err.(*apptheory.AppError)
+	appErr, ok := err.(*apptheory.AppTheoryError)
 	require.True(t, ok)
 	require.Equal(t, "app.conflict", appErr.Code)
 	require.Contains(t, appErr.Message, "cannot start Lesser update to v1.2.6")
@@ -694,7 +694,7 @@ func TestHandlePortalCreateInstanceUpdateJob_ConflictsWhenSameKindVersionDiffers
 
 	_, err := s.handlePortalCreateInstanceUpdateJob(ctx)
 	require.Error(t, err)
-	appErr, ok := err.(*apptheory.AppError)
+	appErr, ok := err.(*apptheory.AppTheoryError)
 	require.True(t, ok)
 	require.Equal(t, "app.conflict", appErr.Code)
 	require.Contains(t, appErr.Message, "cannot start lesser-body update to v0.1.12")
@@ -710,7 +710,7 @@ func TestHandlePortalCreateInstanceUpdateJob_ActiveLatestConflictBeforeResolve(t
 
 	_, err := s.handlePortalCreateInstanceUpdateJob(ctx)
 	require.Error(t, err)
-	appErr, ok := err.(*apptheory.AppError)
+	appErr, ok := err.(*apptheory.AppTheoryError)
 	require.True(t, ok)
 	require.Equal(t, "app.conflict", appErr.Code)
 	require.Contains(t, appErr.Message, "cannot start lesser-body update to latest")
@@ -794,7 +794,7 @@ func TestHandlePortalCreateInstanceUpdateJob_RejectsUnsupportedManagedLesserVers
 
 	_, err := s.handlePortalCreateInstanceUpdateJob(ctx)
 	require.Error(t, err)
-	appErr, ok := err.(*apptheory.AppError)
+	appErr, ok := err.(*apptheory.AppTheoryError)
 	require.True(t, ok)
 	require.Equal(t, "app.bad_request", appErr.Code)
 	require.Contains(t, appErr.Message, "before v1.2.6 are not supported")

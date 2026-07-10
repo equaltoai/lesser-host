@@ -8,7 +8,7 @@ import (
 	"time"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/httpx"
 	"github.com/equaltoai/lesser-host/internal/store/models"
@@ -87,7 +87,7 @@ func (s *Server) handleSoulSelfSuspend(ctx *apptheory.Context) (*apptheory.Respo
 	_ = identity.UpdateKeys()
 
 	if err := s.store.DB.WithContext(ctx.Context()).Model(identity).IfExists().Update("Status", "LifecycleStatus", "LifecycleReason", "UpdatedAt"); err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to self-suspend agent"}
+		return nil, newAppTheoryError("app.internal", "failed to self-suspend agent")
 	}
 
 	// Audit log.
@@ -122,7 +122,7 @@ func (s *Server) handleSoulSelfReinstate(ctx *apptheory.Context) (*apptheory.Res
 	// Cannot use requireActiveSoulAgentWithDomainAccess here since agent is self_suspended.
 	identity, err := s.getSoulAgentIdentity(ctx.Context(), agentIDHex)
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "agent not found"}
+		return nil, newAppTheoryError("app.not_found", "agent not found")
 	}
 	if _, _, accessErr := s.requireSoulDomainAccess(ctx, strings.TrimSpace(identity.Domain)); accessErr != nil {
 		return nil, accessErr
@@ -131,7 +131,7 @@ func (s *Server) handleSoulSelfReinstate(ctx *apptheory.Context) (*apptheory.Res
 	// Only self-suspended agents can self-reinstate.
 	currentStatus := strings.TrimSpace(identity.Status)
 	if currentStatus != models.SoulAgentStatusSelfSuspended {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "agent is not self-suspended"}
+		return nil, newAppTheoryError("app.conflict", "agent is not self-suspended")
 	}
 
 	now := time.Now().UTC()
@@ -142,7 +142,7 @@ func (s *Server) handleSoulSelfReinstate(ctx *apptheory.Context) (*apptheory.Res
 	_ = identity.UpdateKeys()
 
 	if err := s.store.DB.WithContext(ctx.Context()).Model(identity).IfExists().Update("Status", "LifecycleStatus", "LifecycleReason", "UpdatedAt"); err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to reinstate agent"}
+		return nil, newAppTheoryError("app.internal", "failed to reinstate agent")
 	}
 
 	// Audit log.
@@ -181,7 +181,7 @@ func (s *Server) handleSoulValidationOptIn(ctx *apptheory.Context) (*apptheory.R
 
 	challengeID := strings.TrimSpace(ctx.Param("challengeId"))
 	if challengeID == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "challengeId is required"}
+		return nil, newAppTheoryError("app.bad_request", "challengeId is required")
 	}
 
 	optInStatus, appErr := parseSoulValidationOptInStatus(ctx)
@@ -198,18 +198,18 @@ func (s *Server) handleSoulValidationOptIn(ctx *apptheory.Context) (*apptheory.R
 	challenge.UpdatedAt = now
 	_ = challenge.UpdateKeys()
 	if err := s.store.DB.WithContext(ctx.Context()).Model(challenge).IfExists().Update("OptInStatus", "UpdatedAt"); err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to update opt-in status"}
+		return nil, newAppTheoryError("app.internal", "failed to update opt-in status")
 	}
 
 	return apptheory.JSON(http.StatusOK, challenge)
 }
 
-func parseSoulValidationOptInStatus(ctx *apptheory.Context) (string, *apptheory.AppError) {
+func parseSoulValidationOptInStatus(ctx *apptheory.Context) (string, *apptheory.AppTheoryError) {
 	var req soulValidationOptInRequest
 	if parseErr := httpx.ParseJSON(ctx, &req); parseErr != nil {
-		appErr, ok := parseErr.(*apptheory.AppError)
+		appErr, ok := parseErr.(*apptheory.AppTheoryError)
 		if !ok {
-			return "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+			return "", newAppTheoryError("app.internal", "internal error")
 		}
 		return "", appErr
 	}
@@ -221,18 +221,18 @@ func parseSoulValidationOptInStatus(ctx *apptheory.Context) (string, *apptheory.
 	}
 	status := strings.ToLower(strings.TrimSpace(req.Status))
 	if status != models.SoulValidationOptInStatusAccepted && status != models.SoulValidationOptInStatusDeclined {
-		return "", &apptheory.AppError{Code: "app.bad_request", Message: "status must be 'accepted' or 'declined'"}
+		return "", newAppTheoryError("app.bad_request", "status must be 'accepted' or 'declined'")
 	}
 	return status, nil
 }
 
-func (s *Server) loadSoulValidationChallengeForOptIn(ctx context.Context, agentIDHex string, challengeID string) (*models.SoulAgentValidationChallenge, *apptheory.AppError) {
+func (s *Server) loadSoulValidationChallengeForOptIn(ctx context.Context, agentIDHex string, challengeID string) (*models.SoulAgentValidationChallenge, *apptheory.AppTheoryError) {
 	challenge, err := getSoulAgentItemBySK[models.SoulAgentValidationChallenge](s, ctx, agentIDHex, fmt.Sprintf("VALIDATIONCHAL#%s", challengeID))
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "challenge not found"}
+		return nil, newAppTheoryError("app.not_found", "challenge not found")
 	}
 	if strings.TrimSpace(challenge.Status) != models.SoulValidationChallengeStatusIssued {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "challenge is not in issued status"}
+		return nil, newAppTheoryError("app.conflict", "challenge is not in issued status")
 	}
 	return challenge, nil
 }
@@ -266,28 +266,28 @@ func (s *Server) handleSoulCreateDispute(ctx *apptheory.Context) (*apptheory.Res
 
 	disputeID := strings.TrimSpace(req.DisputeID)
 	if disputeID == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "dispute_id is required"}
+		return nil, newAppTheoryError("app.bad_request", "dispute_id is required")
 	}
 	if len(disputeID) > 128 {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "dispute_id is too long"}
+		return nil, newAppTheoryError("app.bad_request", "dispute_id is too long")
 	}
 	signalRef := strings.TrimSpace(req.SignalRef)
 	if signalRef == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "signal_ref is required"}
+		return nil, newAppTheoryError("app.bad_request", "signal_ref is required")
 	}
 	if len(signalRef) > 1024 {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "signal_ref is too long"}
+		return nil, newAppTheoryError("app.bad_request", "signal_ref is too long")
 	}
 	evidence := strings.TrimSpace(req.Evidence)
 	if len(evidence) > 8192 {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "evidence is too long"}
+		return nil, newAppTheoryError("app.bad_request", "evidence is too long")
 	}
 	statement := strings.TrimSpace(req.Statement)
 	if statement == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "statement is required"}
+		return nil, newAppTheoryError("app.bad_request", "statement is required")
 	}
 	if len(statement) > 4096 {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "statement is too long"}
+		return nil, newAppTheoryError("app.bad_request", "statement is too long")
 	}
 
 	now := time.Now().UTC()
@@ -303,7 +303,7 @@ func (s *Server) handleSoulCreateDispute(ctx *apptheory.Context) (*apptheory.Res
 	_ = dispute.UpdateKeys()
 
 	if err := s.store.DB.WithContext(ctx.Context()).Model(dispute).IfNotExists().Create(); err != nil {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "dispute with this ID already exists"}
+		return nil, newAppTheoryError("app.conflict", "dispute with this ID already exists")
 	}
 
 	// Audit log.
@@ -343,7 +343,7 @@ func (s *Server) handleSoulPublicGetDisputes(ctx *apptheory.Context) (*apptheory
 		NextCursor: nextCursor,
 	})
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	s.setSoulPublicHeaders(ctx, resp, "public, max-age=60")
 	return resp, nil
@@ -364,7 +364,7 @@ func (s *Server) handleSoulPublicGetDispute(ctx *apptheory.Context) (*apptheory.
 		return nil, appErr
 	}
 	if !s.cfg.SoulEnabled {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "not found"}
+		return nil, newAppTheoryError("app.not_found", "not found")
 	}
 
 	agentIDHex, _, appErr := parseSoulAgentIDHex(ctx.Param("agentId"))
@@ -373,19 +373,19 @@ func (s *Server) handleSoulPublicGetDispute(ctx *apptheory.Context) (*apptheory.
 	}
 	disputeID := strings.TrimSpace(ctx.Param("disputeId"))
 	if disputeID == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "disputeId is required"}
+		return nil, newAppTheoryError("app.bad_request", "disputeId is required")
 	}
 
 	dispute, err := getSoulAgentItemBySK[models.SoulAgentDispute](s, ctx.Context(), agentIDHex, fmt.Sprintf("DISPUTE#%s", disputeID))
 	if theoryErrors.IsNotFound(err) {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "not found"}
+		return nil, newAppTheoryError("app.not_found", "not found")
 	}
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	resp, jsonErr := apptheory.JSON(http.StatusOK, redactSoulPublicDispute(*dispute))
 	if jsonErr != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	s.setSoulPublicHeaders(ctx, resp, "public, max-age=60")
 	return resp, nil

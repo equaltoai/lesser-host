@@ -4,7 +4,7 @@ import (
 	"reflect"
 
 	"github.com/stretchr/testify/mock"
-	ttmocks "github.com/theory-cloud/tabletheory/pkg/mocks"
+	ttmocks "github.com/theory-cloud/tabletheory/v2/pkg/mocks"
 )
 
 type modelQueryPair struct {

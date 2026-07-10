@@ -137,15 +137,15 @@ func firstNonBlank(values ...string) string {
 	return ""
 }
 
-func (s *Server) saveSoulAgentPromotionLifecycleEvent(ctx context.Context, event *models.SoulAgentPromotionLifecycleEvent) *apptheory.AppError {
+func (s *Server) saveSoulAgentPromotionLifecycleEvent(ctx context.Context, event *models.SoulAgentPromotionLifecycleEvent) *apptheory.AppTheoryError {
 	if s == nil || s.store == nil || s.store.DB == nil || event == nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return newAppTheoryError("app.internal", "internal error")
 	}
 	if err := event.UpdateKeys(); err != nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "failed to normalize promotion lifecycle event"}
+		return newAppTheoryError("app.internal", "failed to normalize promotion lifecycle event")
 	}
 	if err := s.store.DB.WithContext(ctx).Model(event).Create(); err != nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "failed to emit promotion lifecycle event"}
+		return newAppTheoryError("app.internal", "failed to emit promotion lifecycle event")
 	}
 	return nil
 }
@@ -246,7 +246,7 @@ func (s *Server) listSoulAgentPromotionLifecycleEvents(ctx *apptheory.Context, a
 
 	paged, err := qb.AllPaginated(&events)
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to list promotion lifecycle events"}
+		return nil, newAppTheoryError("app.internal", "failed to list promotion lifecycle events")
 	}
 
 	out := make([]soulAgentPromotionLifecycleEventView, 0, len(events))
@@ -277,7 +277,7 @@ func listSoulRequesterScopedItems[T any, V any](
 	sortField string,
 	failureMessage string,
 	build func(*T) V,
-) (items []V, nextCursor string, hasMore bool, appErr *apptheory.AppError) {
+) (items []V, nextCursor string, hasMore bool, appErr *apptheory.AppTheoryError) {
 	if appErr := s.requireSoulRegistryConfigured(); appErr != nil {
 		return nil, "", false, appErr
 	}
@@ -290,7 +290,7 @@ func listSoulRequesterScopedItems[T any, V any](
 
 	requestedBy := strings.TrimSpace(ctx.AuthIdentity)
 	if requestedBy == "" {
-		return nil, "", false, &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
+		return nil, "", false, newAppTheoryError("app.unauthorized", "unauthorized")
 	}
 
 	cursor, limit := soulPublicCursorAndLimit(ctx)
@@ -307,7 +307,7 @@ func listSoulRequesterScopedItems[T any, V any](
 
 	paged, err := qb.AllPaginated(&rawItems)
 	if err != nil {
-		return nil, "", false, &apptheory.AppError{Code: "app.internal", Message: failureMessage}
+		return nil, "", false, newAppTheoryError("app.internal", failureMessage)
 	}
 
 	items = make([]V, 0, len(rawItems))

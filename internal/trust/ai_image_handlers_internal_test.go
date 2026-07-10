@@ -17,8 +17,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
-	ttmocks "github.com/theory-cloud/tabletheory/pkg/mocks"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
+	ttmocks "github.com/theory-cloud/tabletheory/v2/pkg/mocks"
 
 	"github.com/stretchr/testify/mock"
 
@@ -202,7 +202,7 @@ func TestHandleAIEvidenceImage_RejectsCrossInstanceObjectKeyBeforeStorage(t *tes
 		AuthIdentity: testBudgetInstanceSlug,
 		Request:      apptheory.Request{Body: body},
 	})
-	appErr, ok := err.(*apptheory.AppError)
+	appErr, ok := err.(*apptheory.AppTheoryError)
 	if !ok || appErr.Code != appErrCodeBadRequest || !strings.Contains(appErr.Message, "evidence/inst/") {
 		t.Fatalf("expected owned-prefix bad_request, got %T: %v", err, err)
 	}

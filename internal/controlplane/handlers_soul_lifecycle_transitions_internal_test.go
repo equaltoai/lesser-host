@@ -13,9 +13,9 @@ import (
 	"github.com/ethereum/go-ethereum/accounts"
 	"github.com/ethereum/go-ethereum/crypto"
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	"github.com/theory-cloud/tabletheory/pkg/core"
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
-	ttmocks "github.com/theory-cloud/tabletheory/pkg/mocks"
+	"github.com/theory-cloud/tabletheory/v2/pkg/core"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
+	ttmocks "github.com/theory-cloud/tabletheory/v2/pkg/mocks"
 
 	"github.com/stretchr/testify/mock"
 
@@ -481,7 +481,7 @@ func TestHandleSoulArchiveAgent_RejectsInvalidTransition(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected error")
 	}
-	appErr, ok := err.(*apptheory.AppError)
+	appErr, ok := err.(*apptheory.AppTheoryError)
 	if !ok {
 		t.Fatalf("expected AppError, got %T", err)
 	}
@@ -532,7 +532,7 @@ func TestHandleSoulAgentUpdateRegistration_ArchivedAgentRejected(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected error")
 	}
-	appErr, ok := err.(*apptheory.AppError)
+	appErr, ok := err.(*apptheory.AppTheoryError)
 	if !ok {
 		t.Fatalf("expected AppError, got %T", err)
 	}
@@ -621,7 +621,7 @@ func TestHandleSoulArchiveAgent_TransactionFailureReturnsInternalError(t *testin
 	if callErr == nil {
 		t.Fatalf("expected error")
 	}
-	appErr, ok := callErr.(*apptheory.AppError)
+	appErr, ok := callErr.(*apptheory.AppTheoryError)
 	if !ok {
 		t.Fatalf("expected AppError, got %T", callErr)
 	}
@@ -671,7 +671,7 @@ func TestHandleSoulArchiveAgent_RejectsConsumedNonceReplay(t *testing.T) {
 	if callErr == nil {
 		t.Fatalf("expected replayed continuity_nonce to be rejected")
 	}
-	appErr, ok := callErr.(*apptheory.AppError)
+	appErr, ok := callErr.(*apptheory.AppTheoryError)
 	if !ok {
 		t.Fatalf("expected AppError, got %T", callErr)
 	}
@@ -703,7 +703,7 @@ func TestHandleSoulArchiveAgent_RejectsUnknownNonce(t *testing.T) {
 	if callErr == nil {
 		t.Fatalf("expected unknown continuity_nonce to be rejected")
 	}
-	appErr, ok := callErr.(*apptheory.AppError)
+	appErr, ok := callErr.(*apptheory.AppTheoryError)
 	if !ok {
 		t.Fatalf("expected AppError, got %T", callErr)
 	}
@@ -736,7 +736,7 @@ func TestHandleSoulArchiveAgent_RejectsExpiredNonce(t *testing.T) {
 	if callErr == nil {
 		t.Fatalf("expected expired continuity_nonce to be rejected")
 	}
-	appErr, ok := callErr.(*apptheory.AppError)
+	appErr, ok := callErr.(*apptheory.AppTheoryError)
 	if !ok {
 		t.Fatalf("expected AppError, got %T", callErr)
 	}
@@ -797,7 +797,7 @@ func TestHandleSoulArchiveAgent_RejectMissingNonce(t *testing.T) {
 	if callErr == nil {
 		t.Fatalf("expected error for missing continuity_nonce")
 	}
-	appErr2, ok := callErr.(*apptheory.AppError)
+	appErr2, ok := callErr.(*apptheory.AppTheoryError)
 	if !ok {
 		t.Fatalf("expected AppError, got %T", callErr)
 	}
@@ -880,7 +880,7 @@ func TestHandleSoulDesignateSuccessor_RejectMissingNonce(t *testing.T) {
 	if callErr == nil {
 		t.Fatalf("expected error for missing continuity_nonce")
 	}
-	appErr2, ok := callErr.(*apptheory.AppError)
+	appErr2, ok := callErr.(*apptheory.AppTheoryError)
 	if !ok {
 		t.Fatalf("expected AppError, got %T", callErr)
 	}

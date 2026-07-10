@@ -1,3 +1,3 @@
 module github.com/equaltoai/lesser-host/cdk
 
-go 1.26.4
+go 1.26.5

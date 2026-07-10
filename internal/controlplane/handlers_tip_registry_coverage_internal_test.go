@@ -12,8 +12,8 @@ import (
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
-	ttmocks "github.com/theory-cloud/tabletheory/pkg/mocks"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
+	ttmocks "github.com/theory-cloud/tabletheory/v2/pkg/mocks"
 
 	"github.com/stretchr/testify/mock"
 
@@ -27,9 +27,9 @@ import (
 func requireTipRegistryAppErrCode(t *testing.T, err error, want string) {
 	t.Helper()
 
-	appErr, ok := err.(*apptheory.AppError)
+	appErr, ok := err.(*apptheory.AppTheoryError)
 	if !ok {
-		t.Fatalf("expected *apptheory.AppError, got %T: %v", err, err)
+		t.Fatalf("expected *apptheory.AppTheoryError, got %T: %v", err, err)
 	}
 	if appErr.Code != want {
 		t.Fatalf("expected app error %q, got %q", want, appErr.Code)

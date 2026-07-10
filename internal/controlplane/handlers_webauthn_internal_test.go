@@ -7,8 +7,8 @@ import (
 	"time"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
-	ttmocks "github.com/theory-cloud/tabletheory/pkg/mocks"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
+	ttmocks "github.com/theory-cloud/tabletheory/v2/pkg/mocks"
 
 	"github.com/go-webauthn/webauthn/protocol"
 	"github.com/go-webauthn/webauthn/webauthn"
@@ -346,7 +346,7 @@ func TestHandleWebAuthnLoginBegin_RequiresCredentialsAndStoresChallenge(t *testi
 	}).Once()
 	if _, err := s.handleWebAuthnLoginBegin(&apptheory.Context{Request: apptheory.Request{Body: []byte(`{"username":"alice"}`)}}); err == nil {
 		t.Fatalf("expected unauthorized")
-	} else if appErr, ok := err.(*apptheory.AppError); !ok || appErr.Code != "app.unauthorized" {
+	} else if appErr, ok := err.(*apptheory.AppTheoryError); !ok || appErr.Code != "app.unauthorized" {
 		t.Fatalf("expected app.unauthorized, got %T: %v", err, err)
 	}
 

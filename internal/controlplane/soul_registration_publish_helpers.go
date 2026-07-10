@@ -10,13 +10,13 @@ import (
 	"time"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	"github.com/theory-cloud/tabletheory/pkg/core"
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
+	"github.com/theory-cloud/tabletheory/v2/pkg/core"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
-func deriveSoulRegistrationNextVersion(agentIDHex string, previousVersionURI *string, bucketName string) (prev int, next int, appErr *apptheory.AppError) {
+func deriveSoulRegistrationNextVersion(agentIDHex string, previousVersionURI *string, bucketName string) (prev int, next int, appErr *apptheory.AppTheoryError) {
 	agentIDHex = strings.ToLower(strings.TrimSpace(agentIDHex))
 	if previousVersionURI == nil || strings.TrimSpace(*previousVersionURI) == "" {
 		return 0, 1, nil
@@ -25,49 +25,49 @@ func deriveSoulRegistrationNextVersion(agentIDHex string, previousVersionURI *st
 	prevURI := strings.TrimSpace(*previousVersionURI)
 	u, err := url.Parse(prevURI)
 	if err != nil {
-		return 0, 0, &apptheory.AppError{Code: "app.bad_request", Message: "previousVersionUri is invalid"}
+		return 0, 0, newAppTheoryError("app.bad_request", "previousVersionUri is invalid")
 	}
 	if strings.ToLower(strings.TrimSpace(u.Scheme)) != "s3" || strings.TrimSpace(u.Host) == "" {
-		return 0, 0, &apptheory.AppError{Code: "app.bad_request", Message: "previousVersionUri is invalid"}
+		return 0, 0, newAppTheoryError("app.bad_request", "previousVersionUri is invalid")
 	}
 	if !strings.EqualFold(strings.TrimSpace(u.Host), strings.TrimSpace(bucketName)) {
-		return 0, 0, &apptheory.AppError{Code: "app.bad_request", Message: "previousVersionUri does not match expected bucket"}
+		return 0, 0, newAppTheoryError("app.bad_request", "previousVersionUri does not match expected bucket")
 	}
 
 	key := strings.TrimPrefix(strings.TrimSpace(u.Path), "/")
 	prefix := fmt.Sprintf("registry/v1/agents/%s/versions/", agentIDHex)
 	if !strings.HasPrefix(key, prefix) {
-		return 0, 0, &apptheory.AppError{Code: "app.bad_request", Message: "previousVersionUri does not match expected agent"}
+		return 0, 0, newAppTheoryError("app.bad_request", "previousVersionUri does not match expected agent")
 	}
 
 	rest := strings.TrimPrefix(key, prefix)
 	parts := strings.Split(rest, "/")
 	if len(parts) != 2 || strings.TrimSpace(parts[1]) != "registration.json" {
-		return 0, 0, &apptheory.AppError{Code: "app.bad_request", Message: "previousVersionUri does not match expected format"}
+		return 0, 0, newAppTheoryError("app.bad_request", "previousVersionUri does not match expected format")
 	}
 	n, err := strconv.Atoi(strings.TrimSpace(parts[0]))
 	if err != nil || n <= 0 {
-		return 0, 0, &apptheory.AppError{Code: "app.bad_request", Message: "previousVersionUri does not match expected format"}
+		return 0, 0, newAppTheoryError("app.bad_request", "previousVersionUri does not match expected format")
 	}
 
 	return n, n + 1, nil
 }
 
-func validateSoulRegistrationPublishBase(s *Server, identity *models.SoulAgentIdentity, regSHA256 string) *apptheory.AppError {
+func validateSoulRegistrationPublishBase(s *Server, identity *models.SoulAgentIdentity, regSHA256 string) *apptheory.AppTheoryError {
 	if s == nil || identity == nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return newAppTheoryError("app.internal", "internal error")
 	}
 	if !s.cfg.SoulEnabled {
-		return &apptheory.AppError{Code: "app.not_found", Message: "not found"}
+		return newAppTheoryError("app.not_found", "not found")
 	}
 	if s.store == nil || s.store.DB == nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return newAppTheoryError("app.internal", "internal error")
 	}
 	if s.soulPacks == nil || strings.TrimSpace(s.cfg.SoulPackBucketName) == "" {
-		return &apptheory.AppError{Code: "app.conflict", Message: "soul registry bucket is not configured"}
+		return newAppTheoryError("app.conflict", "soul registry bucket is not configured")
 	}
 	if strings.TrimSpace(regSHA256) == "" || len(strings.TrimSpace(regSHA256)) != 64 {
-		return &apptheory.AppError{Code: "app.bad_request", Message: "invalid registration sha256"}
+		return newAppTheoryError("app.bad_request", "invalid registration sha256")
 	}
 	return nil
 }
@@ -82,13 +82,13 @@ func (s *Server) repairExistingSoulRegistrationVersion(
 	capsNorm []string,
 	claimLevels map[string]string,
 	now time.Time,
-) (bool, *apptheory.AppError) {
+) (bool, *apptheory.AppTheoryError) {
 	existing, err := s.getSoulAgentVersionRecord(ctx, agentIDHex, nextVersion)
 	if err == nil && existing != nil {
 		existingSHA := strings.ToLower(strings.TrimSpace(existing.RegistrationSHA256))
 		if existingSHA != strings.ToLower(strings.TrimSpace(regSHA256)) {
 			log.Printf("controlplane: soul_integrity version_sha_mismatch agent=%s version=%d expected_sha=%s got_sha=%s", agentIDHex, nextVersion, existingSHA, regSHA256)
-			return false, &apptheory.AppError{Code: "app.conflict", Message: "version already exists with different content"}
+			return false, newAppTheoryError("app.conflict", "version already exists with different content")
 		}
 		if appErr := s.ensureSoulRegistrationS3Artifacts(ctx, agentIDHex, nextVersion, regBytes, regSHA256); appErr != nil {
 			return false, appErr
@@ -99,12 +99,12 @@ func (s *Server) repairExistingSoulRegistrationVersion(
 		return true, nil
 	}
 	if err != nil && !theoryErrors.IsNotFound(err) {
-		return false, &apptheory.AppError{Code: "app.internal", Message: "failed to read version history"}
+		return false, newAppTheoryError("app.internal", "failed to read version history")
 	}
 	return false, nil
 }
 
-func (s *Server) loadPreviousSoulRegistrationSHA(ctx context.Context, agentIDHex string, prevVersion int) (string, *apptheory.AppError) {
+func (s *Server) loadPreviousSoulRegistrationSHA(ctx context.Context, agentIDHex string, prevVersion int) (string, *apptheory.AppTheoryError) {
 	if prevVersion <= 0 {
 		return "", nil
 	}
@@ -113,12 +113,12 @@ func (s *Server) loadPreviousSoulRegistrationSHA(ctx context.Context, agentIDHex
 	if theoryErrors.IsNotFound(err) {
 		if s.cfg.SoulV2StrictIntegrity {
 			log.Printf("controlplane: soul_integrity missing_previous_version_record agent=%s prev_version=%d", agentIDHex, prevVersion)
-			return "", &apptheory.AppError{Code: "app.conflict", Message: "missing previous version history; repair is required"}
+			return "", newAppTheoryError("app.conflict", "missing previous version history; repair is required")
 		}
 		return "", nil
 	}
 	if err != nil {
-		return "", &apptheory.AppError{Code: "app.internal", Message: "failed to read version history"}
+		return "", newAppTheoryError("app.internal", "failed to read version history")
 	}
 	if prevRec == nil {
 		return "", nil
@@ -147,9 +147,9 @@ func publishSoulAgentRegistrationTyped[Reg any, Hook any](
 	expectedVersion *int,
 	now time.Time,
 	extraWrites func(Hook) error,
-	derive func(*Server, string, Reg) (int, int, *apptheory.AppError),
-	validate func(*Server, Reg, string, int) *apptheory.AppError,
-) (int, *apptheory.AppError) {
+	derive func(*Server, string, Reg) (int, int, *apptheory.AppTheoryError),
+	validate func(*Server, Reg, string, int) *apptheory.AppTheoryError,
+) (int, *apptheory.AppTheoryError) {
 	return s.publishSoulAgentRegistrationWithExtraWrites(
 		ctx,
 		agentIDHex,
@@ -162,10 +162,10 @@ func publishSoulAgentRegistrationTyped[Reg any, Hook any](
 		claimLevels,
 		expectedVersion,
 		now,
-		func() (int, int, *apptheory.AppError) {
+		func() (int, int, *apptheory.AppTheoryError) {
 			return derive(s, agentIDHex, reg)
 		},
-		func(nextVersion int) *apptheory.AppError {
+		func(nextVersion int) *apptheory.AppTheoryError {
 			return validate(s, reg, agentIDHex, nextVersion)
 		},
 		func(tx core.TransactionBuilder) error {
@@ -193,15 +193,15 @@ func (s *Server) prepareSoulRegistrationPublish(
 	claimLevels map[string]string,
 	expectedVersion *int,
 	now time.Time,
-	derive func() (int, int, *apptheory.AppError),
-	validatePrevious func(int) *apptheory.AppError,
-) (soulRegistrationPublishPlan, *apptheory.AppError) {
+	derive func() (int, int, *apptheory.AppTheoryError),
+	validatePrevious func(int) *apptheory.AppTheoryError,
+) (soulRegistrationPublishPlan, *apptheory.AppTheoryError) {
 	prevVersionFromURI, nextVersion, deriveErr := derive()
 	if deriveErr != nil {
 		return soulRegistrationPublishPlan{}, deriveErr
 	}
 	if expectedVersion != nil && *expectedVersion != prevVersionFromURI {
-		return soulRegistrationPublishPlan{}, &apptheory.AppError{Code: "app.bad_request", Message: "expected_version does not match previousVersionUri"}
+		return soulRegistrationPublishPlan{}, newAppTheoryError("app.bad_request", "expected_version does not match previousVersionUri")
 	}
 	if validateErr := validatePrevious(nextVersion); validateErr != nil {
 		return soulRegistrationPublishPlan{}, validateErr
@@ -212,7 +212,7 @@ func (s *Server) prepareSoulRegistrationPublish(
 		}
 	}
 	if identity.SelfDescriptionVersion > nextVersion {
-		return soulRegistrationPublishPlan{}, &apptheory.AppError{Code: "app.conflict", Message: "agent has advanced beyond this version"}
+		return soulRegistrationPublishPlan{}, newAppTheoryError("app.conflict", "agent has advanced beyond this version")
 	}
 
 	newCaps := normalizeSoulCapabilitiesLoose(capsNorm)
@@ -225,7 +225,7 @@ func (s *Server) prepareSoulRegistrationPublish(
 		return soulRegistrationPublishPlan{nextVersion: nextVersion}, nil
 	}
 	if identity.SelfDescriptionVersion != prevVersionFromURI {
-		return soulRegistrationPublishPlan{}, &apptheory.AppError{Code: "app.conflict", Message: "version conflict; reload and try again"}
+		return soulRegistrationPublishPlan{}, newAppTheoryError("app.conflict", "version conflict; reload and try again")
 	}
 
 	prevRegSHA256, prevErr := s.loadPreviousSoulRegistrationSHA(ctx, agentIDHex, prevVersionFromURI)
@@ -236,7 +236,7 @@ func (s *Server) prepareSoulRegistrationPublish(
 	versionedKey := soulRegistrationVersionedS3Key(agentIDHex, nextVersion)
 	versionRecord := buildSoulVersionRecord(agentIDHex, s.cfg.SoulPackBucketName, versionedKey, nextVersion, regSHA256, prevRegSHA256, changeSummary, selfSig, now)
 	if err := versionRecord.UpdateKeys(); err != nil {
-		return soulRegistrationPublishPlan{}, &apptheory.AppError{Code: "app.internal", Message: "failed to record version history"}
+		return soulRegistrationPublishPlan{}, newAppTheoryError("app.internal", "failed to record version history")
 	}
 
 	return soulRegistrationPublishPlan{
@@ -246,14 +246,14 @@ func (s *Server) prepareSoulRegistrationPublish(
 	}, nil
 }
 
-func (s *Server) ensureNoSoulRegistrationVersionHistory(ctx context.Context, agentIDHex string) *apptheory.AppError {
+func (s *Server) ensureNoSoulRegistrationVersionHistory(ctx context.Context, agentIDHex string) *apptheory.AppTheoryError {
 	nextExisting, _, appErr := s.getNextSoulAgentVersion(ctx, agentIDHex)
 	if appErr != nil {
 		return appErr
 	}
 	if nextExisting > 1 {
 		log.Printf("controlplane: soul_integrity version_chain_violation agent=%s reason=missing_prev_uri_with_existing_history next_existing=%d", agentIDHex, nextExisting)
-		return &apptheory.AppError{Code: "app.conflict", Message: "previousVersionUri is required for existing version history"}
+		return newAppTheoryError("app.conflict", "previousVersionUri is required for existing version history")
 	}
 	return nil
 }

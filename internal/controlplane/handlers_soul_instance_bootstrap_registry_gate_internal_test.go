@@ -1,16 +1,14 @@
 package controlplane
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/mock"
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
 
-	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
@@ -56,11 +54,7 @@ func TestSoulInstanceHostedOffchainMintConversation_DoesNotRequireRegistryContra
 	s.cfg.SoulRegistryContractAddress = ""
 	reg := mintConversationHandleReg()
 	t.Setenv("ANTHROPIC_API_KEY", "anthropic-test-key")
-	stubHostedGenesisMicroVMDispatcher(t, s)
-	s.enqueueHostedGenesisMessage = func(_ context.Context, msg hostedgenesis.QueueMessage) error {
-		t.Fatalf("hosted/off-chain mint conversation must not enqueue SQS authority: %#v", msg)
-		return nil
-	}
+	dispatcher := stubHostedGenesisMicroVMDispatcher(t, s)
 
 	expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, soulInstanceBootstrapTestInstanceSlug)
 	stubMintConversationRegistration(t, tdb, reg)
@@ -68,8 +62,6 @@ func TestSoulInstanceHostedOffchainMintConversation_DoesNotRequireRegistryContra
 	stubMintConversationIdentity(t, tdb, nil, theoryErrors.ErrItemNotFound)
 	tdb.qMintIdem.On("First", mock.AnythingOfType("*models.SoulMintConversationIdempotency")).Return(theoryErrors.ErrItemNotFound).Once()
 	expectSoulInstanceMintConversationDebit(t, tdb, reg.AgentID, true)
-	expectSoulInstanceMintConversationProgression(t, tdb, hostedgenesis.StatusInProgress)
-
 	resp, err := s.handleSoulInstanceMintConversation(newSoulInstanceBootstrapContext(
 		map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
 		mustMarshalJSON(t, soulMintConversationRequest{Model: "anthropic:claude-sonnet-4-6", Message: soulInstanceBootstrapTestConversationMessage, IdempotencyKey: soulInstanceBootstrapTestIdempotencyKey, CorrelationID: "corr-1"}),
@@ -81,6 +73,9 @@ func TestSoulInstanceHostedOffchainMintConversation_DoesNotRequireRegistryContra
 	out := assertSoulInstanceMintConversationDispatchedResponse(t, resp)
 	if out.Conversation.RegistrationID != reg.ID || out.Conversation.AgentID != reg.AgentID {
 		t.Fatalf("expected hosted session for registration/agent, got %#v", out.Conversation)
+	}
+	if dispatcher.calls != 0 || dispatcher.queueCalls != 1 {
+		t.Fatalf("expected enqueue-only MicroVM handoff, dispatch=%d queue=%d", dispatcher.calls, dispatcher.queueCalls)
 	}
 }
 

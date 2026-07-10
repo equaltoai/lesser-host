@@ -92,12 +92,13 @@ echo "==> [1/2] stub/local-proved E2E gate: PASS"
 # ---------------------------------------------------------------------------
 stage=""
 outputs_file=""
+auto_kill_controller="false"
 fixtures_file="scripts/lab-e2e-fixtures.json"
 key_file="scripts/.lab-e2e-instance-key"
 
 usage() {
   cat >&2 <<EOF
-usage: bash scripts/hosted-genesis-microvm-e2e-gate.sh [--stage lab] [--outputs-file <path>]
+usage: bash scripts/hosted-genesis-microvm-e2e-gate.sh [--stage lab] [--outputs-file <path>] [--auto-kill-controller]
 
   (no args)         Phase 1 stub/local-proved gate only (CI-safe, no AWS).
   --stage lab       Also run Phase 2 (lab deploy gate). Requires:
@@ -108,6 +109,13 @@ usage: bash scripts/hosted-genesis-microvm-e2e-gate.sh [--stage lab] [--outputs-
                     And the runtime instance-key secret at ${key_file}
                     (provisioned out-of-band; see scripts/lab-e2e-fixtures.json).
                     Fixtures are read from ${fixtures_file} (committed).
+  --auto-kill-controller
+                    Lab only. Drive the kill-VM recovery arc noninteractively by
+                    reading the CDK-owned MicroVM controller bearer token from
+                    SSM with the active AWS credentials and issuing
+                    DELETE /microvms/{conversation}. The raw token is never
+                    printed or persisted by this harness. Without this flag the
+                    kill arc keeps the manual operator /dev/tty pause.
 EOF
 }
 
@@ -120,6 +128,10 @@ while [[ $# -gt 0 ]]; do
     --outputs-file)
       outputs_file="${2:-}"
       shift 2
+      ;;
+    --auto-kill-controller)
+      auto_kill_controller="true"
+      shift
       ;;
     -h|--help)
       usage
@@ -188,6 +200,11 @@ if [[ -z "$lab_host" ]]; then
   echo "      'cdk deploy --stage lab --outputs-file ${outputs_file}'." >&2
   exit 1
 fi
+controller_endpoint="$(resolve_cfn_output 'HostedGenesisMicrovmControllerEndpoint')"
+if [[ "$auto_kill_controller" == "true" && -z "$controller_endpoint" ]]; then
+  echo "FAIL: --auto-kill-controller requires HostedGenesisMicrovmControllerEndpoint in ${outputs_file}." >&2
+  exit 1
+fi
 
 # --- System fixtures: committed, non-secret identifiers (scripts/lab-e2e-fixtures.json). ---
 if [[ ! -f "$fixtures_file" ]]; then
@@ -206,13 +223,14 @@ print(val if isinstance(val, str) else "")
 PY
 }
 registration_id="$(fixture_json_field 'registrationId')"
+instance_slug="$(fixture_json_field 'instanceSlug')"
 agent_id_hex="$(fixture_json_field 'agentIdHex')"
 fixt_model="$(fixture_json_field 'model')"
 fixt_message="$(fixture_json_field 'message')"
 fixt_kill_message="$(fixture_json_field 'killArcMessage')"
 fixt_retry_message="$(fixture_json_field 'retryMessage')"
-if [[ -z "$registration_id" || -z "$agent_id_hex" ]]; then
-  echo "FAIL: system fixture file ${fixtures_file} missing registrationId or agentIdHex." >&2
+if [[ -z "$registration_id" || -z "$instance_slug" || -z "$agent_id_hex" ]]; then
+  echo "FAIL: system fixture file ${fixtures_file} missing registrationId, instanceSlug, or agentIdHex." >&2
   exit 1
 fi
 e2e_model="${fixt_model:-anthropic:claude-sonnet-4-6}"
@@ -247,6 +265,9 @@ json_ct="Content-Type: application/json"
 now_ms() { date +%s%3N; }
 
 echo "==> [2/2] lab deploy gate against ${lab_host} (config: CDK outputs ${outputs_file}; fixtures: ${fixtures_file})"
+if [[ "$auto_kill_controller" == "true" ]]; then
+  echo "    kill-VM arc: auto-controller termination enabled (token read from SSM, not logged)"
+fi
 
 # --- Accept: POST /mint-conversation -> expect 202 in_progress ---
 idem="e2e-$(date +%s)-$$"
@@ -272,7 +293,7 @@ if awk "BEGIN{exit !(${accept_elapsed_s} >= ${ACCEPT_BUDGET_S})}"; then
   exit 1
 fi
 
-conversation_id=$(printf '%s' "$accept_body_clean" | python3 -c 'import sys,json;print(json.load(sys.stdin)["conversation"]["id"])' 2>/dev/null || true)
+conversation_id=$(printf '%s' "$accept_body_clean" | python3 -c 'import sys,json; c=json.load(sys.stdin).get("conversation",{}); print(c.get("id") or c.get("conversation_id") or "")' 2>/dev/null || true)
 if [[ -z "$conversation_id" || "$conversation_id" == "null" ]]; then
   echo "FAIL: could not parse conversation id from accept response: ${accept_body_clean}" >&2
   exit 1
@@ -288,7 +309,7 @@ while [[ $(date +%s) -lt $poll_deadline ]]; do
   status=$(printf '%s' "$poll_resp" | sed 's/__HTTP_STATUS__[0-9]*$//' | \
     python3 -c 'import sys,json;print(json.load(sys.stdin)["conversation"]["status"])' 2>/dev/null || true)
   echo "    poll: status=${status}"
-  if [[ "$status" == "assistant_turn_ready" || "$status" == "declaration_extraction_pending" ]]; then
+  if [[ "$status" == "assistant_turn_ready" || "$status" == "declaration_extraction_pending" || "$status" == "declaration_ready" ]]; then
     break
   fi
   if [[ "$status" == "failed" ]]; then
@@ -296,44 +317,53 @@ while [[ $(date +%s) -lt $poll_deadline ]]; do
     exit 1
   fi
 done
-if [[ "$status" != "assistant_turn_ready" && "$status" != "declaration_extraction_pending" ]]; then
+if [[ "$status" != "assistant_turn_ready" && "$status" != "declaration_extraction_pending" && "$status" != "declaration_ready" ]]; then
   echo "FAIL: timed out waiting for assistant_turn_ready (last status=${status})" >&2
   exit 1
 fi
 echo "    assistant turn ready: ${status}"
 
-# --- Complete -> in-VM declaration extraction -> poll for declaration_ready ---
-complete_resp=$(curl -sS -w '\n__HTTP_STATUS__%{http_code}' -X POST "${base}/${conversation_id}/complete" \
-  -H "$auth" -H "$json_ct" -d '{}' || true)
-complete_status=$(printf '%s' "$complete_resp" | sed -n 's/.*__HTTP_STATUS__\([0-9]*\).*/\1/p')
-echo "    complete: HTTP ${complete_status}"
-if [[ "$complete_status" != "200" && "$complete_status" != "202" ]]; then
-  echo "FAIL: complete expected 200/202, got ${complete_status}: $(printf '%s' "$complete_resp" | sed 's/__HTTP_STATUS__[0-9]*$//')" >&2
-  exit 1
-fi
-
-# Poll for declaration_ready (extraction completes in-VM).
-poll_deadline2=$(( $(date +%s) + POLL_DEADLINE_S ))
-while [[ $(date +%s) -lt $poll_deadline2 ]]; do
-  sleep "$POLL_INTERVAL_S"
-  poll_resp=$(curl -sS -w '\n__HTTP_STATUS__%{http_code}' -X GET "${base}/${conversation_id}" -H "$auth" || true)
-  status=$(printf '%s' "$poll_resp" | sed 's/__HTTP_STATUS__[0-9]*$//' | \
-    python3 -c 'import sys,json;print(json.load(sys.stdin)["conversation"]["status"])' 2>/dev/null || true)
-  echo "    poll: status=${status}"
-  if [[ "$status" == "declaration_ready" ]]; then
-    break
+if [[ "$status" == "declaration_ready" ]]; then
+  echo "    declaration ready: ${status}"
+  echo "==> happy path: PASS"
+else
+  if [[ "$status" == "assistant_turn_ready" ]]; then
+    # --- Complete -> in-VM declaration extraction -> poll for declaration_ready ---
+    complete_resp=$(curl -sS -w '\n__HTTP_STATUS__%{http_code}' -X POST "${base}/${conversation_id}/complete" \
+      -H "$auth" -H "$json_ct" -d '{}' || true)
+    complete_status=$(printf '%s' "$complete_resp" | sed -n 's/.*__HTTP_STATUS__\([0-9]*\).*/\1/p')
+    echo "    complete: HTTP ${complete_status}"
+    if [[ "$complete_status" != "200" && "$complete_status" != "202" ]]; then
+      echo "FAIL: complete expected 200/202, got ${complete_status}: $(printf '%s' "$complete_resp" | sed 's/__HTTP_STATUS__[0-9]*$//')" >&2
+      exit 1
+    fi
+  else
+    echo "    declaration extraction already pending in MicroVM; skipping complete"
   fi
-  if [[ "$status" == "failed" ]]; then
-    echo "FAIL: conversation entered failed during extraction->ready poll" >&2
+
+  # Poll for declaration_ready (extraction completes in-VM).
+  poll_deadline2=$(( $(date +%s) + POLL_DEADLINE_S ))
+  while [[ $(date +%s) -lt $poll_deadline2 ]]; do
+    sleep "$POLL_INTERVAL_S"
+    poll_resp=$(curl -sS -w '\n__HTTP_STATUS__%{http_code}' -X GET "${base}/${conversation_id}" -H "$auth" || true)
+    status=$(printf '%s' "$poll_resp" | sed 's/__HTTP_STATUS__[0-9]*$//' | \
+      python3 -c 'import sys,json;print(json.load(sys.stdin)["conversation"]["status"])' 2>/dev/null || true)
+    echo "    poll: status=${status}"
+    if [[ "$status" == "declaration_ready" ]]; then
+      break
+    fi
+    if [[ "$status" == "failed" ]]; then
+      echo "FAIL: conversation entered failed during extraction->ready poll" >&2
+      exit 1
+    fi
+  done
+  if [[ "$status" != "declaration_ready" ]]; then
+    echo "FAIL: timed out waiting for declaration_ready (last status=${status})" >&2
     exit 1
   fi
-done
-if [[ "$status" != "declaration_ready" ]]; then
-  echo "FAIL: timed out waiting for declaration_ready (last status=${status})" >&2
-  exit 1
+  echo "    declaration ready: ${status}"
+  echo "==> happy path: PASS"
 fi
-echo "    declaration ready: ${status}"
-echo "==> happy path: PASS"
 
 # --- Kill-VM recovery arc (second conversation) ---
 echo "==> kill-VM recovery arc"
@@ -345,18 +375,96 @@ EOF
 kill_accept=$(curl -sS -w '\n__HTTP_STATUS__%{http_code}' -X POST "$base" -H "$auth" -H "$json_ct" -d "$kill_body" || true)
 kill_status=$(printf '%s' "$kill_accept" | sed -n 's/.*__HTTP_STATUS__\([0-9]*\).*/\1/p')
 conv2=$(printf '%s' "$kill_accept" | sed 's/__HTTP_STATUS__[0-9]*$//' | \
-  python3 -c 'import sys,json;print(json.load(sys.stdin)["conversation"]["id"])' 2>/dev/null || true)
+  python3 -c 'import sys,json; c=json.load(sys.stdin).get("conversation",{}); print(c.get("id") or c.get("conversation_id") or "")' 2>/dev/null || true)
 echo "    kill-arc accept: HTTP ${kill_status} conversation=${conv2}"
 if [[ "$kill_status" != "202" || -z "$conv2" ]]; then
   echo "FAIL: kill-arc accept expected 202 + conversation id, got ${kill_status} ${conv2}" >&2
   exit 1
 fi
 
-echo "    ==> OPERATOR ACTION: kill the VM servicing conversation ${conv2} now."
-echo "        From the lab AWS account, terminate the Lambda MicroVM session for"
-echo "        this conversation (console or: aws lambda terminate-microvm ...)."
-echo "        Press ENTER once the VM is killed to continue the recovery poll."
-read -r _ < /dev/tty
+if [[ "$auto_kill_controller" == "true" ]]; then
+  if ! command -v aws >/dev/null 2>&1; then
+    echo "FAIL: --auto-kill-controller requires the aws CLI." >&2
+    exit 1
+  fi
+  controller_auth_token_param="/lesser-host/${stage}/hosted-genesis/microvm/auth-token"
+  controller_auth_token="$(aws ssm get-parameter \
+    --region us-east-1 \
+    --with-decryption \
+    --name "$controller_auth_token_param" \
+    --query 'Parameter.Value' \
+    --output text)"
+  if [[ -z "$controller_auth_token" || "$controller_auth_token" == "None" ]]; then
+    echo "FAIL: --auto-kill-controller could not read controller auth token from SSM parameter ${controller_auth_token_param}." >&2
+    exit 1
+  fi
+
+  controller_auth="Authorization: Bearer ${controller_auth_token}"
+  controller_tenant="x-tenant-id: slug:${instance_slug}"
+  controller_namespace="x-namespace-id: hosted-genesis"
+  controller_request_id="x-request-id: e2e-kill-${conv2}"
+
+  # The control plane returns before the AI worker starts the MicroVM. Poll the
+  # governed controller until the AppTheory session/cache record exists, then
+  # immediately terminate it. This is the noninteractive equivalent of the
+  # manual "kill the VM mid-turn" operator step and still exercises the real
+  # controller/provider/recovery path.
+  kill_deadline=$(( $(date +%s) + RECOVER_POLL_DEADLINE_S ))
+  terminated="false"
+  while [[ $(date +%s) -lt $kill_deadline ]]; do
+    get_resp=$(curl -sS -w '\n__HTTP_STATUS__%{http_code}' \
+      -H "$controller_auth" \
+      -H "$controller_tenant" \
+      -H "$controller_namespace" \
+      -H "$controller_request_id" \
+      "${controller_endpoint}/${conv2}" || true)
+    get_status=$(printf '%s' "$get_resp" | sed -n 's/.*__HTTP_STATUS__\([0-9]*\).*/\1/p')
+    get_body=$(printf '%s' "$get_resp" | sed 's/__HTTP_STATUS__[0-9]*$//')
+    get_error=$(printf '%s' "$get_body" | python3 -c 'import sys,json
+try:
+    data=json.load(sys.stdin)
+    err=data.get("error") or {}
+    print(err.get("code") or "")
+except Exception:
+    print("")' 2>/dev/null || true)
+    if [[ "$get_status" =~ ^2[0-9][0-9]$ && -z "$get_error" ]]; then
+      term_resp=$(curl -sS -w '\n__HTTP_STATUS__%{http_code}' \
+        -X DELETE \
+        -H "$controller_auth" \
+        -H "$controller_tenant" \
+        -H "$controller_namespace" \
+        -H "$controller_request_id" \
+        "${controller_endpoint}/${conv2}" || true)
+      term_status=$(printf '%s' "$term_resp" | sed -n 's/.*__HTTP_STATUS__\([0-9]*\).*/\1/p')
+      term_body=$(printf '%s' "$term_resp" | sed 's/__HTTP_STATUS__[0-9]*$//')
+      term_state=$(printf '%s' "$term_body" | python3 -c 'import sys,json
+try:
+    data=json.load(sys.stdin)
+    print(data.get("lifecycle_state") or data.get("state") or "")
+except Exception:
+    print("")' 2>/dev/null || true)
+      echo "    controller terminate: HTTP ${term_status} state=${term_state}"
+      if [[ "$term_status" =~ ^2[0-9][0-9]$ ]]; then
+        terminated="true"
+        break
+      fi
+    else
+      echo "    controller wait: HTTP ${get_status} error=${get_error:-none}"
+    fi
+    sleep "$POLL_INTERVAL_S"
+  done
+  unset controller_auth_token controller_auth
+  if [[ "$terminated" != "true" ]]; then
+    echo "FAIL: --auto-kill-controller did not observe and terminate MicroVM session ${conv2} before deadline." >&2
+    exit 1
+  fi
+else
+  echo "    ==> OPERATOR ACTION: kill the VM servicing conversation ${conv2} now."
+  echo "        From the lab AWS account, terminate the Lambda MicroVM session for"
+  echo "        this conversation (console or: aws lambda terminate-microvm ...)."
+  echo "        Press ENTER once the VM is killed to continue the recovery poll."
+  read -r _ < /dev/tty
+fi
 
 # Poll for the recover path to surface failed.
 recover_deadline=$(( $(date +%s) + RECOVER_POLL_DEADLINE_S ))

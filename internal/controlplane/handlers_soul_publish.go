@@ -17,7 +17,7 @@ import (
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/crypto"
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/merkle"
 	"github.com/equaltoai/lesser-host/internal/soulattestations"
@@ -79,7 +79,7 @@ type publishRootResponse struct {
 	ManifestKey string               `json:"manifest_key"`
 }
 
-func (s *Server) requireSoulPublishPrereqs(ctx *apptheory.Context) *apptheory.AppError {
+func (s *Server) requireSoulPublishPrereqs(ctx *apptheory.Context) *apptheory.AppTheoryError {
 	if appErr := s.requireSoulRegistryConfigured(); appErr != nil {
 		return appErr
 	}
@@ -87,7 +87,7 @@ func (s *Server) requireSoulPublishPrereqs(ctx *apptheory.Context) *apptheory.Ap
 		return appErr
 	}
 	if s == nil || s.soulPacks == nil {
-		return &apptheory.AppError{Code: "app.conflict", Message: "soul registry bucket is not configured"}
+		return newAppTheoryError("app.conflict", "soul registry bucket is not configured")
 	}
 	return nil
 }
@@ -173,18 +173,18 @@ func (s *Server) handleSoulPublishValidationRoot(ctx *apptheory.Context) (*appth
 	})
 }
 
-func (s *Server) requireSoulActiveAgents(ctx context.Context) ([]*models.SoulAgentIdentity, *apptheory.AppError) {
+func (s *Server) requireSoulActiveAgents(ctx context.Context) ([]*models.SoulAgentIdentity, *apptheory.AppTheoryError) {
 	active, err := s.listSoulActiveAgentIdentities(ctx)
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to list agents"}
+		return nil, newAppTheoryError("app.internal", "failed to list agents")
 	}
 	if len(active) == 0 {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "no active agents"}
+		return nil, newAppTheoryError("app.conflict", "no active agents")
 	}
 	return active, nil
 }
 
-func (s *Server) loadSoulReputationsForAgentIdentities(ctx context.Context, active []*models.SoulAgentIdentity) ([]models.SoulAgentReputation, *apptheory.AppError) {
+func (s *Server) loadSoulReputationsForAgentIdentities(ctx context.Context, active []*models.SoulAgentIdentity) ([]models.SoulAgentReputation, *apptheory.AppTheoryError) {
 	reps := make([]models.SoulAgentReputation, 0, len(active))
 	for _, id := range active {
 		if id == nil {
@@ -196,10 +196,10 @@ func (s *Server) loadSoulReputationsForAgentIdentities(ctx context.Context, acti
 		}
 		rep, repErr := s.getSoulAgentReputation(ctx, agentID)
 		if theoryErrors.IsNotFound(repErr) {
-			return nil, &apptheory.AppError{Code: "app.conflict", Message: "missing reputation for agent " + agentID}
+			return nil, newAppTheoryError("app.conflict", "missing reputation for agent "+agentID)
 		}
 		if repErr != nil || rep == nil {
-			return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to read reputation"}
+			return nil, newAppTheoryError("app.internal", "failed to read reputation")
 		}
 		reps = append(reps, *rep)
 	}
@@ -208,7 +208,7 @@ func (s *Server) loadSoulReputationsForAgentIdentities(ctx context.Context, acti
 	return reps, nil
 }
 
-func (s *Server) loadSortedSoulReputationsForActiveAgents(ctx context.Context) ([]models.SoulAgentReputation, int64, *apptheory.AppError) {
+func (s *Server) loadSortedSoulReputationsForActiveAgents(ctx context.Context) ([]models.SoulAgentReputation, int64, *apptheory.AppTheoryError) {
 	active, appErr := s.requireSoulActiveAgents(ctx)
 	if appErr != nil {
 		return nil, 0, appErr
@@ -241,15 +241,15 @@ func buildValidationLeavesForReputations(reps []models.SoulAgentReputation) []va
 	return leaves
 }
 
-func marshalJSON(v any, msg string) ([]byte, *apptheory.AppError) {
+func marshalJSON(v any, msg string) ([]byte, *apptheory.AppTheoryError) {
 	body, err := json.Marshal(v)
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: msg}
+		return nil, newAppTheoryError("app.internal", msg)
 	}
 	return body, nil
 }
 
-func (s *Server) persistSoulMerkleRootPack(ctx context.Context, prefix string, now time.Time, rootHex string, blockRef int64, count int, snapBody []byte, proofsBody []byte) (snapKey string, proofsKey string, manifestKey string, appErr *apptheory.AppError) {
+func (s *Server) persistSoulMerkleRootPack(ctx context.Context, prefix string, now time.Time, rootHex string, blockRef int64, count int, snapBody []byte, proofsBody []byte) (snapKey string, proofsKey string, manifestKey string, appErr *apptheory.AppTheoryError) {
 	snapKey = prefix + "snapshot.json"
 	proofsKey = prefix + "proofs.json"
 
@@ -264,13 +264,13 @@ func (s *Server) persistSoulMerkleRootPack(ctx context.Context, prefix string, n
 	manifestKey = prefix + "manifest.json"
 
 	if putErr := s.soulPacks.PutObject(ctx, snapKey, snapBody, "application/json", cacheControlNoStore); putErr != nil {
-		return "", "", "", &apptheory.AppError{Code: "app.internal", Message: "failed to persist snapshot"}
+		return "", "", "", newAppTheoryError("app.internal", "failed to persist snapshot")
 	}
 	if putErr := s.soulPacks.PutObject(ctx, proofsKey, proofsBody, "application/json", cacheControlNoStore); putErr != nil {
-		return "", "", "", &apptheory.AppError{Code: "app.internal", Message: "failed to persist proofs"}
+		return "", "", "", newAppTheoryError("app.internal", "failed to persist proofs")
 	}
 	if putErr := s.soulPacks.PutObject(ctx, manifestKey, manifestBody, "application/json", cacheControlNoStore); putErr != nil {
-		return "", "", "", &apptheory.AppError{Code: "app.internal", Message: "failed to persist manifest"}
+		return "", "", "", newAppTheoryError("app.internal", "failed to persist manifest")
 	}
 
 	return snapKey, proofsKey, manifestKey, nil
@@ -289,10 +289,10 @@ func (s *Server) buildAndPersistSoulRootArtifacts(
 	count int,
 	buildProofs soulMerkleProofBuilder,
 	buildSnapshot soulMerkleSnapshotBuilder,
-) (root common.Hash, rootHex string, snapKey string, proofsKey string, manifestKey string, now time.Time, appErr *apptheory.AppError) {
+) (root common.Hash, rootHex string, snapKey string, proofsKey string, manifestKey string, now time.Time, appErr *apptheory.AppTheoryError) {
 	leafHashes, proofs, root, err := buildProofs(leafCodec, treeCodec)
 	if err != nil {
-		return common.Hash{}, "", "", "", "", time.Time{}, &apptheory.AppError{Code: "app.internal", Message: "failed to build merkle tree"}
+		return common.Hash{}, "", "", "", "", time.Time{}, newAppTheoryError("app.internal", "failed to build merkle tree")
 	}
 
 	rootHex = strings.ToLower(root.Hex())
@@ -325,7 +325,7 @@ func (s *Server) buildAndPersistSoulRootArtifacts(
 	return root, rootHex, snapKey, proofsKey, manifestKey, now, nil
 }
 
-func (s *Server) buildAndPersistSoulReputationRootArtifacts(ctx context.Context, reps []models.SoulAgentReputation, blockRef int64) (root common.Hash, rootHex string, snapKey string, proofsKey string, manifestKey string, now time.Time, appErr *apptheory.AppError) {
+func (s *Server) buildAndPersistSoulReputationRootArtifacts(ctx context.Context, reps []models.SoulAgentReputation, blockRef int64) (root common.Hash, rootHex string, snapKey string, proofsKey string, manifestKey string, now time.Time, appErr *apptheory.AppTheoryError) {
 	leafCodec := "keccak256(jcs(json(models.SoulAgentReputation)))"
 	treeCodec := "keccak256(left||right), duplicate last"
 
@@ -347,7 +347,7 @@ func (s *Server) buildAndPersistSoulReputationRootArtifacts(ctx context.Context,
 	})
 }
 
-func (s *Server) buildAndPersistSoulValidationRootArtifacts(ctx context.Context, leaves []validationRootLeaf, blockRef int64) (root common.Hash, rootHex string, snapKey string, proofsKey string, manifestKey string, now time.Time, appErr *apptheory.AppError) {
+func (s *Server) buildAndPersistSoulValidationRootArtifacts(ctx context.Context, leaves []validationRootLeaf, blockRef int64) (root common.Hash, rootHex string, snapKey string, proofsKey string, manifestKey string, now time.Time, appErr *apptheory.AppTheoryError) {
 	leafCodec := "keccak256(jcs(json(validationRootLeaf)))"
 	treeCodec := "keccak256(left||right), duplicate last"
 
@@ -369,14 +369,14 @@ func (s *Server) buildAndPersistSoulValidationRootArtifacts(ctx context.Context,
 	})
 }
 
-func (s *Server) createSoulPublishRootOperation(ctx context.Context, contractAddr common.Address, txTo string, root common.Hash, rootHex string, blockRef int64, count int, snapKey string, proofsKey string, manifestKey string, kind string, auditAction string, actor string, requestID string, now time.Time) (*models.SoulOperation, *safeTxPayload, *apptheory.AppError) {
+func (s *Server) createSoulPublishRootOperation(ctx context.Context, contractAddr common.Address, txTo string, root common.Hash, rootHex string, blockRef int64, count int, snapKey string, proofsKey string, manifestKey string, kind string, auditAction string, actor string, requestID string, now time.Time) (*models.SoulOperation, *safeTxPayload, *apptheory.AppTheoryError) {
 	if blockRef < 0 {
-		return nil, nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid block_ref"}
+		return nil, nil, newAppTheoryError("app.bad_request", "invalid block_ref")
 	}
 
 	data, err := soulattestations.EncodePublishRootCall(root, blockRef, count)
 	if err != nil {
-		return nil, nil, &apptheory.AppError{Code: "app.internal", Message: "failed to encode publishRoot"}
+		return nil, nil, newAppTheoryError("app.internal", "failed to encode publishRoot")
 	}
 
 	safeAddr, appErr := s.soulRegistrySafeAddress()
@@ -427,7 +427,7 @@ func (s *Server) createSoulPublishRootOperation(ctx context.Context, contractAdd
 				op = existing
 			}
 		} else {
-			return nil, nil, &apptheory.AppError{Code: "app.internal", Message: "failed to create operation"}
+			return nil, nil, newAppTheoryError("app.internal", "failed to create operation")
 		}
 	}
 
@@ -443,19 +443,19 @@ func (s *Server) createSoulPublishRootOperation(ctx context.Context, contractAdd
 	return op, payload, nil
 }
 
-func (s *Server) soulReputationAttestationContractAddress() (common.Address, string, *apptheory.AppError) {
+func (s *Server) soulReputationAttestationContractAddress() (common.Address, string, *apptheory.AppTheoryError) {
 	contractAddrRaw := strings.TrimSpace(s.cfg.SoulReputationAttestationContractAddress)
 	if !common.IsHexAddress(contractAddrRaw) {
-		return common.Address{}, "", &apptheory.AppError{Code: "app.conflict", Message: "reputation attestation is not configured"}
+		return common.Address{}, "", newAppTheoryError("app.conflict", "reputation attestation is not configured")
 	}
 	contractAddr := common.HexToAddress(contractAddrRaw)
 	return contractAddr, strings.ToLower(contractAddr.Hex()), nil
 }
 
-func (s *Server) soulValidationAttestationContractAddress() (common.Address, string, *apptheory.AppError) {
+func (s *Server) soulValidationAttestationContractAddress() (common.Address, string, *apptheory.AppTheoryError) {
 	contractAddrRaw := strings.TrimSpace(s.cfg.SoulValidationAttestationContractAddress)
 	if !common.IsHexAddress(contractAddrRaw) {
-		return common.Address{}, "", &apptheory.AppError{Code: "app.conflict", Message: "validation attestation is not configured"}
+		return common.Address{}, "", newAppTheoryError("app.conflict", "validation attestation is not configured")
 	}
 	contractAddr := common.HexToAddress(contractAddrRaw)
 	return contractAddr, strings.ToLower(contractAddr.Hex()), nil
@@ -485,22 +485,22 @@ func (s *Server) listSoulActiveAgentIdentities(ctx context.Context) ([]*models.S
 	return out, nil
 }
 
-func requireUniformSoulReputationBlockRef(reps []models.SoulAgentReputation) (int64, *apptheory.AppError) {
+func requireUniformSoulReputationBlockRef(reps []models.SoulAgentReputation) (int64, *apptheory.AppTheoryError) {
 	blockRef := int64(0)
 	for _, rep := range reps {
 		if rep.BlockRef <= 0 {
-			return 0, &apptheory.AppError{Code: "app.conflict", Message: "missing block_ref for snapshot"}
+			return 0, newAppTheoryError("app.conflict", "missing block_ref for snapshot")
 		}
 		if blockRef == 0 {
 			blockRef = rep.BlockRef
 			continue
 		}
 		if rep.BlockRef != blockRef {
-			return 0, &apptheory.AppError{Code: "app.conflict", Message: "reputation block_ref mismatch"}
+			return 0, newAppTheoryError("app.conflict", "reputation block_ref mismatch")
 		}
 	}
 	if blockRef <= 0 {
-		return 0, &apptheory.AppError{Code: "app.conflict", Message: "missing block_ref for snapshot"}
+		return 0, newAppTheoryError("app.conflict", "missing block_ref for snapshot")
 	}
 	return blockRef, nil
 }

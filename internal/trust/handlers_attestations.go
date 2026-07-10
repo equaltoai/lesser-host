@@ -9,7 +9,7 @@ import (
 	"time"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/attestations"
 	"github.com/equaltoai/lesser-host/internal/httpx"
@@ -26,20 +26,20 @@ type attestationResponse struct {
 
 func (s *Server) handleWellKnownJWKS(ctx *apptheory.Context) (*apptheory.Response, error) {
 	if s == nil || ctx == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	if s.attest == nil || !s.attest.Enabled() {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "not found"}
+		return nil, newAppTheoryError("app.not_found", "not found")
 	}
 
 	jwks, err := s.attest.JWKS(ctx.Context())
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	resp, err := apptheory.JSON(http.StatusOK, jwks)
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	if resp.Headers == nil {
 		resp.Headers = map[string][]string{}
@@ -50,7 +50,7 @@ func (s *Server) handleWellKnownJWKS(ctx *apptheory.Context) (*apptheory.Respons
 
 func (s *Server) handleLookupAttestation(ctx *apptheory.Context) (*apptheory.Response, error) {
 	if s == nil || ctx == nil || s.store == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	actorURI := strings.TrimSpace(httpx.FirstQueryValue(ctx.Request.Query, "actor_uri"))
@@ -61,7 +61,7 @@ func (s *Server) handleLookupAttestation(ctx *apptheory.Context) (*apptheory.Res
 	policyVersion := strings.TrimSpace(httpx.FirstQueryValue(ctx.Request.Query, "policy_version"))
 
 	if actorURI == "" || objectURI == "" || contentHash == "" || instanceSlug == "" || module == "" || policyVersion == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "missing required query parameters"}
+		return nil, newAppTheoryError("app.bad_request", "missing required query parameters")
 	}
 
 	id := attestations.InstanceAttestationID(instanceSlug, actorURI, objectURI, contentHash, module, policyVersion)
@@ -70,44 +70,44 @@ func (s *Server) handleLookupAttestation(ctx *apptheory.Context) (*apptheory.Res
 
 func (s *Server) handleGetAttestation(ctx *apptheory.Context) (*apptheory.Response, error) {
 	if s == nil || ctx == nil || s.store == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	id := strings.TrimSpace(ctx.Param("id"))
 	if !attestationIDRE.MatchString(id) {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid attestation id"}
+		return nil, newAppTheoryError("app.bad_request", "invalid attestation id")
 	}
 	return s.serveAttestationByID(ctx, id)
 }
 
 func (s *Server) serveAttestationByID(ctx *apptheory.Context, id string) (*apptheory.Response, error) {
 	if s == nil || ctx == nil || s.store == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	id = strings.TrimSpace(id)
 	if !attestationIDRE.MatchString(id) {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid attestation id"}
+		return nil, newAppTheoryError("app.bad_request", "invalid attestation id")
 	}
 
 	item, err := s.store.GetAttestation(ctx.Context(), id)
 	if theoryErrors.IsNotFound(err) {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "attestation not found"}
+		return nil, newAppTheoryError("app.not_found", "attestation not found")
 	}
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	if strings.TrimSpace(item.InstanceSlug) == "" {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "attestation not found"}
+		return nil, newAppTheoryError("app.not_found", "attestation not found")
 	}
 
 	headerBytes, payloadBytes, _, err := attestations.ParseCompactJWS(strings.TrimSpace(item.JWS))
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	var header any
 	if unmarshalErr := json.Unmarshal(headerBytes, &header); unmarshalErr != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	out := attestationResponse{
@@ -119,7 +119,7 @@ func (s *Server) serveAttestationByID(ctx *apptheory.Context, id string) (*appth
 
 	resp, err := apptheory.JSON(http.StatusOK, out)
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	maxAge := 0

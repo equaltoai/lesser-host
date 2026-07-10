@@ -65,10 +65,10 @@ func (s *Server) handleAIModerationTextReport(ctx *apptheory.Context) (*apptheor
 	return s.handleAIModerationTextTriggered(ctx, "moderation.scan.report")
 }
 
-func clampModerationText(raw string) (string, *apptheory.AppError) {
+func clampModerationText(raw string) (string, *apptheory.AppTheoryError) {
 	text := strings.TrimSpace(raw)
 	if text == "" {
-		return "", &apptheory.AppError{Code: "app.bad_request", Message: "text is required"}
+		return "", newAppTheoryError("app.bad_request", "text is required")
 	}
 	if len([]byte(text)) <= 10_000 {
 		return text, nil
@@ -219,7 +219,7 @@ func (s *Server) handleAIModerationTextTriggered(ctx *apptheory.Context, action 
 	})
 	if err != nil {
 		s.emitAIRequestMetrics(instanceSlug, ai.ModerationTextLLMModule, ai.Response{Status: ai.JobStatusError}, err)
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to queue job"}
+		return nil, newAppTheoryError("app.internal", "failed to queue job")
 	}
 
 	s.writeAIJobAuditEntryBestEffort(ctx, instanceSlug, action, resp)
@@ -256,7 +256,7 @@ func (s *Server) handleAIModerationImageReport(ctx *apptheory.Context) (*apptheo
 // and CSR-018 is recorded as false-positive.
 func (s *Server) handleAIModerationImageTriggered(ctx *apptheory.Context, action string) (*apptheory.Response, error) {
 	if s.artifacts == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "artifact store not configured"}
+		return nil, newAppTheoryError("app.internal", "artifact store not configured")
 	}
 
 	instanceSlug, err := s.requireAIHandler(ctx)
@@ -270,7 +270,7 @@ func (s *Server) handleAIModerationImageTriggered(ctx *apptheory.Context, action
 	}
 
 	if strings.TrimSpace(req.ObjectKey) == "" && strings.TrimSpace(req.URL) == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "object_key or url is required"}
+		return nil, newAppTheoryError("app.bad_request", "object_key or url is required")
 	}
 
 	instCfg := s.loadInstanceTrustConfig(ctx.Context(), instanceSlug)
@@ -316,7 +316,7 @@ func (s *Server) handleAIModerationImageTriggered(ctx *apptheory.Context, action
 	})
 	if err != nil {
 		s.emitAIRequestMetrics(instanceSlug, ai.ModerationImageLLMModule, ai.Response{Status: ai.JobStatusError}, err)
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to queue job"}
+		return nil, newAppTheoryError("app.internal", "failed to queue job")
 	}
 
 	s.writeAIJobAuditEntryBestEffort(ctx, instanceSlug, action, resp)
@@ -336,13 +336,13 @@ func (s *Server) prepareModerationImageInputs(ctx context.Context, instanceSlug 
 		return ai.ModerationImageInputsV1{}, "", err
 	}
 	if key == "" {
-		return ai.ModerationImageInputsV1{}, "", &apptheory.AppError{Code: "app.bad_request", Message: "object_key or url is required"}
+		return ai.ModerationImageInputsV1{}, "", newAppTheoryError("app.bad_request", "object_key or url is required")
 	}
 	if size <= 0 || size > 5*1024*1024 {
-		return ai.ModerationImageInputsV1{}, "", &apptheory.AppError{Code: "app.bad_request", Message: "object too large"}
+		return ai.ModerationImageInputsV1{}, "", newAppTheoryError("app.bad_request", "object too large")
 	}
 	if ct := strings.ToLower(strings.TrimSpace(contentType)); ct != "" && !strings.HasPrefix(ct, "image/") {
-		return ai.ModerationImageInputsV1{}, "", &apptheory.AppError{Code: "app.bad_request", Message: "object must be an image"}
+		return ai.ModerationImageInputsV1{}, "", newAppTheoryError("app.bad_request", "object must be an image")
 	}
 	inputs := ai.ModerationImageInputsV1{
 		ObjectKey:   key,
@@ -375,7 +375,7 @@ func moderationImageDisabledResponse(action string, req aiModerationImageRequest
 	return &resp
 }
 
-func (s *Server) moderationImageBudgetPrecheckResponse(ctx context.Context, instanceSlug string, instCfg instanceTrustConfig, allowOverage bool, modelSet string, inputsHash string) (*aiModerationResponse, *apptheory.AppError) {
+func (s *Server) moderationImageBudgetPrecheckResponse(ctx context.Context, instanceSlug string, instCfg instanceTrustConfig, allowOverage bool, modelSet string, inputsHash string) (*aiModerationResponse, *apptheory.AppTheoryError) {
 	precheck, appErr := s.precheckAIBudget(ctx, instanceSlug, aiModerationImageBaseCredits, instCfg.AIPricingMultiplierBps, allowOverage)
 	if appErr != nil || precheck == nil || precheck.Allowed {
 		return nil, appErr
@@ -397,7 +397,7 @@ func (s *Server) moderationImageBudgetPrecheckResponse(ctx context.Context, inst
 
 func (s *Server) prepareModerationImageInput(ctx context.Context, instanceSlug string, req aiModerationImageRequest) (key string, contentType string, etag string, size int64, err error) {
 	if s == nil || s.artifacts == nil {
-		return "", "", "", 0, &apptheory.AppError{Code: "app.internal", Message: "artifact store not configured"}
+		return "", "", "", 0, newAppTheoryError("app.internal", "artifact store not configured")
 	}
 
 	instanceSlug = strings.TrimSpace(instanceSlug)
@@ -406,27 +406,27 @@ func (s *Server) prepareModerationImageInput(ctx context.Context, instanceSlug s
 	if rawURL != "" {
 		start, err2 := normalizeModerationImageURL(rawURL)
 		if err2 != nil {
-			return "", "", "", 0, &apptheory.AppError{Code: "app.bad_request", Message: "invalid url"}
+			return "", "", "", 0, newAppTheoryError("app.bad_request", "invalid url")
 		}
 
 		client := newPreviewHTTPClient(8*time.Second, nil)
 		_, _, body, ct, fetchErr := fetchWithRedirects(ctx, nil, client, start, 3, 5*1024*1024)
 		if fetchErr != nil {
-			return "", "", "", 0, &apptheory.AppError{Code: "app.bad_request", Message: "failed to fetch url"}
+			return "", "", "", 0, newAppTheoryError("app.bad_request", "failed to fetch url")
 		}
 		ct = strings.TrimSpace(ct)
 		if ct == "" {
 			ct = http.DetectContentType(body)
 		}
 		if strings.TrimSpace(ct) == "" || !strings.HasPrefix(strings.ToLower(ct), "image/") {
-			return "", "", "", 0, &apptheory.AppError{Code: "app.bad_request", Message: "url must be an image"}
+			return "", "", "", 0, newAppTheoryError("app.bad_request", "url must be an image")
 		}
 
 		sum := sha256.Sum256(body)
 		etag = fmt.Sprintf("%x", sum[:])
 		key = fmt.Sprintf("moderation/%s/%s", instanceSlug, etag)
 		if putErr := s.artifacts.PutObject(ctx, key, body, ct, "no-store"); putErr != nil {
-			return "", "", "", 0, &apptheory.AppError{Code: "app.internal", Message: "failed to store object"}
+			return "", "", "", 0, newAppTheoryError("app.internal", "failed to store object")
 		}
 		return key, ct, etag, int64(len(body)), nil
 	}
@@ -437,12 +437,12 @@ func (s *Server) prepareModerationImageInput(ctx context.Context, instanceSlug s
 
 	prefix := fmt.Sprintf("moderation/%s/", instanceSlug)
 	if !strings.HasPrefix(key, prefix) {
-		return "", "", "", 0, &apptheory.AppError{Code: "app.bad_request", Message: "object_key must be under " + prefix}
+		return "", "", "", 0, newAppTheoryError("app.bad_request", "object_key must be under "+prefix)
 	}
 
 	ct, e, sz, headErr := s.artifacts.HeadObject(ctx, key)
 	if headErr != nil {
-		return "", "", "", 0, &apptheory.AppError{Code: "app.bad_request", Message: "object not found"}
+		return "", "", "", 0, newAppTheoryError("app.bad_request", "object not found")
 	}
 	return key, ct, e, sz, nil
 }

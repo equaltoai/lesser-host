@@ -7,8 +7,8 @@ import (
 	"time"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
-	ttmocks "github.com/theory-cloud/tabletheory/pkg/mocks"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
+	ttmocks "github.com/theory-cloud/tabletheory/v2/pkg/mocks"
 
 	"github.com/stretchr/testify/mock"
 
@@ -24,7 +24,7 @@ func TestHandleWellKnownJWKS_NotFoundWhenDisabled(t *testing.T) {
 
 	s := NewServer(configForTests(), nil)
 	_, err := s.handleWellKnownJWKS(&apptheory.Context{})
-	if appErr, ok := err.(*apptheory.AppError); !ok || appErr.Code != "app.not_found" {
+	if appErr, ok := err.(*apptheory.AppTheoryError); !ok || appErr.Code != "app.not_found" {
 		t.Fatalf("expected not_found, got %T: %v", err, err)
 	}
 }
@@ -37,7 +37,7 @@ func TestHandleGetAttestation_InvalidID(t *testing.T) {
 
 	ctx := &apptheory.Context{Params: map[string]string{"id": "nope"}}
 	_, err := s.handleGetAttestation(ctx)
-	if appErr, ok := err.(*apptheory.AppError); !ok || appErr.Code != appErrCodeBadRequest {
+	if appErr, ok := err.(*apptheory.AppTheoryError); !ok || appErr.Code != appErrCodeBadRequest {
 		t.Fatalf("expected bad_request, got %T: %v", err, err)
 	}
 }
@@ -57,7 +57,7 @@ func TestServeAttestationByID_NotFound(t *testing.T) {
 	s := &Server{store: store.New(db)}
 	ctx := &apptheory.Context{}
 	_, err := s.serveAttestationByID(ctx, "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
-	if appErr, ok := err.(*apptheory.AppError); !ok || appErr.Code != "app.not_found" {
+	if appErr, ok := err.(*apptheory.AppTheoryError); !ok || appErr.Code != "app.not_found" {
 		t.Fatalf("expected not_found, got %T: %v", err, err)
 	}
 }

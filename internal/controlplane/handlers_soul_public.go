@@ -15,7 +15,7 @@ import (
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/ethereum/go-ethereum/common"
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/domains"
 	"github.com/equaltoai/lesser-host/internal/httpx"
@@ -32,13 +32,13 @@ type soulPublicAgentResponse struct {
 
 func (s *Server) handleSoulPublicGetAgent(ctx *apptheory.Context) (*apptheory.Response, error) {
 	if s == nil || ctx == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	if appErr := requireStoreDB(s); appErr != nil {
 		return nil, appErr
 	}
 	if !s.cfg.SoulEnabled {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "not found"}
+		return nil, newAppTheoryError("app.not_found", "not found")
 	}
 
 	agentIDHex, _, appErr := parseSoulAgentIDHex(ctx.Param("agentId"))
@@ -48,10 +48,10 @@ func (s *Server) handleSoulPublicGetAgent(ctx *apptheory.Context) (*apptheory.Re
 
 	identity, err := s.getSoulAgentIdentity(ctx.Context(), agentIDHex)
 	if theoryErrors.IsNotFound(err) {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "not found"}
+		return nil, newAppTheoryError("app.not_found", "not found")
 	}
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	var rep *models.SoulAgentReputation
@@ -65,7 +65,7 @@ func (s *Server) handleSoulPublicGetAgent(ctx *apptheory.Context) (*apptheory.Re
 		Reputation: rep,
 	})
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	s.setSoulPublicHeaders(ctx, resp, "public, max-age=60")
 	return resp, nil
@@ -98,16 +98,16 @@ func soulPublicReputationAllowed(identity *models.SoulAgentIdentity) bool {
 
 func (s *Server) handleSoulPublicGetRegistration(ctx *apptheory.Context) (*apptheory.Response, error) {
 	if s == nil || ctx == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	if appErr := requireStoreDB(s); appErr != nil {
 		return nil, appErr
 	}
 	if !s.cfg.SoulEnabled {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "not found"}
+		return nil, newAppTheoryError("app.not_found", "not found")
 	}
 	if s.soulPacks == nil {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "not found"}
+		return nil, newAppTheoryError("app.not_found", "not found")
 	}
 
 	agentIDHex, _, appErr := parseSoulAgentIDHex(ctx.Param("agentId"))
@@ -120,9 +120,9 @@ func (s *Server) handleSoulPublicGetRegistration(ctx *apptheory.Context) (*appth
 	if err != nil {
 		var nsk *s3types.NoSuchKey
 		if errors.As(err, &nsk) {
-			return nil, &apptheory.AppError{Code: "app.not_found", Message: "not found"}
+			return nil, newAppTheoryError("app.not_found", "not found")
 		}
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to fetch registration"}
+		return nil, newAppTheoryError("app.internal", "failed to fetch registration")
 	}
 
 	resp := &apptheory.Response{Status: http.StatusOK, Body: body}
@@ -147,13 +147,13 @@ type soulPublicReputationResponse struct {
 
 func (s *Server) handleSoulPublicGetReputation(ctx *apptheory.Context) (*apptheory.Response, error) {
 	if s == nil || ctx == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	if appErr := requireStoreDB(s); appErr != nil {
 		return nil, appErr
 	}
 	if !s.cfg.SoulEnabled {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "not found"}
+		return nil, newAppTheoryError("app.not_found", "not found")
 	}
 
 	agentIDHex, _, appErr := parseSoulAgentIDHex(ctx.Param("agentId"))
@@ -163,26 +163,26 @@ func (s *Server) handleSoulPublicGetReputation(ctx *apptheory.Context) (*apptheo
 
 	identity, err := s.getSoulAgentIdentity(ctx.Context(), agentIDHex)
 	if theoryErrors.IsNotFound(err) {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "not found"}
+		return nil, newAppTheoryError("app.not_found", "not found")
 	}
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	if !soulPublicReputationAllowed(identity) {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "not found"}
+		return nil, newAppTheoryError("app.not_found", "not found")
 	}
 
 	rep, err := s.getSoulAgentReputation(ctx.Context(), agentIDHex)
 	if theoryErrors.IsNotFound(err) {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "not found"}
+		return nil, newAppTheoryError("app.not_found", "not found")
 	}
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
 	resp, err := apptheory.JSON(http.StatusOK, soulPublicReputationResponse{Version: "1", Reputation: *rep})
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	s.setSoulPublicHeaders(ctx, resp, "public, max-age=60")
 	return resp, nil
@@ -209,13 +209,13 @@ type soulPublicValidationRecord struct {
 
 func (s *Server) handleSoulPublicGetValidations(ctx *apptheory.Context) (*apptheory.Response, error) {
 	if s == nil || ctx == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	if appErr := requireStoreDB(s); appErr != nil {
 		return nil, appErr
 	}
 	if !s.cfg.SoulEnabled {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "not found"}
+		return nil, newAppTheoryError("app.not_found", "not found")
 	}
 
 	agentIDHex, _, appErr := parseSoulAgentIDHex(ctx.Param("agentId"))
@@ -239,7 +239,7 @@ func (s *Server) handleSoulPublicGetValidations(ctx *apptheory.Context) (*appthe
 
 	paged, err := qb.AllPaginated(&items)
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to list validations"}
+		return nil, newAppTheoryError("app.internal", "failed to list validations")
 	}
 
 	out := make([]soulPublicValidationRecord, 0, len(items))
@@ -265,7 +265,7 @@ func (s *Server) handleSoulPublicGetValidations(ctx *apptheory.Context) (*appthe
 		NextCursor:  nextCursor,
 	})
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	s.setSoulPublicHeaders(ctx, resp, "public, max-age=60")
 	return resp, nil
@@ -324,13 +324,13 @@ func soulSearchResultFromEntry(entry soulSearchIndexEntry) soulSearchResult {
 
 func (s *Server) handleSoulPublicSearch(ctx *apptheory.Context) (*apptheory.Response, error) {
 	if s == nil || ctx == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	if appErr := requireStoreDB(s); appErr != nil {
 		return nil, appErr
 	}
 	if !s.cfg.SoulEnabled {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "not found"}
+		return nil, newAppTheoryError("app.not_found", "not found")
 	}
 
 	params, appErr := s.parseSoulPublicSearchParams(ctx)
@@ -351,7 +351,7 @@ func (s *Server) handleSoulPublicSearch(ctx *apptheory.Context) (*apptheory.Resp
 		NextCursor: nextCursor,
 	})
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 	s.setSoulPublicHeaders(ctx, resp, "public, max-age=30")
 	return resp, nil
@@ -372,9 +372,9 @@ type soulPublicSearchParams struct {
 	Limit      int
 }
 
-func (s *Server) parseSoulPublicSearchParams(ctx *apptheory.Context) (soulPublicSearchParams, *apptheory.AppError) {
+func (s *Server) parseSoulPublicSearchParams(ctx *apptheory.Context) (soulPublicSearchParams, *apptheory.AppTheoryError) {
 	if ctx == nil {
-		return soulPublicSearchParams{}, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return soulPublicSearchParams{}, newAppTheoryError("app.internal", "internal error")
 	}
 
 	q := strings.TrimSpace(httpx.FirstQueryValue(ctx.Request.Query, "q"))
@@ -394,11 +394,11 @@ func (s *Server) parseSoulPublicSearchParams(ctx *apptheory.Context) (soulPublic
 	}
 
 	if domain == "" && cap == "" && boundary == "" && strings.TrimSpace(ensName) == "" && len(channels) == 0 {
-		return soulPublicSearchParams{}, &apptheory.AppError{Code: "app.bad_request", Message: "domain, capability, boundary, ens, or channel is required"}
+		return soulPublicSearchParams{}, newAppTheoryError("app.bad_request", "domain, capability, boundary, ens, or channel is required")
 	}
 
 	if claimLevel != "" && cap == "" {
-		return soulPublicSearchParams{}, &apptheory.AppError{Code: "app.bad_request", Message: "claimLevel requires capability"}
+		return soulPublicSearchParams{}, newAppTheoryError("app.bad_request", "claimLevel requires capability")
 	}
 
 	return soulPublicSearchParams{
@@ -417,7 +417,7 @@ func (s *Server) parseSoulPublicSearchParams(ctx *apptheory.Context) (soulPublic
 	}, nil
 }
 
-func (s *Server) resolveSoulSearchDomainAndLocal(ctx *apptheory.Context, q string, domainRaw string) (string, string, bool, *apptheory.AppError) {
+func (s *Server) resolveSoulSearchDomainAndLocal(ctx *apptheory.Context, q string, domainRaw string) (string, string, bool, *apptheory.AppTheoryError) {
 	q, domainRaw, appErr := s.canonicalizeSoulSearchInputDomains(ctx, q, domainRaw)
 	if appErr != nil {
 		return "", "", false, appErr
@@ -438,7 +438,7 @@ func (s *Server) resolveSoulSearchDomainAndLocal(ctx *apptheory.Context, q strin
 	return domain, localID, localExact, nil
 }
 
-func (s *Server) canonicalizeSoulSearchInputDomains(ctx *apptheory.Context, q string, domainRaw string) (string, string, *apptheory.AppError) {
+func (s *Server) canonicalizeSoulSearchInputDomains(ctx *apptheory.Context, q string, domainRaw string) (string, string, *apptheory.AppTheoryError) {
 	q = strings.TrimSpace(q)
 	domainRaw = strings.TrimSpace(domainRaw)
 
@@ -454,7 +454,7 @@ func (s *Server) canonicalizeSoulSearchInputDomains(ctx *apptheory.Context, q st
 	return canonicalQ, canonicalDomain, nil
 }
 
-func (s *Server) canonicalizeSoulSearchQueryDomain(ctx *apptheory.Context, q string) (string, *apptheory.AppError) {
+func (s *Server) canonicalizeSoulSearchQueryDomain(ctx *apptheory.Context, q string) (string, *apptheory.AppTheoryError) {
 	q = strings.TrimSpace(q)
 	if q == "" {
 		return "", nil
@@ -480,7 +480,7 @@ func (s *Server) canonicalizeSoulSearchQueryDomain(ctx *apptheory.Context, q str
 	return s.canonicalizeSoulSearchRawDomain(ctx, q)
 }
 
-func (s *Server) canonicalizeSoulSearchRawDomain(ctx *apptheory.Context, domainRaw string) (string, *apptheory.AppError) {
+func (s *Server) canonicalizeSoulSearchRawDomain(ctx *apptheory.Context, domainRaw string) (string, *apptheory.AppTheoryError) {
 	domainRaw = strings.TrimSpace(domainRaw)
 	if domainRaw == "" {
 		return "", nil
@@ -493,7 +493,7 @@ func (s *Server) canonicalizeSoulSearchRawDomain(ctx *apptheory.Context, domainR
 	return domain, nil
 }
 
-func (s *Server) resolveSoulSearchCurrentDomainIfNeeded(ctx *apptheory.Context, q string, domainRaw string) (string, *apptheory.AppError) {
+func (s *Server) resolveSoulSearchCurrentDomainIfNeeded(ctx *apptheory.Context, q string, domainRaw string) (string, *apptheory.AppTheoryError) {
 	if !soulSearchNeedsCurrentDomain(q, domainRaw) {
 		return "", nil
 	}
@@ -516,9 +516,9 @@ func soulSearchNeedsCurrentDomain(q string, domainRaw string) bool {
 	return err != nil
 }
 
-func parseSoulPublicSearchFilterParams(ctx *apptheory.Context) (claimLevel string, ensName string, principal string, boundary string, channels []string, status string, appErr *apptheory.AppError) {
+func parseSoulPublicSearchFilterParams(ctx *apptheory.Context) (claimLevel string, ensName string, principal string, boundary string, channels []string, status string, appErr *apptheory.AppTheoryError) {
 	if ctx == nil {
-		return "", "", "", "", nil, "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return "", "", "", "", nil, "", newAppTheoryError("app.internal", "internal error")
 	}
 
 	claimLevel = parseSoulSearchClaimLevel(ctx)
@@ -550,30 +550,30 @@ func parseSoulSearchClaimLevel(ctx *apptheory.Context) string {
 	return strings.ToLower(strings.TrimSpace(httpx.FirstQueryValue(ctx.Request.Query, "claim_level")))
 }
 
-func parseSoulSearchBoundary(raw string) (string, *apptheory.AppError) {
+func parseSoulSearchBoundary(raw string) (string, *apptheory.AppTheoryError) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return "", nil
 	}
 	keyword, ok := soulsearch.NormalizeBoundaryKeyword(raw)
 	if !ok {
-		return "", &apptheory.AppError{Code: "app.bad_request", Message: "boundary must be a single keyword"}
+		return "", newAppTheoryError("app.bad_request", "boundary must be a single keyword")
 	}
 	return keyword, nil
 }
 
-func parseSoulSearchPrincipal(raw string) (string, *apptheory.AppError) {
+func parseSoulSearchPrincipal(raw string) (string, *apptheory.AppTheoryError) {
 	principal := strings.ToLower(strings.TrimSpace(raw))
 	if principal == "" {
 		return "", nil
 	}
 	if !common.IsHexAddress(principal) {
-		return "", &apptheory.AppError{Code: "app.bad_request", Message: "invalid principal"}
+		return "", newAppTheoryError("app.bad_request", "invalid principal")
 	}
 	return principal, nil
 }
 
-func parseSoulSearchChannels(channelsRaw []string) ([]string, *apptheory.AppError) {
+func parseSoulSearchChannels(channelsRaw []string) ([]string, *apptheory.AppTheoryError) {
 	channels := make([]string, 0, len(channelsRaw))
 	seen := map[string]struct{}{}
 	for _, raw := range channelsRaw {
@@ -584,7 +584,7 @@ func parseSoulSearchChannels(channelsRaw []string) ([]string, *apptheory.AppErro
 		switch channelType {
 		case models.SoulChannelTypeEmail, models.SoulChannelTypePhone:
 		default:
-			return nil, &apptheory.AppError{Code: "app.bad_request", Message: "channel must be email or phone"}
+			return nil, newAppTheoryError("app.bad_request", "channel must be email or phone")
 		}
 		if _, ok := seen[channelType]; ok {
 			continue
@@ -596,7 +596,7 @@ func parseSoulSearchChannels(channelsRaw []string) ([]string, *apptheory.AppErro
 	return channels, nil
 }
 
-func parseSoulSearchStatus(raw string) (string, *apptheory.AppError) {
+func parseSoulSearchStatus(raw string) (string, *apptheory.AppTheoryError) {
 	status := strings.ToLower(strings.TrimSpace(raw))
 	if status == "" {
 		return "", nil
@@ -611,7 +611,7 @@ func parseSoulSearchStatus(raw string) (string, *apptheory.AppError) {
 		models.SoulAgentStatusPending:
 		return status, nil
 	default:
-		return "", &apptheory.AppError{Code: "app.bad_request", Message: "invalid status"}
+		return "", newAppTheoryError("app.bad_request", "invalid status")
 	}
 }
 
@@ -639,9 +639,9 @@ func soulAllQueryValues(query map[string][]string, key string) []string {
 	return nil
 }
 
-func (s *Server) querySoulSearchIndexEntries(ctx context.Context, primary soulSearchPrimaryIndex, params soulPublicSearchParams, cursor string, limit int) ([]soulSearchIndexEntry, bool, string, *apptheory.AppError) {
+func (s *Server) querySoulSearchIndexEntries(ctx context.Context, primary soulSearchPrimaryIndex, params soulPublicSearchParams, cursor string, limit int) ([]soulSearchIndexEntry, bool, string, *apptheory.AppTheoryError) {
 	if s == nil || s.store == nil || s.store.DB == nil {
-		return nil, false, "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, false, "", newAppTheoryError("app.internal", "internal error")
 	}
 
 	switch primary {
@@ -654,14 +654,14 @@ func (s *Server) querySoulSearchIndexEntries(ctx context.Context, primary soulSe
 	case soulSearchPrimaryChannel:
 		return s.querySoulSearchByChannels(ctx, params.Channels, params.Domain, params.LocalID, params.LocalExact, cursor, limit)
 	default:
-		return nil, false, "", &apptheory.AppError{Code: "app.internal", Message: "invalid search index"}
+		return nil, false, "", newAppTheoryError("app.internal", "invalid search index")
 	}
 }
 
-func (s *Server) querySoulSearchByCapability(ctx context.Context, cap string, domain string, localID string, localExact bool, cursor string, limit int) ([]soulSearchIndexEntry, bool, string, *apptheory.AppError) {
+func (s *Server) querySoulSearchByCapability(ctx context.Context, cap string, domain string, localID string, localExact bool, cursor string, limit int) ([]soulSearchIndexEntry, bool, string, *apptheory.AppTheoryError) {
 	capNorm := normalizeSoulCapabilitiesLoose([]string{cap})
 	if len(capNorm) == 0 {
-		return nil, false, "", &apptheory.AppError{Code: "app.bad_request", Message: "invalid capability"}
+		return nil, false, "", newAppTheoryError("app.bad_request", "invalid capability")
 	}
 	cap = capNorm[0]
 
@@ -691,7 +691,7 @@ func (s *Server) querySoulSearchByCapability(ctx context.Context, cap string, do
 
 	paged, err := qb.AllPaginated(&items)
 	if err != nil {
-		return nil, false, "", &apptheory.AppError{Code: "app.internal", Message: "failed to search"}
+		return nil, false, "", newAppTheoryError("app.internal", "failed to search")
 	}
 
 	out := make([]soulSearchIndexEntry, 0, len(items))
@@ -711,10 +711,10 @@ func (s *Server) querySoulSearchByCapability(ctx context.Context, cap string, do
 	return out, hasMore, nextCursor, nil
 }
 
-func (s *Server) querySoulSearchByBoundaryKeyword(ctx context.Context, keyword string, domain string, localID string, localExact bool, cursor string, limit int) ([]soulSearchIndexEntry, bool, string, *apptheory.AppError) {
+func (s *Server) querySoulSearchByBoundaryKeyword(ctx context.Context, keyword string, domain string, localID string, localExact bool, cursor string, limit int) ([]soulSearchIndexEntry, bool, string, *apptheory.AppTheoryError) {
 	keyword = strings.ToLower(strings.TrimSpace(keyword))
 	if keyword == "" {
-		return nil, false, "", &apptheory.AppError{Code: "app.bad_request", Message: "boundary is required"}
+		return nil, false, "", newAppTheoryError("app.bad_request", "boundary is required")
 	}
 
 	skPrefix := ""
@@ -743,7 +743,7 @@ func (s *Server) querySoulSearchByBoundaryKeyword(ctx context.Context, keyword s
 
 	paged, err := qb.AllPaginated(&items)
 	if err != nil {
-		return nil, false, "", &apptheory.AppError{Code: "app.internal", Message: "failed to search"}
+		return nil, false, "", newAppTheoryError("app.internal", "failed to search")
 	}
 
 	out := make([]soulSearchIndexEntry, 0, len(items))
@@ -763,10 +763,10 @@ func (s *Server) querySoulSearchByBoundaryKeyword(ctx context.Context, keyword s
 	return out, hasMore, nextCursor, nil
 }
 
-func (s *Server) querySoulSearchByDomain(ctx context.Context, domain string, localID string, localExact bool, cursor string, limit int) ([]soulSearchIndexEntry, bool, string, *apptheory.AppError) {
+func (s *Server) querySoulSearchByDomain(ctx context.Context, domain string, localID string, localExact bool, cursor string, limit int) ([]soulSearchIndexEntry, bool, string, *apptheory.AppTheoryError) {
 	domain = strings.ToLower(strings.TrimSpace(domain))
 	if domain == "" {
-		return nil, false, "", &apptheory.AppError{Code: "app.bad_request", Message: "domain is required"}
+		return nil, false, "", newAppTheoryError("app.bad_request", "domain is required")
 	}
 
 	var items []*models.SoulDomainAgentIndex
@@ -788,7 +788,7 @@ func (s *Server) querySoulSearchByDomain(ctx context.Context, domain string, loc
 
 	paged, err := qb.AllPaginated(&items)
 	if err != nil {
-		return nil, false, "", &apptheory.AppError{Code: "app.internal", Message: "failed to search"}
+		return nil, false, "", newAppTheoryError("app.internal", "failed to search")
 	}
 
 	out := make([]soulSearchIndexEntry, 0, len(items))
@@ -839,14 +839,14 @@ func decodeSoulChannelSearchCursor(raw string) (channelIndex int, innerCursor st
 	return n, string(decoded), true
 }
 
-func (s *Server) querySoulSearchByChannels(ctx context.Context, channelTypes []string, domain string, localID string, localExact bool, cursor string, limit int) ([]soulSearchIndexEntry, bool, string, *apptheory.AppError) {
+func (s *Server) querySoulSearchByChannels(ctx context.Context, channelTypes []string, domain string, localID string, localExact bool, cursor string, limit int) ([]soulSearchIndexEntry, bool, string, *apptheory.AppTheoryError) {
 	if len(channelTypes) == 0 {
-		return nil, false, "", &apptheory.AppError{Code: "app.bad_request", Message: "channel is required"}
+		return nil, false, "", newAppTheoryError("app.bad_request", "channel is required")
 	}
 
 	channelIndex, innerCursor, ok := decodeSoulChannelSearchCursor(cursor)
 	if !ok || channelIndex < 0 || channelIndex >= len(channelTypes) {
-		return nil, false, "", &apptheory.AppError{Code: "app.bad_request", Message: "invalid cursor"}
+		return nil, false, "", newAppTheoryError("app.bad_request", "invalid cursor")
 	}
 
 	results := make([]soulSearchIndexEntry, 0, limit)
@@ -879,10 +879,10 @@ func (s *Server) querySoulSearchByChannels(ctx context.Context, channelTypes []s
 	return results, false, "", nil
 }
 
-func (s *Server) querySoulSearchByChannelType(ctx context.Context, channelType string, domain string, localID string, localExact bool, cursor string, limit int) ([]soulSearchIndexEntry, bool, string, *apptheory.AppError) {
+func (s *Server) querySoulSearchByChannelType(ctx context.Context, channelType string, domain string, localID string, localExact bool, cursor string, limit int) ([]soulSearchIndexEntry, bool, string, *apptheory.AppTheoryError) {
 	channelType = strings.ToLower(strings.TrimSpace(channelType))
 	if channelType != models.SoulChannelTypeEmail && channelType != models.SoulChannelTypePhone {
-		return nil, false, "", &apptheory.AppError{Code: "app.bad_request", Message: "invalid channel"}
+		return nil, false, "", newAppTheoryError("app.bad_request", "invalid channel")
 	}
 
 	skPrefix := ""
@@ -911,7 +911,7 @@ func (s *Server) querySoulSearchByChannelType(ctx context.Context, channelType s
 
 	paged, err := qb.AllPaginated(&items)
 	if err != nil {
-		return nil, false, "", &apptheory.AppError{Code: "app.internal", Message: "failed to search"}
+		return nil, false, "", newAppTheoryError("app.internal", "failed to search")
 	}
 
 	out := make([]soulSearchIndexEntry, 0, len(items))
@@ -931,14 +931,14 @@ func (s *Server) querySoulSearchByChannelType(ctx context.Context, channelType s
 	return out, hasMore, nextCursor, nil
 }
 
-func (s *Server) searchSoulAgentsByENS(ctx context.Context, params soulPublicSearchParams) ([]soulSearchResult, bool, string, *apptheory.AppError) {
+func (s *Server) searchSoulAgentsByENS(ctx context.Context, params soulPublicSearchParams) ([]soulSearchResult, bool, string, *apptheory.AppTheoryError) {
 	if s == nil || s.store == nil || s.store.DB == nil {
-		return nil, false, "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, false, "", newAppTheoryError("app.internal", "internal error")
 	}
 
 	ensName := strings.TrimSpace(params.ENSName)
 	if ensName == "" {
-		return nil, false, "", &apptheory.AppError{Code: "app.bad_request", Message: "ens is required"}
+		return nil, false, "", newAppTheoryError("app.bad_request", "ens is required")
 	}
 	if soul.IsLegacyBareManagedENSName(ensName) {
 		return []soulSearchResult{}, false, "", nil
@@ -957,7 +957,7 @@ func (s *Server) searchSoulAgentsByENS(ctx context.Context, params soulPublicSea
 		return []soulSearchResult{}, false, "", nil
 	}
 	if err != nil {
-		return nil, false, "", &apptheory.AppError{Code: "app.internal", Message: "failed to search"}
+		return nil, false, "", newAppTheoryError("app.internal", "failed to search")
 	}
 
 	agentIDHex := strings.ToLower(strings.TrimSpace(res.AgentID))
@@ -970,11 +970,11 @@ func (s *Server) searchSoulAgentsByENS(ctx context.Context, params soulPublicSea
 		return []soulSearchResult{}, false, "", nil
 	}
 	if err != nil || identity == nil {
-		return nil, false, "", &apptheory.AppError{Code: "app.internal", Message: "failed to search"}
+		return nil, false, "", newAppTheoryError("app.internal", "failed to search")
 	}
 	pass, err := s.agentPassesSearchParams(ctx, agentIDHex, identity, params)
 	if err != nil {
-		return nil, false, "", &apptheory.AppError{Code: "app.internal", Message: "failed to search"}
+		return nil, false, "", newAppTheoryError("app.internal", "failed to search")
 	}
 	if !pass {
 		return []soulSearchResult{}, false, "", nil
@@ -987,7 +987,7 @@ func (s *Server) searchSoulAgentsByENS(ctx context.Context, params soulPublicSea
 	}}, false, "", nil
 }
 
-func (s *Server) searchSoulAgents(ctx context.Context, params soulPublicSearchParams) ([]soulSearchResult, bool, string, *apptheory.AppError) {
+func (s *Server) searchSoulAgents(ctx context.Context, params soulPublicSearchParams) ([]soulSearchResult, bool, string, *apptheory.AppTheoryError) {
 	if strings.TrimSpace(params.ENSName) != "" {
 		return s.searchSoulAgentsByENS(ctx, params)
 	}
@@ -1219,7 +1219,7 @@ func (s *Server) agentHasChannelIndex(ctx context.Context, agentIDHex string, do
 	return strings.TrimSpace(item.AgentID) != "", nil
 }
 
-func parseSoulSearchQuery(q string) (string, string, *apptheory.AppError) {
+func parseSoulSearchQuery(q string) (string, string, *apptheory.AppTheoryError) {
 	q = strings.TrimSpace(q)
 	if q == "" {
 		return "", "", nil
@@ -1232,11 +1232,11 @@ func parseSoulSearchQuery(q string) (string, string, *apptheory.AppError) {
 
 		domain, err := domains.NormalizeDomain(domainRaw)
 		if err != nil {
-			return "", "", &apptheory.AppError{Code: "app.bad_request", Message: err.Error()}
+			return "", "", newAppTheoryError("app.bad_request", err.Error())
 		}
 		local, err := soul.NormalizeLocalAgentID(localRaw)
 		if err != nil {
-			return "", "", &apptheory.AppError{Code: "app.bad_request", Message: err.Error()}
+			return "", "", newAppTheoryError("app.bad_request", err.Error())
 		}
 		return domain, local, nil
 	}
@@ -1247,10 +1247,10 @@ func parseSoulSearchQuery(q string) (string, string, *apptheory.AppError) {
 	}
 
 	// Local-only searches require a scan; fail closed.
-	return "", "", &apptheory.AppError{Code: "app.bad_request", Message: "q must include a domain"}
+	return "", "", newAppTheoryError("app.bad_request", "q must include a domain")
 }
 
-func parseSoulSearchDomainAndLocal(q string, domainRaw string, currentDomain string) (domain string, localID string, localExact bool, appErr *apptheory.AppError) {
+func parseSoulSearchDomainAndLocal(q string, domainRaw string, currentDomain string) (domain string, localID string, localExact bool, appErr *apptheory.AppTheoryError) {
 	q = strings.TrimSpace(q)
 	domainRaw = strings.TrimSpace(domainRaw)
 	currentDomain = strings.TrimSpace(currentDomain)
@@ -1271,7 +1271,7 @@ func parseSoulSearchDomainAndLocal(q string, domainRaw string, currentDomain str
 
 	domain = resolveSoulSearchLocalDomain(domain, currentDomain)
 	if domain == "" {
-		return "", "", false, &apptheory.AppError{Code: "app.bad_request", Message: "q must include a domain unless the request host maps to a verified instance domain (or provide domain=)"}
+		return "", "", false, newAppTheoryError("app.bad_request", "q must include a domain unless the request host maps to a verified instance domain (or provide domain=)")
 	}
 
 	localID, appErr = normalizeSoulSearchLocalQuery(q)
@@ -1281,7 +1281,7 @@ func parseSoulSearchDomainAndLocal(q string, domainRaw string, currentDomain str
 	return domain, localID, false, nil
 }
 
-func normalizeSoulSearchDomainParam(domainRaw string) (string, *apptheory.AppError) {
+func normalizeSoulSearchDomainParam(domainRaw string) (string, *apptheory.AppTheoryError) {
 	domainRaw = strings.TrimSpace(domainRaw)
 	if domainRaw == "" {
 		return "", nil
@@ -1289,17 +1289,17 @@ func normalizeSoulSearchDomainParam(domainRaw string) (string, *apptheory.AppErr
 
 	norm, err := domains.NormalizeDomain(domainRaw)
 	if err != nil {
-		return "", &apptheory.AppError{Code: "app.bad_request", Message: err.Error()}
+		return "", newAppTheoryError("app.bad_request", err.Error())
 	}
 	return norm, nil
 }
 
-func tryParseSoulSearchQualifiedOrDomainQuery(q string, domain string) (string, string, bool, bool, *apptheory.AppError) {
+func tryParseSoulSearchQualifiedOrDomainQuery(q string, domain string) (string, string, bool, bool, *apptheory.AppTheoryError) {
 	if strings.Contains(q, "/") {
 		dFromQ, localFromQ, parseErr := parseSoulSearchQuery(q)
 		if parseErr == nil {
 			if soulSearchDomainsConflict(domain, dFromQ) {
-				return "", "", false, true, &apptheory.AppError{Code: "app.bad_request", Message: "q domain does not match domain parameter"}
+				return "", "", false, true, newAppTheoryError("app.bad_request", "q domain does not match domain parameter")
 			}
 			return dFromQ, localFromQ, true, true, nil
 		}
@@ -1313,7 +1313,7 @@ func tryParseSoulSearchQualifiedOrDomainQuery(q string, domain string) (string, 
 		return "", "", false, false, nil
 	}
 	if soulSearchDomainsConflict(domain, dFromQ) {
-		return "", "", false, true, &apptheory.AppError{Code: "app.bad_request", Message: "q domain does not match domain parameter"}
+		return "", "", false, true, newAppTheoryError("app.bad_request", "q domain does not match domain parameter")
 	}
 	return dFromQ, "", false, true, nil
 }
@@ -1335,20 +1335,20 @@ func resolveSoulSearchLocalDomain(domain string, currentDomain string) string {
 	return strings.TrimSpace(currentDomain)
 }
 
-func normalizeSoulSearchLocalQuery(raw string) (string, *apptheory.AppError) {
+func normalizeSoulSearchLocalQuery(raw string) (string, *apptheory.AppTheoryError) {
 	localID, err := soul.NormalizeLocalAgentID(raw)
 	if err != nil {
-		return "", &apptheory.AppError{Code: "app.bad_request", Message: err.Error()}
+		return "", newAppTheoryError("app.bad_request", err.Error())
 	}
 	return localID, nil
 }
 
-func (s *Server) resolveTrustedSoulSearchCurrentDomain(ctx *apptheory.Context) (string, *apptheory.AppError) {
+func (s *Server) resolveTrustedSoulSearchCurrentDomain(ctx *apptheory.Context) (string, *apptheory.AppTheoryError) {
 	if s == nil || s.store == nil || s.store.DB == nil {
-		return "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return "", newAppTheoryError("app.internal", "internal error")
 	}
 	if ctx == nil {
-		return "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return "", newAppTheoryError("app.internal", "internal error")
 	}
 
 	hostDomain := normalizeSoulSearchRequestHost(httpx.FirstHeaderValue(ctx.Request.Headers, "host"))
@@ -1361,7 +1361,7 @@ func (s *Server) resolveTrustedSoulSearchCurrentDomain(ctx *apptheory.Context) (
 		if theoryErrors.IsNotFound(err) {
 			return "", nil
 		}
-		return "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return "", newAppTheoryError("app.internal", "internal error")
 	}
 	if item == nil || !domainIsVerifiedOrActive(item.Status) {
 		return "", nil
