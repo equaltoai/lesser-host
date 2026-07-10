@@ -5,6 +5,7 @@ import * as path from "node:path";
 import {
   AppTheoryMicrovmController,
   AppTheoryMicrovmNetworkConnector,
+  AppTheoryMicrovmNetworkConnectorKind,
   type IAppTheoryMicrovmImage,
 } from "@theory-cloud/apptheory-cdk";
 import * as cdk from "aws-cdk-lib";
@@ -156,9 +157,17 @@ export function configureHostedGenesisMicrovm(
     scope,
     "HostedGenesisMicrovmEgressConnector",
   );
-  const ingressConnector = AppTheoryMicrovmNetworkConnector.allIngress(
+  // AWS rejects CreateMicrovmAuthToken when ALL_INGRESS is combined with any
+  // other ingress connector. Host also wires SHELL_INGRESS for governed shell
+  // token support, so the workload endpoint must use HTTP_INGRESS explicitly.
+  // AppTheory v1.15.1 has helpers for ALL/NO/SHELL/INTERNET only; import the
+  // documented AWS-managed HTTP_INGRESS connector by ARN while preserving the
+  // framework's typed INGRESS boundary.
+  const ingressConnector = AppTheoryMicrovmNetworkConnector.fromNetworkConnectorArn(
     scope,
-    "HostedGenesisMicrovmIngressConnector",
+    "HostedGenesisMicrovmHttpIngressConnector",
+    awsManagedMicroVMNetworkConnectorArn(scope, "HTTP_INGRESS"),
+    AppTheoryMicrovmNetworkConnectorKind.INGRESS,
   );
   const shellIngressConnector = AppTheoryMicrovmNetworkConnector.shellIngress(
     scope,
@@ -595,6 +604,19 @@ function grantHostedGenesisMicrovmControllerRunPermissions(
 // MicroVM IAM (RunMicrovm/GetMicrovm/...) or session-registry access — the
 // controller Lambda is the single governed surface; the control plane only
 // speaks HTTP to the controller endpoint with the authorizer bearer token.
+function awsManagedMicroVMNetworkConnectorArn(
+  scope: Construct,
+  connectorName: string,
+): string {
+  return cdk.Stack.of(scope).formatArn({
+    service: "lambda",
+    account: "aws",
+    resource: "network-connector",
+    resourceName: `aws-network-connector:${connectorName}`,
+    arnFormat: cdk.ArnFormat.COLON_RESOURCE_NAME,
+  });
+}
+
 function grantControlPlaneMicroVMDispatch(
   scope: Construct,
   fn: lambda.Function,

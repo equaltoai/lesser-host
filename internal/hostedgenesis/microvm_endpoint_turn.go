@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -241,6 +242,10 @@ func executeMicrovmTurn(ctx context.Context, deps resolvedEndpointTurnDeps, micr
 	if endpoint == "" {
 		return runtimemicrovm.LifecycleResult{}, ErrMicroVMEndpointMissing
 	}
+	endpoint, err = normalizeMicroVMEndpointURL(endpoint)
+	if err != nil {
+		return runtimemicrovm.LifecycleResult{}, err
+	}
 	token, err := createMicrovmAuthToken(ctx, deps.sdk, microvmID, requestID)
 	if err != nil {
 		return runtimemicrovm.LifecycleResult{}, err
@@ -387,6 +392,32 @@ func createMicrovmAuthToken(ctx context.Context, sdk microvmEndpointAPI, microvm
 		return "", ErrMicroVMAuthTokenMissing
 	}
 	return out.AuthToken[microvmAuthTokenHeader], nil
+}
+
+// normalizeMicroVMEndpointURL accepts the lambda-microvms Endpoint value from
+// GetMicrovm and returns a request-ready base URL. The AWS response can be a
+// bare HTTPS host name (for example, <id>.lambda-microvm.<region>.on.aws)
+// instead of a fully-qualified URL; the controller must not pass that directly
+// to net/http or it fails with "unsupported protocol scheme". Tests use http
+// httptest URLs, so http is accepted only as an already-explicit scheme.
+func normalizeMicroVMEndpointURL(endpoint string) (string, error) {
+	endpoint = strings.TrimSpace(endpoint)
+	if endpoint == "" {
+		return "", ErrMicroVMEndpointMissing
+	}
+	if !strings.Contains(endpoint, "://") {
+		endpoint = "https://" + strings.TrimLeft(endpoint, "/")
+	}
+	parsed, err := url.Parse(endpoint)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return "", fmt.Errorf("%w: invalid endpoint URL", ErrMicroVMEndpointMissing)
+	}
+	if parsed.Scheme != "https" && parsed.Scheme != "http" {
+		return "", fmt.Errorf("%w: unsupported endpoint scheme", ErrMicroVMEndpointMissing)
+	}
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+	return strings.TrimRight(parsed.String(), "/"), nil
 }
 
 // postTurnToEndpoint POSTs the M16 LifecycleEvent to the workload's run hook at

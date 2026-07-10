@@ -3,12 +3,15 @@ package hostedgenesis
 import (
 	"context"
 	"errors"
+	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/lambdamicrovms"
 	lambdatypes "github.com/aws/aws-sdk-go-v2/service/lambdamicrovms/types"
+	"github.com/aws/smithy-go"
 	runtimemicrovm "github.com/theory-cloud/apptheory/runtime/microvm"
 )
 
@@ -68,7 +71,7 @@ func (p *noRunHookAWSLambdaMicroVMProvider) Run(ctx context.Context, input runti
 		MaximumDurationInSeconds: optionalInt32(input.MaximumDurationSeconds),
 	})
 	if err != nil {
-		return runtimemicrovm.ProviderSession{}, providerOperationFailed(input.RequestID)
+		return runtimemicrovm.ProviderSession{}, providerOperationFailedFromError(input.RequestID, err)
 	}
 	return noRunHookSessionFromRunOutput(input, out)
 }
@@ -182,11 +185,29 @@ func noRunHookSessionFromRunOutput(input runtimemicrovm.ProviderRunInput, out *l
 }
 
 func noRunHookEgressConnectors(input runtimemicrovm.ProviderRunInput) []string {
-	connectors := append([]string{}, input.EgressNetworkConnectorRefs...)
-	if input.NetworkConnectorRef != "" {
-		connectors = append(connectors, input.NetworkConnectorRef)
+	// AppTheory's controller envelope still requires NetworkConnectorRef for the
+	// run command, but Host also passes the typed egress connector list used by
+	// current AWS RunMicrovm. Treat NetworkConnectorRef as the legacy fallback,
+	// not an additional egress connector, otherwise a single configured egress ref
+	// is submitted twice and AWS rejects the run request.
+	connectors := normalizeStringSlice(input.EgressNetworkConnectorRefs)
+	if len(connectors) == 0 && strings.TrimSpace(input.NetworkConnectorRef) != "" {
+		connectors = []string{strings.TrimSpace(input.NetworkConnectorRef)}
 	}
-	return normalizeStringSlice(connectors)
+	return uniqueStringSlice(connectors)
+}
+
+func uniqueStringSlice(values []string) []string {
+	out := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range normalizeStringSlice(values) {
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
 }
 
 func noRunHookIdlePolicy(policy *runtimemicrovm.ProviderIdlePolicy) *lambdatypes.IdlePolicy {
@@ -235,6 +256,26 @@ func providerOperationFailed(requestID string) runtimemicrovm.SafeError {
 		Message:   "apptheory: microvm provider operation failed",
 		RequestID: strings.TrimSpace(requestID),
 	}
+}
+
+func providerOperationFailedFromError(requestID string, err error) runtimemicrovm.SafeError {
+	requestID = strings.TrimSpace(requestID)
+	attrs := []any{slog.String("request_id", requestID)}
+	var apiErr smithy.APIError
+	if errors.As(err, &apiErr) {
+		attrs = append(attrs,
+			slog.String("aws_error_code", strings.TrimSpace(apiErr.ErrorCode())),
+			slog.String("aws_error_message", strings.TrimSpace(apiErr.ErrorMessage())),
+			slog.String("aws_error_fault", fmt.Sprint(apiErr.ErrorFault())),
+		)
+	} else if err != nil {
+		attrs = append(attrs,
+			slog.String("error_type", fmt.Sprintf("%T", err)),
+			slog.String("error", strings.TrimSpace(err.Error())),
+		)
+	}
+	slog.Error("hosted genesis microvm provider run failed", attrs...)
+	return providerOperationFailed(requestID)
 }
 
 func withSafeRequestID(err error, requestID string) error {

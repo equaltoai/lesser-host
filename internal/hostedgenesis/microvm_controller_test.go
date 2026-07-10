@@ -25,7 +25,7 @@ func TestMicroVMControllerRuntimeExercisesAppTheoryM16Commands(t *testing.T) {
 		Registry:                    runtimemicrovm.NewMemorySessionRegistry(),
 		ImageRef:                    "arn:aws:lambda:us-east-1:123456789012:microvm-image/hosted-genesis:1",
 		NetworkConnectorRef:         "arn:aws:lambda:us-east-1:123456789012:network-connector/hosted-genesis-egress",
-		IngressNetworkConnectorRefs: []string{"ALL_INGRESS"},
+		IngressNetworkConnectorRefs: []string{"HTTP_INGRESS"},
 		EgressNetworkConnectorRefs:  []string{"arn:aws:lambda:us-east-1:123456789012:network-connector/hosted-genesis-egress"},
 	})
 	require.NoError(t, err)
