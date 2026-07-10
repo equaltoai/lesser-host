@@ -28,6 +28,7 @@ import (
 	"github.com/equaltoai/lesser-host/internal/artifacts"
 	"github.com/equaltoai/lesser-host/internal/attestations"
 	"github.com/equaltoai/lesser-host/internal/config"
+	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
 	"github.com/equaltoai/lesser-host/internal/rendering"
 	"github.com/equaltoai/lesser-host/internal/secrets"
 	"github.com/equaltoai/lesser-host/internal/store"
@@ -80,18 +81,26 @@ type Server struct {
 	comprehend  comprehendAPI
 	rekognition rekognitionAPI
 	attest      *attestations.KMSService
+
+	ssmGetParameter                func(ctx context.Context, name string) (string, error)
+	hostedGenesisMicroVMDispatcher hostedgenesis.MicroVMDispatcher
 }
 
 // NewServer constructs a Server with AWS service clients and a store.
 func NewServer(cfg config.Config, st aiStore, art *artifacts.Store, comp comprehendAPI, rek rekognitionAPI) *Server {
-	return &Server{
-		cfg:         cfg,
-		store:       st,
-		artifacts:   art,
-		comprehend:  comp,
-		rekognition: rek,
-		attest:      attestations.NewKMSService(cfg.AttestationSigningKeyID, cfg.AttestationPublicKeyIDs),
+	srv := &Server{
+		cfg:             cfg,
+		store:           st,
+		artifacts:       art,
+		comprehend:      comp,
+		rekognition:     rek,
+		attest:          attestations.NewKMSService(cfg.AttestationSigningKeyID, cfg.AttestationPublicKeyIDs),
+		ssmGetParameter: defaultAIWorkerSSMGetParameter,
 	}
+	dispatcherCtx, cancel := context.WithTimeout(context.Background(), hostedGenesisWorkerMicroVMDispatcherInitTimeout)
+	defer cancel()
+	srv.hostedGenesisMicroVMDispatcher = hostedGenesisWorkerMicroVMDispatcherBuilder(dispatcherCtx, cfg, srv.ssmGetParameter, hostedGenesisWorkerMicroVMDispatcherOptions{})
+	return srv
 }
 
 // Register registers SQS handlers with the provided app.

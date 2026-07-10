@@ -149,36 +149,12 @@ func withOpenAIBaseURL(t *testing.T, url, apiKey string) {
 	_ = os.Setenv("OPENAI_API_KEY", apiKey)
 }
 
-// TestRunTurnAndPersist_AssistantTurnReadyThenDeclarationReady proves the run
-// hook's full path: a successful assistant turn persists assistant_turn_ready,
-// then declaration extraction persists declaration_ready, with the explicit HTTP
-// timeout configured on the LLM clients.
-func TestRunTurnAndPersist_AssistantTurnReadyThenDeclarationReady(t *testing.T) {
-	// Two LLM calls happen (assistant stream + declarations JSON). Route both
-	// through one server that serves the streaming assistant response for the
-	// streaming call and the declarations JSON for the non-streaming call. The
-	// openai-go SDK sets an Accept: text/event-stream header only for streaming
-	// calls, so dispatch on that header.
-	assistantChunk := "data: " + mustMarshal(map[string]any{
-		"id": "chatcmpl_test", "object": "chat.completion.chunk", "created": 1, "model": "gpt-test",
-		"choices": []any{map[string]any{"index": 0, "delta": map[string]any{"role": "assistant", "content": "I am acme."}, "finish_reason": nil}},
-	}) + "\n\ndata: [DONE]\n\n"
-	declBody := mustMarshal(map[string]any{
-		"id": "chatcmpl_test", "object": "chat.completion", "created": 1, "model": "gpt-test",
-		"choices": []any{map[string]any{"index": 0, "message": map[string]any{"role": "assistant", "content": mustMarshal(validDeclarationDraft())}}},
-		"usage":   map[string]any{"prompt_tokens": 5, "completion_tokens": 7, "total_tokens": 12},
-	})
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		bodyBytes, _ := io.ReadAll(r.Body)
-		_ = r.Body.Close()
-		if strings.Contains(string(bodyBytes), `"stream":true`) {
-			w.Header().Set("Content-Type", "text/event-stream")
-			_, _ = w.Write([]byte(assistantChunk))
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(declBody))
-	}))
+// TestRunTurnAndPersist_InProgressRecordsAssistantTurnReady proves the run hook
+// executes exactly the assistant step for an in_progress HostedGenesisSession.
+// Declaration extraction is a separate complete-driven dispatch once the user
+// accepts the assistant transcript.
+func TestRunTurnAndPersist_InProgressRecordsAssistantTurnReady(t *testing.T) {
+	srv := openaiStreamServer(t, "I am acme.")
 	t.Cleanup(srv.Close)
 	withOpenAIBaseURL(t, srv.URL, "sk-test")
 
@@ -194,6 +170,49 @@ func TestRunTurnAndPersist_AssistantTurnReadyThenDeclarationReady(t *testing.T) 
 	if err := runner.runTurnAndPersist(context.Background(), turn); err != nil {
 		t.Fatalf("runTurnAndPersist failed: %v", err)
 	}
+	if got := hostedgenesis.NormalizeStatus(compStore.session.Status); got != hostedgenesis.StatusAssistantTurnReady {
+		t.Fatalf("expected assistant_turn_ready, got %q (last write status=%q)", got, compStore.lastWrite.Status)
+	}
+	decodedMessages := models.DecodeSoulMintConversationBlob(turnStore.conv.Messages)
+	if !strings.Contains(decodedMessages, `"role":"assistant"`) || !strings.Contains(decodedMessages, "I am acme.") {
+		t.Fatalf("expected assistant transcript persisted to conversation, got %s", decodedMessages)
+	}
+	if compStore.session.DeclarationCheckpoint != nil || models.DecodeSoulMintConversationBlob(turnStore.conv.ProducedDeclarations) != "" {
+		t.Fatalf("in_progress turn must not persist declarations yet: session=%#v declarations=%q", compStore.session, turnStore.conv.ProducedDeclarations)
+	}
+}
+
+func TestRunTurnAndPersist_DeclarationExtractionPendingRecordsDeclarationReady(t *testing.T) {
+	declBody := mustMarshal(map[string]any{
+		"id": "chatcmpl_test", "object": "chat.completion", "created": 1, "model": "gpt-test",
+		"choices": []any{map[string]any{"index": 0, "message": map[string]any{"role": "assistant", "content": mustMarshal(validDeclarationDraft())}}},
+		"usage":   map[string]any{"prompt_tokens": 5, "completion_tokens": 7, "total_tokens": 12},
+	})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		bodyBytes, _ := io.ReadAll(r.Body)
+		_ = r.Body.Close()
+		if strings.Contains(string(bodyBytes), `"stream":true`) {
+			t.Fatalf("declaration extraction must not run an assistant streaming turn")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(declBody))
+	}))
+	t.Cleanup(srv.Close)
+	withOpenAIBaseURL(t, srv.URL, "sk-test")
+	llm.ConfigureProviderHTTPClient(&http.Client{Timeout: 5 * time.Second})
+	t.Cleanup(func() { llm.ConfigureProviderHTTPClient(nil) })
+
+	turnStore, compStore, turn := baseTurnInput()
+	transcript := `[{"role":"user","content":"hello"},{"role":"assistant","content":"I am acme."}]`
+	turnStore.session.Status = string(hostedgenesis.StatusDeclarationExtractionPending)
+	turnStore.conv.Messages = models.EncodeSoulMintConversationBlob(transcript)
+	compStore.session.Status = string(hostedgenesis.StatusDeclarationExtractionPending)
+	writer := completion.NewCompletionWriter(compStore, func() time.Time { return time.Unix(3000, 0).UTC() })
+	runner := &turnRunner{store: turnStore, writer: writer, nowFunc: func() time.Time { return time.Unix(3000, 0).UTC() }}
+
+	if err := runner.runTurnAndPersist(context.Background(), turn); err != nil {
+		t.Fatalf("runTurnAndPersist extraction failed: %v", err)
+	}
 	if got := hostedgenesis.NormalizeStatus(compStore.session.Status); got != hostedgenesis.StatusDeclarationReady {
 		t.Fatalf("expected declaration_ready, got %q (last write status=%q)", got, compStore.lastWrite.Status)
 	}
@@ -202,10 +221,6 @@ func TestRunTurnAndPersist_AssistantTurnReadyThenDeclarationReady(t *testing.T) 
 	}
 	if !strings.HasPrefix(compStore.session.DeclarationCheckpoint.DeclarationHash, "sha256:") {
 		t.Fatalf("expected sha256 declaration hash, got %q", compStore.session.DeclarationCheckpoint.DeclarationHash)
-	}
-	decodedMessages := models.DecodeSoulMintConversationBlob(turnStore.conv.Messages)
-	if !strings.Contains(decodedMessages, `"role":"assistant"`) || !strings.Contains(decodedMessages, "I am acme.") {
-		t.Fatalf("expected assistant transcript persisted to conversation, got %s", decodedMessages)
 	}
 	decodedDeclarations := models.DecodeSoulMintConversationBlob(turnStore.conv.ProducedDeclarations)
 	if decodedDeclarations == "" || !strings.Contains(decodedDeclarations, `"selfDescription"`) {

@@ -217,15 +217,20 @@ func stubHostedGenesisAssistantRunner(t *testing.T, s *Server, response string, 
 }
 
 // stubHostedGenesisMicroVMDispatcher wires a stub MicroVMDispatcher that records
-// the binding the accept path dispatched and returns a validated in_progress
-// lifecycle ref. It asserts the sync assistant runner is NOT invoked so the
-// accept path is proven dispatch-only.
+// a valid MicroVM dispatcher plus queue enqueue seam. It asserts the sync
+// assistant runner is NOT invoked so the accept path is proven
+// queue-handoff-only.
 func stubHostedGenesisMicroVMDispatcher(t *testing.T, s *Server) *stubMicroVMDispatcher {
 	t.Helper()
 	dispatcher := &stubMicroVMDispatcher{t: t}
 	s.hostedGenesisMicroVMDispatcher = dispatcher
+	s.enqueueHostedGenesisMessage = func(_ context.Context, msg hostedgenesis.QueueMessage) error {
+		dispatcher.queueCalls++
+		dispatcher.lastQueue = msg
+		return nil
+	}
 	// Guard the synchronous runner seam: H1.2 makes the production accept path
-	// dispatch-only, so the sync assistant runner must never be reached.
+	// queue-handoff-only, so the sync assistant runner must never be reached.
 	s.hostedGenesisAssistantRunner = func(_ context.Context, _ hostedGenesisAssistantRunInput) (hostedGenesisAssistantRunResult, error) {
 		t.Fatalf("synchronous assistant runner must not be invoked on the dispatch-only accept path")
 		return hostedGenesisAssistantRunResult{}, nil
@@ -240,6 +245,8 @@ type stubMicroVMDispatcher struct {
 	lastBinding    hostedgenesis.MicroVMSessionBinding
 	dispatchErr    error
 	reconcileErr   error
+	queueCalls     int
+	lastQueue      hostedgenesis.QueueMessage
 	// observedState is the lifecycle state the stub reports from a controller
 	// get reconciliation (defaults to running/non-terminal).
 	observedState runtimemicrovm.LifecycleState

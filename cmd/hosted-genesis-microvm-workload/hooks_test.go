@@ -247,8 +247,8 @@ func TestHookServer_ReadyHookEmptyBody200(t *testing.T) {
 }
 
 // TestHookServer_RunHookExecutesTurn proves the /run hook drives the adapter to
-// running and executes the assistant turn + declaration extraction, persisting
-// declaration_ready to session truth.
+// running and executes the assistant turn for an in_progress session,
+// persisting assistant_turn_ready to session truth.
 func TestHookServer_RunHookExecutesTurn(t *testing.T) {
 	assistantChunk := "data: " + mustMarshal(map[string]any{
 		"id": "chatcmpl_test", "object": "chat.completion.chunk", "created": 1, "model": "gpt-test",
@@ -296,8 +296,8 @@ func TestHookServer_RunHookExecutesTurn(t *testing.T) {
 	if result.State != runtimemicrovm.StateRunning {
 		t.Fatalf("expected running state from run hook, got %q (err=%v)", result.State, result.Error)
 	}
-	if got := hostedgenesis.NormalizeStatus(compStore.session.Status); got != hostedgenesis.StatusDeclarationReady {
-		t.Fatalf("expected session declaration_ready after run hook, got %q", got)
+	if got := hostedgenesis.NormalizeStatus(compStore.session.Status); got != hostedgenesis.StatusAssistantTurnReady {
+		t.Fatalf("expected session assistant_turn_ready after run hook, got %q", got)
 	}
 }
 
@@ -352,7 +352,38 @@ func TestHookServer_TurnEndpointExecutesTurn(t *testing.T) {
 	if result.State != runtimemicrovm.StateRunning || result.Hook != runtimemicrovm.HookRun {
 		t.Fatalf("expected run/running result, got hook=%q state=%q err=%v", result.Hook, result.State, result.Error)
 	}
-	waitForHostedGenesisStatus(t, compStore, hostedgenesis.StatusDeclarationReady)
+	waitForHostedGenesisStatus(t, compStore, hostedgenesis.StatusAssistantTurnReady)
+}
+
+// TestHookServer_TurnEndpointStorePreflightFailureIsControllerVisible proves a
+// turn is not acknowledged to the controller until the per-turn store can read
+// Host truth. The AI worker treats a failed LifecycleResult as an invoke error
+// and persists microvm_unavailable using its own store, so a workload that cannot
+// initialize/access DynamoDB cannot leave the conversation stuck in_progress.
+func TestHookServer_TurnEndpointStorePreflightFailureIsControllerVisible(t *testing.T) {
+	failingStore, compStore, _ := baseTurnInput()
+	failingStore.session = nil
+	runner := &turnRunner{storeFactory: func(context.Context) (turnStore, *completion.CompletionWriter, error) {
+		return failingStore, completion.NewCompletionWriter(compStore, nil), nil
+	}}
+	srv := newTestHookServer(t, runner)
+
+	event := validEvent(runtimemicrovm.HookRun, runtimemicrovm.StateRunning)
+	body, _ := json.Marshal(event)
+	req := httptest.NewRequest(http.MethodPost, hostedgenesis.MicroVMTurnEndpointPath, bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected controller envelope status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var result runtimemicrovm.LifecycleResult
+	if err := json.NewDecoder(rec.Body).Decode(&result); err != nil {
+		t.Fatalf("decode result: %v", err)
+	}
+	if result.State != runtimemicrovm.StateFailed || result.Error == nil || result.Error.Code != hookErrorCode {
+		t.Fatalf("expected controller-visible store preflight failure, got state=%q error=%#v", result.State, result.Error)
+	}
 }
 
 func waitForHostedGenesisStatus(t *testing.T, compStore *fakeCompletionStore, want hostedgenesis.Status) {

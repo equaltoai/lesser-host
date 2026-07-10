@@ -19,6 +19,8 @@ import (
 	"github.com/equaltoai/lesser-host/internal/testutil"
 )
 
+const validStoreHostedGenesisSessionPK = "HOSTED_GENESIS#INSTANCE#demo"
+
 func TestStore_GetHostedGenesisSessionScopesByTenantSlug(t *testing.T) {
 	t.Parallel()
 
@@ -40,7 +42,7 @@ func TestStore_GetHostedGenesisSessionScopesByTenantSlug(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "demo", got.InstanceSlug)
 	require.Equal(t, "conv_123", got.ConversationID)
-	require.Equal(t, "HOSTED_GENESIS#INSTANCE#demo", got.PK)
+	require.Equal(t, validStoreHostedGenesisSessionPK, got.PK)
 
 	db.AssertExpectations(t)
 	q.AssertExpectations(t)
@@ -56,7 +58,7 @@ func TestStore_CreateHostedGenesisSessionUsesTransactionalCreate(t *testing.T) {
 	db.On("TransactWrite", ctx, mock.Anything).Return(nil).Once()
 	tx.On("Create", mock.MatchedBy(func(item any) bool {
 		session, ok := item.(*models.HostedGenesisSession)
-		return ok && session.PK == "HOSTED_GENESIS#INSTANCE#demo" && session.Version == 0
+		return ok && session.PK == validStoreHostedGenesisSessionPK && session.Version == 0
 	}), mock.MatchedBy(func(conditions []core.TransactCondition) bool {
 		return len(conditions) == 0
 	})).Return(tx).Once()
@@ -80,7 +82,7 @@ func TestStore_UpdateHostedGenesisSessionUsesExpectedVersion(t *testing.T) {
 	tx.UpdateBuilder = ub
 	tx.On("UpdateWithBuilder", mock.MatchedBy(func(item any) bool {
 		session, ok := item.(*models.HostedGenesisSession)
-		return ok && session.PK == "HOSTED_GENESIS#INSTANCE#demo" && session.SK == "SESSION#conv_123"
+		return ok && session.PK == validStoreHostedGenesisSessionPK && session.SK == "SESSION#conv_123"
 	}), mock.Anything, mock.MatchedBy(func(conditions []core.TransactCondition) bool {
 		return hasConditionKind(conditions, core.TransactConditionKindPrimaryKeyExists) &&
 			hasVersionCondition(conditions, 7) &&
@@ -127,6 +129,95 @@ func TestStore_UpdateHostedGenesisSessionRejectsIllegalTransitionBeforeWrite(t *
 	err := st.UpdateHostedGenesisSession(ctx, session, 7, hostedgenesis.StatusCreated)
 	require.ErrorIs(t, err, hostedgenesis.ErrInvalidStatusTransition)
 	db.AssertExpectations(t)
+}
+
+func TestStore_FailHostedGenesisSessionAndConversationUsesOneGuardedTransaction(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := ttmocks.NewMockExtendedDBStrict()
+	tx := new(ttmocks.MockTransactionBuilder)
+	db.TransactWriteBuilder = tx
+	db.On("TransactWrite", ctx, mock.Anything).Return(nil).Once()
+	tx.UpdateBuilder = &captureHostedGenesisUpdateBuilder{}
+	tx.On("UpdateWithBuilder", mock.MatchedBy(func(item any) bool {
+		session, ok := item.(*models.HostedGenesisSession)
+		return ok && session.PK == validStoreHostedGenesisSessionPK && session.Status == string(hostedgenesis.StatusFailed)
+	}), mock.Anything, mock.MatchedBy(func(conditions []core.TransactCondition) bool {
+		return hasConditionKind(conditions, core.TransactConditionKindPrimaryKeyExists) &&
+			hasVersionCondition(conditions, 7) &&
+			hasStatusCondition(conditions, hostedgenesis.StatusInProgress)
+	})).Return(tx).Once()
+	tx.On("UpdateWithBuilder", mock.MatchedBy(func(item any) bool {
+		conversation, ok := item.(*models.SoulAgentMintConversation)
+		return ok && conversation.PK == "SOUL#AGENT#0x2222222222222222222222222222222222222222222222222222222222222222" &&
+			conversation.SK == "MINT_CONVERSATION#conv_123" &&
+			conversation.Status == models.SoulMintConversationStatusFailed
+	}), mock.Anything, mock.MatchedBy(func(conditions []core.TransactCondition) bool {
+		return len(conditions) == 1 && hasConditionKind(conditions, core.TransactConditionKindPrimaryKeyExists)
+	})).Return(tx).Once()
+
+	session, conversation := validStoreHostedGenesisFailure()
+	st := New(db)
+	require.NoError(t, st.FailHostedGenesisSessionAndConversation(ctx, session, 7, hostedgenesis.StatusInProgress, conversation))
+
+	db.AssertExpectations(t)
+	tx.AssertExpectations(t)
+}
+
+func TestStore_FailHostedGenesisSessionAndConversationPropagatesTransactionFailure(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := ttmocks.NewMockExtendedDBStrict()
+	db.On("TransactWrite", ctx, mock.Anything).Return(theoryErrors.ErrConditionFailed).Once()
+	session, conversation := validStoreHostedGenesisFailure()
+
+	err := New(db).FailHostedGenesisSessionAndConversation(ctx, session, 7, hostedgenesis.StatusInProgress, conversation)
+	require.ErrorIs(t, err, theoryErrors.ErrConditionFailed)
+	db.AssertExpectations(t)
+}
+
+func TestStore_FailHostedGenesisSessionAndConversationRejectsMismatchedIdentityBeforeWrite(t *testing.T) {
+	t.Parallel()
+
+	db := ttmocks.NewMockExtendedDBStrict()
+	session, conversation := validStoreHostedGenesisFailure()
+	conversation.AgentID = "0x" + strings.Repeat("33", 32)
+
+	err := New(db).FailHostedGenesisSessionAndConversation(context.Background(), session, 7, hostedgenesis.StatusInProgress, conversation)
+	require.ErrorContains(t, err, "matching session and conversation identity")
+	db.AssertExpectations(t)
+}
+
+func validStoreHostedGenesisFailure() (*models.HostedGenesisSession, *models.SoulAgentMintConversation) {
+	now := time.Date(2026, 6, 24, 12, 5, 0, 0, time.UTC)
+	session := validStoreHostedGenesisSession()
+	session.Status = string(hostedgenesis.StatusFailed)
+	session.Failure = &hostedgenesis.Failure{
+		Code:      hostedgenesis.FailureCodeMicroVMUnavailable,
+		Message:   "hosted genesis MicroVM unavailable",
+		Retryable: true,
+		Recovery: hostedgenesis.Recovery{
+			Action:            hostedgenesis.RecoveryActionRetrySameStep,
+			MaxAttempts:       3,
+			RetryAfterSeconds: 30,
+			Reason:            "microvm_unavailable",
+		},
+	}
+	session.CompletedAt = now
+	conversation := &models.SoulAgentMintConversation{
+		AgentID:        session.AgentID,
+		ConversationID: session.ConversationID,
+		Model:          "deterministic",
+		Status:         models.SoulMintConversationStatusFailed,
+		StatusReason:   "microvm_unavailable",
+		RequestID:      session.RequestID,
+		CreatedAt:      session.CreatedAt,
+		UpdatedAt:      now,
+		CompletedAt:    now,
+	}
+	return session, conversation
 }
 
 func validStoreHostedGenesisSession() *models.HostedGenesisSession {

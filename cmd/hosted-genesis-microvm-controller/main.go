@@ -9,14 +9,11 @@ import (
 	"errors"
 	"net/http"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-lambda-go/lambda"
-	awsconfig "github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/service/lambdamicrovms"
 	apptheory "github.com/theory-cloud/apptheory/runtime"
 	runtimemicrovm "github.com/theory-cloud/apptheory/runtime/microvm"
 
@@ -158,330 +155,26 @@ func newRuntimeController(ctx context.Context, getenv getenvFunc) (*hostedgenesi
 		ControllerID:             hostedgenesis.MicroVMControllerID,
 		SessionTTL:               hostedgenesis.MicroVMRegistryReconstructionTTL,
 		ReconstructionStaleAfter: 5 * time.Minute,
-		EndpointTurnClient:       newEndpointTurnClient(ctx),
 	}
 	return hostedgenesis.NewMicroVMControllerRuntime(cfg)
 }
 
 func newMicroVMProvider(ctx context.Context) (runtimemicrovm.Provider, error) {
-	delegate, err := runtimemicrovm.NewAWSLambdaMicroVMProvider(ctx)
-	if err != nil {
-		return nil, err
-	}
-	awsCfg, err := awsconfig.LoadDefaultConfig(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return hostedgenesis.NewNoRunHookAWSLambdaMicroVMProvider(lambdamicrovms.NewFromConfig(awsCfg), delegate)
-}
-
-// newEndpointTurnClient builds the raw lambda-microvms SDK client + HTTP client
-// RunTurnViaEndpoint uses to bridge the framework gap (the framework does not
-// surface the MicroVM Endpoint and discards the auth token value). The SDK
-// client loads the controller Lambda's execution-role AWS config (the role has
-// the lambda-microvms permissions). The HTTP client POSTs the LifecycleEvent to
-// the AWS-returned MicroVM endpoint. Construction failure is fail-closed: a nil
-// SDK client disables the endpoint-POST path (the controller refuses
-// run-via-endpoint instead of falling back to a synchronous LLM path).
-func newEndpointTurnClient(ctx context.Context) hostedgenesis.EndpointTurnClient {
-	awsCfg, err := awsconfig.LoadDefaultConfig(ctx)
-	if err != nil {
-		return hostedgenesis.EndpointTurnClient{}
-	}
-	return hostedgenesis.EndpointTurnClient{
-		SDKClient:  lambdamicrovms.NewFromConfig(awsCfg),
-		HTTPClient: &http.Client{Timeout: 0}, // per-request timeout is set in RunTurnViaEndpoint via context
-	}
+	return runtimemicrovm.NewAWSLambdaMicroVMProvider(ctx)
 }
 
 func newControllerApp(runtime *hostedgenesis.MicroVMControllerRuntime, getenv getenvFunc) (*apptheory.App, error) {
 	if getenv == nil {
 		getenv = os.Getenv
 	}
-	if runtime == nil {
+	if runtime == nil || runtime.Controller() == nil {
 		return nil, errors.New("hosted genesis microvm controller runtime is nil")
 	}
 	app := apptheory.New(
 		apptheory.WithObservability(observability.New(serviceName)),
 		apptheory.WithAuthHook(controllerAuthHook(getenv)),
 	)
-	// P52 H1: register the endpoint-POST run route BEFORE the framework's
-	// RegisterControllerRoutes so it wins for POST /microvms. AppTheory's router
-	// prefers earlier registration order for equally-specific routes
-	// (router.go routeMoreSpecific), and RegisterControllerRoutes registers
-	// POST /microvms -> controller.Handle(CommandRun) which only STARTS the
-	// MicroVM. The endpoint-based architecture additionally executes the turn
-	// by POSTing an M16 LifecycleEvent to the MicroVM's runtime endpoint; the
-	// custom run route does both (RunTurnViaEndpoint) and returns the same
-	// ControllerResponse envelope so the control plane's HTTPControllerDispatcher
-	// decodes it unchanged. Registering first is the framework-gap-safe way to
-	// override the run route without patching the framework.
-	app.Handle("POST", "/microvms", runTurnViaEndpointHandler(runtime), apptheory.RequireAuth())
-	if err := registerControllerRoutesExceptRun(app, runtime); err != nil {
-		return nil, err
-	}
-	return app, nil
-}
-
-func registerControllerRoutesExceptRun(app *apptheory.App, runtime *hostedgenesis.MicroVMControllerRuntime) error {
-	if app == nil || runtime == nil {
-		return errors.New("hosted genesis microvm controller route registration is incomplete")
-	}
-	routes := []struct {
-		method  string
-		path    string
-		command runtimemicrovm.Command
-	}{
-		{"GET", "/microvms", runtimemicrovm.CommandList},
-		{"GET", "/microvms/{session_id}", runtimemicrovm.CommandGet},
-		{"POST", "/microvms/{session_id}/suspend", runtimemicrovm.CommandSuspend},
-		{"POST", "/microvms/{session_id}/resume", runtimemicrovm.CommandResume},
-		{"DELETE", "/microvms/{session_id}", runtimemicrovm.CommandTerminate},
-		{"POST", "/microvms/{session_id}/auth-token", runtimemicrovm.CommandAuthToken},
-		{"POST", "/microvms/{session_id}/shell-auth-token", runtimemicrovm.CommandShellAuthToken},
-		// Compatibility route retained by AppTheory v1.16.1 for callers created
-		// during the M16 correction window.
-		{"POST", "/microvms/{session_id}/shell-token", runtimemicrovm.CommandShellAuthToken},
-	}
-	for _, route := range routes {
-		app.Handle(route.method, route.path, controllerRouteHandler(runtime, route.command), apptheory.RequireAuth())
-	}
-	return nil
-}
-
-type controllerRoutePayload struct {
-	TenantID                    string                             `json:"tenant_id"`
-	Namespace                   string                             `json:"namespace"`
-	SessionID                   string                             `json:"session_id"`
-	ImageRef                    string                             `json:"image_ref"`
-	ImageVersion                string                             `json:"image_version"`
-	NetworkConnectorRef         string                             `json:"network_connector_ref"`
-	IngressNetworkConnectorRefs []string                           `json:"ingress_network_connector_refs"`
-	EgressNetworkConnectorRefs  []string                           `json:"egress_network_connector_refs"`
-	SessionSpec                 runtimemicrovm.SessionSpec         `json:"session_spec"`
-	IdlePolicy                  *runtimemicrovm.ProviderIdlePolicy `json:"idle_policy"`
-	MaximumDurationSeconds      int32                              `json:"maximum_duration_seconds"`
-	TTLSeconds                  int32                              `json:"ttl_seconds"`
-	AllowedPortScope            []runtimemicrovm.ProviderPortScope `json:"allowed_port_scope"`
-	MaxResults                  int32                              `json:"max_results"`
-}
-
-func controllerRouteHandler(runtime *hostedgenesis.MicroVMControllerRuntime, command runtimemicrovm.Command) apptheory.Handler {
-	return func(ctx *apptheory.Context) (*apptheory.Response, error) {
-		req, safe := controllerRequestFromContext(ctx, command)
-		if safe.Code != "" {
-			return controllerJSON(controllerHTTPStatus(&safe), controllerErrorResponse(req, &safe))
-		}
-		resp, err := runtime.Handle(ctx.Context(), req)
-		if err != nil && resp.Error == nil {
-			safeErr := runTurnSafeError(err, req.RequestID)
-			resp = controllerErrorResponse(req, safeErr)
-		}
-		return controllerJSON(controllerHTTPStatus(resp.Error), resp)
-	}
-}
-
-func controllerRequestFromContext(ctx *apptheory.Context, command runtimemicrovm.Command) (runtimemicrovm.ControllerRequest, runtimemicrovm.SafeError) {
-	request := runtimemicrovm.ControllerRequest{Command: command}
-	if ctx == nil {
-		return request, safeErrorMicrovm(runtimemicrovm.ErrorCodeInvalidControllerRequest, "apptheory: microvm controller route context is missing")
-	}
-	payload := controllerRoutePayload{}
-	if len(ctx.Request.Body) > 0 {
-		if err := json.Unmarshal(ctx.Request.Body, &payload); err != nil {
-			request.RequestID = controllerRequestID(ctx)
-			return request, safeErrorMicrovm(runtimemicrovm.ErrorCodeInvalidControllerRequest, "apptheory: microvm controller route request is malformed")
-		}
-	}
-	pathSessionID := strings.TrimSpace(ctx.Param("session_id"))
-	bodySessionID := strings.TrimSpace(payload.SessionID)
-	if pathSessionID != "" && bodySessionID != "" && pathSessionID != bodySessionID {
-		request.RequestID = controllerRequestID(ctx)
-		return request, safeErrorMicrovm(runtimemicrovm.ErrorCodeTenantBindingViolation, "apptheory: microvm controller route session binding mismatch")
-	}
-	if ctx.TenantID != "" && strings.TrimSpace(payload.TenantID) != "" && strings.TrimSpace(payload.TenantID) != strings.TrimSpace(ctx.TenantID) {
-		request.RequestID = controllerRequestID(ctx)
-		return request, safeErrorMicrovm(runtimemicrovm.ErrorCodeTenantBindingViolation, "apptheory: microvm controller route tenant binding mismatch")
-	}
-	if ctx.TenantID != "" && strings.TrimSpace(ctx.Query("tenant_id")) != "" && strings.TrimSpace(ctx.Query("tenant_id")) != strings.TrimSpace(ctx.TenantID) {
-		request.RequestID = controllerRequestID(ctx)
-		return request, safeErrorMicrovm(runtimemicrovm.ErrorCodeTenantBindingViolation, "apptheory: microvm controller route tenant binding mismatch")
-	}
-	namespace := firstNonEmptyString(payload.Namespace, ctx.Header("x-namespace-id"), ctx.Query("namespace"))
-	request = runtimemicrovm.ControllerRequest{
-		Command:                     command,
-		RequestID:                   controllerRequestID(ctx),
-		TenantID:                    firstNonEmptyString(ctx.TenantID, payload.TenantID, ctx.Query("tenant_id")),
-		Namespace:                   namespace,
-		AuthContext:                 runtimemicrovm.AuthContext{Subject: strings.TrimSpace(ctx.AuthIdentity), TenantID: strings.TrimSpace(ctx.TenantID), Namespace: namespace},
-		SessionID:                   firstNonEmptyString(pathSessionID, bodySessionID),
-		ImageRef:                    payload.ImageRef,
-		ImageVersion:                payload.ImageVersion,
-		NetworkConnectorRef:         payload.NetworkConnectorRef,
-		IngressNetworkConnectorRefs: append([]string(nil), payload.IngressNetworkConnectorRefs...),
-		EgressNetworkConnectorRefs:  append([]string(nil), payload.EgressNetworkConnectorRefs...),
-		SessionSpec:                 payload.SessionSpec,
-		IdlePolicy:                  payload.IdlePolicy,
-		MaximumDurationSeconds:      payload.MaximumDurationSeconds,
-		TTLSeconds:                  payload.TTLSeconds,
-		AllowedPortScope:            append([]runtimemicrovm.ProviderPortScope(nil), payload.AllowedPortScope...),
-		MaxResults:                  firstPositiveInt32(payload.MaxResults, parseInt32(ctx.Query("max_results"))),
-	}
-	return request, runtimemicrovm.SafeError{}
-}
-
-func controllerErrorResponse(req runtimemicrovm.ControllerRequest, safe *runtimemicrovm.SafeError) runtimemicrovm.ControllerResponse {
-	return runtimemicrovm.ControllerResponse{
-		Command:   req.Command,
-		RequestID: strings.TrimSpace(req.RequestID),
-		TenantID:  strings.TrimSpace(req.TenantID),
-		Namespace: strings.TrimSpace(req.Namespace),
-		SessionID: strings.TrimSpace(req.SessionID),
-		Error:     safe,
-	}
-}
-
-// runTurnViaEndpointHandler is the POST /microvms handler that executes a
-// hosted-genesis turn via the MicroVM's runtime endpoint (P52 H1
-// endpoint-based architecture). It decodes the same controllerRoutePayload the
-// framework's run route accepts, resolves the HostedGenesisSession binding from
-// the session-spec metadata, calls RunTurnViaEndpoint (start MicroVM -> get
-// endpoint -> auth token -> POST turn -> LifecycleResult), and returns the run
-// ControllerResponse envelope. A turn-execution failure is surfaced as a
-// ControllerResponse carrying a SafeError so the control plane's
-// HTTPControllerDispatcher observes resp.Error and fails closed (no silent
-// fallback to a synchronous LLM path).
-func runTurnViaEndpointHandler(runtime *hostedgenesis.MicroVMControllerRuntime) apptheory.Handler {
-	return func(ctx *apptheory.Context) (*apptheory.Response, error) {
-		requestID := controllerRequestID(ctx)
-		binding, safeErr := controllerRunBindingFromContext(ctx)
-		if safeErr.Code != "" {
-			return controllerJSON(http.StatusBadRequest, runTurnErrorResponse(requestID, &safeErr))
-		}
-		result, err := runtime.RunTurnViaEndpoint(ctx.Context(), requestID, binding, hostedgenesis.EndpointTurnClient{})
-		if err != nil {
-			safe := runTurnSafeError(err, requestID)
-			return controllerJSON(controllerHTTPStatus(safe), runTurnErrorResponse(requestID, safe))
-		}
-		resp := result.RunResponse
-		if resp.Error != nil && resp.Error.Code != "" {
-			return controllerJSON(controllerHTTPStatus(resp.Error), resp)
-		}
-		return controllerJSON(http.StatusOK, resp)
-	}
-}
-
-// controllerRunBindingFromContext decodes the POST /microvms body the control
-// plane's HTTPControllerDispatcher sends (microvmRunRequestPayload shape) and
-// resolves the HostedGenesisSession binding from the session-spec metadata +
-// tenant header. It mirrors the framework's controllerRequestFromHTTP tenant +
-// namespace resolution so the run envelope the control plane sends is honored
-// unchanged. A binding that cannot be tied back to a hosted-genesis
-// conversation (missing slug/registration/agent/conversation/turn) is a loud
-// fail-closed SafeError.
-func controllerRunBindingFromContext(ctx *apptheory.Context) (hostedgenesis.MicroVMSessionBinding, runtimemicrovm.SafeError) {
-	var payload controllerRunPayload
-	if ctx == nil {
-		return hostedgenesis.MicroVMSessionBinding{}, safeErrorMicrovm(runtimemicrovm.ErrorCodeInvalidControllerRequest, "apptheory: microvm run-turn route context is missing")
-	}
-	if len(ctx.Request.Body) > 0 {
-		if err := json.Unmarshal(ctx.Request.Body, &payload); err != nil {
-			return hostedgenesis.MicroVMSessionBinding{}, safeErrorMicrovm(runtimemicrovm.ErrorCodeInvalidControllerRequest, "apptheory: microvm run-turn route request is malformed")
-		}
-	}
-	tenantID := strings.TrimSpace(ctx.TenantID)
-	if tenantID == "" {
-		tenantID = strings.TrimSpace(payload.TenantID)
-	}
-	if tenantID == "" {
-		tenantID = strings.TrimSpace(ctx.Query("tenant_id"))
-	}
-	instanceSlug := strings.TrimSpace(strings.TrimPrefix(tenantID, "slug:"))
-	metadata := payload.SessionSpec.Metadata
-	binding := hostedgenesis.MicroVMSessionBinding{
-		InstanceSlug:   instanceSlug,
-		RegistrationID: strings.TrimSpace(metadata["registration_id"]),
-		AgentID:        strings.TrimSpace(metadata["agent_id"]),
-		ConversationID: strings.TrimSpace(payload.SessionID),
-		TurnID:         strings.TrimSpace(metadata["turn_id"]),
-	}
-	if binding.ConversationID == "" {
-		binding.ConversationID = strings.TrimSpace(metadata["conversation_id"])
-	}
-	if err := binding.Validate(); err != nil {
-		return binding, safeErrorMicrovm(runtimemicrovm.ErrorCodeInvalidControllerRequest, "apptheory: microvm run-turn route binding is incomplete")
-	}
-	return binding, runtimemicrovm.SafeError{}
-}
-
-// controllerRunPayload is the POST /microvms body shape (the same
-// microvmRunRequestPayload the control plane's HTTPControllerDispatcher sends
-// and the framework's controllerRoutePayload decodes). Only the fields the
-// run-turn route needs are modeled: SessionID + TenantID + SessionSpec.Metadata
-// (the HostedGenesisSession ids). Image/network refs come from the runtime's
-// CDK-provided config, not the body.
-type controllerRunPayload struct {
-	SessionID   string                     `json:"session_id,omitempty"`
-	TenantID    string                     `json:"tenant_id,omitempty"`
-	SessionSpec runtimemicrovm.SessionSpec `json:"session_spec,omitempty"`
-}
-
-func controllerRequestID(ctx *apptheory.Context) string {
-	if ctx == nil {
-		return ""
-	}
-	if id := strings.TrimSpace(ctx.RequestID); id != "" {
-		return id
-	}
-	return strings.TrimSpace(ctx.Header("x-request-id"))
-}
-
-func runTurnSafeError(err error, requestID string) *runtimemicrovm.SafeError {
-	return &runtimemicrovm.SafeError{
-		Code:      runtimemicrovm.ErrorCodeControllerCommandFailed,
-		Message:   strings.TrimSpace(err.Error()),
-		RequestID: strings.TrimSpace(requestID),
-	}
-}
-
-func runTurnErrorResponse(requestID string, safe *runtimemicrovm.SafeError) runtimemicrovm.ControllerResponse {
-	return runtimemicrovm.ControllerResponse{
-		Command:   runtimemicrovm.CommandRun,
-		RequestID: strings.TrimSpace(requestID),
-		Error:     safe,
-	}
-}
-
-func safeErrorMicrovm(code, message string) runtimemicrovm.SafeError {
-	return runtimemicrovm.SafeError{Code: code, Message: message}
-}
-
-// controllerHTTPStatus mirrors the framework's controllerHTTPStatus
-// (controller_routes.go) for the SafeError codes the run-turn route can
-// return, so the HTTP status semantics stay consistent across the custom run
-// route and the framework's other M16 routes.
-func controllerHTTPStatus(err *runtimemicrovm.SafeError) int {
-	if err == nil || err.Code == "" {
-		return http.StatusOK
-	}
-	switch err.Code {
-	case runtimemicrovm.ErrorCodeUnauthenticatedController:
-		return http.StatusUnauthorized
-	case runtimemicrovm.ErrorCodeTenantBindingViolation:
-		return http.StatusForbidden
-	case runtimemicrovm.ErrorCodeSessionRegistryIncomplete:
-		return http.StatusNotFound
-	case runtimemicrovm.ErrorCodeControllerIncomplete:
-		return http.StatusInternalServerError
-	case runtimemicrovm.ErrorCodeControllerCommandFailed, runtimemicrovm.ErrorCodeProviderOperationFailed:
-		return http.StatusBadGateway
-	default:
-		return http.StatusBadRequest
-	}
-}
-
-func controllerJSON(status int, value any) (*apptheory.Response, error) {
-	return apptheory.JSON(status, value)
+	return runtimemicrovm.RegisterControllerRoutes(app, runtime.Controller())
 }
 
 func controllerAuthHook(getenv getenvFunc) apptheory.AuthHook {
@@ -545,30 +238,6 @@ func firstString(values []string) string {
 		}
 	}
 	return ""
-}
-
-func firstNonEmptyString(values ...string) string {
-	for _, value := range values {
-		if trimmed := strings.TrimSpace(value); trimmed != "" {
-			return trimmed
-		}
-	}
-	return ""
-}
-
-func parseInt32(value string) int32 {
-	n, err := strconv.ParseInt(strings.TrimSpace(value), 10, 32)
-	if err != nil || n <= 0 {
-		return 0
-	}
-	return int32(n)
-}
-
-func firstPositiveInt32(value int32, fallback int32) int32 {
-	if value > 0 {
-		return value
-	}
-	return fallback
 }
 
 func csv(value string) []string {

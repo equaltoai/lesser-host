@@ -28,23 +28,27 @@ type turnStore interface {
 	GetSoulAgentRegistration(ctx context.Context, id string) (*models.SoulAgentRegistration, error)
 }
 
-// turnRunner is the in-VM hosted-genesis workload's assistant-turn +
+// turnRunner is the in-VM hosted-genesis workload's assistant-turn and
 // declaration-extraction executor. It loads the authoritative conversation
-// transcript + registration through the existing store layer, runs the assistant
-// turn and declaration extraction through the existing internal/ai/llm clients
-// (which carry an explicit HTTP timeout configured at process startup), and
-// durably records the outcome to HostedGenesisSession truth through the
-// completion writer. It never receives a raw AWS SDK client, a bearer token, or
-// a raw lifecycle hook payload.
+// transcript + registration through the existing store layer, runs exactly the
+// step represented by HostedGenesisSession truth (in_progress => assistant turn,
+// declaration_extraction_pending => declaration extraction) through the existing
+// internal/ai/llm clients (which carry an explicit HTTP timeout configured at
+// process startup), and durably records the outcome through the completion
+// writer. It never receives a raw AWS SDK client, a bearer token, or a raw
+// lifecycle hook payload.
 //
 // The runner is fail-closed: a missing session/conversation/registration, a
 // missing provider key, an empty assistant response, or a declaration-extraction
 // failure surfaces as a typed completion failure written to session truth —
 // never as a silent HTTP 200 or a swallowed error.
+type turnStoreFactory func(context.Context) (turnStore, *completion.CompletionWriter, error)
+
 type turnRunner struct {
-	store   turnStore
-	writer  *completion.CompletionWriter
-	nowFunc func() time.Time
+	store        turnStore
+	writer       *completion.CompletionWriter
+	storeFactory turnStoreFactory
+	nowFunc      func() time.Time
 }
 
 // turnInput is the resolved, prompt-ready input for one assistant turn. It is
@@ -115,19 +119,14 @@ func (r *turnRunner) runAssistantTurn(ctx context.Context, in turnInput) (string
 	}
 }
 
-// runDeclarationExtraction extracts structured declarations from the post-turn
-// transcript (accepted user messages + produced assistant message) through the
-// existing internal/ai/llm declaration clients. Returns a draft + a
-// publish-ready DeclarationCheckpoint.
-func (r *turnRunner) runDeclarationExtraction(ctx context.Context, in turnInput, assistantContent string) (llm.MintConversationDeclarationsDraft, models.AIUsage, error) {
+// runDeclarationExtraction extracts structured declarations from the supplied
+// post-turn transcript (accepted user messages + produced assistant message)
+// through the existing internal/ai/llm declaration clients.
+func (r *turnRunner) runDeclarationExtraction(ctx context.Context, in turnInput, messages []llm.MintConversationMessage) (llm.MintConversationDeclarationsDraft, models.AIUsage, error) {
 	apiKey, err := providerAPIKey(ctx, in.modelSet)
 	if err != nil {
 		return llm.MintConversationDeclarationsDraft{}, models.AIUsage{}, err
 	}
-	extractionMessages := append(append([]llm.MintConversationMessage(nil), in.messages...), llm.MintConversationMessage{
-		Role:    "assistant",
-		Content: strings.TrimSpace(assistantContent),
-	})
 	declInput := llm.MintConversationDeclarationsInput{
 		Registration: llm.MintConversationRegistrationContext{
 			Domain:               in.registration.DomainNormalized,
@@ -135,7 +134,7 @@ func (r *turnRunner) runDeclarationExtraction(ctx context.Context, in turnInput,
 			AgentID:              in.registration.AgentID,
 			DeclaredCapabilities: in.registration.Capabilities,
 		},
-		Messages: extractionMessages,
+		Messages: append([]llm.MintConversationMessage(nil), messages...),
 	}
 	modelSet := strings.ToLower(strings.TrimSpace(in.modelSet))
 	switch {
@@ -148,18 +147,78 @@ func (r *turnRunner) runDeclarationExtraction(ctx context.Context, in turnInput,
 	}
 }
 
-// runTurnAndPersist is the run-hook's durable execution path. It runs the
-// assistant turn, persists assistant_turn_ready, runs declaration extraction,
-// and persists declaration_ready — or persists a typed failure at any point the
-// path cannot continue. Every completion write is idempotent per turn ID and
-// conditional on the session's status + version; a replay against an already-
-// advanced session is recorded as a conflict (not a silent re-apply).
+// runTurnAndPersist is the run-hook's durable execution path. It executes one
+// step according to HostedGenesisSession truth: assistant turn for in_progress,
+// declaration extraction for declaration_extraction_pending. Every completion
+// write is idempotent per turn ID and conditional on the session's status +
+// version; a replay against an already-advanced session is recorded as a
+// conflict (not a silent re-apply).
 func (r *turnRunner) runTurnAndPersist(ctx context.Context, turn completion.CompletionTurn) error {
-	in, err := r.loadTurnInput(ctx, turn)
+	runner, in, err := r.prepareTurn(ctx, turn)
 	if err != nil {
-		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeInvalidCompletionState, err.Error())
+		if runner == nil {
+			return fmt.Errorf("initialize hosted genesis microvm turn store: %w", err)
+		}
+		return runner.recordFailure(ctx, turn, hostedgenesis.FailureCodeInvalidCompletionState, err.Error())
 	}
+	return runner.runPreparedTurnAndPersist(ctx, turn, in)
+}
 
+// prepareTurn initializes a fresh turn-scoped store and performs the first
+// authoritative DynamoDB reads before the controller acknowledges the workload
+// invocation. AWS credential providers retrieve lazily, so constructing the
+// TableTheory client alone is not a sufficient readiness check. Returning the
+// prepared runner + input lets the endpoint detach only provider work, while a
+// credential/store failure remains visible to the controller and AI worker.
+func (r *turnRunner) prepareTurn(ctx context.Context, turn completion.CompletionTurn) (*turnRunner, turnInput, error) {
+	runner, err := r.withTurnStore(ctx)
+	if err != nil {
+		return nil, turnInput{}, err
+	}
+	in, err := runner.loadTurnInput(ctx, turn)
+	if err != nil {
+		return runner, turnInput{}, err
+	}
+	return runner, in, nil
+}
+
+func (r *turnRunner) runPreparedTurnAndPersist(ctx context.Context, turn completion.CompletionTurn, in turnInput) error {
+	switch hostedgenesis.NormalizeStatus(in.session.Status) {
+	case hostedgenesis.StatusInProgress:
+		return r.runAssistantTurnAndPersist(ctx, turn, in)
+	case hostedgenesis.StatusDeclarationExtractionPending:
+		return r.runDeclarationExtractionAndPersist(ctx, turn, in)
+	case hostedgenesis.StatusAssistantTurnReady, hostedgenesis.StatusDeclarationReady:
+		return nil
+	default:
+		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeInvalidCompletionState, "session is not ready for hosted genesis microvm work")
+	}
+}
+
+func (r *turnRunner) withTurnStore(ctx context.Context) (*turnRunner, error) {
+	if r == nil {
+		return nil, errors.New("turn runner is not configured")
+	}
+	if r.store != nil && r.writer != nil {
+		return r, nil
+	}
+	if r.storeFactory == nil {
+		return nil, errors.New("turn store factory is not configured")
+	}
+	st, writer, err := r.storeFactory(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if st == nil || writer == nil {
+		return nil, errors.New("turn store factory returned incomplete store")
+	}
+	copy := *r
+	copy.store = st
+	copy.writer = writer
+	return &copy, nil
+}
+
+func (r *turnRunner) runAssistantTurnAndPersist(ctx context.Context, turn completion.CompletionTurn, in turnInput) error {
 	assistantContent, assistantUsage, err := r.runAssistantTurn(ctx, in)
 	if err != nil || strings.TrimSpace(assistantContent) == "" {
 		msg := "assistant turn failed"
@@ -185,8 +244,14 @@ func (r *turnRunner) runTurnAndPersist(ctx context.Context, turn completion.Comp
 		// a concurrent recovery). Do not overwrite; surface the conflict.
 		return fmt.Errorf("record assistant turn ready: %w", werr)
 	}
+	return nil
+}
 
-	draft, declarationUsage, err := r.runDeclarationExtraction(ctx, in, assistantContent)
+func (r *turnRunner) runDeclarationExtractionAndPersist(ctx context.Context, turn completion.CompletionTurn, in turnInput) error {
+	if !hasAssistantMessage(in.messages) {
+		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeInvalidCompletionState, "declaration extraction requires an assistant transcript")
+	}
+	draft, declarationUsage, err := r.runDeclarationExtraction(ctx, in, in.messages)
 	if err != nil {
 		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeDeclarationExtractionFailed, err.Error())
 	}
@@ -205,6 +270,15 @@ func (r *turnRunner) runTurnAndPersist(ctx context.Context, turn completion.Comp
 		return fmt.Errorf("record declaration ready: %w", werr)
 	}
 	return nil
+}
+
+func hasAssistantMessage(messages []llm.MintConversationMessage) bool {
+	for _, msg := range messages {
+		if strings.EqualFold(strings.TrimSpace(msg.Role), "assistant") && strings.TrimSpace(msg.Content) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 type producedDeclarations struct {
@@ -429,7 +503,7 @@ func recoveryActionFor(code hostedgenesis.FailureCode) hostedgenesis.RecoveryAct
 // (OpenAIServiceKey / ClaudeAPIKey), which read the same unscoped SecureString
 // params the control plane reads (/lesser-host/api/openai/service and
 // /lesser-host/api/claude). The in-VM workload can reach SSM because the
-// host-owned MicroVM execution role (AppTheory v1.15.2 executionRole
+// host-owned MicroVM execution role (AppTheory executionRole
 // propagation) grants ssm:GetParameter + kms:Decrypt on exactly those params.
 type ssmKeyLoader func(ctx context.Context, client secrets.SSMAPI) (string, error)
 
@@ -445,9 +519,9 @@ var providerSSMLoaders = map[string]ssmKeyLoader{
 // resolution: OPENAI_API_KEY / ANTHROPIC_API_KEY (or CLAUDE_API_KEY) win when
 // set; otherwise the loader reads the provider-key SecureString from SSM.
 //
-// P52 H1.5 corrective (AppTheory v1.15.2): the prior comment held that SSM
+// P52 H1.5 corrective: the prior comment held that SSM
 // fallback was "a control-plane concern and not available in the MicroVM image
-// env" — that was true when the in-VM workload had no IAM identity. With v1.15.2
+// env" — that was true when the in-VM workload had no IAM identity. With
 // execution-role propagation, the MicroVM assumes the host-owned execution role
 // (DynamoDB + SSM provider-key grants), so SSM fallback is now available and is
 // the production path: the image env never carries raw provider keys (the

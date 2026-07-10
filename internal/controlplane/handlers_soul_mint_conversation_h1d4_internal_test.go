@@ -214,15 +214,17 @@ func TestH1_4_RecoveryFallthroughDispatchErrorIsLoudNoSyncRerun(t *testing.T) {
 // package (dispatch_test.go) because microVMReconcileIsTerminal is unexported.
 // See TestH1_4_MicroVMReconcileIsTerminalClassification in that package.
 
-// TestH1_4_ProductionDispatchFailureSurfacesNon2xxNot200 proves the production
-// async accept path's MicroVM dispatch failure surfaces as a loud non-2xx typed
-// failure (503 microvm_unavailable), not HTTP 200 with a failed body. This is
-// the G10a invariant for the production path (the sync-path G10a kill is covered
-// by TestH1_2_NonProductionSyncFallbackFailurePersistsTypedFailure, now 502).
-func TestH1_4_ProductionDispatchFailureSurfacesNon2xxNot200(t *testing.T) {
+// TestH1_4_ProductionQueueFailureSurfacesNon2xxNot200 proves the production
+// async accept path's durable dispatch handoff failure surfaces as a loud
+// non-2xx typed failure (503 microvm_unavailable), not HTTP 200 with a failed
+// body. Worker-side controller dispatch failure is covered in aiworker.
+func TestH1_4_ProductionQueueFailureSurfacesNon2xxNot200(t *testing.T) {
 	tdb, s, reg, dispatcher := h1d2AcceptPathFixture(t)
-	dispatcher.dispatchErr = errors.New("controller run rejected")
-	s.hostedGenesisMicroVMDispatcher = dispatcher
+	s.enqueueHostedGenesisMessage = func(_ context.Context, msg hostedgenesis.QueueMessage) error {
+		dispatcher.queueCalls++
+		dispatcher.lastQueue = msg
+		return errors.New("sqs unavailable")
+	}
 	h1d2ExpectAcceptPathProgression(t, tdb, hostedgenesis.StatusFailed)
 
 	resp, err := s.handleSoulInstanceMintConversation(h1d2AcceptPathRequest(t, reg))

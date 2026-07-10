@@ -200,7 +200,7 @@ func TestMicroVMControllerRuntimeUsesAppTheoryM16WithoutLocalAdapter(t *testing.
 		require.NoError(t, err)
 		source := string(b)
 		retiredAdapter := "ProvisionalDogfood" + "MicroVMClient"
-		require.NotContains(t, source, retiredAdapter, "v1.15 M16 adoption must retire Host's provisional adapter")
+		require.NotContains(t, source, retiredAdapter, "AppTheory M16 adoption must retire Host's provisional adapter")
 		forbiddenEscape := "RawAWSSDK" + ": true"
 		require.NotContains(t, source, forbiddenEscape, "AppTheory raw SDK escape hatch must remain disabled")
 	}

@@ -177,59 +177,58 @@ func (s *Server) progressHostedGenesisAcceptedTurn(ctx context.Context, regCtx m
 	if session.session == nil || conv == nil {
 		return nil, nil, 0, newAppTheoryError("app.internal", "internal error")
 	}
-	// H1.2: the production accept path dispatches the AppTheory M16 MicroVM
-	// controller run command and returns 202 accepted-pending. The control plane
-	// never makes a synchronous LLM HTTP call on this path; the assistant turn
-	// runs inside the MicroVM and completion is reconstructed from Host truth.
-	// The synchronous assistant runner is retained only behind an explicit
-	// non-production/test guard (hostedGenesisSyncAssistantFallbackEnabled) until
-	// H2.1 deletes it; production never sets that guard.
-	if s.hostedGenesisMicroVMDispatcher == nil {
-		if s.hostedGenesisSyncAssistantFallbackEnabled && s.hostedGenesisAssistantRunner != nil {
-			return s.progressHostedGenesisAcceptedTurnSync(ctx, regCtx, session, conv, acceptedMessages, apiKey, requestID)
-		}
-		log.Printf("controlplane: hosted genesis microvm dispatcher unavailable agent_hash=%s conversation_hash=%s", soulMintInstanceReadAuditHash(regCtx.agentIDHex), soulMintInstanceReadAuditHash(session.conversationID))
-		failedSession, failedConv, appErr := s.persistHostedGenesisAcceptedTurnFailure(ctx, session, conv, acceptedMessages, hostedGenesisFailureMicroVMUnavailable, requestID, time.Now().UTC())
-		if appErr != nil {
-			return nil, nil, 0, appErr
-		}
-		// H1.5 (carries forward G10a's explicit-status posture): the MicroVM-
-		// unavailable accept-path returns an explicit 503, matching the error
-		// mapper's 503 for appErrCodeMicroVMUnavailable. The returned int is the
-		// response status used when the caller builds a non-error body; the typed
-		// AppTheoryError is the authoritative surface and also maps to 503.
-		return failedSession, failedConv, http.StatusServiceUnavailable, newAppTheoryError(appErrCodeMicroVMUnavailable, "MicroVM execution dispatch is unavailable")
+	// Provider key resolution already happened before this function is called. The
+	// key value is deliberately not used here: the accepted turn is handed to the
+	// MicroVM worker via non-authoritative SQS ids only, and the in-VM workload
+	// resolves provider credentials from its own least-privilege SSM path.
+	_ = apiKey
+	if s.hostedGenesisSyncAssistantFallbackEnabled && s.hostedGenesisMicroVMDispatcher == nil && s.hostedGenesisAssistantRunner != nil {
+		return s.progressHostedGenesisAcceptedTurnSync(ctx, regCtx, session, conv, acceptedMessages, apiKey, requestID)
 	}
-
-	binding := session.session.MicroVMSessionBinding()
-	if err := binding.Validate(); err != nil {
+	if err := session.session.MicroVMSessionBinding().Validate(); err != nil {
 		log.Printf("controlplane: hosted genesis microvm binding invalid agent_hash=%s conversation_hash=%s err=%v", soulMintInstanceReadAuditHash(regCtx.agentIDHex), soulMintInstanceReadAuditHash(session.conversationID), err)
 		failedSession, failedConv, appErr := s.persistHostedGenesisAcceptedTurnFailure(ctx, session, conv, acceptedMessages, hostedGenesisFailureMicroVMUnavailable, requestID, time.Now().UTC())
 		if appErr != nil {
 			return nil, nil, 0, appErr
 		}
-		// H1.5: explicit 503 (matches the error mapper), not a silent 200.
 		return failedSession, failedConv, http.StatusServiceUnavailable, newAppTheoryError(appErrCodeMicroVMUnavailable, "MicroVM execution dispatch is unavailable")
 	}
-
-	runCtx, cancel := context.WithTimeout(detachedMintConversationContext(ctx), hostedGenesisAcceptedTurnDispatchTimeout)
-	defer cancel()
-	dispatch, dispatchErr := s.hostedGenesisMicroVMDispatcher.DispatchMicroVMRun(runCtx, strings.TrimSpace(requestID), binding)
-	if dispatchErr != nil {
-		log.Printf("controlplane: hosted genesis microvm dispatch failed agent_hash=%s conversation_hash=%s err=%v", soulMintInstanceReadAuditHash(regCtx.agentIDHex), soulMintInstanceReadAuditHash(session.conversationID), dispatchErr)
+	if s.enqueueHostedGenesisMessage == nil {
+		log.Printf("controlplane: hosted genesis microvm dispatch queue unavailable agent_hash=%s conversation_hash=%s", soulMintInstanceReadAuditHash(regCtx.agentIDHex), soulMintInstanceReadAuditHash(session.conversationID))
 		failedSession, failedConv, appErr := s.persistHostedGenesisAcceptedTurnFailure(ctx, session, conv, acceptedMessages, hostedGenesisFailureMicroVMUnavailable, requestID, time.Now().UTC())
 		if appErr != nil {
 			return nil, nil, 0, appErr
 		}
-		// H1.5: explicit 503 (matches the error mapper), not a silent 200.
-		return failedSession, failedConv, http.StatusServiceUnavailable, newAppTheoryError(appErrCodeMicroVMUnavailable, "MicroVM execution dispatch failed")
+		return failedSession, failedConv, http.StatusServiceUnavailable, newAppTheoryError(appErrCodeMicroVMUnavailable, "MicroVM execution dispatch queue is unavailable")
 	}
+	msg := hostedGenesisMicroVMDispatchQueueMessage(regCtx, session, requestID)
+	if err := s.enqueueHostedGenesisMessage(ctx, msg); err != nil {
+		log.Printf("controlplane: hosted genesis microvm dispatch enqueue failed agent_hash=%s conversation_hash=%s err=%v", soulMintInstanceReadAuditHash(regCtx.agentIDHex), soulMintInstanceReadAuditHash(session.conversationID), err)
+		failedSession, failedConv, appErr := s.persistHostedGenesisAcceptedTurnFailure(ctx, session, conv, acceptedMessages, hostedGenesisFailureMicroVMUnavailable, requestID, time.Now().UTC())
+		if appErr != nil {
+			return nil, nil, 0, appErr
+		}
+		return failedSession, failedConv, http.StatusServiceUnavailable, newAppTheoryError(appErrCodeMicroVMUnavailable, "MicroVM execution dispatch enqueue failed")
+	}
+	return cloneHostedGenesisSession(session.session), cloneSoulAgentMintConversation(conv), http.StatusAccepted, nil
+}
 
-	progressedSession, progressedConv, appErr := s.persistHostedGenesisAcceptedMicroVMDispatch(ctx, session, conv, acceptedMessages, dispatch, requestID, time.Now().UTC())
-	if appErr != nil {
-		return nil, nil, 0, appErr
+func hostedGenesisMicroVMDispatchQueueMessage(regCtx mintConversationRegistrationContext, session hostedGenesisTurnSession, requestID string) hostedgenesis.QueueMessage {
+	msg := hostedgenesis.QueueMessage{
+		Kind:           hostedgenesis.QueueMessageKind,
+		Step:           hostedgenesis.StepMicroVMDispatch,
+		RegistrationID: strings.TrimSpace(regCtx.reg.ID),
+		InstanceSlug:   strings.TrimSpace(regCtx.inst.Slug),
+		AgentID:        strings.TrimSpace(regCtx.agentIDHex),
+		ConversationID: strings.TrimSpace(session.conversationID),
+		TurnID:         strings.TrimSpace(session.turnID),
+		RequestID:      strings.TrimSpace(requestID),
 	}
-	return progressedSession, progressedConv, http.StatusAccepted, nil
+	if session.idempotency != nil {
+		msg.IdempotencyKey = strings.TrimSpace(session.idempotency.IdempotencyKey)
+		msg.CorrelationID = strings.TrimSpace(session.idempotency.CorrelationID)
+	}
+	return msg
 }
 
 // progressHostedGenesisAcceptedTurnSync is the retained non-production/test-only
@@ -937,9 +936,9 @@ func (s *Server) startHostedGenesisDeclarationExtraction(ctx *apptheory.Context,
 	// pending status is no longer a permanent trap: the VM services the
 	// extraction or the session fails loudly. An unwired dispatcher is
 	// fail-closed and loud; there is no silent fallback to a non-MicroVM
-	// extraction path. M4 demotes hosted-genesis SQS to operator/backfill
-	// recovery only; this path does not rely on queue delivery, DLQ state, or
-	// AI-worker liveness.
+	// extraction path. Hosted-genesis SQS may carry non-authoritative MicroVM
+	// dispatch/backfill/janitor commands, but declaration extraction does not
+	// rely on queue delivery, DLQ state, or AI-worker liveness.
 	transitioned := hostedgenesis.NormalizeStatus(convCtx.session.Status) != hostedgenesis.StatusDeclarationExtractionPending
 	if !transitioned {
 		return nil
@@ -979,6 +978,11 @@ func (s *Server) startHostedGenesisDeclarationExtraction(ctx *apptheory.Context,
 	if appErr != nil {
 		return appErr
 	}
+	// The debit transaction above advances the HostedGenesisSession version by
+	// one while transitioning to declaration_extraction_pending. Keep the
+	// in-memory source-of-truth copy aligned before the follow-on dispatch
+	// refreshes lifecycle refs under optimistic locking.
+	convCtx.session.Version = expectedVersion + 1
 	if convCtx.conv != nil {
 		convCtx.conv.ChargedCredits += creditsDebited
 		convCtx.conv.Status = models.SoulMintConversationStatusDeclarationExtractionPending

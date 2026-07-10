@@ -41,10 +41,12 @@ func microVMWiringTestConfig() config.Config {
 // an httptest.Server. It is duplicated here as a thin local helper so the
 // controlplane wiring tests can stand up a stub controller without importing
 // the hostedgenesis test helpers (which are not exported). It serializes the
-// same ControllerResponse JSON shape the real controller route handler emits.
+// same ControllerResponse / LifecycleResult JSON shapes the real AppTheory
+// controller route handlers emit.
 type stubControllerServer struct {
 	token    string
 	sessions map[string]runtimemicrovm.ControllerResponse
+	invokes  int
 }
 
 func newStubControllerServer(token string) *stubControllerServer {
@@ -54,7 +56,7 @@ func newStubControllerServer(token string) *stubControllerServer {
 func (s *stubControllerServer) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/microvms", s.handleRun)
-	mux.HandleFunc("/microvms/", s.handleGet)
+	mux.HandleFunc("/microvms/", s.handleMicroVMRoute)
 	return mux
 }
 
@@ -62,6 +64,14 @@ func (s *stubControllerServer) authorize(r *http.Request) bool {
 	token := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
 	return token != "" && token != r.Header.Get("Authorization") && token == s.token &&
 		r.Header.Get("x-tenant-id") != "" && r.Header.Get("x-namespace-id") != ""
+}
+
+func (s *stubControllerServer) handleMicroVMRoute(w http.ResponseWriter, r *http.Request) {
+	if strings.Contains(r.URL.Path, "/invoke") {
+		s.handleInvoke(w, r)
+		return
+	}
+	s.handleGet(w, r)
 }
 
 func (s *stubControllerServer) handleRun(w http.ResponseWriter, r *http.Request) {
@@ -105,6 +115,10 @@ func (s *stubControllerServer) handleGet(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	sessionID := strings.TrimPrefix(r.URL.Path, "/microvms/")
+	if strings.Contains(sessionID, "/") {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
 	resp, ok := s.sessions[sessionID]
 	if !ok {
 		w.WriteHeader(http.StatusNotFound)
@@ -113,6 +127,69 @@ func (s *stubControllerServer) handleGet(w http.ResponseWriter, r *http.Request)
 	resp.Command = runtimemicrovm.CommandGet
 	resp.LastAction = runtimemicrovm.CommandGet
 	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *stubControllerServer) handleInvoke(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost || !s.authorize(r) {
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+	sessionID, ok := stubInvokeSessionID(r.URL.Path)
+	if !ok {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	if !stubInvokeHeadersValid(r) {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	if _, ok := s.sessions[sessionID]; !ok {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	var event runtimemicrovm.LifecycleEvent
+	if err := readJSONBody(r, &event); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	if !stubInvokeEventMatches(r, event, sessionID) {
+		w.WriteHeader(http.StatusForbidden)
+		return
+	}
+	s.invokes++
+	writeJSON(w, http.StatusOK, runtimemicrovm.LifecycleResult{
+		RequestID:     event.RequestID,
+		TenantID:      event.TenantID,
+		Namespace:     event.Namespace,
+		SessionID:     event.SessionID,
+		Hook:          runtimemicrovm.HookRun,
+		PreviousState: runtimemicrovm.StateRunning,
+		State:         runtimemicrovm.StateRunning,
+		Metadata:      event.Metadata,
+	})
+}
+
+func stubInvokeSessionID(path string) (string, bool) {
+	tail := strings.TrimPrefix(strings.TrimPrefix(path, "/microvms/"), "/")
+	sessionID, invokePath, ok := strings.Cut(tail, "/invoke")
+	if !ok || strings.TrimSpace(sessionID) == "" || invokePath != hostedgenesis.MicroVMTurnEndpointPath {
+		return "", false
+	}
+	return strings.TrimSpace(sessionID), true
+}
+
+func stubInvokeHeadersValid(r *http.Request) bool {
+	return r.Header.Get("x-apptheory-microvm-port") == "8080" &&
+		r.Header.Get("x-aws-proxy-auth") == "" &&
+		r.Header.Get("x-aws-proxy-port") == ""
+}
+
+func stubInvokeEventMatches(r *http.Request, event runtimemicrovm.LifecycleEvent, sessionID string) bool {
+	return event.RequestID == strings.TrimSpace(r.Header.Get("x-request-id")) &&
+		event.TenantID == strings.TrimSpace(r.Header.Get("x-tenant-id")) &&
+		event.Namespace == strings.TrimSpace(r.Header.Get("x-namespace-id")) &&
+		event.SessionID == sessionID &&
+		event.Hook == runtimemicrovm.HookRun
 }
 
 func (s *stubControllerServer) terminate(sessionID string) {
@@ -149,7 +226,7 @@ func (g stubSSMGetter) GetParameter(_ context.Context, name string) (string, err
 // TestH1_5_NewServerWiresHTTPControllerDispatcherForDeployedStages proves
 // NewServer constructs a real HTTPControllerDispatcher against the governed
 // AppTheoryMicrovmController HTTP API when the MicroVM config is enabled and
-// complete, and sets it on the Server so the accept path is dispatch-only (no
+// complete, and sets it on the Server for recovery/extraction dispatch (no
 // sync LLM). The httptest stub controller + stub SSM getter prove the wiring
 // without calling AWS or SSM.
 func TestH1_5_NewServerWiresHTTPControllerDispatcherForDeployedStages(t *testing.T) {
@@ -194,6 +271,9 @@ func TestH1_5_NewServerWiresHTTPControllerDispatcherForDeployedStages(t *testing
 	}
 	if result.LifecycleRef.LifecycleState != runtimemicrovm.StateRunning {
 		t.Fatalf("expected running lifecycle state from stub controller, got %q", result.LifecycleRef.LifecycleState)
+	}
+	if stub.invokes != 1 {
+		t.Fatalf("expected dispatcher to call the canonical invoke route once, got %d", stub.invokes)
 	}
 }
 
@@ -305,9 +385,9 @@ func TestH1_5_NewServerLeavesDispatcherNilForEmptyConfig(t *testing.T) {
 
 // TestH1_5_MicroVMUnavailableAcceptPathReturnsExplicit503 is the grep-proof
 // structural guard that the three MicroVM-unavailable accept-path returns in
-// handlers_soul_mint_conversation_async.go (dispatcher-unavailable, invalid
-// binding, dispatch-failed) carry forward G10a's explicit-status posture from
-// H1.4: they return http.StatusServiceUnavailable (503), matching the error
+// handlers_soul_mint_conversation_async.go (invalid binding, queue-unavailable,
+// enqueue-failed) carry forward G10a's explicit-status posture from H1.4:
+// they return http.StatusServiceUnavailable (503), matching the error
 // mapper's 503 for appErrCodeMicroVMUnavailable, not the prior silent
 // http.StatusOK. The mapper-emitted 503 assertion at
 // handlers_soul_mint_conversation_async_internal_test.go (TestH1_2_MicroVMUnavailableIsLoudFailureNotSyncLLFallthrough)

@@ -486,15 +486,16 @@ func runH1D3ReconciliationObservationCase(t *testing.T, status hostedgenesis.Sta
 // TestH1_3_CompleteAssistantReadyWithoutDeclarationsDispatchesExtraction proves
 // the complete path services a declaration_extraction_pending transition by
 // dispatching a follow-on M16 controller run command on the same MicroVM
-// session via the dispatcher seam (not by enqueuing SQS authority). The pending
-// extraction is VM-serviced; the pending status is not a permanent trap. This
-// is the production extraction-dispatch reachability site (kills G7).
+// session via the dispatcher seam (not by enqueuing a user-visible queue
+// command). The pending extraction is VM-serviced; the pending status is not a
+// permanent trap. This is the production extraction-dispatch reachability site
+// (kills G7).
 func TestH1_3_CompleteAssistantReadyWithoutDeclarationsDispatchesExtraction(t *testing.T) {
 	tdb := newMintConversationTestDB()
 	s := newMintConversationServer(tdb)
 	reg := mintConversationHandleReg()
 	s.enqueueHostedGenesisMessage = func(_ context.Context, msg hostedgenesis.QueueMessage) error {
-		t.Fatalf("user-visible declaration extraction handoff must not enqueue SQS authority: %#v", msg)
+		t.Fatalf("declaration extraction handoff must not enqueue a user-visible queue command: %#v", msg)
 		return nil
 	}
 	dispatcher := &stubMicroVMDispatcher{t: t}

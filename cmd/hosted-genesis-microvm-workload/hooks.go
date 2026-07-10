@@ -300,11 +300,12 @@ func (s *hookServer) handleRunHook(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleTurnEndpoint is Host's application-level MicroVM turn endpoint. It
-// validates the M16 run envelope, starts durable assistant/declaration work in
-// the MicroVM, and returns running immediately so the controller stays a
-// lifecycle/dispatch surface (<10s) instead of becoming the long-running LLM
-// worker. Completion is written asynchronously to HostedGenesisSession truth by
-// the in-VM runner and observed by the normal API polling/recovery path.
+// validates the M16 run envelope, performs a turn-scoped store/read preflight,
+// starts durable assistant/declaration work in the MicroVM, and then returns
+// running so the controller stays a lifecycle/dispatch surface (<10s) instead
+// of becoming the long-running LLM worker. Completion is written asynchronously
+// to HostedGenesisSession truth by the in-VM runner and observed by the normal
+// API polling/recovery path.
 func (s *hookServer) handleTurnEndpoint(w http.ResponseWriter, r *http.Request) {
 	event, err := decodeLifecycleEvent(r)
 	if err != nil {
@@ -313,12 +314,12 @@ func (s *hookServer) handleTurnEndpoint(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	event.Hook = runtimemicrovm.HookRun
-	result := s.acceptTurnEndpoint(event)
+	result := s.acceptTurnEndpoint(r.Context(), event)
 	writeJSON(w, http.StatusOK, result)
 	logHookRequest(r.URL.Path, http.StatusOK, string(result.State))
 }
 
-func (s *hookServer) acceptTurnEndpoint(event runtimemicrovm.LifecycleEvent) runtimemicrovm.LifecycleResult {
+func (s *hookServer) acceptTurnEndpoint(ctx context.Context, event runtimemicrovm.LifecycleEvent) runtimemicrovm.LifecycleResult {
 	result := runtimemicrovm.LifecycleResult{
 		RequestID:     strings.TrimSpace(event.RequestID),
 		TenantID:      strings.TrimSpace(event.TenantID),
@@ -335,7 +336,25 @@ func (s *hookServer) acceptTurnEndpoint(event runtimemicrovm.LifecycleEvent) run
 		result.Error = &runtimemicrovm.SafeError{Code: hookErrorCode, Message: err.Error(), RequestID: strings.TrimSpace(event.RequestID)}
 		return result
 	}
-	s.runTurnDetached(binding.completionTurn())
+	turn := binding.completionTurn()
+	preparedRunner, preparedInput, err := s.runner.prepareTurn(ctx, turn)
+	if err != nil {
+		// The controller must observe this failure before it acknowledges invoke.
+		// The AI worker then persists microvm_unavailable with its own Host store;
+		// the workload cannot be expected to record a failure through the store that
+		// just failed initialization/read preflight.
+		slog.Error(serviceName+": turn store preflight failed", //nolint:gosec // G706: ids/error are structured slog attrs, not a format string.
+			slog.String("instance_slug", turn.InstanceSlug),
+			slog.String("conversation_id", turn.ConversationID),
+			slog.String("turn_id", turn.TurnID),
+			slog.String("request_id", turn.RequestID),
+			slog.String("error", err.Error()),
+		)
+		result.State = runtimemicrovm.StateFailed
+		result.Error = &runtimemicrovm.SafeError{Code: hookErrorCode, Message: "hosted genesis turn store is unavailable", RequestID: strings.TrimSpace(event.RequestID)}
+		return result
+	}
+	s.runTurnDetached(preparedRunner, turn, preparedInput)
 	return result
 }
 
@@ -355,8 +374,7 @@ func (s *hookServer) validateTurnEndpointEvent(event runtimemicrovm.LifecycleEve
 	return hookBinding{}.fromEvent(event)
 }
 
-func (s *hookServer) runTurnDetached(turn completion.CompletionTurn) {
-	runner := s.runner
+func (s *hookServer) runTurnDetached(runner *turnRunner, turn completion.CompletionTurn, in turnInput) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer cancel()
@@ -366,7 +384,7 @@ func (s *hookServer) runTurnDetached(turn completion.CompletionTurn) {
 			slog.String("turn_id", turn.TurnID),
 			slog.String("request_id", turn.RequestID),
 		)
-		if err := runner.runTurnAndPersist(ctx, turn); err != nil {
+		if err := runner.runPreparedTurnAndPersist(ctx, turn, in); err != nil {
 			slog.Error(serviceName+": turn execution failed", //nolint:gosec // G706: ids/error are structured slog attrs, not a format string.
 				slog.String("instance_slug", turn.InstanceSlug),
 				slog.String("conversation_id", turn.ConversationID),

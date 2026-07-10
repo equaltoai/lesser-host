@@ -173,14 +173,12 @@ test("hosted genesis AppTheory MicroVM deployed-stage wiring uses AppTheory cons
     "expected AWS-managed INTERNET_EGRESS egress connector ref",
   );
 
-  // P52 H1 (endpoint-based architecture, 2026-07-05): the MicroVM image is
-  // built with a raw cdk.CfnResource (AWS::Lambda::MicrovmImage) carrying an
-  // EMPTY Hooks config — NO Port, NO MicrovmImageHooks, NO MicrovmHooks — i.e.
-  // NO AWS-invoked build-time hooks. This bypasses the AppTheory v1.15.2
-  // AppTheoryMicrovmImage construct's renderHooks guard
-  // (microvm-image.js:234: "AppTheoryMicrovmImage requires props.hooks.
-  // microvmHooks or props.hooks.microvmImageHooks"), which refuses to render a
-  // no-hooks image. The AWS Lambda MicroVM BUILD environment does not route
+  // AppTheory v1.17.0 is the formal replacement for Host's temporary raw L1
+  // MicroVM-image bridge. The first-class AppTheoryMicrovmImage construct now
+  // renders an EMPTY Hooks config — NO Port, NO MicrovmImageHooks, NO
+  // MicrovmHooks — i.e. NO AWS-invoked build-time hooks. This preserves the
+  // endpoint-based architecture Host lab proved: the AWS Lambda MicroVM BUILD
+  // environment does not route
   // inbound HTTP to the container's :8080 hook port (proven across lab deploys
   // #10/#11/#12 — PR #882's loggingListener saw zero `connection accepted`
   // events from the build service), so an image with /ready ENABLED cannot
@@ -195,9 +193,7 @@ test("hosted genesis AppTheory MicroVM deployed-stage wiring uses AppTheory cons
   // getting-started example (no --hooks → CREATED). The workload still serves
   // /ready + /validate + the runtime hooks on :8080 (unchanged); AWS simply
   // does not invoke them at build time. Turn execution is via the controller
-  // POSTing to the runtime endpoint (separate brief). The proper fix (relax
-  // renderHooks + support endpoint invocation) is routed upstream to
-  // AppTheory — this is a principal-approved framework-gap exception.
+  // POSTing to the runtime endpoint through AppTheory's canonical invoke route.
   const hooks = imageProps.Hooks as
     | {
         MicrovmImageHooks?: { Ready?: string; Validate?: string };
@@ -420,7 +416,7 @@ test("hosted genesis AppTheory MicroVM deployed-stage wiring uses AppTheory cons
   );
   assert.equal(
     controllerEnv.APPTHEORY_MICROVM_CONTROLLER_OPERATIONS,
-    "run,get,list,suspend,resume,terminate,auth-token,shell-auth-token",
+    "run,get,list,suspend,resume,terminate,invoke,auth-token,shell-auth-token",
   );
   assert.ok(
     String(controllerEnv.APPTHEORY_MICROVM_CONTROLLER_ROUTES ?? "").includes(
@@ -470,7 +466,7 @@ test("hosted genesis AppTheory MicroVM deployed-stage wiring uses AppTheory cons
   );
   assert.ok(
     !("HOSTED_GENESIS_MICROVM_ADAPTER_FEEDBACK" in controllerEnv),
-    "v1.15 adoption must retire the provisional adapter feedback env",
+    "AppTheory MicroVM adoption must retire the provisional adapter feedback env",
   );
 
   const routes = findResources(template, "AWS::ApiGatewayV2::Route").filter(
@@ -482,6 +478,8 @@ test("hosted genesis AppTheory MicroVM deployed-stage wiring uses AppTheory cons
       "DELETE /microvms/{session_id}",
       "GET /microvms",
       "GET /microvms/{session_id}",
+      "ANY /microvms/{session_id}/invoke",
+      "ANY /microvms/{session_id}/invoke/{proxy+}",
       "POST /microvms",
       "POST /microvms/{session_id}/auth-token",
       "POST /microvms/{session_id}/resume",
@@ -643,7 +641,7 @@ test("hosted genesis AppTheory MicroVM deployed-stage wiring uses AppTheory cons
   );
 });
 
-test("P52 H1.5 corrective (AppTheory v1.15.2): host-owned MicroVM execution role propagates to RunMicrovm via the controller", () => {
+test("P52 H1.5 corrective: host-owned MicroVM execution role propagates to RunMicrovm via the controller", () => {
   const template = synthTemplateWithContext(
     hostedGenesisMicrovmRequiredContext,
   );
@@ -684,12 +682,12 @@ test("P52 H1.5 corrective (AppTheory v1.15.2): host-owned MicroVM execution role
     executionRole[1].Properties?.AssumeRolePolicyDocument ?? {},
   );
   assert.ok(
-    execAssumePolicyJson.includes(buildRoleLogicalId),
-    "expected execution role trust to allow the image build role to assume it for in-guest runtime credentials",
+    !execAssumePolicyJson.includes(buildRoleLogicalId),
+    "execution role trust must not allow the image build role to assume runtime authority",
   );
 
   // The controller Lambda env carries APPTHEORY_MICROVM_EXECUTION_ROLE_ARN,
-  // pointing at the host-owned execution role (AppTheory v1.15.2 propagation:
+  // pointing at the host-owned execution role (AppTheory propagation:
   // controller reads env -> ProviderRunInput -> RunMicrovmInput). The env value
   // must be a CDK reference (Fn::GetAtt on the role), never a literal ARN.
   const controllerFn = findResourceEntries(
@@ -781,13 +779,8 @@ test("P52 H1.5 corrective (AppTheory v1.15.2): host-owned MicroVM execution role
     buildRolePolicies.map(([, policy]) => policy.Properties ?? {}),
   );
   assert.ok(
-    buildRolePolicyJson.includes("sts:AssumeRole") &&
-      buildRolePolicyJson.includes(execRoleLogicalId),
-    "expected image build role to assume only the host-owned execution role for in-guest credential correction",
-  );
-  assert.ok(
-    !buildRolePolicyJson.includes('"sts:AssumeRole","Resource":["*"]'),
-    "image build role sts:AssumeRole must not be wildcard",
+    !buildRolePolicyJson.includes("sts:AssumeRole"),
+    "image build role must not assume the MicroVM execution role",
   );
 
   // Execution role is least-privilege: DynamoDB R/W on the Host state table,
@@ -872,15 +865,10 @@ test("P52 H1.5 corrective (AppTheory v1.15.2): host-owned MicroVM execution role
   const executionRoleVar = imageEnv.find(
     (env) => env?.Key === "HOSTED_GENESIS_MICROVM_EXECUTION_ROLE_ARN",
   );
-  assert.ok(
+  assert.equal(
     executionRoleVar,
-    "expected HOSTED_GENESIS_MICROVM_EXECUTION_ROLE_ARN in the MicroVM image environment",
-  );
-  const executionRoleVarJson = JSON.stringify(executionRoleVar?.Value ?? {});
-  assert.ok(
-    executionRoleVarJson.includes('"Fn::GetAtt"') &&
-      executionRoleVarJson.includes(execRoleLogicalId),
-    "expected MicroVM image execution role env value to reference the host-owned execution role ARN",
+    undefined,
+    "MicroVM image must use platform-supplied execution-role credentials without a self-assume ARN",
   );
   const stateTableVar = imageEnv.find((env) => env?.Key === "STATE_TABLE_NAME");
   assert.ok(
@@ -1099,6 +1087,16 @@ test("P52 H1.5: control-plane Lambda receives HTTP dispatch env + SSM auth-token
   );
   assert.ok(controlPlaneFn, "expected control-plane Lambda to synthesize");
   const controlPlaneEnv = lambdaEnvironment(controlPlaneFn[1].Properties ?? {});
+  const controllerFn = findResourceEntries(
+    template,
+    "AWS::Lambda::Function",
+  ).find(
+    ([, fn]) =>
+      fn.Properties?.FunctionName ===
+      "lesser-host-lab-hosted-genesis-microvm-controller",
+  );
+  assert.ok(controllerFn, "expected AppTheory-created controller Lambda");
+  const controllerEnv = lambdaEnvironment(controllerFn[1].Properties ?? {});
   // controlplane.NewServer reads these env vars to construct the
   // HTTPControllerDispatcher (HostedGenesisMicroVM config block). The
   // controller endpoint + auth-token SSM param name + image/egress refs are
@@ -1131,6 +1129,17 @@ test("P52 H1.5: control-plane Lambda receives HTTP dispatch env + SSM auth-token
       controlPlaneEnv.APPTHEORY_MICROVM_INGRESS_NETWORK_CONNECTOR_REFS,
     ).includes("aws-network-connector:HTTP_INGRESS"),
     "expected control-plane dispatch to use HTTP_INGRESS for endpoint auth-token compatibility",
+  );
+  assert.ok(
+    JSON.stringify(
+      controlPlaneEnv.APPTHEORY_MICROVM_INGRESS_NETWORK_CONNECTOR_REFS,
+    ).includes("aws-network-connector:SHELL_INGRESS"),
+    "expected control-plane dispatch ingress refs to match the controller deployment-pinned shell ingress ref",
+  );
+  assert.deepEqual(
+    controlPlaneEnv.APPTHEORY_MICROVM_INGRESS_NETWORK_CONNECTOR_REFS,
+    controllerEnv.APPTHEORY_MICROVM_INGRESS_NETWORK_CONNECTOR_REFS,
+    "control-plane dispatch ingress refs must match controller deployment-pinned ingress refs",
   );
   assert.ok(
     !JSON.stringify(

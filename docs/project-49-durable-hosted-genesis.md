@@ -65,9 +65,11 @@ does not delete `HostedGenesisSession` truth.
 
 ### Worker and retry model (M4 demoted)
 
-Hosted-genesis SQS may remain available for operator/backfill/janitor recovery, but the control plane no longer receives
-`HOSTED_GENESIS_QUEUE_URL` and does not enqueue user-visible conversation turns. If an operator/backfill path feeds the
-queue, the AI worker consumes one hosted-genesis job at a time and re-loads all durable state before writing:
+Hosted-genesis SQS remains available as non-authoritative transport for accepted-turn MicroVM dispatch plus
+operator/backfill/janitor recovery. The control plane may enqueue a MicroVM dispatch command after
+`HostedGenesisSession` and the user-visible conversation turn are already durably committed, but it must not treat the
+queue as conversation authority. If the AI worker consumes a hosted-genesis job, it re-loads all durable state before
+writing:
 
 1. registration id and agent id
 2. registration domain
@@ -76,9 +78,10 @@ queue, the AI worker consumes one hosted-genesis job at a time and re-loads all 
 5. idempotency row when present
 
 The queue has an SQS-managed encrypted DLQ, three receive attempts, and a one-message batch size. Queue loss, DLQ
-backlog, or AI-worker outage must not block status reads, recovery guidance, or finalize gate decisions once
+backlog, or AI-worker outage must not override status reads, recovery guidance, or finalize gate decisions once
 `HostedGenesisSession` truth exists. Retry with the same `idempotency_key` and request hash replays the existing
-conversation/turn and does not append another user message or debit credits again.
+conversation/turn and may re-enqueue the missing MicroVM dispatch command only after validating the durable session; it
+does not append another user message or debit credits again.
 
 ### `created` status decision
 

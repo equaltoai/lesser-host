@@ -16,8 +16,10 @@ import (
 
 	"github.com/equaltoai/lesser-host/internal/ai/llm"
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
+	"github.com/equaltoai/lesser-host/internal/manageddomain"
 	"github.com/equaltoai/lesser-host/internal/secrets"
 	"github.com/equaltoai/lesser-host/internal/soul"
+	"github.com/equaltoai/lesser-host/internal/store"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
@@ -27,6 +29,7 @@ const (
 	hostedGenesisFailureLLMUnavailable              = "llm_unavailable"
 	hostedGenesisFailureAssistantTurnFailed         = "assistant_turn_failed"
 	hostedGenesisFailureDeclarationExtractionFailed = "declaration_extraction_failed"
+	hostedGenesisFailureMicroVMUnavailable          = "microvm_unavailable"
 	hostedGenesisFailureInvalidCompletionState      = "invalid_completion_state"
 	hostedGenesisFailureTenantBoundaryViolation     = "tenant_boundary_violation"
 )
@@ -37,6 +40,7 @@ type hostedGenesisStore interface {
 	GetInstance(ctx context.Context, slug string) (*models.Instance, error)
 	GetHostedGenesisSession(ctx context.Context, instanceSlug string, conversationID string) (*models.HostedGenesisSession, error)
 	UpdateHostedGenesisSession(ctx context.Context, item *models.HostedGenesisSession, expectedVersion int64, expectedStatus hostedgenesis.Status) error
+	FailHostedGenesisSessionAndConversation(ctx context.Context, session *models.HostedGenesisSession, expectedVersion int64, expectedStatus hostedgenesis.Status, conversation *models.SoulAgentMintConversation) error
 	GetSoulAgentMintConversation(ctx context.Context, agentID string, conversationID string) (*models.SoulAgentMintConversation, error)
 	PutSoulAgentMintConversation(ctx context.Context, item *models.SoulAgentMintConversation) error
 	GetSoulMintConversationIdempotency(ctx context.Context, instanceSlug string, registrationID string, idempotencyKey string) (*models.SoulMintConversationIdempotency, error)
@@ -69,6 +73,8 @@ func (s *Server) handleHostedGenesisQueueMessage(ctx *apptheory.EventContext, ms
 		return nil
 	}
 	switch strings.TrimSpace(qm.Step) {
+	case hostedgenesis.StepMicroVMDispatch:
+		return s.processHostedGenesisMicroVMDispatch(ctx.Context(), ctx.RequestID, qm)
 	case hostedgenesis.StepAssistantTurn:
 		return s.processHostedGenesisAssistantTurn(ctx.Context(), ctx.RequestID, qm)
 	case hostedgenesis.StepDeclarationExtraction:
@@ -98,7 +104,10 @@ func (s *Server) processHostedGenesisAssistantTurn(ctx context.Context, workerRe
 	if !hostedGenesisAssistantJobReady(reg, conv, session, msg) {
 		return nil
 	}
-	run, ok := s.prepareHostedGenesisAssistantRun(ctx, st, conv, session, workerRequestID)
+	run, ok, err := s.prepareHostedGenesisAssistantRun(ctx, st, conv, session, workerRequestID)
+	if err != nil {
+		return err
+	}
 	if !ok {
 		return nil
 	}
@@ -119,24 +128,24 @@ func hostedGenesisAssistantJobReady(reg *models.SoulAgentRegistration, conv *mod
 	return strings.TrimSpace(session.LatestTurnID) == strings.TrimSpace(msg.TurnID) && hostedgenesis.NormalizeStatus(session.Status) == hostedgenesis.StatusInProgress
 }
 
-func (s *Server) prepareHostedGenesisAssistantRun(ctx context.Context, st hostedGenesisStore, conv *models.SoulAgentMintConversation, session *models.HostedGenesisSession, workerRequestID string) (hostedGenesisAssistantRun, bool) {
+func (s *Server) prepareHostedGenesisAssistantRun(ctx context.Context, st hostedGenesisStore, conv *models.SoulAgentMintConversation, session *models.HostedGenesisSession, workerRequestID string) (hostedGenesisAssistantRun, bool, error) {
 	messages, err := decodeHostedGenesisMessages(conv.Messages)
 	if err != nil || len(messages) == 0 {
-		s.markHostedGenesisConversationFailed(ctx, st, conv, session, hostedGenesisFailureInvalidCompletionState, workerRequestID)
-		return hostedGenesisAssistantRun{}, false
+		persistErr := s.markHostedGenesisConversationFailed(ctx, st, conv, session, hostedGenesisFailureInvalidCompletionState, workerRequestID)
+		return hostedGenesisAssistantRun{}, false, persistErr
 	}
 	modelSet := firstNonEmptyWorker(session.Model, conv.Model)
 	apiKey, appErr := hostedGenesisAPIKey(ctx, modelSet)
 	if appErr != nil {
-		s.markHostedGenesisConversationFailed(ctx, st, conv, session, hostedGenesisFailureLLMUnavailable, workerRequestID)
-		return hostedGenesisAssistantRun{}, false
+		persistErr := s.markHostedGenesisConversationFailed(ctx, st, conv, session, hostedGenesisFailureLLMUnavailable, workerRequestID)
+		return hostedGenesisAssistantRun{}, false, persistErr
 	}
 	return hostedGenesisAssistantRun{
 		messages:    messages,
 		llmMessages: hostedGenesisLLMMessages(messages),
 		modelSet:    modelSet,
 		apiKey:      apiKey,
-	}, true
+	}, true, nil
 }
 
 func (s *Server) runAndPersistHostedGenesisAssistant(ctx context.Context, st hostedGenesisStore, reg *models.SoulAgentRegistration, conv *models.SoulAgentMintConversation, session *models.HostedGenesisSession, msg hostedgenesis.QueueMessage, workerRequestID string, run hostedGenesisAssistantRun) error {
@@ -145,14 +154,15 @@ func (s *Server) runAndPersistHostedGenesisAssistant(ctx context.Context, st hos
 	fullResponse, usage, err := runHostedGenesisAssistantModel(runCtx, run.apiKey, run.modelSet, hostedGenesisSystemPrompt(reg), run.llmMessages)
 	if err != nil || strings.TrimSpace(fullResponse) == "" {
 		log.Printf("aiworker: hosted genesis assistant turn failed agent_hash=%s conversation_hash=%s provider=%s err=%v", hostedGenesisAuditHash(conv.AgentID), hostedGenesisAuditHash(conv.ConversationID), hostedGenesisProvider(run.modelSet), err)
-		s.markHostedGenesisConversationFailed(ctx, st, conv, session, hostedGenesisFailureAssistantTurnFailed, workerRequestID)
+		if persistErr := s.markHostedGenesisConversationFailed(ctx, st, conv, session, hostedGenesisFailureAssistantTurnFailed, workerRequestID); persistErr != nil {
+			return persistErr
+		}
 		return err
 	}
 	run.messages = append(run.messages, hostedGenesisMessage{Role: "assistant", Content: fullResponse})
 	messagesJSON, err := json.Marshal(run.messages)
 	if err != nil {
-		s.markHostedGenesisConversationFailed(ctx, st, conv, session, hostedGenesisFailureAssistantTurnFailed, workerRequestID)
-		return nil
+		return s.markHostedGenesisConversationFailed(ctx, st, conv, session, hostedGenesisFailureAssistantTurnFailed, workerRequestID)
 	}
 	return persistHostedGenesisAssistantResponse(ctx, st, conv, session, msg, workerRequestID, string(messagesJSON), usage, len(run.messages))
 }
@@ -190,7 +200,10 @@ func (s *Server) processHostedGenesisDeclarationExtraction(ctx context.Context, 
 	if !hostedGenesisDeclarationJobReady(reg, conv, session) {
 		return nil
 	}
-	run, ok := s.prepareHostedGenesisDeclarationRun(ctx, st, reg, conv, session, workerRequestID)
+	run, ok, err := s.prepareHostedGenesisDeclarationRun(ctx, st, reg, conv, session, workerRequestID)
+	if err != nil {
+		return err
+	}
 	if !ok {
 		return nil
 	}
@@ -207,23 +220,23 @@ func hostedGenesisDeclarationJobReady(reg *models.SoulAgentRegistration, conv *m
 	return reg != nil && conv != nil && session != nil && hostedgenesis.NormalizeStatus(session.Status) == hostedgenesis.StatusDeclarationExtractionPending
 }
 
-func (s *Server) prepareHostedGenesisDeclarationRun(ctx context.Context, st hostedGenesisStore, reg *models.SoulAgentRegistration, conv *models.SoulAgentMintConversation, session *models.HostedGenesisSession, workerRequestID string) (hostedGenesisDeclarationRun, bool) {
+func (s *Server) prepareHostedGenesisDeclarationRun(ctx context.Context, st hostedGenesisStore, reg *models.SoulAgentRegistration, conv *models.SoulAgentMintConversation, session *models.HostedGenesisSession, workerRequestID string) (hostedGenesisDeclarationRun, bool, error) {
 	messages, err := decodeHostedGenesisMessages(conv.Messages)
 	if err != nil || len(messages) == 0 || !hostedGenesisHasAssistant(messages) {
-		s.markHostedGenesisConversationFailed(ctx, st, conv, session, hostedGenesisFailureInvalidCompletionState, workerRequestID)
-		return hostedGenesisDeclarationRun{}, false
+		persistErr := s.markHostedGenesisConversationFailed(ctx, st, conv, session, hostedGenesisFailureInvalidCompletionState, workerRequestID)
+		return hostedGenesisDeclarationRun{}, false, persistErr
 	}
 	modelSet := firstNonEmptyWorker(session.Model, conv.Model)
 	apiKey, appErr := hostedGenesisAPIKey(ctx, modelSet)
 	if appErr != nil {
-		s.markHostedGenesisConversationFailed(ctx, st, conv, session, hostedGenesisFailureLLMUnavailable, workerRequestID)
-		return hostedGenesisDeclarationRun{}, false
+		persistErr := s.markHostedGenesisConversationFailed(ctx, st, conv, session, hostedGenesisFailureLLMUnavailable, workerRequestID)
+		return hostedGenesisDeclarationRun{}, false, persistErr
 	}
 	return hostedGenesisDeclarationRun{
 		input:    hostedGenesisDeclarationInput(reg, messages),
 		modelSet: modelSet,
 		apiKey:   apiKey,
-	}, true
+	}, true, nil
 }
 
 func hostedGenesisDeclarationInput(reg *models.SoulAgentRegistration, messages []hostedGenesisMessage) llm.MintConversationDeclarationsInput {
@@ -251,18 +264,18 @@ func (s *Server) runAndPersistHostedGenesisDeclaration(ctx context.Context, st h
 	draft, usage, err := runHostedGenesisDeclarationModel(ctx, run.apiKey, run.modelSet, run.input)
 	if err != nil {
 		log.Printf("aiworker: hosted genesis declaration extraction failed agent_hash=%s conversation_hash=%s provider=%s err=%v", hostedGenesisAuditHash(conv.AgentID), hostedGenesisAuditHash(conv.ConversationID), hostedGenesisProvider(run.modelSet), err)
-		s.markHostedGenesisConversationFailed(ctx, st, conv, session, hostedGenesisFailureDeclarationExtractionFailed, workerRequestID)
+		if persistErr := s.markHostedGenesisConversationFailed(ctx, st, conv, session, hostedGenesisFailureDeclarationExtractionFailed, workerRequestID); persistErr != nil {
+			return persistErr
+		}
 		return err
 	}
 	decl, err := buildHostedGenesisDeclarationsDraft(draft, time.Now().UTC(), run.modelSet)
 	if err != nil {
-		s.markHostedGenesisConversationFailed(ctx, st, conv, session, hostedGenesisFailureDeclarationExtractionFailed, workerRequestID)
-		return nil
+		return s.markHostedGenesisConversationFailed(ctx, st, conv, session, hostedGenesisFailureDeclarationExtractionFailed, workerRequestID)
 	}
 	b, err := json.Marshal(decl)
 	if err != nil {
-		s.markHostedGenesisConversationFailed(ctx, st, conv, session, hostedGenesisFailureDeclarationExtractionFailed, workerRequestID)
-		return nil
+		return s.markHostedGenesisConversationFailed(ctx, st, conv, session, hostedGenesisFailureDeclarationExtractionFailed, workerRequestID)
 	}
 	return persistHostedGenesisDeclarationResponse(ctx, st, conv, session, msg, workerRequestID, string(b), usage, run.modelSet)
 }
@@ -292,39 +305,112 @@ func persistHostedGenesisDeclarationResponse(ctx context.Context, st hostedGenes
 }
 
 func (s *Server) loadAndValidateHostedGenesisJob(ctx context.Context, st hostedGenesisStore, msg hostedgenesis.QueueMessage) (*models.SoulAgentRegistration, *models.SoulAgentMintConversation, *models.HostedGenesisSession, error) {
-	reg, err := st.GetSoulAgentRegistration(ctx, msg.RegistrationID)
+	reg, err := loadHostedGenesisRegistrationForJob(ctx, st, msg.RegistrationID)
 	if err != nil || reg == nil {
-		return nil, nil, nil, nil
+		return nil, nil, nil, err
 	}
 	if !hostedGenesisRegistrationMatchesJob(reg, msg) {
 		return nil, nil, nil, nil
 	}
-	session, sessionErr := st.GetHostedGenesisSession(ctx, msg.InstanceSlug, msg.ConversationID)
-	if sessionErr != nil || session == nil {
-		return reg, nil, nil, nil
+	session, err := loadHostedGenesisSessionForJob(ctx, st, msg)
+	if err != nil || session == nil {
+		return reg, nil, nil, err
 	}
-	if !strings.EqualFold(strings.TrimSpace(session.RegistrationID), strings.TrimSpace(msg.RegistrationID)) ||
-		!strings.EqualFold(strings.TrimSpace(session.AgentID), strings.TrimSpace(msg.AgentID)) {
-		s.markHostedGenesisSessionFailed(ctx, st, session, hostedGenesisFailureTenantBoundaryViolation, msg.RequestID)
-		return nil, nil, nil, nil
+	valid, err := s.validateHostedGenesisSessionIdentity(ctx, st, session, msg)
+	if err != nil || !valid {
+		return nil, nil, nil, err
 	}
-	if !hostedGenesisJobBoundaryValid(ctx, st, reg, msg) {
-		conv, _ := st.GetSoulAgentMintConversation(ctx, msg.AgentID, msg.ConversationID)
-		s.markHostedGenesisConversationFailed(ctx, st, conv, session, hostedGenesisFailureTenantBoundaryViolation, msg.RequestID)
-		return nil, nil, nil, nil
+	valid, err = s.validateHostedGenesisBoundary(ctx, st, reg, session, msg)
+	if err != nil || !valid {
+		return nil, nil, nil, err
 	}
-	if !hostedGenesisJobIdempotencyValid(ctx, st, msg) {
-		conv, _ := st.GetSoulAgentMintConversation(ctx, msg.AgentID, msg.ConversationID)
-		s.markHostedGenesisConversationFailed(ctx, st, conv, session, hostedGenesisFailureInvalidCompletionState, msg.RequestID)
-		return nil, nil, nil, nil
+	valid, err = s.validateHostedGenesisIdempotency(ctx, st, session, msg)
+	if err != nil || !valid {
+		return nil, nil, nil, err
 	}
-	conv, err := st.GetSoulAgentMintConversation(ctx, msg.AgentID, msg.ConversationID)
-	if err != nil || conv == nil {
-		return reg, nil, session, nil
+	conv, err := loadHostedGenesisConversationForJob(ctx, st, msg)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	if conv == nil {
+		persistErr := s.markHostedGenesisSessionFailed(ctx, st, session, hostedGenesisFailureInvalidCompletionState, msg.RequestID)
+		return nil, nil, nil, persistErr
 	}
 	conv.Messages = models.DecodeSoulMintConversationBlob(conv.Messages)
 	conv.ProducedDeclarations = models.DecodeSoulMintConversationBlob(conv.ProducedDeclarations)
 	return reg, conv, session, nil
+}
+
+func loadHostedGenesisRegistrationForJob(ctx context.Context, st hostedGenesisStore, registrationID string) (*models.SoulAgentRegistration, error) {
+	reg, err := st.GetSoulAgentRegistration(ctx, registrationID)
+	if err != nil {
+		if store.IsNotFound(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("load hosted genesis registration: %w", err)
+	}
+	return reg, nil
+}
+
+func loadHostedGenesisSessionForJob(ctx context.Context, st hostedGenesisStore, msg hostedgenesis.QueueMessage) (*models.HostedGenesisSession, error) {
+	session, err := st.GetHostedGenesisSession(ctx, msg.InstanceSlug, msg.ConversationID)
+	if err != nil {
+		if store.IsNotFound(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("load hosted genesis session: %w", err)
+	}
+	return session, nil
+}
+
+func loadHostedGenesisConversationForJob(ctx context.Context, st hostedGenesisStore, msg hostedgenesis.QueueMessage) (*models.SoulAgentMintConversation, error) {
+	conv, err := st.GetSoulAgentMintConversation(ctx, msg.AgentID, msg.ConversationID)
+	if err != nil {
+		if store.IsNotFound(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("load hosted genesis conversation: %w", err)
+	}
+	return conv, nil
+}
+
+func (s *Server) validateHostedGenesisSessionIdentity(ctx context.Context, st hostedGenesisStore, session *models.HostedGenesisSession, msg hostedgenesis.QueueMessage) (bool, error) {
+	if strings.EqualFold(strings.TrimSpace(session.RegistrationID), strings.TrimSpace(msg.RegistrationID)) &&
+		strings.EqualFold(strings.TrimSpace(session.AgentID), strings.TrimSpace(msg.AgentID)) {
+		return true, nil
+	}
+	authoritative := msg
+	authoritative.AgentID = session.AgentID
+	authoritative.ConversationID = session.ConversationID
+	conv, err := loadHostedGenesisConversationForJob(ctx, st, authoritative)
+	if err != nil {
+		return false, err
+	}
+	return false, s.markHostedGenesisConversationFailed(ctx, st, conv, session, hostedGenesisFailureTenantBoundaryViolation, msg.RequestID)
+}
+
+func (s *Server) validateHostedGenesisBoundary(ctx context.Context, st hostedGenesisStore, reg *models.SoulAgentRegistration, session *models.HostedGenesisSession, msg hostedgenesis.QueueMessage) (bool, error) {
+	valid, err := s.hostedGenesisJobBoundaryValid(ctx, st, reg, msg)
+	if err != nil || valid {
+		return valid, err
+	}
+	conv, err := loadHostedGenesisConversationForJob(ctx, st, msg)
+	if err != nil {
+		return false, err
+	}
+	return false, s.markHostedGenesisConversationFailed(ctx, st, conv, session, hostedGenesisFailureTenantBoundaryViolation, msg.RequestID)
+}
+
+func (s *Server) validateHostedGenesisIdempotency(ctx context.Context, st hostedGenesisStore, session *models.HostedGenesisSession, msg hostedgenesis.QueueMessage) (bool, error) {
+	valid, err := hostedGenesisJobIdempotencyValid(ctx, st, msg)
+	if err != nil || valid {
+		return valid, err
+	}
+	conv, err := loadHostedGenesisConversationForJob(ctx, st, msg)
+	if err != nil {
+		return false, err
+	}
+	return false, s.markHostedGenesisConversationFailed(ctx, st, conv, session, hostedGenesisFailureInvalidCompletionState, msg.RequestID)
 }
 
 var runHostedGenesisAssistantModel = defaultRunHostedGenesisAssistantModel
@@ -357,32 +443,100 @@ func hostedGenesisRegistrationMatchesJob(reg *models.SoulAgentRegistration, msg 
 	return reg != nil && strings.EqualFold(strings.TrimSpace(reg.AgentID), strings.TrimSpace(msg.AgentID))
 }
 
-func hostedGenesisJobBoundaryValid(ctx context.Context, st hostedGenesisStore, reg *models.SoulAgentRegistration, msg hostedgenesis.QueueMessage) bool {
-	domain, domainErr := st.GetDomain(ctx, reg.DomainNormalized)
-	if domainErr != nil || domain == nil || !hostedGenesisDomainActive(domain) || !strings.EqualFold(strings.TrimSpace(domain.InstanceSlug), strings.TrimSpace(msg.InstanceSlug)) {
-		return false
+func (s *Server) hostedGenesisJobBoundaryValid(ctx context.Context, st hostedGenesisStore, reg *models.SoulAgentRegistration, msg hostedgenesis.QueueMessage) (bool, error) {
+	domain, inst, ok, err := s.hostedGenesisJobBoundaryDomainAndInstance(ctx, st, strings.TrimSpace(reg.DomainNormalized), strings.TrimSpace(msg.InstanceSlug))
+	if err != nil || !ok || domain == nil || inst == nil {
+		return false, err
 	}
-	inst, instErr := st.GetInstance(ctx, msg.InstanceSlug)
-	return instErr == nil && inst != nil && strings.EqualFold(strings.TrimSpace(inst.Slug), strings.TrimSpace(msg.InstanceSlug))
+	return strings.EqualFold(strings.TrimSpace(domain.InstanceSlug), strings.TrimSpace(msg.InstanceSlug)) &&
+		strings.EqualFold(strings.TrimSpace(inst.Slug), strings.TrimSpace(msg.InstanceSlug)), nil
 }
 
-func hostedGenesisJobIdempotencyValid(ctx context.Context, st hostedGenesisStore, msg hostedgenesis.QueueMessage) bool {
+func (s *Server) hostedGenesisJobBoundaryDomainAndInstance(ctx context.Context, st hostedGenesisStore, normalizedDomain string, instanceSlug string) (*models.Domain, *models.Instance, bool, error) {
+	if st == nil {
+		return nil, nil, false, fmt.Errorf("hosted genesis store not initialized")
+	}
+	normalizedDomain = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(normalizedDomain), "."))
+	instanceSlug = strings.TrimSpace(instanceSlug)
+	if normalizedDomain == "" || instanceSlug == "" {
+		return nil, nil, false, nil
+	}
+	domain, inst, ok, err := hostedGenesisDirectDomainAndInstance(ctx, st, normalizedDomain, instanceSlug)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	if ok {
+		return domain, inst, true, nil
+	}
+	stage := ""
+	if s != nil {
+		stage = s.cfg.Stage
+	}
+	baseDomain, ok := manageddomain.BaseDomainFromStageDomain(stage, normalizedDomain)
+	if !ok {
+		return nil, nil, false, nil
+	}
+	domain, inst, ok, err = hostedGenesisDirectDomainAndInstance(ctx, st, baseDomain, instanceSlug)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	if !ok || domain == nil || inst == nil {
+		return nil, nil, false, nil
+	}
+	if strings.TrimSpace(domain.Type) != models.DomainTypePrimary ||
+		!strings.EqualFold(strings.TrimSpace(domain.VerificationMethod), "managed") ||
+		!strings.EqualFold(strings.TrimSpace(inst.HostedBaseDomain), strings.TrimSpace(domain.Domain)) {
+		return nil, nil, false, nil
+	}
+	return domain, inst, true, nil
+}
+
+func hostedGenesisDirectDomainAndInstance(ctx context.Context, st hostedGenesisStore, normalizedDomain string, instanceSlug string) (*models.Domain, *models.Instance, bool, error) {
+	domain, domainErr := st.GetDomain(ctx, normalizedDomain)
+	if domainErr != nil {
+		if store.IsNotFound(domainErr) {
+			return nil, nil, false, nil
+		}
+		return nil, nil, false, fmt.Errorf("load hosted genesis domain: %w", domainErr)
+	}
+	if domain == nil || !hostedGenesisDomainActive(domain) || !strings.EqualFold(strings.TrimSpace(domain.InstanceSlug), instanceSlug) {
+		return nil, nil, false, nil
+	}
+	inst, instErr := st.GetInstance(ctx, instanceSlug)
+	if instErr != nil {
+		if store.IsNotFound(instErr) {
+			return nil, nil, false, nil
+		}
+		return nil, nil, false, fmt.Errorf("load hosted genesis instance: %w", instErr)
+	}
+	if inst == nil || !strings.EqualFold(strings.TrimSpace(inst.Slug), instanceSlug) {
+		return nil, nil, false, nil
+	}
+	return domain, inst, true, nil
+}
+
+func hostedGenesisJobIdempotencyValid(ctx context.Context, st hostedGenesisStore, msg hostedgenesis.QueueMessage) (bool, error) {
 	if strings.TrimSpace(msg.IdempotencyKey) == "" {
-		return true
+		return true, nil
 	}
 	idem, idemErr := st.GetSoulMintConversationIdempotency(ctx, msg.InstanceSlug, msg.RegistrationID, msg.IdempotencyKey)
-	return idemErr == nil && idem != nil &&
+	if idemErr != nil {
+		if store.IsNotFound(idemErr) {
+			return false, nil
+		}
+		return false, fmt.Errorf("load hosted genesis idempotency reservation: %w", idemErr)
+	}
+	return idem != nil &&
 		strings.EqualFold(strings.TrimSpace(idem.ConversationID), strings.TrimSpace(msg.ConversationID)) &&
-		strings.EqualFold(strings.TrimSpace(idem.TurnID), strings.TrimSpace(msg.TurnID))
+		strings.EqualFold(strings.TrimSpace(idem.TurnID), strings.TrimSpace(msg.TurnID)), nil
 }
 
-func (s *Server) markHostedGenesisConversationFailed(ctx context.Context, st hostedGenesisStore, conv *models.SoulAgentMintConversation, session *models.HostedGenesisSession, reason string, requestID string) {
+func (s *Server) markHostedGenesisConversationFailed(ctx context.Context, st hostedGenesisStore, conv *models.SoulAgentMintConversation, session *models.HostedGenesisSession, reason string, requestID string) error {
 	if st == nil {
-		return
+		return fmt.Errorf("hosted genesis store not initialized")
 	}
-	s.markHostedGenesisSessionFailed(ctx, st, session, reason, requestID)
 	if conv == nil {
-		return
+		return s.markHostedGenesisSessionFailed(ctx, st, session, reason, requestID)
 	}
 	now := time.Now().UTC()
 	conv.Status = models.SoulMintConversationStatusFailed
@@ -391,13 +545,27 @@ func (s *Server) markHostedGenesisConversationFailed(ctx context.Context, st hos
 	conv.UpdatedAt = now
 	conv.CompletedAt = now
 	encodeHostedGenesisPrivateFields(conv)
-	_ = conv.UpdateKeys()
-	_ = st.PutSoulAgentMintConversation(ctx, conv)
+	if err := conv.UpdateKeys(); err != nil {
+		return err
+	}
+	if session == nil {
+		return st.PutSoulAgentMintConversation(ctx, conv)
+	}
+	expectedStatus := hostedgenesis.NormalizeStatus(session.Status)
+	session.Status = string(hostedgenesis.StatusFailed)
+	session.Failure = hostedGenesisFailureFromWorkerReason(reason)
+	session.RequestID = firstNonEmptyWorker(requestID, session.RequestID)
+	session.UpdatedAt = now
+	session.CompletedAt = now
+	return st.FailHostedGenesisSessionAndConversation(ctx, session, session.Version, expectedStatus, conv)
 }
 
-func (s *Server) markHostedGenesisSessionFailed(ctx context.Context, st hostedGenesisStore, session *models.HostedGenesisSession, reason string, requestID string) {
-	if st == nil || session == nil {
-		return
+func (s *Server) markHostedGenesisSessionFailed(ctx context.Context, st hostedGenesisStore, session *models.HostedGenesisSession, reason string, requestID string) error {
+	if st == nil {
+		return fmt.Errorf("hosted genesis store not initialized")
+	}
+	if session == nil {
+		return nil
 	}
 	now := time.Now().UTC()
 	expectedStatus := hostedgenesis.NormalizeStatus(session.Status)
@@ -406,7 +574,7 @@ func (s *Server) markHostedGenesisSessionFailed(ctx context.Context, st hostedGe
 	session.RequestID = firstNonEmptyWorker(requestID, session.RequestID)
 	session.UpdatedAt = now
 	session.CompletedAt = now
-	_ = st.UpdateHostedGenesisSession(ctx, session, session.Version, expectedStatus)
+	return st.UpdateHostedGenesisSession(ctx, session, session.Version, expectedStatus)
 }
 
 func encodeHostedGenesisPrivateFields(conv *models.SoulAgentMintConversation) {
@@ -471,6 +639,8 @@ func hostedGenesisFailureFromWorkerReason(reason string) *hostedgenesis.Failure 
 		code = hostedgenesis.FailureCodeLLMUnavailable
 	case hostedGenesisFailureAssistantTurnFailed:
 		code = hostedgenesis.FailureCodeAssistantTurnFailed
+	case hostedGenesisFailureMicroVMUnavailable:
+		code = hostedgenesis.FailureCodeMicroVMUnavailable
 	case hostedGenesisFailureDeclarationExtractionFailed:
 		code = hostedgenesis.FailureCodeDeclarationExtractionFailed
 	case hostedGenesisFailureTenantBoundaryViolation:
@@ -478,7 +648,7 @@ func hostedGenesisFailureFromWorkerReason(reason string) *hostedgenesis.Failure 
 	}
 	action := hostedgenesis.RecoveryActionRefreshState
 	retryable := false
-	if code == hostedgenesis.FailureCodeLLMUnavailable || code == hostedgenesis.FailureCodeAssistantTurnFailed || code == hostedgenesis.FailureCodeDeclarationExtractionFailed {
+	if code == hostedgenesis.FailureCodeLLMUnavailable || code == hostedgenesis.FailureCodeAssistantTurnFailed || code == hostedgenesis.FailureCodeDeclarationExtractionFailed || code == hostedgenesis.FailureCodeMicroVMUnavailable {
 		action = hostedgenesis.RecoveryActionRetrySameStep
 		retryable = true
 	}
@@ -504,6 +674,8 @@ func failureMessageFromWorkerCode(code hostedgenesis.FailureCode) string {
 		return "Assistant provider was unavailable."
 	case hostedgenesis.FailureCodeAssistantTurnFailed:
 		return "Assistant turn did not reach declaration extraction."
+	case hostedgenesis.FailureCodeMicroVMUnavailable:
+		return "MicroVM execution dispatch is unavailable."
 	case hostedgenesis.FailureCodeDeclarationExtractionFailed:
 		return "Declaration extraction did not complete."
 	case hostedgenesis.FailureCodeTenantBoundaryViolation:

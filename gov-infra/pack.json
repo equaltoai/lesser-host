@@ -1,14 +1,14 @@
 {
   "$schema": "https://gov.pai.dev/schemas/pack.schema.json",
   "schemaVersion": 1,
-  "packVersion": "2026.07.07-microvm-registry-boundary.0",
-  "packDigest": "3d869548fd97f89ea7fd7ea61da7b41bcbbca9a5fe18c1c4a4ee60e30d0f777d",
+  "packVersion": "2026.07.08-framework-microvm.0",
+  "packDigest": "512ffc2e6b8910f796602fcc6bda7e14472bc9bf4806b1d9ac93daf7d80365a6",
   "domain": "custom",
   "projectSlug": "lesser-host",
-  "generatedAt": "2026-07-07T14:50:09Z",
+  "generatedAt": "2026-07-08T20:50:00Z",
   "source": {
-    "commitSha": "d7d2ff3943fa63aebfba3a1e0a7c25a441145c48",
-    "branch": "theorymcp/equaltoai/host/hosted-genesis-microvm-registry-boundary"
+    "commitSha": "9c19b5cfeb81749ff57896246002e4417abc9b9d",
+    "branch": "theorymcp/equaltoai/host/hosted-genesis-microvm-api-proof"
   },
   "artifacts": {
     "planning": [

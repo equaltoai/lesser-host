@@ -8,41 +8,47 @@ import (
 	"github.com/aws/aws-lambda-go/events"
 )
 
-func TestAuthorizeFailsClosedWithoutLabAndHash(t *testing.T) {
+func TestAuthorizeFailsClosedWithoutCanonicalStageAndHash(t *testing.T) {
 	t.Parallel()
 	event := events.APIGatewayV2CustomAuthorizerV2Request{Headers: map[string]string{"authorization": "Bearer token"}}
 	if authorize(event, func(string) string { return "" }) {
-		t.Fatal("expected authorizer to deny without lab context and hash")
+		t.Fatal("expected authorizer to deny without canonical stage and hash")
 	}
 	if authorize(event, func(key string) string {
 		if key == "STAGE" {
-			return "live"
+			return "dev"
 		}
 		return tokenHash("token")
 	}) {
-		t.Fatal("expected authorizer to deny outside lab")
+		t.Fatal("expected authorizer to deny outside canonical deploy stages")
 	}
 }
 
-func TestAuthorizeAcceptsOnlyHashedBearerToken(t *testing.T) {
+func TestAuthorizeAcceptsOnlyHashedBearerTokenInCanonicalStages(t *testing.T) {
 	t.Parallel()
-	event := events.APIGatewayV2CustomAuthorizerV2Request{Headers: map[string]string{"Authorization": "Bearer lab-token"}}
-	getenv := func(key string) string {
-		switch key {
-		case "STAGE":
-			return "lab"
-		case "HOSTED_GENESIS_MICROVM_AUTH_TOKEN_SHA256":
-			return "sha256:" + tokenHash("lab-token")
-		default:
-			return ""
-		}
-	}
-	if !authorize(event, getenv) {
-		t.Fatal("expected matching hashed lab bearer token to authorize")
-	}
-	event.Headers["Authorization"] = "Bearer wrong"
-	if authorize(event, getenv) {
-		t.Fatal("expected mismatched bearer token to deny")
+	for _, stage := range []string{"lab", "live"} {
+		stage := stage
+		t.Run(stage, func(t *testing.T) {
+			t.Parallel()
+			event := events.APIGatewayV2CustomAuthorizerV2Request{Headers: map[string]string{"Authorization": "Bearer stage-token"}}
+			getenv := func(key string) string {
+				switch key {
+				case "STAGE":
+					return stage
+				case "HOSTED_GENESIS_MICROVM_AUTH_TOKEN_SHA256":
+					return "sha256:" + tokenHash("stage-token")
+				default:
+					return ""
+				}
+			}
+			if !authorize(event, getenv) {
+				t.Fatalf("expected matching hashed %s bearer token to authorize", stage)
+			}
+			event.Headers["Authorization"] = "Bearer wrong"
+			if authorize(event, getenv) {
+				t.Fatalf("expected mismatched %s bearer token to deny", stage)
+			}
+		})
 	}
 }
 

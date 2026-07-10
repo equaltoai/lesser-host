@@ -68,6 +68,60 @@ echo ""
 failed=0
 checked=0
 
+diff_payload_lines() {
+  grep -E '^[+-]' | grep -vE '^(---|\+\+\+)' || true
+}
+
+payload_equals() {
+  local actual="$1"
+  shift
+  local expected
+  expected="$(printf '%s\n' "$@")"
+  [[ "${actual}" == "${expected}" ]]
+}
+
+# AppTheory v1.17.0 / TableTheory v2.0.3 migration allowance:
+# the instance-auth mechanism remains locked (sha256 bearer matching, raw-key
+# handling, revocation, and audit behavior must not change), but the framework
+# major-version migration necessarily updates TableTheory import paths and the
+# AppTheory error constructor type. Keep this exception exact: any additional
+# locked-file hunk still fails SEC-9.
+is_allowed_framework_migration_diff() {
+  local file="$1"
+  local diff_output="$2"
+  local payload
+  payload="$(printf '%s\n' "${diff_output}" | diff_payload_lines)"
+
+  case "${file}" in
+    "internal/trust/attestations_issue.go")
+      payload_equals "${payload}" \
+        '-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"' \
+        '+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"'
+      ;;
+    "internal/trust/auth_instance_test.go")
+      payload_equals "${payload}" \
+        '-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"' \
+        '-	ttmocks "github.com/theory-cloud/tabletheory/pkg/mocks"' \
+        '+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"' \
+        '+	ttmocks "github.com/theory-cloud/tabletheory/v2/pkg/mocks"'
+      ;;
+    "internal/trust/auth_instance.go")
+      payload_equals "${payload}" \
+        '-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"' \
+        '+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"' \
+        '-		return "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}' \
+        '+		return "", newAppTheoryError("app.internal", "internal error")' \
+        '-		return "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}' \
+        '+		return "", newAppTheoryError("app.internal", "internal error")' \
+        '-		return "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}' \
+        '+		return "", newAppTheoryError("app.internal", "internal error")'
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 for f in "${LOCKED_FILES[@]}"; do
   checked=$((checked + 1))
 
@@ -86,8 +140,10 @@ for f in "${LOCKED_FILES[@]}"; do
     echo "  ${f}: no diff"
   elif [[ -z "${diff_output}" ]]; then
     echo "  ${f}: whitespace-only diff (acceptable)"
+  elif is_allowed_framework_migration_diff "${f}" "${diff_output}"; then
+    echo "  ${f}: framework-major compatibility diff only (TableTheory v2/AppTheoryError migration; instance-auth semantics preserved)"
   else
-    local lines
+    lines=""
     lines="$(printf '%s\n' "${diff_output}" | wc -l | tr -d ' ')"
     echo "FAIL: ${f}: semantic diff detected (${lines} non-whitespace lines changed)" >&2
     printf '%s\n' "${diff_output}" | head -n 20 >&2

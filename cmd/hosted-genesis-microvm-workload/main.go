@@ -28,18 +28,14 @@ package main
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/service/sts"
-	ststypes "github.com/aws/aws-sdk-go-v2/service/sts/types"
 	apptheory "github.com/theory-cloud/apptheory/runtime"
 
 	"github.com/equaltoai/lesser-host/internal/ai/llm"
@@ -69,98 +65,52 @@ func main() {
 	}
 }
 
-// microVMSTSAPI is the minimal STS surface used to exchange the platform-provided
-// MicroVM guest credentials for Host's explicit MicroVM execution role. AWS
-// GetMicrovm reports ExecutionRoleArn, but lab evidence showed the in-guest
-// default credential chain was still backed by the image BuildRoleArn; the
-// workload therefore assumes the configured execution role itself before any
-// TableTheory/SSM client is initialized. Temporary credentials stay process-
-// local, are never logged, and are used only by the default AWS SDK chain.
-type microVMSTSAPI interface {
-	AssumeRole(context.Context, *sts.AssumeRoleInput, ...func(*sts.Options)) (*sts.AssumeRoleOutput, error)
-}
+// loadMicroVMDefaultConfig is a test seam around the AWS SDK's default config
+// loader. Production always uses awsconfig.LoadDefaultConfig.
+var loadMicroVMDefaultConfig = awsconfig.LoadDefaultConfig
 
-func configureMicroVMExecutionCredentials(ctx context.Context) error {
-	roleArn := strings.TrimSpace(os.Getenv("HOSTED_GENESIS_MICROVM_EXECUTION_ROLE_ARN"))
-	if roleArn == "" {
-		return nil
-	}
+// microVMExecutionCredentialsProvider reloads the credentials supplied by the
+// Lambda MicroVM execution role for every turn. RunMicrovm already causes the
+// guest to assume executionRoleArn, and Lambda refreshes compute-role
+// credentials; re-assuming the same role is both unnecessary and denied unless
+// the role is explicitly configured for self-assumption. The turn-scoped load is
+// still required so an image-build/startup credential snapshot is never retained
+// in a process-global TableTheory client.
+func microVMExecutionCredentialsProvider(ctx context.Context) (aws.CredentialsProvider, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	cfg, err := awsconfig.LoadDefaultConfig(ctx)
+	cfg, err := loadMicroVMDefaultConfig(ctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	return assumeMicroVMExecutionRole(ctx, sts.NewFromConfig(cfg), roleArn)
+	if cfg.Credentials == nil {
+		return nil, errors.New("microvm execution-role credentials are unavailable")
+	}
+	return cfg.Credentials, nil
 }
 
-func assumeMicroVMExecutionRole(ctx context.Context, api microVMSTSAPI, roleArn string) error {
-	roleArn = strings.TrimSpace(roleArn)
-	if roleArn == "" {
-		return nil
-	}
-	if api == nil {
-		return fmt.Errorf("sts client is required")
-	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	out, err := api.AssumeRole(ctx, &sts.AssumeRoleInput{
-		RoleArn:         aws.String(roleArn),
-		RoleSessionName: aws.String("hosted-genesis-microvm-workload"),
-		DurationSeconds: aws.Int32(3600),
-	})
+func newMicroVMTurnStore(ctx context.Context) (turnStore, *completion.CompletionWriter, error) {
+	credentials, err := microVMExecutionCredentialsProvider(ctx)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
-	creds := stsCredentials(out)
-	accessKeyID := aws.ToString(creds.AccessKeyId)
-	secretAccessKey := aws.ToString(creds.SecretAccessKey)
-	sessionToken := aws.ToString(creds.SessionToken)
-	if accessKeyID == "" || secretAccessKey == "" || sessionToken == "" {
-		return fmt.Errorf("assume role returned incomplete credentials")
+	stateDB, err := store.MicroVMInit(ctx, credentials)
+	if err != nil {
+		return nil, nil, err
 	}
-	// These are temporary in-process AWS credentials, not Host/customer secrets.
-	// Do not log them; setting env lets TableTheory and internal/secrets use the
-	// standard AWS SDK default chain without local framework patches.
-	if err := os.Setenv("AWS_ACCESS_KEY_ID", accessKeyID); err != nil {
-		return err
-	}
-	if err := os.Setenv("AWS_SECRET_ACCESS_KEY", secretAccessKey); err != nil {
-		return err
-	}
-	if err := os.Setenv("AWS_SESSION_TOKEN", sessionToken); err != nil {
-		return err
-	}
-	return nil
-}
-
-func stsCredentials(out *sts.AssumeRoleOutput) ststypes.Credentials {
-	if out == nil || out.Credentials == nil {
-		return ststypes.Credentials{}
-	}
-	return *out.Credentials
+	st := store.New(stateDB)
+	return st, completion.NewCompletionWriter(st, nil), nil
 }
 
 func run() error {
-	if err := configureMicroVMExecutionCredentials(context.Background()); err != nil {
-		return errors.Join(errors.New("configure execution credentials"), err)
-	}
-
 	// Install the explicit-timeout provider HTTP client before any provider call
 	// so every llm.StreamMintConversation* / MintConversationDeclarations* call
 	// fails at the configured HTTP deadline, not the Lambda/MicroVM envelope
 	// (kills G8).
 	llm.ConfigureDefaultProviderHTTPClient()
 
-	stateDB, err := store.LambdaInit()
-	if err != nil {
-		return errors.Join(errors.New("store init"), err)
-	}
-	st := store.New(stateDB)
-	writer := completion.NewCompletionWriter(st, nil)
-	runner := &turnRunner{store: st, writer: writer}
+	runner := &turnRunner{storeFactory: newMicroVMTurnStore}
 
 	server, err := newHookServer(runner, hostedgenesis.MicroVMNamespace)
 	if err != nil {

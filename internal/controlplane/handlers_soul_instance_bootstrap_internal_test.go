@@ -696,19 +696,12 @@ func TestSoulInstanceMintConversation_StartReturnsJSONWithoutQueueAuthority(t *t
 	reg := mintConversationHandleReg()
 	t.Setenv("ANTHROPIC_API_KEY", "anthropic-test-key")
 	dispatcher := stubHostedGenesisMicroVMDispatcher(t, s)
-	s.enqueueHostedGenesisMessage = func(_ context.Context, msg hostedgenesis.QueueMessage) error {
-		t.Fatalf("user-visible hosted genesis start must not enqueue SQS authority: %#v", msg)
-		return nil
-	}
-
 	expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, soulInstanceBootstrapTestInstanceSlug)
 	stubMintConversationRegistration(t, tdb, reg)
 	stubSoulInstanceBootstrapDomainAndInstance(t, tdb, reg.DomainNormalized, soulInstanceBootstrapTestInstanceSlug)
 	stubMintConversationIdentity(t, tdb, nil, theoryErrors.ErrItemNotFound)
 	tdb.qMintIdem.On("First", mock.AnythingOfType("*models.SoulMintConversationIdempotency")).Return(theoryErrors.ErrItemNotFound).Once()
 	expectSoulInstanceMintConversationDebit(t, tdb, reg.AgentID, true)
-	expectSoulInstanceMintConversationProgression(t, tdb, hostedgenesis.StatusInProgress)
-
 	resp, err := s.handleSoulInstanceMintConversation(newSoulInstanceBootstrapContext(
 		map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
 		mustMarshalJSON(t, soulMintConversationRequest{Model: "anthropic:claude-sonnet-4-6", Message: soulInstanceBootstrapTestConversationMessage, IdempotencyKey: soulInstanceBootstrapTestIdempotencyKey, CorrelationID: "corr-1"}),
@@ -721,8 +714,8 @@ func TestSoulInstanceMintConversation_StartReturnsJSONWithoutQueueAuthority(t *t
 	if out.Conversation.RegistrationID != reg.ID {
 		t.Fatalf("expected durable session authority for registration %s, got %#v", reg.ID, out.Conversation)
 	}
-	if dispatcher.calls != 1 {
-		t.Fatalf("expected exactly one MicroVM controller run dispatch, got %d", dispatcher.calls)
+	if dispatcher.calls != 0 || dispatcher.queueCalls != 1 {
+		t.Fatalf("expected enqueue-only MicroVM handoff, dispatch=%d queue=%d", dispatcher.calls, dispatcher.queueCalls)
 	}
 	tdb.qLifecycle.AssertCalled(t, "Create")
 }
@@ -733,10 +726,10 @@ func TestSoulInstanceMintConversation_AssistantFailurePersistsTypedFailure(t *te
 	reg := mintConversationHandleReg()
 	t.Setenv("ANTHROPIC_API_KEY", "anthropic-test-key")
 	dispatcher := stubHostedGenesisMicroVMDispatcher(t, s)
-	dispatcher.dispatchErr = errors.New("microvm controller run rejected")
 	s.enqueueHostedGenesisMessage = func(_ context.Context, msg hostedgenesis.QueueMessage) error {
-		t.Fatalf("failed hosted genesis turn must not enqueue SQS authority: %#v", msg)
-		return nil
+		dispatcher.queueCalls++
+		dispatcher.lastQueue = msg
+		return errors.New("sqs unavailable")
 	}
 
 	expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, soulInstanceBootstrapTestInstanceSlug)
@@ -759,8 +752,8 @@ func TestSoulInstanceMintConversation_AssistantFailurePersistsTypedFailure(t *te
 	if appErr.Code != soulInstanceBootstrapCodeMicroVMUnavailable || appErr.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("expected typed microvm-unavailable 503 error, got %#v", appErr)
 	}
-	if dispatcher.calls != 1 {
-		t.Fatalf("expected dispatch to be attempted before loud failure, got %d calls", dispatcher.calls)
+	if dispatcher.calls != 0 || dispatcher.queueCalls != 1 {
+		t.Fatalf("expected queue handoff failure before MicroVM dispatch, dispatch=%d queue=%d", dispatcher.calls, dispatcher.queueCalls)
 	}
 }
 
@@ -770,10 +763,6 @@ func TestSoulInstanceMintConversation_IdempotentRetryDoesNotDebitOrAppend(t *tes
 	reg := mintConversationHandleReg()
 	t.Setenv("ANTHROPIC_API_KEY", "anthropic-test-key")
 	dispatcher := stubHostedGenesisMicroVMDispatcher(t, s)
-	s.enqueueHostedGenesisMessage = func(_ context.Context, msg hostedgenesis.QueueMessage) error {
-		t.Fatalf("idempotent replay must not enqueue duplicate user-visible execution: %#v", msg)
-		return nil
-	}
 	idemKey := "idem-retry-1"
 	reqHash := hostedGenesisRequestHash(reg.ID, "", "anthropic:claude-sonnet-4-6", soulInstanceBootstrapTestConversationMessage)
 
@@ -824,8 +813,6 @@ func TestSoulInstanceMintConversation_IdempotentRetryDoesNotDebitOrAppend(t *tes
 		dest := testutil.RequireMockArg[*models.HostedGenesisSession](t, args, 0)
 		*dest = session
 	}).Once()
-	expectSoulInstanceMintConversationProgression(t, tdb, hostedgenesis.StatusInProgress)
-
 	resp, err := s.handleSoulInstanceMintConversation(newSoulInstanceBootstrapContext(
 		map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
 		mustMarshalJSON(t, soulMintConversationRequest{ConversationID: mintConversationTestConversationID, Model: "anthropic:claude-sonnet-4-6", Message: soulInstanceBootstrapTestConversationMessage, IdempotencyKey: idemKey, CorrelationID: "corr-retry"}),
@@ -851,10 +838,10 @@ func TestSoulInstanceMintConversation_IdempotentRetryDoesNotDebitOrAppend(t *tes
 			t.Fatalf("idempotent replay must not append an inline assistant message: %#v", out.Conversation.Messages)
 		}
 	}
-	if dispatcher.calls != 1 {
-		t.Fatalf("expected one MicroVM dispatch on replay progression, got %d", dispatcher.calls)
+	if dispatcher.calls != 0 || dispatcher.queueCalls != 1 {
+		t.Fatalf("expected one queued MicroVM dispatch on replay progression, dispatch=%d queue=%d", dispatcher.calls, dispatcher.queueCalls)
 	}
-	tdb.db.AssertNumberOfCalls(t, "TransactWrite", 1)
+	tdb.db.AssertNumberOfCalls(t, "TransactWrite", 0)
 	tdb.qBudget.AssertNumberOfCalls(t, "First", 0)
 }
 
@@ -893,11 +880,6 @@ func TestSoulInstanceMintConversation_ContinueUsesStoredModelAndMessages(t *test
 	reg := mintConversationHandleReg()
 	t.Setenv("ANTHROPIC_API_KEY", "anthropic-test-key")
 	dispatcher := stubHostedGenesisMicroVMDispatcher(t, s)
-	s.enqueueHostedGenesisMessage = func(_ context.Context, msg hostedgenesis.QueueMessage) error {
-		t.Fatalf("continued user-visible hosted genesis turn must not enqueue SQS authority: %#v", msg)
-		return nil
-	}
-
 	expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, soulInstanceBootstrapTestInstanceSlug)
 	stubMintConversationRegistration(t, tdb, reg)
 	stubSoulInstanceBootstrapDomainAndInstance(t, tdb, reg.DomainNormalized, soulInstanceBootstrapTestInstanceSlug)
@@ -912,8 +894,6 @@ func TestSoulInstanceMintConversation_ContinueUsesStoredModelAndMessages(t *test
 		CreatedAt:      time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC),
 	})
 	expectSoulInstanceMintConversationDebit(t, tdb, reg.AgentID, false)
-	expectSoulInstanceMintConversationProgression(t, tdb, hostedgenesis.StatusInProgress)
-
 	resp, err := s.handleSoulInstanceMintConversation(newSoulInstanceBootstrapContext(
 		map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
 		mustMarshalJSON(t, soulMintConversationRequest{ConversationID: mintConversationTestConversationID, Message: "second"}),
@@ -939,8 +919,8 @@ func TestSoulInstanceMintConversation_ContinueUsesStoredModelAndMessages(t *test
 	if last.Role != hostedGenesisTranscriptRoleUser || last.Content != "second" {
 		t.Fatalf("continued dispatched turn must end on the accepted user turn, not an inline assistant message: %#v", out.Conversation.Messages)
 	}
-	if dispatcher.calls != 1 {
-		t.Fatalf("expected one MicroVM dispatch on continuation, got %d", dispatcher.calls)
+	if dispatcher.calls != 0 || dispatcher.queueCalls != 1 {
+		t.Fatalf("expected one queued MicroVM dispatch on continuation, dispatch=%d queue=%d", dispatcher.calls, dispatcher.queueCalls)
 	}
 }
 
