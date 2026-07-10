@@ -45,7 +45,7 @@ Legend:
 | Category | Rubric ID | What it proves | Evidence artifacts |
 | --- | --- | --- | --- |
 | Quality | QUA-1 | Go unit tests run and pass | `gov-infra/evidence/QUA-1-output.log` |
-| Quality | QUA-2 | Multi-language test/build surface runs (web/contracts/cdk) | `gov-infra/evidence/QUA-2-output.log` |
+| Quality | QUA-2 | Multi-language test/build surface runs (web/contracts/cdk), including CDK Docker asset-context regression tests | `gov-infra/evidence/QUA-2-output.log` |
 | Quality | QUA-3 | Coverage measurement is produced and threshold enforced (≥ 80%) | `gov-infra/evidence/QUA-3-output.log`, `gov-infra/evidence/coverage.out` |
 | Consistency | CON-1 | Go formatting is clean (no gofmt diffs) | `gov-infra/evidence/CON-1-output.log` |
 | Consistency | CON-2 | Lint/static analysis gates run with pinned toolchain (Go + web + CDK + Solidity) | `gov-infra/evidence/CON-2-output.log` |
