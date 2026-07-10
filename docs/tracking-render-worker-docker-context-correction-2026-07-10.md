@@ -67,10 +67,12 @@ Rollout order is mandatory:
 3. Deploy the reviewed correction to `lab` through `theory app up --stage lab --execute`; never set a deployment
    timeout.
 4. Inspect the synthesized/staged context and final image, then complete the required `lab` canary and soak.
-5. Restore the separately reviewed pre-activation live Soul context before any later live deployment; do not bundle
+5. After `lab` acceptance, have the operator promote `staging` to `main` through the protected promotion PR; the
+   steward does not merge or release.
+6. Restore the separately reviewed pre-activation live Soul context before any later live deployment; do not bundle
    mainnet activation into this correction.
-6. Obtain fresh explicit authorization for a `live` deploy and the bounded `TheoryLive` acceptance canary.
-7. Resume roadmap Phase 1 only after the independent Phase 0 rollout gate is accepted.
+7. Obtain fresh explicit authorization for a `live` deploy and the bounded `TheoryLive` acceptance canary.
+8. Resume roadmap Phase 1 only after the independent Phase 0 rollout gate is accepted.
 
 ## Governance scope
 
