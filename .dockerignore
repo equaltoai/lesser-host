@@ -1,1 +1,10 @@
-**/.env
+# The only repo-root Docker build is cmd/render-worker/Dockerfile.
+# Default-deny prevents operator-local credentials and generated artifacts from
+# entering CDK AssetStaging or the local BuildKit cache.
+**
+!go.mod
+!go.sum
+!cmd/render-worker/*.go
+!cmd/render-worker/Dockerfile
+!internal/**/*.go
+**/*_test.go

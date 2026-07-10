@@ -715,6 +715,7 @@ export class LesserHostStack extends cdk.Stack {
         functionName: `${namePrefix}-render-worker`,
         code: lambda.DockerImageCode.fromImageAsset(repoRoot, {
           file: "cmd/render-worker/Dockerfile",
+          ignoreMode: cdk.IgnoreMode.DOCKER,
           exclude: [
             "cdk/cdk.out/**",
             "cdk/node_modules/**",

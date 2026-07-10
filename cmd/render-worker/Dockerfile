@@ -11,7 +11,8 @@ FROM golang:1.26 AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
-COPY . .
+COPY cmd/render-worker ./cmd/render-worker
+COPY internal ./internal
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -buildvcs=false -o /out/bootstrap ./cmd/render-worker
 
 FROM public.ecr.aws/lambda/provided:al2023
