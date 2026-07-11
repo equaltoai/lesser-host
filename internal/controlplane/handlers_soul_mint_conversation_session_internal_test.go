@@ -403,7 +403,7 @@ func TestMintConversationInstanceTrustRequestParsingBranches(t *testing.T) {
 	})
 	req, issuedAt, expected, err = parseMintConversationFinalizeInstanceTrustRequestBody(ctx, 7)
 	if err != nil || issuedAt.IsZero() || expected == nil || *expected != 8 || req.BoundarySignatures["b1"] == "" {
-		t.Fatalf("expected valid instance-trust request, req=%#v issued=%v expected=%v err=%v", req, issuedAt, expected)
+		t.Fatalf("expected valid instance-trust request, req=%#v issued=%v expected=%v err=%v", req, issuedAt, expected, err)
 	}
 
 	for name, body := range map[string]map[string]any{
