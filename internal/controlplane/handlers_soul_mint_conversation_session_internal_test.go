@@ -52,7 +52,7 @@ func TestHostedGenesisProducedDeclarationsFromSessionTrustsCheckpointHash(t *tes
 	}
 
 	produced := buildHostedGenesisProducedDeclarationsFromSession(session, conv, requestID)
-	if produced == nil || produced.Evidence.Source != "hosted_genesis_session" || produced.DeclarationHash != session.DeclarationCheckpoint.DeclarationHash {
+	if produced == nil || produced.Evidence.Source != "host_conversation" || produced.DeclarationHash != session.DeclarationCheckpoint.DeclarationHash {
 		t.Fatalf("expected session-bound declarations, got %#v", produced)
 	}
 
@@ -403,7 +403,7 @@ func TestMintConversationInstanceTrustRequestParsingBranches(t *testing.T) {
 	})
 	req, issuedAt, expected, err = parseMintConversationFinalizeInstanceTrustRequestBody(ctx, 7)
 	if err != nil || issuedAt.IsZero() || expected == nil || *expected != 8 || req.BoundarySignatures["b1"] == "" {
-		t.Fatalf("expected valid instance-trust request, req=%#v issued=%v expected=%v err=%v", req, issuedAt, expected, err)
+		t.Fatalf("expected valid instance-trust request, req=%#v issued=%v expected=%v err=%v", req, issuedAt, expected)
 	}
 
 	for name, body := range map[string]map[string]any{
