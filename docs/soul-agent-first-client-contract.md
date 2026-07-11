@@ -301,15 +301,18 @@ For the Lesser instance-key hosted-genesis path:
 - `GET /api/v1/soul/instance/agents/register/{id}/mint-conversation/{conversationId}`
 
 The POST response and GET status read are durable JSON HostConversation envelopes. `HTTP 200` / `HTTP 202` is transport
-success only. Lesser must persist `conversation_id` immediately, project `in_progress` and
-`declaration_extraction_pending` as progress, and only advance to publish when the status read returns
-`declaration_ready` with `produced_declarations`.
+success only. Lesser must persist `conversation_id` immediately and project `in_progress` and
+`declaration_extraction_pending` as progress. When the registration-scoped status read observes
+`declaration_ready` with `produced_declarations`, Host auto-finalizes the instance-trust hosted/off-chain
+publication before returning the status envelope; Lesser should then resolve the published agent from Host rather than
+waiting for a separate browser-visible finalize action.
 
 When the latest assistant turn asks the final minted-soul affirmation question, the user's affirmative reply is the
 review-completion action for the Lesser instance-key route. Lesser should send that affirmation as the next ordinary
 `POST /mint-conversation` turn; Host records the affirmation in the durable transcript and transitions to
 `declaration_extraction_pending` instead of generating another assistant turn. Clients should then poll the canonical
-GET status until `declaration_ready` with `produced_declarations`.
+GET status until `declaration_ready` with `produced_declarations`; that GET also reconciles the hosted/off-chain
+publication for explicit instance-trust identities.
 
 For portal/native Host UI routes:
 
@@ -335,7 +338,8 @@ Important behavior:
 
 For the Lesser instance-key hosted-genesis path, this step is normally driven by the final affirmation turn described
 above, not by a separate browser-visible Host button. The explicit `/complete` route remains available for controlled
-recovery and compatibility.
+recovery and compatibility; the normal final-affirmation path proceeds through declaration extraction and GET-time
+hosted/off-chain auto-finalization.
 
 Response is the completed conversation record with extracted declarations stored on the backend.
 
@@ -368,6 +372,10 @@ The preflight response is the canonical source for finalize UI and signing prepa
 Clients should not reconstruct these values locally when the server already provides them.
 
 ### 8. Finalize and publish graduation
+
+For the Lesser instance-key hosted-genesis path with `authority_model=instance_trust`, Host performs this publication
+automatically when the registration-scoped status GET observes a publish-ready `HostedGenesisSession`. The explicit
+finalize routes remain the recovery/compatibility surface and the portal/native Host UI flow.
 
 - registration-scoped:
   - `POST /api/v1/soul/agents/register/{id}/mint-conversation/{conversationId}/finalize`

@@ -187,6 +187,9 @@ func (s *Server) handleSoulInstanceGetRegistrationMintConversation(ctx *apptheor
 	if appErr := rejectOversizeSoulMintInstanceConversation(convCtx.conv); appErr != nil {
 		return nil, appErr
 	}
+	if _, err := s.autoFinalizeSoulInstanceHostedGenesisOnReady(ctx, convCtx); err != nil {
+		return nil, err
+	}
 	resp, err := hostedGenesisConversationJSONFromSession(http.StatusOK, convCtx.session, convCtx.conv, hostedGenesisProjectionOptions{
 		RegistrationID:  convCtx.reg.ID,
 		RequestID:       strings.TrimSpace(ctx.RequestID),
@@ -271,6 +274,50 @@ func (s *Server) handleSoulInstanceFinalizeMintConversation(ctx *apptheory.Conte
 		return nil, soulInstanceBootstrapConversationErrorFromError(err)
 	}
 	return resp, nil
+}
+
+func (s *Server) autoFinalizeSoulInstanceHostedGenesisOnReady(ctx *apptheory.Context, convCtx soulInstanceBootstrapConversationContext) (bool, error) {
+	if convCtx.reg == nil || convCtx.session == nil || convCtx.conv == nil {
+		return false, nil
+	}
+	if !strings.EqualFold(strings.TrimSpace(convCtx.reg.AuthorityModel), models.SoulAuthorityModelInstanceTrust) {
+		return false, nil
+	}
+	if hostedgenesis.NormalizeStatus(convCtx.session.Status) != hostedgenesis.StatusDeclarationReady {
+		return false, nil
+	}
+	if strings.TrimSpace(convCtx.conv.ProducedDeclarations) == "" {
+		return false, nil
+	}
+
+	finalizeCtx, appErr := s.loadSoulInstanceMintConversationFinalizeContext(ctx, convCtx)
+	if appErr != nil {
+		return false, appErr
+	}
+	if !isExplicitInstanceTrustAuthority(finalizeCtx.reg, finalizeCtx.identity) {
+		return false, nil
+	}
+	if finalizeCtx.identity != nil && finalizeCtx.identity.SelfDescriptionVersion > 0 {
+		return false, nil
+	}
+
+	autoCtx := *ctx
+	autoCtx.Request.Body = nil
+	if _, err := s.finalizeMintConversation(&autoCtx, finalizeCtx); err != nil {
+		if s.autoFinalizeSoulInstanceHostedGenesisAlreadyPublished(ctx, convCtx.agentIDHex) {
+			return false, nil
+		}
+		return false, soulInstanceBootstrapConversationErrorFromError(err)
+	}
+	return true, nil
+}
+
+func (s *Server) autoFinalizeSoulInstanceHostedGenesisAlreadyPublished(ctx *apptheory.Context, agentIDHex string) bool {
+	if s == nil || ctx == nil || strings.TrimSpace(agentIDHex) == "" {
+		return false
+	}
+	identity, err := s.getSoulAgentIdentity(ctx.Context(), agentIDHex)
+	return err == nil && identity != nil && identity.SelfDescriptionVersion > 0
 }
 
 func (s *Server) requireSoulInstanceBootstrapContext(ctx *apptheory.Context) (soulInstanceBootstrapContext, *apptheory.AppTheoryError) {
