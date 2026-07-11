@@ -399,6 +399,13 @@ func (s *Server) requireSoulInstanceBootstrapConversationContext(ctx *apptheory.
 	if err != nil {
 		return soulInstanceBootstrapConversationContext{}, soulInstanceBootstrapError(soulInstanceBootstrapCodeNotFound, "conversation not found", http.StatusNotFound, nil)
 	}
+	if appErr := hydrateHostedGenesisSessionRouteBinding(session, mintConversationRegistrationContext{
+		reg:        regCtx.reg,
+		inst:       regCtx.inst,
+		agentIDHex: regCtx.agentIDHex,
+	}, regCtx.instanceSlug, conversationID); appErr != nil {
+		return soulInstanceBootstrapConversationContext{}, soulInstanceBootstrapConversationErrorFromAppError(appErr)
+	}
 	return soulInstanceBootstrapConversationContext{
 		soulInstanceBootstrapRegistrationContext: regCtx,
 		session:                                  session,

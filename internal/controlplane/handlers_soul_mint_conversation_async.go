@@ -73,6 +73,9 @@ func (s *Server) handleSoulMintConversationForRegistrationAsync(ctx *apptheory.C
 	if session.modelSet == "" {
 		return nil, newAppTheoryError("app.bad_request", "model is required")
 	}
+	if appErr := requireHostedGenesisMicroVMBindingReady(regCtx, session.session, instanceSlug, session.conversationID); appErr != nil {
+		return nil, appErr
+	}
 	if session.replayed {
 		return s.handleHostedGenesisReplayedTurn(ctx, regCtx, session, req)
 	}
@@ -717,6 +720,9 @@ func (s *Server) loadExistingHostedGenesisTurnSession(ctx context.Context, sessi
 	if appErr := applyHostedGenesisSessionModel(&session, hostSession.Model); appErr != nil {
 		return hostedGenesisTurnSession{}, appErr
 	}
+	if appErr := hydrateHostedGenesisSessionRouteBinding(hostSession, regCtx, instanceSlug, session.conversationID); appErr != nil {
+		return hostedGenesisTurnSession{}, appErr
+	}
 	s.hydrateHostedGenesisCompatibilityConversation(ctx, &session, regCtx.agentIDHex)
 	if session.modelSet == "" {
 		session.modelSet = defaultSoulMintConversationModel
@@ -736,6 +742,75 @@ func requireHostedGenesisSessionAcceptsTurn(session *models.HostedGenesisSession
 		return nil
 	}
 	return newAppTheoryError("app.conflict", "conversation cannot accept a new turn")
+}
+
+type hostedGenesisRouteBinding struct {
+	instanceSlug   string
+	registrationID string
+	agentID        string
+	conversationID string
+}
+
+func hydrateHostedGenesisSessionRouteBinding(session *models.HostedGenesisSession, regCtx mintConversationRegistrationContext, instanceSlug string, conversationID string) *apptheory.AppTheoryError {
+	if session == nil || regCtx.reg == nil {
+		return newAppTheoryError(appTheoryCodeInternal, "internal error")
+	}
+	binding, appErr := hostedGenesisRouteBindingFromContext(session, regCtx, instanceSlug, conversationID)
+	if appErr != nil {
+		return appErr
+	}
+	if !hostedGenesisRouteBindingMatches(session.InstanceSlug, binding.instanceSlug, strings.ToLower) ||
+		!hostedGenesisRouteBindingMatches(session.RegistrationID, binding.registrationID, strings.TrimSpace) ||
+		!hostedGenesisRouteBindingMatches(session.AgentID, binding.agentID, normalizeHostedGenesisAgentID) ||
+		!hostedGenesisRouteBindingMatches(session.ConversationID, binding.conversationID, strings.TrimSpace) {
+		return newAppTheoryError(appTheoryCodeConflict, "conversation binding mismatch")
+	}
+	session.InstanceSlug = binding.instanceSlug
+	session.RegistrationID = binding.registrationID
+	session.AgentID = binding.agentID
+	session.ConversationID = binding.conversationID
+	_ = session.UpdateKeys()
+	return nil
+}
+
+func hostedGenesisRouteBindingFromContext(session *models.HostedGenesisSession, regCtx mintConversationRegistrationContext, instanceSlug string, conversationID string) (hostedGenesisRouteBinding, *apptheory.AppTheoryError) {
+	routeSlug := instanceSlug
+	if routeSlug == "" && regCtx.inst != nil {
+		routeSlug = regCtx.inst.Slug
+	}
+	routeSlug = strings.ToLower(strings.TrimSpace(routeSlug))
+	routeRegistrationID := strings.TrimSpace(regCtx.reg.ID)
+	routeAgentID := normalizeHostedGenesisAgentID(firstNonEmpty(regCtx.agentIDHex, regCtx.reg.AgentID))
+	routeConversationID := strings.TrimSpace(firstNonEmpty(conversationID, session.ConversationID))
+	if routeSlug == "" || routeRegistrationID == "" || routeAgentID == "" || routeConversationID == "" {
+		return hostedGenesisRouteBinding{}, newAppTheoryError(appTheoryCodeInternal, "internal error")
+	}
+	return hostedGenesisRouteBinding{
+		instanceSlug:   routeSlug,
+		registrationID: routeRegistrationID,
+		agentID:        routeAgentID,
+		conversationID: routeConversationID,
+	}, nil
+}
+
+func hostedGenesisRouteBindingMatches(current string, target string, normalize func(string) string) bool {
+	current = normalize(current)
+	return current == "" || current == target
+}
+
+func normalizeHostedGenesisAgentID(agentID string) string {
+	return strings.ToLower(strings.TrimSpace(agentID))
+}
+
+func requireHostedGenesisMicroVMBindingReady(regCtx mintConversationRegistrationContext, session *models.HostedGenesisSession, instanceSlug string, conversationID string) *apptheory.AppTheoryError {
+	if appErr := hydrateHostedGenesisSessionRouteBinding(session, regCtx, instanceSlug, conversationID); appErr != nil {
+		return appErr
+	}
+	if err := session.MicroVMSessionBinding().Validate(); err != nil {
+		log.Printf("controlplane: hosted genesis microvm binding invalid before accept persistence agent_hash=%s conversation_hash=%s err=%v", soulMintInstanceReadAuditHash(regCtx.agentIDHex), soulMintInstanceReadAuditHash(conversationID), err)
+		return newAppTheoryError(appErrCodeMicroVMUnavailable, "MicroVM execution dispatch is unavailable")
+	}
+	return nil
 }
 
 func hostedGenesisStatusAcceptsTurn(status hostedgenesis.Status) bool {
@@ -1021,6 +1096,14 @@ func addHostedGenesisSessionWrite(tx core.TransactionBuilder, session *models.Ho
 		return err
 	}
 	tx.UpdateWithBuilder(session, func(ub core.UpdateBuilder) error {
+		ub.Set("InstanceSlug", session.InstanceSlug)
+		ub.Set("RegistrationID", session.RegistrationID)
+		ub.Set("AgentID", session.AgentID)
+		ub.Set("ConversationID", session.ConversationID)
+		ub.Set("GSI1PK", session.GSI1PK)
+		ub.Set("GSI1SK", session.GSI1SK)
+		ub.Set("GSI2PK", session.GSI2PK)
+		ub.Set("GSI2SK", session.GSI2SK)
 		ub.Set("Status", session.Status)
 		ub.Set("Model", session.Model)
 		ub.Set("LatestTurnID", session.LatestTurnID)
