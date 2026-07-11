@@ -96,9 +96,6 @@ type mintConversationInstanceReadContext struct {
 }
 
 func (s *Server) requireMintConversationInstanceReadContext(ctx *apptheory.Context) (mintConversationInstanceReadContext, *apptheory.AppTheoryError) {
-	if appErr := s.requireSoulRegistryConfigured(); appErr != nil {
-		return mintConversationInstanceReadContext{}, soulMintInstanceReadErrorFromAppError(appErr)
-	}
 	if appErr := requireStoreDB(s); appErr != nil {
 		return mintConversationInstanceReadContext{}, soulMintInstanceReadErrorFromAppError(appErr)
 	}
@@ -117,6 +114,9 @@ func (s *Server) requireMintConversationInstanceReadContext(ctx *apptheory.Conte
 	key, appErr := s.requireSoulMintInstanceReadKey(ctx)
 	if appErr != nil {
 		return mintConversationInstanceReadContext{}, appErr
+	}
+	if !s.cfg.SoulEnabled {
+		return mintConversationInstanceReadContext{}, soulMintInstanceReadErrorFromAppError(newAppTheoryError(appErrCodeConflict, "soul registry is not configured"))
 	}
 
 	agentIDHex, _, parseErr := parseSoulAgentIDHex(ctx.Param("agentId"))

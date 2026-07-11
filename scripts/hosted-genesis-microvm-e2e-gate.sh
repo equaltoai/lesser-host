@@ -361,9 +361,78 @@ else
     echo "FAIL: timed out waiting for declaration_ready (last status=${status})" >&2
     exit 1
   fi
-  echo "    declaration ready: ${status}"
-  echo "==> happy path: PASS"
+echo "    declaration ready: ${status}"
+echo "==> happy path: PASS"
 fi
+
+# --- Agent-scoped list/get proof for the newly created hosted/off-chain conversation. ---
+# These reads use the ordinary InstanceKey-authenticated agent routes that Lesser
+# calls after it knows the agent id. The list assertion is deliberately
+# metadata-only: it rejects transcript/declaration/private-field leakage and
+# never prints the raw InstanceKey.
+agent_read_base="${lab_host}/api/v1/soul/instance/agents/${agent_id_hex}/mint-conversations"
+list_resp=$(curl -sS -w '\n__HTTP_STATUS__%{http_code}' -X GET "${agent_read_base}?limit=50" -H "$auth" || true)
+list_status=$(printf '%s' "$list_resp" | sed -n 's/.*__HTTP_STATUS__\([0-9]*\).*/\1/p')
+list_body=$(printf '%s' "$list_resp" | sed 's/__HTTP_STATUS__[0-9]*$//')
+echo "    agent list: HTTP ${list_status}"
+if [[ "$list_status" != "200" ]]; then
+  echo "FAIL: agent-scoped list expected 200, got ${list_status}: ${list_body}" >&2
+  exit 1
+fi
+if [[ "$list_body" == *"$instance_key"* ]]; then
+  echo "FAIL: agent-scoped list leaked the raw InstanceKey" >&2
+  exit 1
+fi
+if [[ "$list_body" == *'"messages"'* || "$list_body" == *'"produced_declarations"'* || "$list_body" == *'"declarations"'* || "$list_body" == *"${e2e_message}"* ]]; then
+  echo "FAIL: agent-scoped list leaked transcript/declaration/private fields" >&2
+  exit 1
+fi
+printf '%s' "$list_body" | python3 - "$conversation_id" "$agent_id_hex" <<'PY'
+import json
+import sys
+
+conversation_id, agent_id = sys.argv[1], sys.argv[2]
+data = json.load(sys.stdin)
+items = data.get("conversations")
+if not isinstance(items, list):
+    raise SystemExit("list response missing conversations array")
+for item in items:
+    if item.get("conversation_id") == conversation_id:
+        if item.get("agent_id") != agent_id:
+            raise SystemExit(f"listed conversation has wrong agent_id {item.get('agent_id')!r}")
+        if "messages" in item or "produced_declarations" in item or "declarations" in item:
+            raise SystemExit("listed conversation contains private fields")
+        break
+else:
+    raise SystemExit(f"conversation {conversation_id} was not present in agent-scoped list")
+PY
+echo "    agent list: contains ${conversation_id} and remains metadata-only"
+
+get_resp=$(curl -sS -w '\n__HTTP_STATUS__%{http_code}' -X GET "${agent_read_base}/${conversation_id}" -H "$auth" || true)
+get_status=$(printf '%s' "$get_resp" | sed -n 's/.*__HTTP_STATUS__\([0-9]*\).*/\1/p')
+get_body=$(printf '%s' "$get_resp" | sed 's/__HTTP_STATUS__[0-9]*$//')
+echo "    agent get: HTTP ${get_status}"
+if [[ "$get_status" != "200" ]]; then
+  echo "FAIL: agent-scoped get expected 200, got ${get_status}: ${get_body}" >&2
+  exit 1
+fi
+if [[ "$get_body" == *"$instance_key"* ]]; then
+  echo "FAIL: agent-scoped get leaked the raw InstanceKey" >&2
+  exit 1
+fi
+printf '%s' "$get_body" | python3 - "$conversation_id" "$agent_id_hex" <<'PY'
+import json
+import sys
+
+conversation_id, agent_id = sys.argv[1], sys.argv[2]
+data = json.load(sys.stdin)
+conv = data.get("conversation") or {}
+if conv.get("conversation_id") != conversation_id:
+    raise SystemExit(f"single-get returned wrong conversation_id {conv.get('conversation_id')!r}")
+if conv.get("agent_id") != agent_id:
+    raise SystemExit(f"single-get returned wrong agent_id {conv.get('agent_id')!r}")
+PY
+echo "    agent get: returned ${conversation_id} for ${agent_id_hex}"
 
 # --- Kill-VM recovery arc (second conversation) ---
 echo "==> kill-VM recovery arc"

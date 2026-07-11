@@ -229,6 +229,127 @@ func TestHandleSoulInstanceGetMintConversation_ReturnsHostedGenesisMessages(t *t
 	}
 }
 
+func TestHandleSoulInstanceMintConversationReads_HostedOffchainDoesNotRequireRegistry(t *testing.T) {
+	t.Parallel()
+
+	t.Run("list succeeds with contractless hosted offchain config", func(t *testing.T) {
+		t.Parallel()
+
+		tdb := newMintConversationTestDB()
+		s := newMintConversationServer(tdb)
+		s.cfg.SoulChainID = 0
+		s.cfg.SoulRegistryContractAddress = ""
+		s.cfg.SoulRPCURL = ""
+		identity := testMintConversationIdentity()
+
+		expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, "inst1")
+		stubMintConversationIdentity(t, tdb, identity, nil)
+		stubMintConversationInstanceDomain(t, tdb, identity.Domain, "inst1")
+		tdb.qConv.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+			dest := testutil.RequireMockArg[*[]*models.SoulAgentMintConversation](t, args, 0)
+			*dest = []*models.SoulAgentMintConversation{
+				{
+					AgentID:              identity.AgentID,
+					ConversationID:       "conv-contractless",
+					Model:                "anthropic:claude-sonnet-4-6",
+					Messages:             `private transcript`,
+					ProducedDeclarations: `{"private":true}`,
+					Status:               models.SoulMintConversationStatusInProgress,
+					CreatedAt:            time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC),
+				},
+			}
+		}).Once()
+
+		resp, err := s.handleSoulInstanceListMintConversations(newMintConversationInstanceReadContext(identity.AgentID, "", nil))
+		if err != nil {
+			t.Fatalf("unexpected contractless hosted/off-chain list error: %v", err)
+		}
+		if resp.Status != http.StatusOK {
+			t.Fatalf("expected 200, got %d body=%q", resp.Status, string(resp.Body))
+		}
+		body := string(resp.Body)
+		if !strings.Contains(body, "conv-contractless") {
+			t.Fatalf("expected listed conversation id, got %s", body)
+		}
+		if strings.Contains(body, "private transcript") || strings.Contains(body, "produced_declarations") || strings.Contains(body, mintConversationInstanceReadTestRawKey) {
+			t.Fatalf("contractless list leaked private fields or credential: %s", body)
+		}
+	})
+
+	t.Run("single get succeeds with contractless hosted offchain config", func(t *testing.T) {
+		t.Parallel()
+
+		tdb := newMintConversationTestDB()
+		s := newMintConversationServer(tdb)
+		s.cfg.SoulChainID = 0
+		s.cfg.SoulRegistryContractAddress = ""
+		s.cfg.SoulRPCURL = ""
+		identity := testMintConversationIdentity()
+
+		expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, "inst1")
+		stubMintConversationIdentity(t, tdb, identity, nil)
+		stubMintConversationInstanceDomain(t, tdb, identity.Domain, "inst1")
+		stubMintConversationConversation(t, tdb, models.SoulAgentMintConversation{
+			AgentID:        identity.AgentID,
+			ConversationID: mintConversationTestConversationID,
+			Model:          "anthropic:claude-sonnet-4-6",
+			Messages:       encodeMintConversationBlob(`[{"role":"user","content":"hello"},{"role":"assistant","content":"ready"}]`),
+			Status:         models.SoulMintConversationStatusAssistantTurnReady,
+			LatestTurnID:   "turn-contractless",
+			CreatedAt:      time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC),
+		})
+
+		resp, err := s.handleSoulInstanceGetMintConversation(newMintConversationInstanceReadContext(identity.AgentID, mintConversationTestConversationID, nil))
+		if err != nil {
+			t.Fatalf("unexpected contractless hosted/off-chain get error: %v", err)
+		}
+		if resp.Status != http.StatusOK {
+			t.Fatalf("expected 200, got %d body=%q", resp.Status, string(resp.Body))
+		}
+		var out hostedGenesisConversationResponse
+		if err := json.Unmarshal(resp.Body, &out); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if out.Conversation.ConversationID != mintConversationTestConversationID || out.Conversation.Status != models.SoulMintConversationStatusAssistantTurnReady {
+			t.Fatalf("expected contractless hosted conversation, got %#v", out.Conversation)
+		}
+	})
+}
+
+func TestHandleSoulInstanceMintConversationReads_AuthenticateBeforeSoulEnabled(t *testing.T) {
+	t.Parallel()
+
+	tdb := newMintConversationTestDB()
+	s := newMintConversationServer(tdb)
+	s.cfg.SoulEnabled = false
+	identity := testMintConversationIdentity()
+	tdb.qKey.On("First", mock.AnythingOfType("*models.InstanceKey")).Return(theoryErrors.ErrItemNotFound).Once()
+
+	_, err := s.handleSoulInstanceListMintConversations(newMintConversationInstanceReadContext(identity.AgentID, "", nil))
+	appErr := requireAppTheoryError(t, err)
+	if appErr.Code != soulMintInstanceReadCodeUnauthorized || appErr.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected unauthorized before SoulEnabled disclosure, got %#v", appErr)
+	}
+	tdb.qKey.AssertNumberOfCalls(t, "First", 1)
+}
+
+func TestHandleSoulInstanceMintConversationReads_ValidKeyFailsClosedWhenSoulDisabled(t *testing.T) {
+	t.Parallel()
+
+	tdb := newMintConversationTestDB()
+	s := newMintConversationServer(tdb)
+	s.cfg.SoulEnabled = false
+	identity := testMintConversationIdentity()
+
+	expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, "inst1")
+
+	_, err := s.handleSoulInstanceListMintConversations(newMintConversationInstanceReadContext(identity.AgentID, "", nil))
+	appErr := requireAppTheoryError(t, err)
+	if appErr.Code != soulMintInstanceReadCodeConflict || appErr.StatusCode != http.StatusConflict {
+		t.Fatalf("expected authenticated disabled-Soul conflict, got %#v", appErr)
+	}
+}
+
 func TestHandleSoulInstanceMintConversationReads_RejectBoundaryAndInputFailures(t *testing.T) {
 	t.Parallel()
 
