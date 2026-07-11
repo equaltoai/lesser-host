@@ -74,32 +74,7 @@ func (s *Server) handleSoulMintConversationForRegistrationAsync(ctx *apptheory.C
 		return nil, newAppTheoryError("app.bad_request", "model is required")
 	}
 	if session.replayed {
-		if hostedGenesisReplayedTurnNeedsProgression(session) {
-			apiKey, apiKeyErr := s.apiKeyForMintConversationModel(ctx.Context(), session.modelSet)
-			if apiKeyErr != nil {
-				return nil, apiKeyErr
-			}
-			progressedSession, progressedConv, status, progressErr := s.progressHostedGenesisAcceptedTurn(ctx.Context(), regCtx, session, session.conv, session.existingMessages, apiKey, strings.TrimSpace(ctx.RequestID))
-			if progressErr != nil {
-				return nil, progressErr
-			}
-			return hostedGenesisConversationJSONFromSession(status, progressedSession, progressedConv, hostedGenesisProjectionOptions{
-				RegistrationID:  regCtx.reg.ID,
-				RequestID:       strings.TrimSpace(ctx.RequestID),
-				CollapseCreated: true,
-				CorrelationID:   req.CorrelationID,
-				IdempotencyKey:  req.IdempotencyKey,
-				LesserRequestID: req.LesserRequestID,
-			})
-		}
-		return hostedGenesisConversationJSONFromSession(http.StatusAccepted, session.session, session.conv, hostedGenesisProjectionOptions{
-			RegistrationID:  regCtx.reg.ID,
-			RequestID:       strings.TrimSpace(ctx.RequestID),
-			CollapseCreated: true,
-			CorrelationID:   req.CorrelationID,
-			IdempotencyKey:  req.IdempotencyKey,
-			LesserRequestID: req.LesserRequestID,
-		})
+		return s.handleHostedGenesisReplayedTurn(ctx, regCtx, session, req)
 	}
 	apiKey, apiKeyErr := s.apiKeyForMintConversationModel(ctx.Context(), session.modelSet)
 	if apiKeyErr != nil {
@@ -133,6 +108,10 @@ func (s *Server) handleSoulMintConversationForRegistrationAsync(ctx *apptheory.C
 		log.Printf("controlplane: hosted genesis accepted promotion update failed agent_hash=%s conversation_hash=%s err=%v", soulMintInstanceReadAuditHash(regCtx.agentIDHex), soulMintInstanceReadAuditHash(session.conversationID), appErr)
 	}
 
+	if hostedGenesisFinalAffirmationCompletesReview(session, message) {
+		return s.startHostedGenesisFinalAffirmationCompletion(ctx, regCtx, session, conv, req)
+	}
+
 	progressedSession, progressedConv, status, progressErr := s.progressHostedGenesisAcceptedTurn(ctx.Context(), regCtx, session, conv, updatedMessages, apiKey, strings.TrimSpace(ctx.RequestID))
 	if progressErr != nil {
 		return nil, progressErr
@@ -146,6 +125,117 @@ func (s *Server) handleSoulMintConversationForRegistrationAsync(ctx *apptheory.C
 		IdempotencyKey:  req.IdempotencyKey,
 		LesserRequestID: req.LesserRequestID,
 	})
+}
+
+func (s *Server) handleHostedGenesisReplayedTurn(ctx *apptheory.Context, regCtx mintConversationRegistrationContext, session hostedGenesisTurnSession, req soulMintConversationRequest) (*apptheory.Response, error) {
+	if hostedGenesisReplayedTurnNeedsProgression(session) {
+		apiKey, apiKeyErr := s.apiKeyForMintConversationModel(ctx.Context(), session.modelSet)
+		if apiKeyErr != nil {
+			return nil, apiKeyErr
+		}
+		progressedSession, progressedConv, status, progressErr := s.progressHostedGenesisAcceptedTurn(ctx.Context(), regCtx, session, session.conv, session.existingMessages, apiKey, strings.TrimSpace(ctx.RequestID))
+		if progressErr != nil {
+			return nil, progressErr
+		}
+		return hostedGenesisConversationJSONFromSession(status, progressedSession, progressedConv, hostedGenesisProjectionOptions{
+			RegistrationID:  regCtx.reg.ID,
+			RequestID:       strings.TrimSpace(ctx.RequestID),
+			CollapseCreated: true,
+			CorrelationID:   req.CorrelationID,
+			IdempotencyKey:  req.IdempotencyKey,
+			LesserRequestID: req.LesserRequestID,
+		})
+	}
+	return hostedGenesisConversationJSONFromSession(http.StatusAccepted, session.session, session.conv, hostedGenesisProjectionOptions{
+		RegistrationID:  regCtx.reg.ID,
+		RequestID:       strings.TrimSpace(ctx.RequestID),
+		CollapseCreated: true,
+		CorrelationID:   req.CorrelationID,
+		IdempotencyKey:  req.IdempotencyKey,
+		LesserRequestID: req.LesserRequestID,
+	})
+}
+
+func (s *Server) startHostedGenesisFinalAffirmationCompletion(ctx *apptheory.Context, regCtx mintConversationRegistrationContext, session hostedGenesisTurnSession, conv *models.SoulAgentMintConversation, req soulMintConversationRequest) (*apptheory.Response, error) {
+	if !session.sessionIsNew {
+		session.session.Version = session.expectedVersion + 1
+	}
+	convCtx := soulInstanceBootstrapConversationContext{
+		soulInstanceBootstrapRegistrationContext: soulInstanceBootstrapRegistrationContext{
+			soulInstanceBootstrapContext: soulInstanceBootstrapContext{instanceSlug: strings.TrimSpace(session.session.InstanceSlug)},
+			reg:                          regCtx.reg,
+			inst:                         regCtx.inst,
+			agentIDHex:                   regCtx.agentIDHex,
+		},
+		session:        session.session,
+		conv:           conv,
+		conversationID: session.conversationID,
+	}
+	if err := s.startHostedGenesisDeclarationExtraction(ctx, convCtx); err != nil {
+		return nil, err
+	}
+	return hostedGenesisConversationJSONFromSession(http.StatusAccepted, convCtx.session, convCtx.conv, hostedGenesisProjectionOptions{
+		RegistrationID:  regCtx.reg.ID,
+		RequestID:       strings.TrimSpace(ctx.RequestID),
+		CollapseCreated: true,
+		CorrelationID:   req.CorrelationID,
+		IdempotencyKey:  req.IdempotencyKey,
+		LesserRequestID: req.LesserRequestID,
+	})
+}
+
+func hostedGenesisFinalAffirmationCompletesReview(session hostedGenesisTurnSession, message string) bool {
+	if hostedgenesis.NormalizeStatus(string(session.expectedStatus)) != hostedgenesis.StatusAssistantTurnReady {
+		return false
+	}
+	if !hostedGenesisLastAssistantRequestedFinalAffirmation(session.existingMessages) {
+		return false
+	}
+	return hostedGenesisMessageAffirmsFinalDeclaration(message)
+}
+
+func hostedGenesisLastAssistantRequestedFinalAffirmation(messages []soulMintConversationMessage) bool {
+	for i := len(messages) - 1; i >= 0; i-- {
+		msg := messages[i]
+		if !strings.EqualFold(strings.TrimSpace(msg.Role), hostedGenesisTranscriptRoleAssistant) {
+			continue
+		}
+		content := strings.ToLower(strings.TrimSpace(msg.Content))
+		if content == "" {
+			return false
+		}
+		return strings.Contains(content, "do you affirm") &&
+			strings.Contains(content, "foundation of your minted soul") &&
+			strings.Contains(content, "inscribed")
+	}
+	return false
+}
+
+func hostedGenesisMessageAffirmsFinalDeclaration(message string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(message))
+	if normalized == "" {
+		return false
+	}
+	normalized = strings.Trim(normalized, " \t\r\n.!?")
+	if normalized == "" {
+		return false
+	}
+	if strings.Contains(normalized, "not affirm") ||
+		strings.Contains(normalized, "do not affirm") ||
+		strings.Contains(normalized, "don't affirm") ||
+		strings.Contains(normalized, "change ") ||
+		strings.Contains(normalized, "correct ") ||
+		strings.Contains(normalized, "qualify ") ||
+		strings.Contains(normalized, "strike ") {
+		return false
+	}
+	switch normalized {
+	case "yes", "yes i affirm", "i affirm", "affirmed", "i do", "confirmed", "i confirm", "approved", "i approve", "proceed":
+		return true
+	}
+	return strings.Contains(normalized, "i affirm") ||
+		strings.Contains(normalized, "i confirm") ||
+		strings.Contains(normalized, "i approve")
 }
 
 func hostedGenesisReplayedTurnNeedsProgression(session hostedGenesisTurnSession) bool {
@@ -614,8 +704,15 @@ func (s *Server) loadExistingHostedGenesisTurnSession(ctx context.Context, sessi
 	session.session = hostSession
 	session.expectedStatus = hostedgenesis.NormalizeStatus(hostSession.Status)
 	session.expectedVersion = hostSession.Version
-	if appErr := requireHostedGenesisSessionAcceptsTurn(hostSession); appErr != nil {
-		return hostedGenesisTurnSession{}, appErr
+	turnAccepting := hostedGenesisStatusAcceptsTurn(session.expectedStatus)
+	replayOnly := session.idempotency != nil && hostedGenesisStatusAcceptsIdempotentReplay(session.expectedStatus)
+	if !turnAccepting && !replayOnly {
+		return hostedGenesisTurnSession{}, newAppTheoryError("app.conflict", "conversation cannot accept a new turn")
+	}
+	if turnAccepting {
+		if appErr := requireHostedGenesisSessionAcceptsTurn(hostSession); appErr != nil {
+			return hostedGenesisTurnSession{}, appErr
+		}
 	}
 	if appErr := applyHostedGenesisSessionModel(&session, hostSession.Model); appErr != nil {
 		return hostedGenesisTurnSession{}, appErr
@@ -624,15 +721,39 @@ func (s *Server) loadExistingHostedGenesisTurnSession(ctx context.Context, sessi
 	if session.modelSet == "" {
 		session.modelSet = defaultSoulMintConversationModel
 	}
-	return finishHostedGenesisTurnSession(regCtx.reg.ID, session, req, message, requestID, now)
+	finished, appErr := finishHostedGenesisTurnSession(regCtx.reg.ID, session, req, message, requestID, now)
+	if appErr != nil {
+		return hostedGenesisTurnSession{}, appErr
+	}
+	if !turnAccepting && !finished.replayed {
+		return hostedGenesisTurnSession{}, newAppTheoryError("app.conflict", "conversation cannot accept a new turn")
+	}
+	return finished, nil
 }
 
 func requireHostedGenesisSessionAcceptsTurn(session *models.HostedGenesisSession) *apptheory.AppTheoryError {
-	status := hostedgenesis.NormalizeStatus(session.Status)
-	if status == hostedgenesis.StatusInProgress || status == hostedgenesis.StatusAssistantTurnReady || status == hostedgenesis.StatusCreated {
+	if hostedGenesisStatusAcceptsTurn(hostedgenesis.NormalizeStatus(session.Status)) {
 		return nil
 	}
 	return newAppTheoryError("app.conflict", "conversation cannot accept a new turn")
+}
+
+func hostedGenesisStatusAcceptsTurn(status hostedgenesis.Status) bool {
+	switch status {
+	case hostedgenesis.StatusInProgress, hostedgenesis.StatusAssistantTurnReady, hostedgenesis.StatusCreated:
+		return true
+	default:
+		return false
+	}
+}
+
+func hostedGenesisStatusAcceptsIdempotentReplay(status hostedgenesis.Status) bool {
+	switch status {
+	case hostedgenesis.StatusDeclarationExtractionPending, hostedgenesis.StatusDeclarationReady:
+		return true
+	default:
+		return false
+	}
 }
 
 func applyHostedGenesisSessionModel(session *hostedGenesisTurnSession, storedModel string) *apptheory.AppTheoryError {

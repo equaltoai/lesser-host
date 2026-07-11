@@ -305,6 +305,12 @@ success only. Lesser must persist `conversation_id` immediately, project `in_pro
 `declaration_extraction_pending` as progress, and only advance to publish when the status read returns
 `declaration_ready` with `produced_declarations`.
 
+When the latest assistant turn asks the final minted-soul affirmation question, the user's affirmative reply is the
+review-completion action for the Lesser instance-key route. Lesser should send that affirmation as the next ordinary
+`POST /mint-conversation` turn; Host records the affirmation in the durable transcript and transitions to
+`declaration_extraction_pending` instead of generating another assistant turn. Clients should then poll the canonical
+GET status until `declaration_ready` with `produced_declarations`.
+
 For portal/native Host UI routes:
 
 - registration-scoped:
@@ -326,6 +332,10 @@ Important behavior:
   - `POST /api/v1/soul/agents/register/{id}/mint-conversation/{conversationId}/complete`
 - agent-scoped:
   - `POST /api/v1/soul/agents/{agentId}/mint-conversation/{conversationId}/complete`
+
+For the Lesser instance-key hosted-genesis path, this step is normally driven by the final affirmation turn described
+above, not by a separate browser-visible Host button. The explicit `/complete` route remains available for controlled
+recovery and compatibility.
 
 Response is the completed conversation record with extracted declarations stored on the backend.
 

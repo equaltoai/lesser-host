@@ -61,6 +61,12 @@ by `status=declaration_ready` plus a valid declaration checkpoint (`declaration_
 `checkpoint_ref`, registration/conversation/agent ids, message count, request id, and produced timestamp). Typed
 `failed` recovery actions are server-authored and limited to the locked recovery enum below.
 
+For the production Lesser instance-key path, the final minted-soul affirmation is an ordinary accepted user turn with
+completion semantics. When the previous assistant message asks the final affirmation question and the user affirms,
+Host persists that affirmation and transitions to `declaration_extraction_pending` rather than enqueueing another
+assistant response. The MicroVM declaration extraction then advances the same durable conversation to
+`declaration_ready` with `produced_declarations`; Lesser should poll status and publish from that Host state.
+
 ### Idempotency ledger semantics
 
 The durable `HostedGenesisSession` turn ledger is the Host source of truth for retry semantics. For a caller-provided
