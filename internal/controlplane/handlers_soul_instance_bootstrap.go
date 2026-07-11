@@ -298,13 +298,20 @@ func (s *Server) autoFinalizeSoulInstanceHostedGenesisOnReady(ctx *apptheory.Con
 		return false, nil
 	}
 	if finalizeCtx.identity != nil && finalizeCtx.identity.SelfDescriptionVersion > 0 {
+		if appErr := s.ensureSoulAgentRegistrationPublishedIdentityActive(ctx.Context(), finalizeCtx.identity, time.Now().UTC()); appErr != nil {
+			return false, appErr
+		}
 		return false, nil
 	}
 
 	autoCtx := *ctx
 	autoCtx.Request.Body = nil
 	if _, err := s.finalizeMintConversation(&autoCtx, finalizeCtx); err != nil {
-		if s.autoFinalizeSoulInstanceHostedGenesisAlreadyPublished(ctx, convCtx.agentIDHex) {
+		alreadyPublished, reconcileErr := s.autoFinalizeSoulInstanceHostedGenesisAlreadyPublished(ctx, convCtx.agentIDHex)
+		if reconcileErr != nil {
+			return false, reconcileErr
+		}
+		if alreadyPublished {
 			return false, nil
 		}
 		return false, soulInstanceBootstrapConversationErrorFromError(err)
@@ -312,12 +319,18 @@ func (s *Server) autoFinalizeSoulInstanceHostedGenesisOnReady(ctx *apptheory.Con
 	return true, nil
 }
 
-func (s *Server) autoFinalizeSoulInstanceHostedGenesisAlreadyPublished(ctx *apptheory.Context, agentIDHex string) bool {
+func (s *Server) autoFinalizeSoulInstanceHostedGenesisAlreadyPublished(ctx *apptheory.Context, agentIDHex string) (bool, error) {
 	if s == nil || ctx == nil || strings.TrimSpace(agentIDHex) == "" {
-		return false
+		return false, nil
 	}
 	identity, err := s.getSoulAgentIdentity(ctx.Context(), agentIDHex)
-	return err == nil && identity != nil && identity.SelfDescriptionVersion > 0
+	if err != nil || identity == nil || identity.SelfDescriptionVersion <= 0 {
+		return false, nil
+	}
+	if appErr := s.ensureSoulAgentRegistrationPublishedIdentityActive(ctx.Context(), identity, time.Now().UTC()); appErr != nil {
+		return false, appErr
+	}
+	return true, nil
 }
 
 func (s *Server) requireSoulInstanceBootstrapContext(ctx *apptheory.Context) (soulInstanceBootstrapContext, *apptheory.AppTheoryError) {

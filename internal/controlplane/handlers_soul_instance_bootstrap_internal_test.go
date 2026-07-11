@@ -1360,6 +1360,7 @@ func TestSoulInstanceHostedInstanceTrustFinalizePublishesHostedOffchain(t *testi
 		t.Fatalf("unmarshal: %v", err)
 	}
 	assertSoulInstanceHostedInstanceTrustFinalizeResponse(t, out)
+	assertSoulInstanceFinalizeIdentityActivationPersisted(t, tdb, true)
 
 	packs, ok := s.soulPacks.(*fakeSoulPackStoreForPublish)
 	if !ok {
@@ -1403,6 +1404,7 @@ func TestSoulInstanceGetRegistrationMintConversation_AutoFinalizesHostedInstance
 	}
 	published := packs.puts[soulRegistrationS3Key(reg.AgentID)]
 	assertSoulInstanceHostedInstanceTrustRegistrationFile(t, published)
+	assertSoulInstanceFinalizeIdentityActivationPersisted(t, tdb, true)
 	assertSoulInstanceFinalizeAuditAndLifecycle(t, tdb, reg.AgentID)
 }
 

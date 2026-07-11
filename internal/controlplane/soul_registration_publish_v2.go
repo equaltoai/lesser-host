@@ -276,29 +276,7 @@ func (s *Server) finalizeSoulAgentRegistrationV2Identity(ctx context.Context, id
 		updates = append(updates, "SelfDescriptionVersion")
 	}
 
-	if shouldActivateSoulIdentityOnRegistrationPublish(identity) {
-		identity.Status = models.SoulAgentStatusActive
-		identity.LifecycleStatus = models.SoulAgentStatusActive
-		if strings.TrimSpace(identity.AnchorState) == "" {
-			identity.AnchorState = models.SoulAnchorStateHostedOffchain
-		}
-		applyHostedBoundSoulPolicyDefaults(identity)
-		updates = append(updates,
-			"Status",
-			"LifecycleStatus",
-			"PolicyVersion",
-			"AnchorState",
-			"OperationalBinding",
-			"CapabilityPolicyVersion",
-			"CallerAccessPaymentPolicyVersion",
-			"EmailDefaultAllowed",
-			"PhoneEntitlementStatus",
-			"SMSAllowed",
-			"VoiceAllowed",
-			"PublicPaidCallerAccess",
-			"PolicyMigrationState",
-		)
-	}
+	updates = append(updates, soulIdentityRegistrationPublishActivationFields(identity, true)...)
 
 	if len(updates) > 0 {
 		identity.UpdatedAt = now.UTC()
@@ -311,7 +289,54 @@ func (s *Server) finalizeSoulAgentRegistrationV2Identity(ctx context.Context, id
 	return nil
 }
 
-func shouldActivateSoulIdentityOnRegistrationPublish(identity *models.SoulAgentIdentity) bool {
+func (s *Server) ensureSoulAgentRegistrationPublishedIdentityActive(ctx context.Context, identity *models.SoulAgentIdentity, now time.Time) *apptheory.AppTheoryError {
+	if s == nil || s.store == nil || s.store.DB == nil || identity == nil {
+		return newAppTheoryError("app.internal", "internal error")
+	}
+	if identity.SelfDescriptionVersion <= 0 {
+		return nil
+	}
+	updates := soulIdentityRegistrationPublishActivationFields(identity, false)
+	if len(updates) == 0 {
+		return nil
+	}
+	identity.UpdatedAt = now.UTC()
+	_ = identity.UpdateKeys()
+	updates = append(updates, "UpdatedAt")
+	if err := s.store.DB.WithContext(ctx).Model(identity).IfExists().Update(updates...); err != nil {
+		return newAppTheoryError("app.internal", "failed to activate identity publication")
+	}
+	return nil
+}
+
+func soulIdentityRegistrationPublishActivationFields(identity *models.SoulAgentIdentity, persistAlreadyActive bool) []string {
+	if !shouldPersistSoulIdentityActivationOnRegistrationPublish(identity, persistAlreadyActive) {
+		return nil
+	}
+	identity.Status = models.SoulAgentStatusActive
+	identity.LifecycleStatus = models.SoulAgentStatusActive
+	if strings.TrimSpace(identity.AnchorState) == "" {
+		identity.AnchorState = models.SoulAnchorStateHostedOffchain
+	}
+	applyHostedBoundSoulPolicyDefaults(identity)
+	return []string{
+		"Status",
+		"LifecycleStatus",
+		"PolicyVersion",
+		"AnchorState",
+		"OperationalBinding",
+		"CapabilityPolicyVersion",
+		"CallerAccessPaymentPolicyVersion",
+		"EmailDefaultAllowed",
+		"PhoneEntitlementStatus",
+		"SMSAllowed",
+		"VoiceAllowed",
+		"PublicPaidCallerAccess",
+		"PolicyMigrationState",
+	}
+}
+
+func shouldPersistSoulIdentityActivationOnRegistrationPublish(identity *models.SoulAgentIdentity, persistAlreadyActive bool) bool {
 	if identity == nil {
 		return false
 	}
@@ -319,5 +344,8 @@ func shouldActivateSoulIdentityOnRegistrationPublish(identity *models.SoulAgentI
 	if status == "" {
 		status = strings.ToLower(strings.TrimSpace(identity.Status))
 	}
-	return status == "" || status == models.SoulAgentStatusPending
+	if status == "" || status == models.SoulAgentStatusPending {
+		return true
+	}
+	return persistAlreadyActive && status == models.SoulAgentStatusActive
 }
