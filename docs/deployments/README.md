@@ -19,6 +19,12 @@ Conventions:
   `ensGatewayResolverAddressLab` maps to lab trust API `ENS_GATEWAY_RESOLVER_ADDRESS`, and
   `ensGatewayResolverAddressLive` maps to live trust API `ENS_GATEWAY_RESOLVER_ADDRESS`. The legacy generic
   `ensGatewayResolverAddress` is a lab-only migration fallback.
+- Mainnet runtime reconnection records are operational Evidence, not source defaults. Keep any recovered-runtime
+  companion or `docs/deployments/mainnet/latest.json` local/ignored, sanitize it to public addresses, code hashes,
+  source-verification references, parameter names, template hashes, and IAM projection only, and follow
+  `docs/runbooks/soul-mainnet-runtime-reconnection.md` for the activation/rollback checklist.
+- Never record RPC values, Mint-signer material, raw InstanceKeys, signed payload bodies, full transaction bodies, PII, or
+  tenant transcripts in deployment manifests.
 - When deploying new contracts:
   1. Deploy contracts (Hardhat scripts in `contracts/`).
   2. Update your local `docs/deployments/<network>/latest.json` with addresses + tx hashes + required Safe calls.

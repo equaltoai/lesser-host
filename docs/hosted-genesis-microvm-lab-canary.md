@@ -55,8 +55,13 @@ This PR does **not** deploy, run a cloud canary, mutate SSM/Secrets, sign transa
 
 1. Run the normal `theory app up --stage lab --execute` path. The CDK custom resource generates the authorizer bearer token and writes it to the deterministic SSM SecureString `/lesser-host/lab/hosted-genesis/microvm/auth-token` during the deploy. **Do not** manually `aws ssm put-parameter` the raw token, and **do not** supply `hostedGenesisMicrovmAuthorizerTokenSha256` or `hostedGenesisMicrovmAuthTokenSSMParamName` CDK context — those are retired. No VPC/subnet/SG/base-image/build-role context is required either. Do not bypass AppTheory's deploy contract and do not set a CDK deploy timeout.
 2. Run the post-deploy verifier (`./scripts/hosted-genesis-microvm-preflight.sh --stage lab`) to confirm the stack-owned SSM SecureString was provisioned.
-3. Exercise the controller endpoint with AppTheory M16 controller routes: `POST /microvms`, `GET /microvms`, `GET /microvms/{session_id}`, `POST /microvms/{session_id}/suspend`, `POST /microvms/{session_id}/resume`, `DELETE /microvms/{session_id}`, `POST /microvms/{session_id}/auth-token`, and `POST /microvms/{session_id}/shell-auth-token`.
-4. Verify logs contain no MicroVM endpoint tokens, bearer tokens, raw Instance API keys, provider keys, SSM values, wallet signatures, AWS credentials, raw transcripts, or raw lifecycle payloads.
+3. Run `scripts/hosted-genesis-microvm-e2e-gate.sh --stage lab --outputs-file cdk/lab-outputs.json` against the deployed lab stack. After the ordinary Hosted Genesis happy path creates a new conversation, the gate must also call the agent-scoped InstanceKey routes:
+   - `GET /api/v1/soul/instance/agents/{agentId}/mint-conversations`
+   - `GET /api/v1/soul/instance/agents/{agentId}/mint-conversations/{conversationId}`
+
+   The list response must contain the newly created conversation ID, must bind it to the fixture agent ID, and must remain metadata-only: no transcript messages, produced declarations, raw InstanceKey, provider credential, or private prompt text. The single-get response must return the same conversation ID and agent ID through the supported InstanceKey-authenticated path. This is the contractless hosted/off-chain read proof required before any recovered mainnet Registry configuration can be treated as rollout evidence.
+4. Exercise the controller endpoint with AppTheory M16 controller routes: `POST /microvms`, `GET /microvms`, `GET /microvms/{session_id}`, `POST /microvms/{session_id}/suspend`, `POST /microvms/{session_id}/resume`, `DELETE /microvms/{session_id}`, `POST /microvms/{session_id}/auth-token`, and `POST /microvms/{session_id}/shell-auth-token`.
+5. Verify logs contain no MicroVM endpoint tokens, bearer tokens, raw Instance API keys, provider keys, SSM values, wallet signatures, AWS credentials, raw transcripts, or raw lifecycle payloads.
 
 ## Truth layering
 

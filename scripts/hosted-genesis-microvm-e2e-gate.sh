@@ -71,6 +71,67 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
+validate_agent_list_response() {
+  local conversation_id="$1"
+  local agent_id="$2"
+  python3 -c '
+import json
+import sys
+
+conversation_id, agent_id = sys.argv[1], sys.argv[2]
+data = json.load(sys.stdin)
+items = data.get("conversations")
+if not isinstance(items, list):
+    raise SystemExit("list response missing conversations array")
+for item in items:
+    if item.get("conversation_id") == conversation_id:
+        listed_agent = item.get("agent_id")
+        if listed_agent is not None and listed_agent != agent_id:
+            raise SystemExit(f"listed conversation has wrong agent_id {listed_agent!r}")
+        if "messages" in item or "produced_declarations" in item or "declarations" in item:
+            raise SystemExit("listed conversation contains private fields")
+        break
+else:
+    raise SystemExit(f"conversation {conversation_id} was not present in agent-scoped list")
+' "$conversation_id" "$agent_id"
+}
+
+validate_agent_get_response() {
+  local conversation_id="$1"
+  local agent_id="$2"
+  python3 -c '
+import json
+import sys
+
+conversation_id, agent_id = sys.argv[1], sys.argv[2]
+data = json.load(sys.stdin)
+conv = data.get("conversation") or {}
+returned_conversation = conv.get("conversation_id")
+if returned_conversation != conversation_id:
+    raise SystemExit(f"single-get returned wrong conversation_id {returned_conversation!r}")
+returned_agent = conv.get("agent_id")
+if returned_agent != agent_id:
+    raise SystemExit(f"single-get returned wrong agent_id {returned_agent!r}")
+' "$conversation_id" "$agent_id"
+}
+
+run_agent_read_parser_smoke_tests() {
+  printf '%s' '{"conversations":[{"conversation_id":"parser-smoke-conversation","status":"declaration_ready","message_count":1}]}' |
+    validate_agent_list_response "parser-smoke-conversation" "0xparser"
+  if printf '%s' '{"conversations":[{"conversation_id":"parser-smoke-conversation","agent_id":"0xother"}]}' |
+    validate_agent_list_response "parser-smoke-conversation" "0xparser" 2>/dev/null; then
+    echo "FAIL: parser smoke test accepted mismatched list agent_id" >&2
+    exit 1
+  fi
+  if printf '%s' '{"conversations":[{"conversation_id":"parser-smoke-conversation","messages":[]}]}' |
+    validate_agent_list_response "parser-smoke-conversation" "0xparser" 2>/dev/null; then
+    echo "FAIL: parser smoke test accepted private list fields" >&2
+    exit 1
+  fi
+  printf '%s' '{"conversation":{"conversation_id":"parser-smoke-conversation","agent_id":"0xparser"}}' |
+    validate_agent_get_response "parser-smoke-conversation" "0xparser"
+}
+
 # ---------------------------------------------------------------------------
 # Phase 1 — stub/local-proved gate (CI-safe, no AWS, no config).
 # ---------------------------------------------------------------------------
@@ -85,6 +146,7 @@ go test ./internal/controlplane \
 go test ./cmd/hosted-genesis-microvm-controller \
   -run 'TestControllerEventFailsClosedWhenDisabled|TestControllerEventFailsClosedWhenAuthLoosened|TestControllerEventGateNoLongerLabOnly' \
   -count=1
+run_agent_read_parser_smoke_tests
 echo "==> [1/2] stub/local-proved E2E gate: PASS"
 
 # ---------------------------------------------------------------------------
@@ -361,9 +423,49 @@ else
     echo "FAIL: timed out waiting for declaration_ready (last status=${status})" >&2
     exit 1
   fi
-  echo "    declaration ready: ${status}"
-  echo "==> happy path: PASS"
+echo "    declaration ready: ${status}"
+echo "==> happy path: PASS"
 fi
+
+# --- Agent-scoped list/get proof for the newly created hosted/off-chain conversation. ---
+# These reads use the ordinary InstanceKey-authenticated agent routes that Lesser
+# calls after it knows the agent id. The list assertion is deliberately
+# metadata-only: it rejects transcript/declaration/private-field leakage and
+# never prints the raw InstanceKey.
+agent_read_base="${lab_host}/api/v1/soul/instance/agents/${agent_id_hex}/mint-conversations"
+list_resp=$(curl -sS -w '\n__HTTP_STATUS__%{http_code}' -X GET "${agent_read_base}?limit=50" -H "$auth" || true)
+list_status=$(printf '%s' "$list_resp" | sed -n 's/.*__HTTP_STATUS__\([0-9]*\).*/\1/p')
+list_body=$(printf '%s' "$list_resp" | sed 's/__HTTP_STATUS__[0-9]*$//')
+echo "    agent list: HTTP ${list_status}"
+if [[ "$list_status" != "200" ]]; then
+  echo "FAIL: agent-scoped list expected 200, got ${list_status}: ${list_body}" >&2
+  exit 1
+fi
+if [[ "$list_body" == *"$instance_key"* ]]; then
+  echo "FAIL: agent-scoped list leaked the raw InstanceKey" >&2
+  exit 1
+fi
+if [[ "$list_body" == *'"messages"'* || "$list_body" == *'"produced_declarations"'* || "$list_body" == *'"declarations"'* || "$list_body" == *"${e2e_message}"* ]]; then
+  echo "FAIL: agent-scoped list leaked transcript/declaration/private fields" >&2
+  exit 1
+fi
+printf '%s' "$list_body" | validate_agent_list_response "$conversation_id" "$agent_id_hex"
+echo "    agent list: contains ${conversation_id} and remains metadata-only"
+
+get_resp=$(curl -sS -w '\n__HTTP_STATUS__%{http_code}' -X GET "${agent_read_base}/${conversation_id}" -H "$auth" || true)
+get_status=$(printf '%s' "$get_resp" | sed -n 's/.*__HTTP_STATUS__\([0-9]*\).*/\1/p')
+get_body=$(printf '%s' "$get_resp" | sed 's/__HTTP_STATUS__[0-9]*$//')
+echo "    agent get: HTTP ${get_status}"
+if [[ "$get_status" != "200" ]]; then
+  echo "FAIL: agent-scoped get expected 200, got ${get_status}: ${get_body}" >&2
+  exit 1
+fi
+if [[ "$get_body" == *"$instance_key"* ]]; then
+  echo "FAIL: agent-scoped get leaked the raw InstanceKey" >&2
+  exit 1
+fi
+printf '%s' "$get_body" | validate_agent_get_response "$conversation_id" "$agent_id_hex"
+echo "    agent get: returned ${conversation_id} for ${agent_id_hex}"
 
 # --- Kill-VM recovery arc (second conversation) ---
 echo "==> kill-VM recovery arc"

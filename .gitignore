@@ -52,3 +52,10 @@ scripts/.lab-e2e-instance-key
 docs/deployments/*
 !docs/deployments/README.md
 docs/testing-plan.md
+
+# Materialized agent-local artifacts. These are generated/personal agent state
+# and must remain untracked; AGENTS.md is the canonical tracked repo guide.
+GEMINI.md
+CLAUDE.md
+.mcp.json
+.mcp/
