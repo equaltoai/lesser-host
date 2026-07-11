@@ -3,9 +3,10 @@
 ## Goal
 
 Restore the intended boundary between Host-backed conversation reads and optional on-chain assurance, then reconnect
-the verified recovered Ethereum mainnet Soul contracts without allowing that configuration to mask the bug. The first
-live deployment proves agent list/get while the Registry is absent. A later, separately authorized configuration-only
-deployment activates the recovered chain-1 values from an isolated, approved source state and sends no transaction.
+the verified recovered Ethereum mainnet Soul contracts without letting on-chain configuration become a prerequisite for
+hosted/off-chain reads. The boundary is proven at the source/test layer and by the configured lab Hosted Genesis MicroVM
+E2E canary, not by temporarily disconnecting deployed lab or live contract references. The mainnet activation remains a
+separately authorized configuration-only deployment from an isolated, approved source state and sends no transaction.
 
 ## Classification
 
@@ -17,7 +18,8 @@ docs.
 - `internal/controlplane/handlers_soul_mint_conversation_instance_read.go`
 - focused `internal/controlplane` registry-boundary tests
 - the Hosted Genesis lab E2E gate and its canary instructions
-- operator-local, ignored Soul runtime context in `cdk/cdk.context.local.json`
+- operator-local, ignored Soul runtime context in `cdk/cdk.context.local.json` for final Sepolia/mainnet values only;
+  temporary contractless lab/live runtime deployments are explicitly out of scope
 - Control plane and Trust API synthesized environments and SSM IAM projections, through existing CDK behavior
 - `cdk/cdk.context.local.json.example`
 - `cdk/test/lesser-host-stack-soul-runtime.test.ts` with synthetic runtime values
@@ -108,66 +110,72 @@ Coordination remains KB-first and non-blocking. No sibling repository is edited 
 - **Controls**: focused negative tests, unchanged on-chain fail-closed control, extended E2E assertions, synthetic CDK
   projection/IAM tests, full validation, placeholder-only tracked context, and exact no-change review.
 
-### Phase 2: Prove contract independence in lab
+### Phase 2: Prove deployed lab MicroVM conversation acceptance
 
-- **Items**: operator checkpoint 1
+- **Items**: operator checkpoint 1, corrected 2026-07-11 after operator rejection of temporary contract disconnects
 - **Dependencies**:
-  - Items 1-4 are merged to `staging`; pin the exact `staging` SHA.
-  - Deploy from an isolated clean checkout using an exact deliberately contractless lab Soul context:
-    `SoulEnabled=true`, `SoulChainID=0`, and empty-string RPC, Registry, ReputationAttestation, and
-    ValidationAttestation addresses. Never substitute the syntactically valid EVM zero address; assert the synthesized
-    Lambda environment before deployment.
+  - Items 1-4 and the E2E gate hardening are merged to `staging`; pin the exact `staging` SHA.
   - The independent MicroVM correction is already the reviewed/deployed baseline from Phase 0.
+  - Lab remains configured with the real verified Sepolia Soul runtime references. Do not blank, replace, or disconnect
+    real deployed contract references merely to prove a helper boundary.
 - **Exercise**:
-  1. Deploy with `AWS_PROFILE=Lesser theory app up --stage lab --execute`; never set a timeout.
-  2. Run the extended governed lab gate. It creates a hosted/off-chain conversation, proves the new ID appears in agent
-     list, proves single-get returns that same conversation, and proves list is metadata-only. No manual Host API
+  1. Assert the deployed lab Control plane and Trust API are using the expected Sepolia Soul context by reading Lambda
+     environment names/addresses only; do not resolve or print secret values.
+  2. Run the extended governed lab gate against the deployed lab. It creates a hosted/off-chain conversation through the
+     real Hosted Genesis MicroVM path, proves the new ID appears in agent list, proves single-get returns that same
+     conversation, proves list is metadata-only, and exercises the kill-VM recovery arc. No manual Host API
      conversation-creation or data-deletion call is required.
-  3. Use the committed tests/CI evidence for missing-key, revoked-key, disabled-Soul, cross-tenant, metadata-only,
-     bounded-list, and genuine on-chain fail-closed cases; do not manufacture cross-tenant live data.
-  4. Confirm no raw InstanceKey, transcript, provider credential, or signed payload appears in logs.
-  5. Restore the normal verified Sepolia lab context, redeploy through AppTheory, and repeat the successful read path to
-     show that the correction also coexists with configured assurance.
-- **Soak**: after both lab variants pass, observe at least two hours with no new Control plane failures, unexpected
+  3. Use committed tests/CI evidence for the registry-independence boundary: missing-key, revoked-key, disabled-Soul,
+     cross-tenant, metadata-only, bounded-list, and genuine on-chain fail-closed cases. Do not manufacture cross-tenant
+     live data and do not use a temporary runtime disconnect as evidence.
+  4. Confirm no raw InstanceKey, transcript, provider credential, or signed payload appears in harness output or
+     relevant logs.
+- **Current evidence**: on 2026-07-11 from `staging` SHA `775a42c`, the configured lab Hosted Genesis gate passed:
+  accept returned `202`, assistant turn reached ready, declaration extraction reached `declaration_ready`, agent list/get
+  returned the created conversation with metadata-only list projection, kill-VM recovery surfaced `failed`, and retry
+  accept returned `202`.
+- **Soak**: observe at least two hours after the configured lab gate with no new Control plane failures, unexpected
   `401`/`403` posture, cross-Slug anomalies, or Hosted Genesis lifecycle regression.
-- **Risks**: configuration could accidentally mask the bug, or an unhealthy MicroVM flow could be mistaken for a
-  list/get failure.
-- **Controls**: contractless variant first, separate lifecycle and read-route evidence, then Sepolia restoration.
+- **Risks**: an unhealthy MicroVM flow could be mistaken for a list/get failure; over-focusing on optional on-chain
+  configuration can distract from whether MicroVM-driven conversations actually work.
+- **Controls**: source-level registry-independence tests, configured-lab MicroVM E2E proof, metadata-only assertions,
+  and no deploy-level contract-reference churn.
 
-### Phase 3: Promote and deploy the correction to live with the Registry absent
+### Phase 3: Promote only after lab MicroVM acceptance and an actual live reason
 
 - **Items**: operator checkpoint 1 completion
 - **Dependencies**:
-  - Lab acceptance and soak are complete.
+  - Configured lab MicroVM acceptance and soak are complete.
   - The operator promotes `staging` to `main`; `main` accepts only the `staging` PR and uses its normal branch checks.
     Do not rerun `gov-rubric` as a staging-to-main promotion gate.
   - Pin the approved `main` SHA. Any `v*` tag is manual and operator-owned.
-  - Use the captured **pre-activation** live Soul context: `SoulEnabled=true`, existing chain value retained, and empty
-    Registry/RPC/attestation addresses. Do not use the already prepared chain-1 context for this deployment.
-  - The independently deployed MicroVM correction must still be healthy in live.
+  - The live Soul context remains the operator-reviewed production context. Do not deploy live with deliberately blank
+    Registry/RPC/attestation references just to manufacture a no-user proof.
 - **Pre-deploy gate**:
   - tracked and staged diffs empty; no untracked deploy input;
-  - ignored context explicitly reviewed;
+  - ignored context explicitly reviewed and confirmed to preserve intended live references;
   - synth/template hash recorded;
   - CDK diff contains only the reviewed source deployment and no unrelated MicroVM, worker, Gov-infra, framework,
-    web, TipSplitter, or ENS change.
-- **Deploy**: with fresh explicit operator authorization, run
+    web, TipSplitter, ENS, or Soul runtime-reference churn.
+- **Deploy**: only with fresh explicit operator authorization and a real live acceptance reason, run
   `AWS_PROFILE=Lesser theory app up --stage live --execute` from the pinned checkout without a timeout.
 - **Acceptance and soak**:
-  - An ordinary Lesser-created hosted/off-chain conversation appears in agent list/get while the Registry remains
-    empty. This is the decisive proof that configuration did not fix the bug.
+  - If a live canary instance exists, an ordinary Hosted Genesis conversation appears in agent list/get through that
+    instance's normal InstanceKey path. If no live agents/users/canary instance exist, do not invent customer data or
+    treat absence of users as rollout evidence; retain lab E2E plus source-level tests as the acceptance basis.
   - Observe at least two hours with zero valid-request `soul_mint.conflict` responses on these reads, no tenant-boundary
     anomaly, and no related Control plane error increase.
-  - Do not delete conversation data merely to make the canary pass.
-- **Risks**: deploying from prepared mainnet context would invalidate the root-cause proof; a source rollback would
-  reintroduce the known `409`.
-- **Controls**: exact pre-activation context, template diff, ordinary user flow, and a mandatory boundary before Phase 4.
+  - Do not delete conversation data merely to make a canary pass.
+- **Risks**: a source rollback would reintroduce the known `409`; a synthetic live deployment with no users can waste
+  time without improving confidence in MicroVM-driven conversations.
+- **Controls**: configured lab MicroVM proof, exact live context review, template diff, optional real canary only, and a
+  mandatory boundary before Phase 4.
 
 ### Phase 4: Activate the recovered Ethereum mainnet configuration separately
 
 - **Items**: operator checkpoint 2
 - **Dependencies**:
-  - Phase 3 is accepted and its contractless-live Evidence is retained.
+  - Phase 3 is accepted and its configured-lab/live-canary Evidence is retained.
   - The operator explicitly acknowledges that activation enables signed direct-wallet `selfMintSoul` payload and
     `SoulOperation` creation for qualifying authorized registrations even when `SOUL_TX_MODE=safe`. Host does not
     broadcast, and this rollout invokes no signing endpoint or transaction.
@@ -213,7 +221,8 @@ Coordination remains KB-first and non-blocking. No sibling repository is edited 
 - **Post-deploy verification**:
   - read back Lambda environment names and scoped IAM projection without resolving secrets;
   - repeat chain, code, owner, paused, Safe, signer/attestor, and current-block probes;
-  - repeat hosted/off-chain list/get and confirm it remains independent of Registry availability;
+  - repeat hosted/off-chain list/get where a configured canary exists, and rely on source tests for Registry-optional
+    read independence rather than disconnecting deployed contracts;
   - confirm TipSplitter and ENS remain disabled;
   - confirm no rollout-time `SoulOperation`, signed payload, mint, transfer, broadcast, or Safe transaction was created.
 - **Soak**: two hours of active observation followed by a 24-hour passive review of Control plane/Trust API errors,
@@ -232,8 +241,9 @@ Coordination remains KB-first and non-blocking. No sibling repository is edited 
   - update ignored `docs/deployments/mainnet/latest.json` or its recovered-runtime companion according to
     `docs/deployments/README.md`;
   - record pinned source SHA, synthesized-template hash, public addresses/code hashes, source-verification references,
-    chain proof, Safe state, parameter **names**, environment/IAM projection, CloudFormation completion, contractless and
-    configured read proofs, and monitoring outcome;
+    chain proof, Safe state, parameter **names**, environment/IAM projection, CloudFormation completion,
+    registry-independence test proof, configured lab MicroVM E2E proof, optional live canary proof, and monitoring
+    outcome;
   - append the durable deployment decision/outcome to steward memory;
   - never record the RPC value, Mint-signer material, raw InstanceKey, signed payload body, full transaction body, PII,
     or tenant transcript.
@@ -248,19 +258,19 @@ Coordination remains KB-first and non-blocking. No sibling repository is edited 
 
 - **Command**: `AWS_PROFILE=Lesser theory app up --stage lab --execute`
 - **Authorization**: operator-approved lab deployment from the pinned `staging` SHA.
-- **Sequence**: contractless Soul context first; extended automated Hosted Genesis list/get gate; restore Sepolia
-  context; repeat; then soak.
-- **Soak duration**: minimum two hours after both variants pass.
-- **Soak criteria**: successful list and single-get without Registry; normal conversation lifecycle on the independently
-  corrected MicroVM baseline; existing Sepolia-backed behavior healthy; no auth, tenant, log-secrecy, or worker
-  regression.
+- **Sequence**: preserve verified Sepolia Soul context; run the extended automated Hosted Genesis MicroVM list/get gate;
+  then soak.
+- **Soak duration**: minimum two hours after the configured lab gate passes.
+- **Soak criteria**: normal MicroVM-driven conversation lifecycle; successful list and single-get for the created
+  conversation; metadata-only list projection; existing Sepolia-backed behavior healthy; no auth, tenant, log-secrecy,
+  or worker regression.
 
 ### Live
 
-- **Commands**: two separate invocations of
-  `AWS_PROFILE=Lesser theory app up --stage live --execute`, each with no timeout:
-  1. approved code with the pre-activation empty Registry;
-  2. the same pinned source with recovered chain-1 operator context.
+- **Commands**: live deploys are operator-authorized only. Do not perform a temporary empty-Registry live deployment.
+  If Phase 3 has a real live acceptance reason, use one invocation of
+  `AWS_PROFILE=Lesser theory app up --stage live --execute` with no timeout. Phase 4's mainnet activation remains a
+  separate invocation from the same pinned source with recovered chain-1 operator context.
 - **Authorization**: explicit operator authorization is required for each deployment. Phase 4 additionally requires
   informed acknowledgement of direct-wallet mint-signing availability.
 - **Post-deploy monitoring plan**: route status/latency, valid-request `soul_mint.conflict`, `401`/`403` posture,
@@ -303,8 +313,8 @@ any per-Slug tenant deployment. There is no canary customer or broader Managed i
   Revert the bounded source commit or check out the pinned prior approved SHA and redeploy through
   AppTheory/CloudFormation. Before Phase 4 this may reintroduce the known fail-closed `409` but does not mutate data.
 - **CDK stack rollback**: let CloudFormation finish. For the source fix, revert the bounded commit and redeploy through
-  AppTheory. For mainnet configuration, restore the captured pre-activation live context and redeploy the same pinned
-  source. Never modify deployed environment variables manually.
+  AppTheory. For mainnet configuration, restore the captured pre-activation live context with the intended production
+  references and redeploy the same pinned source. Never modify deployed environment variables manually.
 - **On-chain rollback**: no rollout transaction exists to reverse. Any future user-submitted mint is immutable and is
   outside this configuration rollback; forward governance would be required for later on-chain changes.
 - **Governance-rubric rollback**: not applicable; the rubric is unchanged.
@@ -316,7 +326,7 @@ any per-Slug tenant deployment. There is no canary customer or broader Managed i
 
 | Risk | Mitigation | Blocker condition |
 |---|---|---|
-| Registry configuration masks the defect | Mandatory contractless lab and live deployments before activation | No contractless-live proof |
+| Registry configuration masks the defect | Source-level registry-independence tests plus configured lab MicroVM E2E proof; no temporary contract-reference disconnects | Tests or configured lab MicroVM gate fail |
 | InstanceKey or tenant-isolation regression | Auth-before-config ordering plus missing/revoked/cross-tenant tests | Any unexpected status or cross-Slug result |
 | Private transcript leakage in list/logs | Preserve metadata-only projection, bounds, and no-secret logging | Transcript/key appears in output or logs |
 | Dirty source reaches live | Isolated main-derived worktree, pinned SHA, clean status, exact diff | Any unrelated source/template delta |
@@ -347,7 +357,8 @@ Not applicable. This work is a principal-direct incident and operator request, n
    enables direct-wallet `selfMintSoul` payload generation and `SoulOperation` creation despite Safe mode.
 2. **Blocking before Phase 0 exits**: record the separate MicroVM correction's reviewed PR and deployed SHA plus the
    no-self-assume and terminal-failure-persistence Evidence described in Phase 0.
-3. Select the operator-owned deployment window and, if desired, manual `v*` release tag after `staging` promotion.
+3. Select whether there is a real live acceptance reason/canary before any Phase 3 live deploy, and if desired choose a
+   manual `v*` release tag after `staging` promotion.
 4. Assign the separate Infura rotation follow-up; it does not block Google-backed activation.
 5. The repository-wide classification of legacy `requireSoulRegistryConfigured()` call sites remains a separate need.
 
