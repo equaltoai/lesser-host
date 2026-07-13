@@ -61,6 +61,12 @@ by `status=declaration_ready` plus a valid declaration checkpoint (`declaration_
 `checkpoint_ref`, registration/conversation/agent ids, message count, request id, and produced timestamp). Typed
 `failed` recovery actions are server-authored and limited to the locked recovery enum below.
 
+For the production Lesser instance-key path, the final minted-soul affirmation is an ordinary accepted user turn with
+completion semantics. When the previous assistant message asks the final affirmation question and the user affirms,
+Host persists that affirmation and transitions to `declaration_extraction_pending` rather than enqueueing another
+assistant response. The MicroVM declaration extraction then advances the same durable conversation to
+`declaration_ready` with `produced_declarations`; the registration-scoped instance-key status read then auto-finalizes hosted/off-chain publication from that Host state. Lesser polls Host status and then resolves the published agent; it does not need a browser-visible Host `/complete` or `/finalize` action for the normal final-affirmation path.
+
 ### Idempotency ledger semantics
 
 The durable `HostedGenesisSession` turn ledger is the Host source of truth for retry semantics. For a caller-provided
@@ -158,7 +164,8 @@ should not wait for an explicit local `created` projection before persisting `ho
 1. Transport is not state. SSE, JSON, and HTTP status codes only deliver state; durable Host records are the source of
    truth.
 2. `HTTP 200` and `HTTP 202` are not terminal. Terminal publish readiness requires `status=declaration_ready` plus
-   valid `produced_declarations`.
+   valid `produced_declarations`; for instance-trust hosted genesis, the registration-scoped GET reconciles that
+   readiness into hosted/off-chain publication before returning the status envelope.
 3. `conversation_id` is persisted early. Lesser persists it before returning control to a browser or retry loop.
 4. Publish requires declaration evidence. Lesser, Greater, and Sim fail closed without active-conversation
    `produced_declarations`.

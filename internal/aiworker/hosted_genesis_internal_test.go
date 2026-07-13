@@ -361,6 +361,41 @@ func TestHostedGenesisMicroVMDispatchStartsPersistsLifecycleAndInvokes(t *testin
 	}
 }
 
+func TestHostedGenesisMicroVMDispatchStartsFreshWhenPriorLifecycleExists(t *testing.T) {
+	t.Parallel()
+
+	st := newHostedGenesisWorkerStore("turn-worker")
+	binding := st.session.MicroVMSessionBinding()
+	previous, err := hostedGenesisWorkerMicroVMDispatchResult(t, "previous-req", binding, runtimemicrovm.CommandRun)
+	if err != nil {
+		t.Fatalf("seed lifecycle ref: %v", err)
+	}
+	if applyErr := st.session.ApplyMicroVMLifecycleRef(previous.LifecycleRef); applyErr != nil {
+		t.Fatalf("apply previous lifecycle ref: %v", applyErr)
+	}
+	st.session.Version = 3
+	srv := NewServer(config.Config{}, st, artifacts.New(""), fakeComprehend{}, fakeRekognition{})
+	dispatcher := &stubHostedGenesisWorkerMicroVMDispatcher{t: t}
+	srv.hostedGenesisMicroVMDispatcher = dispatcher
+
+	err = srv.processHostedGenesisMicroVMDispatch(context.Background(), "worker-req", hostedGenesisWorkerQueueMessage(hostedgenesis.StepMicroVMDispatch, "turn-worker"))
+	if err != nil {
+		t.Fatalf("unexpected microvm dispatch error: %v", err)
+	}
+	if dispatcher.startCalls != 1 || dispatcher.invokeCalls != 1 || dispatcher.dispatchCalls != 0 {
+		t.Fatalf("expected fresh start+invoke despite previous lifecycle, got start=%d invoke=%d dispatch=%d", dispatcher.startCalls, dispatcher.invokeCalls, dispatcher.dispatchCalls)
+	}
+
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if st.session == nil || st.session.Version != 4 {
+		t.Fatalf("expected fresh lifecycle persist to advance version, got %#v", st.session)
+	}
+	if !strings.Contains(st.session.ExecutionStateRef, "#running@7") {
+		t.Fatalf("expected refreshed running lifecycle execution ref, got %q", st.session.ExecutionStateRef)
+	}
+}
+
 func TestHostedGenesisMicroVMDispatchAllowsManagedStageAliasBoundary(t *testing.T) {
 	t.Parallel()
 
@@ -598,10 +633,10 @@ func TestHostedGenesisMicroVMDispatchRetriesWhenFailurePersistenceFails(t *testi
 
 	err = srv.processHostedGenesisMicroVMDispatch(context.Background(), "worker-req", hostedGenesisWorkerQueueMessage(hostedgenesis.StepMicroVMDispatch, "turn-worker"))
 	if err == nil {
-		t.Fatal("expected failure-persistence error so SQS retries the dispatch message")
+		t.Fatal("expected lifecycle-persistence error so SQS retries the dispatch message")
 	}
-	if dispatcher.startCalls != 0 || dispatcher.invokeCalls != 1 {
-		t.Fatalf("expected existing lifecycle to reach invoke failure, got start=%d invoke=%d", dispatcher.startCalls, dispatcher.invokeCalls)
+	if dispatcher.startCalls != 1 || dispatcher.invokeCalls != 0 {
+		t.Fatalf("expected fresh lifecycle persist failure before invoke, got start=%d invoke=%d", dispatcher.startCalls, dispatcher.invokeCalls)
 	}
 
 	st.mu.Lock()

@@ -1360,6 +1360,7 @@ func TestSoulInstanceHostedInstanceTrustFinalizePublishesHostedOffchain(t *testi
 		t.Fatalf("unmarshal: %v", err)
 	}
 	assertSoulInstanceHostedInstanceTrustFinalizeResponse(t, out)
+	assertSoulInstanceFinalizeIdentityActivationPersisted(t, tdb, true)
 
 	packs, ok := s.soulPacks.(*fakeSoulPackStoreForPublish)
 	if !ok {
@@ -1367,6 +1368,44 @@ func TestSoulInstanceHostedInstanceTrustFinalizePublishesHostedOffchain(t *testi
 	}
 	published := packs.puts[soulRegistrationS3Key(reg.AgentID)]
 	assertSoulInstanceHostedInstanceTrustRegistrationFile(t, published)
+}
+
+func TestSoulInstanceGetRegistrationMintConversation_AutoFinalizesHostedInstanceTrust(t *testing.T) {
+	t.Parallel()
+
+	reg, identity, completedConv := soulInstanceHostedFinalizeFixture(t)
+	tdb := newMintConversationTestDB()
+	s := newMintConversationServer(tdb)
+	stubSoulInstanceFinalizeReadContext(t, tdb, reg, identity, completedConv)
+	expectSoulInstanceFinalizePublishWrites(t, tdb)
+
+	resp, err := s.handleSoulInstanceGetRegistrationMintConversation(newSoulInstanceBootstrapContext(
+		map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
+		nil,
+		map[string]string{"id": reg.ID, "conversationId": mintConversationTestConversationID},
+	))
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if resp.Status != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%q", resp.Status, string(resp.Body))
+	}
+	var out hostedGenesisConversationResponse
+	if err := json.Unmarshal(resp.Body, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.Conversation.Status != models.SoulMintConversationStatusDeclarationReady || out.Conversation.ProducedDeclarations == nil {
+		t.Fatalf("expected declaration-ready status envelope after auto-finalize, got %#v", out.Conversation)
+	}
+
+	packs, ok := s.soulPacks.(*fakeSoulPackStoreForPublish)
+	if !ok {
+		t.Fatalf("unexpected soul pack store: %T", s.soulPacks)
+	}
+	published := packs.puts[soulRegistrationS3Key(reg.AgentID)]
+	assertSoulInstanceHostedInstanceTrustRegistrationFile(t, published)
+	assertSoulInstanceFinalizeIdentityActivationPersisted(t, tdb, true)
+	assertSoulInstanceFinalizeAuditAndLifecycle(t, tdb, reg.AgentID)
 }
 
 func TestSoulInstanceFinalizeMintConversation_RejectsInvalidStates(t *testing.T) {

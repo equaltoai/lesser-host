@@ -135,7 +135,7 @@ func buildHostedGenesisProducedDeclarationsFromSession(session *models.HostedGen
 		ProducedAt:      producedAt.UTC().Format(time.RFC3339Nano),
 		Declarations:    decl,
 		Evidence: hostedGenesisDeclarationEvidence{
-			Source:         "hosted_genesis_session",
+			Source:         "host_conversation",
 			RegistrationID: strings.TrimSpace(session.DeclarationCheckpoint.RegistrationID),
 			ConversationID: strings.TrimSpace(session.DeclarationCheckpoint.ConversationID),
 			AgentID:        strings.ToLower(strings.TrimSpace(session.DeclarationCheckpoint.AgentID)),
