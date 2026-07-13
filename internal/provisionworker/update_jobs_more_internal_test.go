@@ -912,6 +912,10 @@ func TestManagedInstanceKeyReceiptValidationBindsUpdateJob(t *testing.T) {
 
 	require.NoError(t, (&Server{cfg: config.Config{Stage: "live"}}).validateManagedInstanceKeyReceipt(baseJob, &baseReceipt))
 
+	labReceipt := baseReceipt
+	labReceipt.Stage = "dev"
+	require.NoError(t, (&Server{cfg: config.Config{Stage: "lab"}}).validateManagedInstanceKeyReceipt(baseJob, &labReceipt))
+
 	tests := []struct {
 		name    string
 		server  *Server
