@@ -52,7 +52,7 @@ func TestHostedGenesisProducedDeclarationsFromSessionTrustsCheckpointHash(t *tes
 	}
 
 	produced := buildHostedGenesisProducedDeclarationsFromSession(session, conv, requestID)
-	if produced == nil || produced.Evidence.Source != "hosted_genesis_session" || produced.DeclarationHash != session.DeclarationCheckpoint.DeclarationHash {
+	if produced == nil || produced.Evidence.Source != "host_conversation" || produced.DeclarationHash != session.DeclarationCheckpoint.DeclarationHash {
 		t.Fatalf("expected session-bound declarations, got %#v", produced)
 	}
 

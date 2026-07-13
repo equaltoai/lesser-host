@@ -15,12 +15,12 @@
   },
   "dependencies": {
     "@theory-cloud/apptheory-cdk": "https://github.com/theory-cloud/AppTheory/releases/download/v1.17.0/theory-cloud-apptheory-cdk-1.17.0.tgz",
-    "aws-cdk-lib": "2.257.0",
+    "aws-cdk-lib": "2.261.0",
     "constructs": "10.6.0"
   },
   "devDependencies": {
     "@types/node": "^25.5.0",
-    "aws-cdk": "^2.1122.0",
+    "aws-cdk": "2.1130.0",
     "ts-node": "^10.9.2",
     "typescript": "^5.9.3"
   },

@@ -119,19 +119,23 @@ func (s *Server) processHostedGenesisMicroVMDispatch(ctx context.Context, worker
 
 	controller, ok := s.hostedGenesisMicroVMDispatcher.(hostedGenesisMicroVMTurnController)
 	if ok {
-		if session.MicroVMLifecycleRef == nil || strings.TrimSpace(session.ExecutionStateRef) == "" {
-			started, startErr := controller.StartMicroVMRun(runCtx, requestID, binding)
-			if startErr != nil {
-				log.Printf("aiworker: hosted genesis microvm start failed agent_hash=%s conversation_hash=%s err=%v", hostedGenesisAuditHash(msg.AgentID), hostedGenesisAuditHash(msg.ConversationID), startErr)
-				return s.markHostedGenesisConversationFailed(ctx, st, conv, session, hostedGenesisFailureMicroVMUnavailable, requestID)
-			}
-			progressed, persistErr := persistHostedGenesisMicroVMDispatchLifecycle(ctx, st, session, started, requestID, time.Now().UTC())
-			if persistErr != nil {
-				log.Printf("aiworker: hosted genesis microvm lifecycle persist failed agent_hash=%s conversation_hash=%s err=%v", hostedGenesisAuditHash(msg.AgentID), hostedGenesisAuditHash(msg.ConversationID), persistErr)
-				return persistErr
-			}
-			session = progressed
+		// A HostedGenesisSession is durable conversation truth; an AppTheory
+		// MicroVM session is bounded execution/cache state. A human-paced
+		// minting conversation can spend minutes between turns, so a previous
+		// MicroVM lifecycle ref must never be treated as proof that the next
+		// accepted turn can reuse the same execution. Start a fresh run for each
+		// queued turn, persist that fresh lifecycle ref, then invoke the turn.
+		started, startErr := controller.StartMicroVMRun(runCtx, requestID, binding)
+		if startErr != nil {
+			log.Printf("aiworker: hosted genesis microvm start failed agent_hash=%s conversation_hash=%s err=%v", hostedGenesisAuditHash(msg.AgentID), hostedGenesisAuditHash(msg.ConversationID), startErr)
+			return s.markHostedGenesisConversationFailed(ctx, st, conv, session, hostedGenesisFailureMicroVMUnavailable, requestID)
 		}
+		progressed, persistErr := persistHostedGenesisMicroVMDispatchLifecycle(ctx, st, session, started, requestID, time.Now().UTC())
+		if persistErr != nil {
+			log.Printf("aiworker: hosted genesis microvm lifecycle persist failed agent_hash=%s conversation_hash=%s err=%v", hostedGenesisAuditHash(msg.AgentID), hostedGenesisAuditHash(msg.ConversationID), persistErr)
+			return persistErr
+		}
+		session = progressed
 		if _, invokeErr := controller.WaitAndInvokeMicroVMTurn(runCtx, requestID, binding); invokeErr != nil {
 			log.Printf("aiworker: hosted genesis microvm invoke failed agent_hash=%s conversation_hash=%s err=%v", hostedGenesisAuditHash(msg.AgentID), hostedGenesisAuditHash(msg.ConversationID), invokeErr)
 			return s.markHostedGenesisConversationFailed(ctx, st, conv, session, hostedGenesisFailureMicroVMUnavailable, requestID)
