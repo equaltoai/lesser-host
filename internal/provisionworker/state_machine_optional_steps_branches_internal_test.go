@@ -118,7 +118,7 @@ func TestAdvanceProvisionReceiptIngest_SetsDoneWhenBodyDisabled(t *testing.T) {
 	s := newProvisionServerWithStore(t)
 	s.cfg = config.Config{ArtifactBucketName: "bucket"}
 	s.s3 = &fakeS3{out: &s3.GetObjectOutput{Body: io.NopCloser(strings.NewReader(
-		provisionReceiptWithManagedInstanceKey("123456789012", "us-east-1", "demo", "lab", "arn:aws:secretsmanager:us-east-1:123456789012:secret:lab/demo/instance-key"),
+		provisionReceiptWithManagedInstanceKey("123456789012", "us-east-1", "demo", "dev", "arn:aws:secretsmanager:us-east-1:123456789012:secret:dev/demo/instance-key"),
 	))}}
 
 	now := time.Unix(110, 0).UTC()
