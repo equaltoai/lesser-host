@@ -506,24 +506,30 @@ func testMintConversationProducedDeclarationsBranches(t *testing.T, now time.Tim
 		SelfDescription: soul.SelfDescriptionV2{Purpose: "A sufficiently long purpose string.", AuthoredBy: "agent"},
 		Capabilities:    []soul.CapabilityV2{{Capability: "", Scope: "skip"}},
 		Boundaries:      []llm.MintConversationBoundaryDraft{{Category: "refusal", Statement: "I will not impersonate humans."}},
-	}, now, "openai:gpt-5.4")
+	}, now, "openai:gpt-5.4", []string{"travel_planning"})
 	if appErr != nil {
-		t.Fatalf("expected hosted contract to allow empty extracted capabilities, got %#v", appErr)
+		t.Fatalf("expected declared capabilities to fill empty extracted capabilities, got %#v", appErr)
 	}
-	if decl.Capabilities == nil || len(decl.Capabilities) != 0 || len(decl.Boundaries) != 1 {
-		t.Fatalf("expected empty capabilities with retained valid boundary, got %#v", decl)
+	if len(decl.Capabilities) != 1 || decl.Capabilities[0].Capability != "travel_planning" || len(decl.Boundaries) != 1 {
+		t.Fatalf("expected declared capability with retained valid boundary, got %#v", decl)
 	}
 
-	decl, appErr = buildMintConversationProducedDeclarations(llm.MintConversationDeclarationsDraft{
+	_, appErr = buildMintConversationProducedDeclarations(llm.MintConversationDeclarationsDraft{
+		SelfDescription: soul.SelfDescriptionV2{Purpose: "A sufficiently long purpose string.", AuthoredBy: "agent"},
+		Capabilities:    []soul.CapabilityV2{{Capability: "", Scope: "skip"}},
+		Boundaries:      []llm.MintConversationBoundaryDraft{{Category: "refusal", Statement: "I will not impersonate humans."}},
+	}, now, "openai:gpt-5.4")
+	if appErr == nil || appErr.Message != "capabilities is required" {
+		t.Fatalf("expected required capabilities error, got %#v", appErr)
+	}
+
+	_, appErr = buildMintConversationProducedDeclarations(llm.MintConversationDeclarationsDraft{
 		SelfDescription: soul.SelfDescriptionV2{Purpose: "A sufficiently long purpose string.", AuthoredBy: "agent"},
 		Capabilities:    []soul.CapabilityV2{{Capability: "travel_planning", Scope: "Draft itineraries."}},
 		Boundaries:      []llm.MintConversationBoundaryDraft{{Category: "", Statement: "skip"}},
 	}, now, "openai:gpt-5.4")
-	if appErr != nil {
-		t.Fatalf("expected hosted contract to allow empty extracted boundaries, got %#v", appErr)
-	}
-	if decl.Boundaries == nil || len(decl.Boundaries) != 0 || len(decl.Capabilities) != 1 {
-		t.Fatalf("expected retained valid capability with empty boundaries, got %#v", decl)
+	if appErr == nil || appErr.Message != "boundaries is required" {
+		t.Fatalf("expected required boundaries error, got %#v", appErr)
 	}
 
 	decl, appErr = buildMintConversationProducedDeclarations(llm.MintConversationDeclarationsDraft{

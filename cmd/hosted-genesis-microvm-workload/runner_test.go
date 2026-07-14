@@ -235,6 +235,47 @@ func TestRunTurnAndPersist_DeclarationExtractionPendingRecordsDeclarationReady(t
 	}
 }
 
+func TestRunTurnAndPersist_DeclarationExtractionPreservesDeclaredCapabilities(t *testing.T) {
+	draft := validDeclarationDraft()
+	draft["capabilities"] = []any{}
+	declBody := mustMarshal(map[string]any{
+		"id": "chatcmpl_test", "object": "chat.completion", "created": 1, "model": "gpt-test",
+		"choices": []any{map[string]any{"index": 0, "message": map[string]any{"role": "assistant", "content": mustMarshal(draft)}}},
+		"usage":   map[string]any{"prompt_tokens": 5, "completion_tokens": 7, "total_tokens": 12},
+	})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		_ = r.Body.Close()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(declBody))
+	}))
+	t.Cleanup(srv.Close)
+	withOpenAIBaseURL(t, srv.URL, "sk-test")
+	llm.ConfigureProviderHTTPClient(&http.Client{Timeout: 5 * time.Second})
+	t.Cleanup(func() { llm.ConfigureProviderHTTPClient(nil) })
+
+	turnStore, compStore, turn := baseTurnInput()
+	turnStore.reg.Capabilities = []string{"simulacrum.hosted-first-default"}
+	transcript := `[{"role":"user","content":"hello"},{"role":"assistant","content":"I am acme."}]`
+	turnStore.session.Status = string(hostedgenesis.StatusDeclarationExtractionPending)
+	turnStore.conv.Messages = models.EncodeSoulMintConversationBlob(transcript)
+	compStore.session.Status = string(hostedgenesis.StatusDeclarationExtractionPending)
+	writer := completion.NewCompletionWriter(compStore, func() time.Time { return time.Unix(3000, 0).UTC() })
+	runner := &turnRunner{store: turnStore, writer: writer, nowFunc: func() time.Time { return time.Unix(3000, 0).UTC() }}
+
+	if err := runner.runTurnAndPersist(context.Background(), turn); err != nil {
+		t.Fatalf("runTurnAndPersist extraction failed: %v", err)
+	}
+	if got := hostedgenesis.NormalizeStatus(compStore.session.Status); got != hostedgenesis.StatusDeclarationReady {
+		t.Fatalf("expected declaration_ready, got %q", got)
+	}
+	decodedDeclarations := models.DecodeSoulMintConversationBlob(turnStore.conv.ProducedDeclarations)
+	if !strings.Contains(decodedDeclarations, `"capability":"simulacrum.hosted-first-default"`) ||
+		!strings.Contains(decodedDeclarations, `"claimLevel":"self-declared"`) {
+		t.Fatalf("expected declared capability preserved in produced declarations, got %s", decodedDeclarations)
+	}
+}
+
 // TestRunTurnAndPersist_MissingSessionRecordsFailure proves a missing
 // authoritative session surfaces as a typed invalid_completion_state failure,
 // not a silent success.

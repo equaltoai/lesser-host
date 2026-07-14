@@ -255,7 +255,7 @@ func (r *turnRunner) runDeclarationExtractionAndPersist(ctx context.Context, tur
 	if err != nil {
 		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeDeclarationExtractionFailed, err.Error())
 	}
-	declarationsJSON, err := r.buildProducedDeclarationsJSON(draft, in.modelSet)
+	declarationsJSON, err := r.buildProducedDeclarationsJSON(draft, in.modelSet, in.registration.Capabilities)
 	if err != nil {
 		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeInvalidProducedDeclarations, err.Error())
 	}
@@ -339,7 +339,7 @@ func (r *turnRunner) persistConversationDeclarationReady(ctx context.Context, in
 	return nil
 }
 
-func (r *turnRunner) buildProducedDeclarationsJSON(draft llm.MintConversationDeclarationsDraft, modelSet string) (string, error) {
+func (r *turnRunner) buildProducedDeclarationsJSON(draft llm.MintConversationDeclarationsDraft, modelSet string, declaredCapabilities []string) (string, error) {
 	now := r.now()
 	decl := producedDeclarations{
 		SelfDescription: draft.SelfDescription,
@@ -362,6 +362,10 @@ func (r *turnRunner) buildProducedDeclarationsJSON(draft llm.MintConversationDec
 		}
 		decl.Capabilities = append(decl.Capabilities, c)
 	}
+	decl.Capabilities = hostedgenesis.MergeDeclaredCapabilities(decl.Capabilities, declaredCapabilities)
+	if len(decl.Capabilities) == 0 {
+		return "", fmt.Errorf("capabilities is required")
+	}
 	for i, b := range draft.Boundaries {
 		entry := soul.BoundaryV2{
 			ID:             fmt.Sprintf("mint-%d-%02d", now.Unix(), i+1),
@@ -376,6 +380,9 @@ func (r *turnRunner) buildProducedDeclarationsJSON(draft llm.MintConversationDec
 			continue
 		}
 		decl.Boundaries = append(decl.Boundaries, entry)
+	}
+	if len(decl.Boundaries) == 0 {
+		return "", fmt.Errorf("boundaries is required")
 	}
 	if decl.Transparency == nil {
 		decl.Transparency = map[string]any{}

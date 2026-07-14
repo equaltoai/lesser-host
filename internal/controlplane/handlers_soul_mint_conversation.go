@@ -22,6 +22,7 @@ import (
 
 	"github.com/equaltoai/lesser-host/internal/ai/llm"
 	"github.com/equaltoai/lesser-host/internal/billing"
+	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis/mintprompt"
 	"github.com/equaltoai/lesser-host/internal/httpx"
 	"github.com/equaltoai/lesser-host/internal/secrets"
@@ -1407,7 +1408,7 @@ func (s *Server) beginFinalizeMintConversation(ctx *apptheory.Context, finalizeC
 		return nil, err
 	}
 
-	decl, appErr := parseAndValidateMintConversationDeclarations(finalizeCtx.conv.ProducedDeclarations)
+	decl, appErr := mintConversationFinalizeDeclarationsForContext(finalizeCtx)
 	if appErr != nil {
 		return nil, appErr
 	}
@@ -1454,7 +1455,7 @@ func (s *Server) finalizeMintConversation(ctx *apptheory.Context, finalizeCtx mi
 	publishIdentity := mintConversationFinalizeIdentityForPublication(finalizeCtx.identity)
 	finalizeCtx.identity = publishIdentity
 
-	decl, appErr := parseAndValidateMintConversationDeclarations(finalizeCtx.conv.ProducedDeclarations)
+	decl, appErr := mintConversationFinalizeDeclarationsForContext(finalizeCtx)
 	if appErr != nil {
 		return nil, appErr
 	}
@@ -1482,7 +1483,7 @@ func (s *Server) beginFinalizeMintConversationInstanceTrust(ctx *apptheory.Conte
 		return nil, err
 	}
 
-	decl, appErr := parseAndValidateMintConversationDeclarations(finalizeCtx.conv.ProducedDeclarations)
+	decl, appErr := mintConversationFinalizeDeclarationsForContext(finalizeCtx)
 	if appErr != nil {
 		return nil, appErr
 	}
@@ -1517,7 +1518,7 @@ func (s *Server) finalizeMintConversationInstanceTrust(ctx *apptheory.Context, f
 	publishIdentity := mintConversationFinalizeIdentityForPublication(finalizeCtx.identity)
 	finalizeCtx.identity = publishIdentity
 
-	decl, appErr := parseAndValidateMintConversationDeclarations(finalizeCtx.conv.ProducedDeclarations)
+	decl, appErr := mintConversationFinalizeDeclarationsForContext(finalizeCtx)
 	if appErr != nil {
 		return nil, appErr
 	}
@@ -1531,6 +1532,34 @@ func (s *Server) finalizeMintConversationInstanceTrust(ctx *apptheory.Context, f
 		return nil, appErr
 	}
 	return s.finalizeMintConversationPublish(ctx, finalizeCtx, regV2, regMap, decl, req.BoundarySignatures, capsNorm, claimLevels, issuedAt, expectedVersion, "")
+}
+
+func mintConversationFinalizeDeclarationsForContext(finalizeCtx mintConversationFinalizeContext) (soulMintConversationProducedDeclarations, *apptheory.AppTheoryError) {
+	if finalizeCtx.conv == nil {
+		return soulMintConversationProducedDeclarations{}, newAppTheoryError("app.conflict", "conversation has no produced declarations")
+	}
+	decl, appErr := parseAndValidateMintConversationDeclarations(finalizeCtx.conv.ProducedDeclarations)
+	if appErr != nil {
+		return soulMintConversationProducedDeclarations{}, appErr
+	}
+	decl.Capabilities = hostedgenesis.MergeDeclaredCapabilities(decl.Capabilities, mintConversationFinalizeDeclaredCapabilities(finalizeCtx))
+	if len(decl.Capabilities) == 0 {
+		return soulMintConversationProducedDeclarations{}, newAppTheoryError("app.conflict", "conversation has no publishable capabilities; restart soul bootstrap")
+	}
+	if len(decl.Boundaries) == 0 {
+		return soulMintConversationProducedDeclarations{}, newAppTheoryError("app.conflict", "conversation has no publishable boundaries; restart soul bootstrap")
+	}
+	return decl, nil
+}
+
+func mintConversationFinalizeDeclaredCapabilities(finalizeCtx mintConversationFinalizeContext) []string {
+	if finalizeCtx.reg != nil && len(finalizeCtx.reg.Capabilities) > 0 {
+		return append([]string(nil), finalizeCtx.reg.Capabilities...)
+	}
+	if finalizeCtx.identity != nil {
+		return append([]string(nil), finalizeCtx.identity.Capabilities...)
+	}
+	return nil
 }
 
 // --- Helpers ---
@@ -2298,14 +2327,14 @@ func (s *Server) extractMintConversationDeclarations(ctx context.Context, reg *m
 		return soulMintConversationProducedDeclarations{}, models.AIUsage{}, newAppTheoryError("app.bad_request", mintConversationUnsupportedModelSetMessage)
 	}
 
-	decl, appErr := buildMintConversationProducedDeclarations(draft, now, modelSet)
+	decl, appErr := buildMintConversationProducedDeclarations(draft, now, modelSet, reg.Capabilities)
 	if appErr != nil {
 		return soulMintConversationProducedDeclarations{}, models.AIUsage{}, appErr
 	}
 	return decl, usage, nil
 }
 
-func buildMintConversationProducedDeclarations(draft llm.MintConversationDeclarationsDraft, now time.Time, modelSet string) (soulMintConversationProducedDeclarations, *apptheory.AppTheoryError) {
+func buildMintConversationProducedDeclarations(draft llm.MintConversationDeclarationsDraft, now time.Time, modelSet string, declaredCapabilities ...[]string) (soulMintConversationProducedDeclarations, *apptheory.AppTheoryError) {
 	decl := soulMintConversationProducedDeclarations{
 		SelfDescription: draft.SelfDescription,
 		Capabilities:    []soul.CapabilityV2{},
@@ -2330,7 +2359,14 @@ func buildMintConversationProducedDeclarations(draft llm.MintConversationDeclara
 		}
 		caps = append(caps, c)
 	}
-	decl.Capabilities = caps
+	declared := []string(nil)
+	if len(declaredCapabilities) > 0 {
+		declared = declaredCapabilities[0]
+	}
+	decl.Capabilities = hostedgenesis.MergeDeclaredCapabilities(caps, declared)
+	if len(decl.Capabilities) == 0 {
+		return soulMintConversationProducedDeclarations{}, newAppTheoryError("app.bad_request", "capabilities is required")
+	}
 
 	bounds := make([]soul.BoundaryV2, 0, len(draft.Boundaries))
 	for i, b := range draft.Boundaries {
@@ -2350,6 +2386,9 @@ func buildMintConversationProducedDeclarations(draft llm.MintConversationDeclara
 		bounds = append(bounds, entry)
 	}
 	decl.Boundaries = bounds
+	if len(decl.Boundaries) == 0 {
+		return soulMintConversationProducedDeclarations{}, newAppTheoryError("app.bad_request", "boundaries is required")
+	}
 
 	if decl.Transparency == nil {
 		decl.Transparency = map[string]any{}
