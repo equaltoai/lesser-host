@@ -1202,6 +1202,25 @@ func TestHostedGenesisDeclarationsDraftBuilder(t *testing.T) {
 		decl.Transparency == nil {
 		t.Fatalf("unexpected produced declarations: %#v", decl)
 	}
+	fallbackDraft := validHostedGenesisDraft()
+	fallbackDraft.Capabilities = []soul.CapabilityV2{{Capability: "", Scope: "ignored"}}
+	decl, err = buildHostedGenesisDeclarationsDraft(fallbackDraft, time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC), "anthropic:claude-sonnet-4-6", []string{"simulacrum.hosted-first-default"})
+	if err != nil {
+		t.Fatalf("unexpected declared-capability fallback error: %v", err)
+	}
+	if len(decl.Capabilities) != 1 || decl.Capabilities[0].Capability != "simulacrum.hosted-first-default" || decl.Capabilities[0].ClaimLevel != "self-declared" {
+		t.Fatalf("expected declared capability fallback, got %#v", decl.Capabilities)
+	}
+	noCapabilityDraft := validHostedGenesisDraft()
+	noCapabilityDraft.Capabilities = nil
+	if _, err := buildHostedGenesisDeclarationsDraft(noCapabilityDraft, time.Now(), "openai:gpt-5"); err == nil || err.Error() != "capabilities is required" {
+		t.Fatalf("expected required capability error, got %v", err)
+	}
+	noBoundaryDraft := validHostedGenesisDraft()
+	noBoundaryDraft.Boundaries = nil
+	if _, err := buildHostedGenesisDeclarationsDraft(noBoundaryDraft, time.Now(), "openai:gpt-5"); err == nil || err.Error() != "boundaries is required" {
+		t.Fatalf("expected required boundary error, got %v", err)
+	}
 	badDraft := validHostedGenesisDraft()
 	badDraft.SelfDescription.Purpose = "short"
 	if _, err := buildHostedGenesisDeclarationsDraft(badDraft, time.Now(), "openai:gpt-5"); err == nil {

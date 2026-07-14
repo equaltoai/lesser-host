@@ -269,7 +269,7 @@ func (s *Server) runAndPersistHostedGenesisDeclaration(ctx context.Context, st h
 		}
 		return err
 	}
-	decl, err := buildHostedGenesisDeclarationsDraft(draft, time.Now().UTC(), run.modelSet)
+	decl, err := buildHostedGenesisDeclarationsDraft(draft, time.Now().UTC(), run.modelSet, run.input.Registration.DeclaredCapabilities)
 	if err != nil {
 		return s.markHostedGenesisConversationFailed(ctx, st, conv, session, hostedGenesisFailureDeclarationExtractionFailed, workerRequestID)
 	}
@@ -764,7 +764,7 @@ func hostedGenesisSystemPrompt(reg *models.SoulAgentRegistration) string {
 	return sb.String()
 }
 
-func buildHostedGenesisDeclarationsDraft(draft llm.MintConversationDeclarationsDraft, now time.Time, modelSet string) (hostedGenesisProducedDeclarations, error) {
+func buildHostedGenesisDeclarationsDraft(draft llm.MintConversationDeclarationsDraft, now time.Time, modelSet string, declaredCapabilities ...[]string) (hostedGenesisProducedDeclarations, error) {
 	decl := hostedGenesisProducedDeclarations{
 		SelfDescription: draft.SelfDescription,
 		Capabilities:    []soul.CapabilityV2{},
@@ -786,6 +786,14 @@ func buildHostedGenesisDeclarationsDraft(draft llm.MintConversationDeclarationsD
 		}
 		decl.Capabilities = append(decl.Capabilities, c)
 	}
+	declared := []string(nil)
+	if len(declaredCapabilities) > 0 {
+		declared = declaredCapabilities[0]
+	}
+	decl.Capabilities = hostedgenesis.MergeDeclaredCapabilities(decl.Capabilities, declared)
+	if len(decl.Capabilities) == 0 {
+		return hostedGenesisProducedDeclarations{}, fmt.Errorf("capabilities is required")
+	}
 	for i, b := range draft.Boundaries {
 		entry := soul.BoundaryV2{
 			ID:             fmt.Sprintf("mint-%d-%02d", now.Unix(), i+1),
@@ -800,6 +808,9 @@ func buildHostedGenesisDeclarationsDraft(draft llm.MintConversationDeclarationsD
 			continue
 		}
 		decl.Boundaries = append(decl.Boundaries, entry)
+	}
+	if len(decl.Boundaries) == 0 {
+		return hostedGenesisProducedDeclarations{}, fmt.Errorf("boundaries is required")
 	}
 	if decl.Transparency == nil {
 		decl.Transparency = map[string]any{}
