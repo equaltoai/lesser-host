@@ -171,20 +171,49 @@ func requireX402IssueResponse(t *testing.T, resp *apptheory.Response, err error)
 	return out
 }
 
+func requireX402ConsumeResponse(t *testing.T, resp *apptheory.Response, err error) soulX402GrantConsumeResponse {
+	t.Helper()
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if resp.Status != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", resp.Status, string(resp.Body))
+	}
+	var out soulX402GrantConsumeResponse
+	if err := json.Unmarshal(resp.Body, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	return out
+}
+
 func assertX402IssueMinimized(t *testing.T, resp *apptheory.Response, out soulX402GrantIssueResponse, captured *models.SoulX402InvocationGrant) {
 	t.Helper()
 	if !out.TokenReturned || out.Replayed || strings.TrimSpace(out.Grant.GrantToken) == "" {
 		t.Fatalf("expected first response to return one grant token, got %#v", out)
 	}
+	assertX402IssueResponseDoesNotLeakRawMaterial(t, resp)
+	if captured == nil {
+		t.Fatalf("expected captured grant")
+		return
+	}
+	assertX402CapturedGrantHashes(t, out, captured)
+	assertX402GrantAuthorityAndScope(t, out.Grant, *captured)
+	if captured.PolicyVersion != models.SoulCallerAccessPaymentPolicyVersionV1 {
+		t.Fatalf("unexpected policy version: %q", captured.PolicyVersion)
+	}
+}
+
+func assertX402IssueResponseDoesNotLeakRawMaterial(t *testing.T, resp *apptheory.Response) {
+	t.Helper()
 	for _, forbidden := range []string{"raw-payment-evidence", "payment-1", "did:example:caller-1"} {
 		if strings.Contains(string(resp.Body), forbidden) {
 			t.Fatalf("response leaked raw caller/payment material %q: %s", forbidden, string(resp.Body))
 		}
 	}
-	if captured == nil {
-		t.Fatalf("expected captured grant")
-		return
-	}
+}
+
+func assertX402CapturedGrantHashes(t *testing.T, out soulX402GrantIssueResponse, captured *models.SoulX402InvocationGrant) {
+	t.Helper()
 	if captured.PaymentEvidenceHash != sha256HexTrimmed("raw-payment-evidence") {
 		t.Fatalf("grant did not store payment evidence hash: %#v", captured)
 	}
@@ -197,14 +226,15 @@ func assertX402IssueMinimized(t *testing.T, resp *apptheory.Response, out soulX4
 	if captured.GrantTokenHash != sha256HexTrimmed(out.Grant.GrantToken) {
 		t.Fatalf("grant token hash mismatch")
 	}
-	if captured.Authority != models.SoulX402InvocationGrantAuthorityScopedInvocation || out.Grant.Authority != models.SoulX402InvocationGrantAuthorityScopedInvocation {
-		t.Fatalf("grant authority must stay scoped invocation only: %#v", out.Grant)
+}
+
+func assertX402GrantAuthorityAndScope(t *testing.T, view soulX402InvocationGrantView, captured models.SoulX402InvocationGrant) {
+	t.Helper()
+	if captured.Authority != models.SoulX402InvocationGrantAuthorityScopedInvocation || view.Authority != models.SoulX402InvocationGrantAuthorityScopedInvocation {
+		t.Fatalf("grant authority must stay scoped invocation only: %#v", view)
 	}
-	if captured.Scope != models.SoulX402InvocationGrantScopeWrite || out.Grant.Scope != models.SoulX402InvocationGrantScopeWrite {
-		t.Fatalf("grant scope must be stored and returned separately from authority: captured=%q response=%q", captured.Scope, out.Grant.Scope)
-	}
-	if captured.PolicyVersion != models.SoulCallerAccessPaymentPolicyVersionV1 {
-		t.Fatalf("unexpected policy version: %q", captured.PolicyVersion)
+	if captured.Scope != models.SoulX402InvocationGrantScopeWrite || view.Scope != models.SoulX402InvocationGrantScopeWrite {
+		t.Fatalf("grant scope must be stored and returned separately from authority: captured=%q response=%q", captured.Scope, view.Scope)
 	}
 }
 
@@ -308,25 +338,8 @@ func TestHandleSoulX402ConsumeInvocationGrant_ConsumesAndReplaysByIdempotency(t 
 			Headers: map[string][]string{"authorization": {"Bearer raw-instance-key"}},
 		},
 	})
-	if err != nil {
-		t.Fatalf("unexpected err: %v", err)
-	}
-	if resp.Status != http.StatusOK {
-		t.Fatalf("expected 200, got %d body=%s", resp.Status, string(resp.Body))
-	}
-	var out soulX402GrantConsumeResponse
-	if err := json.Unmarshal(resp.Body, &out); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if !out.Accepted || out.Replayed || out.Usage.UsedCount != 1 || out.Grant.UsedCount != 1 {
-		t.Fatalf("unexpected consume response: %#v", out)
-	}
-	if out.Grant.Scope != models.SoulX402InvocationGrantScopeWrite || out.Grant.Authority != models.SoulX402InvocationGrantAuthorityScopedInvocation {
-		t.Fatalf("consume response must expose access scope without changing authority: %#v", out.Grant)
-	}
-	if out.Usage.IdempotencyKeyHash != sha256HexTrimmed("consume-idem-1") || strings.TrimSpace(out.Usage.ConsumeRequestHash) == "" {
-		t.Fatalf("usage did not return minimized consume idempotency hash: %#v", out.Usage)
-	}
+	out := requireX402ConsumeResponse(t, resp, err)
+	assertX402ConsumeAcceptedOnce(t, out)
 
 	// Direct replay path: same consume idempotency and request hash returns accepted without another slot.
 	tdbReplay := newSoulX402GrantTestDB()
@@ -350,6 +363,19 @@ func TestHandleSoulX402ConsumeInvocationGrant_ConsumesAndReplaysByIdempotency(t 
 	}, time.Now().UTC())
 	if appErr != nil || !replayed || usedCount != 1 || usage == nil {
 		t.Fatalf("expected idempotent replay, usage=%#v used=%d replay=%v err=%v", usage, usedCount, replayed, appErr)
+	}
+}
+
+func assertX402ConsumeAcceptedOnce(t *testing.T, out soulX402GrantConsumeResponse) {
+	t.Helper()
+	if !out.Accepted || out.Replayed || out.Usage.UsedCount != 1 || out.Grant.UsedCount != 1 {
+		t.Fatalf("unexpected consume response: %#v", out)
+	}
+	if out.Grant.Scope != models.SoulX402InvocationGrantScopeWrite || out.Grant.Authority != models.SoulX402InvocationGrantAuthorityScopedInvocation {
+		t.Fatalf("consume response must expose access scope without changing authority: %#v", out.Grant)
+	}
+	if out.Usage.IdempotencyKeyHash != sha256HexTrimmed("consume-idem-1") || strings.TrimSpace(out.Usage.ConsumeRequestHash) == "" {
+		t.Fatalf("usage did not return minimized consume idempotency hash: %#v", out.Usage)
 	}
 }
 

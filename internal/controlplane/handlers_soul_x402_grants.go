@@ -365,12 +365,9 @@ func parseSoulX402GrantIssueRequest(ctx *apptheory.Context, now time.Time) (vali
 	if appErr != nil {
 		return validatedSoulX402GrantIssue{}, appErr
 	}
-	maxUsage := raw.MaxUsage
-	if maxUsage == 0 {
-		maxUsage = 1
-	}
-	if maxUsage < 1 || maxUsage > x402GrantMaximumUsage {
-		return validatedSoulX402GrantIssue{}, newX402Error(x402CodeInvalidRequest, "maxUsage is invalid", http.StatusBadRequest)
+	maxUsage, appErr := normalizeX402GrantMaxUsage(raw.MaxUsage)
+	if appErr != nil {
+		return validatedSoulX402GrantIssue{}, appErr
 	}
 
 	out := validatedSoulX402GrantIssue{
@@ -454,6 +451,16 @@ func normalizeX402GrantAccessScope(raw string) (string, *apptheory.AppTheoryErro
 	default:
 		return "", newX402Error(x402CodeInvalidRequest, "scope is invalid", http.StatusBadRequest)
 	}
+}
+
+func normalizeX402GrantMaxUsage(raw int) (int, *apptheory.AppTheoryError) {
+	if raw == 0 {
+		return 1, nil
+	}
+	if raw < 1 || raw > x402GrantMaximumUsage {
+		return 0, newX402Error(x402CodeInvalidRequest, "maxUsage is invalid", http.StatusBadRequest)
+	}
+	return raw, nil
 }
 
 func normalizeX402PaymentBinding(raw soulX402GrantPaymentRequest) (soulX402GrantPaymentBinding, *apptheory.AppTheoryError) {
@@ -718,11 +725,7 @@ func validateSoulX402GrantForConsume(grant *models.SoulX402InvocationGrant, req 
 	if grant.ExpiresAt.IsZero() || !grant.ExpiresAt.After(now) {
 		return newX402Error(x402CodeGrantRejected, "grant expired", http.StatusForbidden)
 	}
-	if !strings.EqualFold(strings.TrimSpace(grant.AgentID), req.agentIDHex) ||
-		!strings.EqualFold(strings.TrimSpace(grant.Capability), req.capability) ||
-		!strings.EqualFold(strings.TrimSpace(grant.Tool), req.tool) ||
-		strings.TrimSpace(grant.Resource) != strings.TrimSpace(req.resource) ||
-		!strings.EqualFold(strings.TrimSpace(grant.RequestHash), req.requestHash) {
+	if !soulX402GrantMatchesConsumeRequest(grant, req) {
 		return newX402Error(x402CodeGrantRejected, "grant scope mismatch", http.StatusForbidden)
 	}
 	if grant.MaxUsage < 1 || grant.MaxUsage > x402GrantMaximumUsage {
@@ -732,6 +735,14 @@ func validateSoulX402GrantForConsume(grant *models.SoulX402InvocationGrant, req 
 		return newX402Error(x402CodeGrantRejected, "payment evidence hash mismatch", http.StatusForbidden)
 	}
 	return nil
+}
+
+func soulX402GrantMatchesConsumeRequest(grant *models.SoulX402InvocationGrant, req validatedSoulX402GrantConsume) bool {
+	return strings.EqualFold(strings.TrimSpace(grant.AgentID), req.agentIDHex) &&
+		strings.EqualFold(strings.TrimSpace(grant.Capability), req.capability) &&
+		strings.EqualFold(strings.TrimSpace(grant.Tool), req.tool) &&
+		strings.TrimSpace(grant.Resource) == strings.TrimSpace(req.resource) &&
+		strings.EqualFold(strings.TrimSpace(grant.RequestHash), req.requestHash)
 }
 
 func (s *Server) claimSoulX402InvocationGrantUsage(ctx context.Context, key *models.InstanceKey, grant *models.SoulX402InvocationGrant, req validatedSoulX402GrantConsume, now time.Time) (*models.SoulX402InvocationGrantUsage, int, bool, *apptheory.AppTheoryError) {
