@@ -2,15 +2,20 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://lesser.host/spec/v3/schemas/soul-x402-invocation-grant.issue.request.schema.json",
   "title": "POST /api/v1/soul/x402/grants request",
-  "description": "Issues a host-side scoped x402 invocation grant for configured public paid callers. Raw caller and payment evidence may be supplied for hashing but is never returned by the instance-key authenticated route.",
+  "description": "Issues a host-side scoped x402 invocation grant for configured public paid callers. Raw caller and payment evidence may be supplied for hashing but is never returned by the instance-key authenticated route. The required access scope is an explicit vocabulary (`read`, `write`, `admin`) that downstream runtimes enforce separately from scoped invocation authority.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["agentId", "capability", "tool", "resource", "requestHash", "caller", "payment", "nonce", "idempotencyKey", "expiresAt"],
+  "required": ["agentId", "capability", "tool", "resource", "scope", "requestHash", "caller", "payment", "nonce", "idempotencyKey", "expiresAt"],
   "properties": {
     "agentId": { "type": "string", "pattern": "^0x[0-9a-fA-F]{64}$" },
     "capability": { "type": "string", "minLength": 1, "maxLength": 128 },
     "tool": { "type": "string", "minLength": 1, "maxLength": 128 },
     "resource": { "type": "string", "minLength": 1, "maxLength": 512 },
+    "scope": {
+      "type": "string",
+      "enum": ["read", "write", "admin"],
+      "description": "Access scope for the invocation grant. This is downstream tool access vocabulary and does not change authority, which remains scoped_invocation."
+    },
     "requestHash": { "type": "string", "pattern": "^(sha256:)?[0-9a-fA-F]{64}$" },
     "caller": {
       "type": "object",

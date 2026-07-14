@@ -792,9 +792,10 @@ export interface paths {
         /**
          * Issue a scoped x402 invocation grant
          * @description Issues a host-side off-chain invocation grant for a configured public paid caller. The grant binds the
-         *     `agentId`, `capability`, `tool`, `resource`, invocation `requestHash`, caller subject hash, payment evidence
+         *     `agentId`, `capability`, `tool`, `resource`, access `scope`, invocation `requestHash`, caller subject hash, payment evidence
          *     hash, amount/network metadata, nonce, idempotency key hash, expiry, max usage, and caller-access payment policy
-         *     version.
+         *     version. The access `scope` vocabulary is `read`, `write`, or `admin` and stays separate from grant
+         *     `authority`, which remains `scoped_invocation`.
          *
          *     This instance-key authenticated route returns a raw `grantToken` only on the first successful issue. Idempotent replays return the
          *     same grant metadata with `tokenReturned=false`; callers must retain the original token. Host stores only hashes
@@ -823,7 +824,8 @@ export interface paths {
          * @description Consumes a host-issued x402 invocation grant from an authenticated managed instance. The bearer token is the
          *     instance API key; public paid callers never receive principal/operator/session authority. The authenticated
          *     instance must own the agent domain, present the one-time raw grant token, and repeat the original
-         *     agent/capability/tool/resource/request hash binding.
+         *     agent/capability/tool/resource/request hash binding. Consume responses return the persisted grant `scope` so
+         *     downstream runtimes can reject right-tool/wrong-scope invocations before side effects.
          *
          *     Consumption writes a bounded usage slot keyed by the consume idempotency key hash. Repeating the same consume
          *     idempotency key with the same consume request hash is a replay and does not increment usage. Distinct consume
@@ -2224,13 +2226,18 @@ export interface components {
         };
         /**
          * POST /api/v1/soul/x402/grants request
-         * @description Issues a host-side scoped x402 invocation grant for configured public paid callers. Raw caller and payment evidence may be supplied for hashing but is never returned by the instance-key authenticated route.
+         * @description Issues a host-side scoped x402 invocation grant for configured public paid callers. Raw caller and payment evidence may be supplied for hashing but is never returned by the instance-key authenticated route. The required access scope is an explicit vocabulary (`read`, `write`, `admin`) that downstream runtimes enforce separately from scoped invocation authority.
          */
         "soul-x402-invocation-grant.issue.request.schema": {
             agentId: string;
             capability: string;
             tool: string;
             resource: string;
+            /**
+             * @description Access scope for the invocation grant. This is downstream tool access vocabulary and does not change authority, which remains scoped_invocation.
+             * @enum {string}
+             */
+            scope: "read" | "write" | "admin";
             requestHash: string;
             /** @description Provide either subject or subjectHash. If subject is supplied, host hashes it and returns only subjectHash. */
             caller: {
@@ -2268,7 +2275,7 @@ export interface components {
         };
         /**
          * Soul x402 invocation grant
-         * @description A minimized host-issued off-chain grant for one bounded public paid invocation. It is scoped invocation authority only and does not confer principal, operator, wallet, or tenant-data authority.
+         * @description A minimized host-issued off-chain grant for one bounded public paid invocation. It is scoped invocation authority only and does not confer principal, operator, wallet, or tenant-data authority. The required access scope is explicit downstream tool vocabulary (`read`, `write`, `admin`) and is intentionally separate from authority.
          */
         "soul-x402-invocation-grant.schema": {
             grantId: string;
@@ -2278,6 +2285,11 @@ export interface components {
             capability: string;
             tool: string;
             resource: string;
+            /**
+             * @description Access scope enforced by the consuming runtime before side effects. This is not principal/operator/session authority.
+             * @enum {string}
+             */
+            scope: "read" | "write" | "admin";
             /** @description sha256 hash of the concrete invocation request Body must present later; raw request body is not stored. */
             requestHash: string;
             /** @description sha256 hash of the public caller subject. The raw subject is not returned. */

@@ -35,6 +35,7 @@ type soulX402GrantIssueRequest struct {
 	Capability     string                      `json:"capability"`
 	Tool           string                      `json:"tool"`
 	Resource       string                      `json:"resource"`
+	Scope          string                      `json:"scope"`
 	RequestHash    string                      `json:"requestHash"`
 	Caller         soulX402GrantCallerRequest  `json:"caller"`
 	Payment        soulX402GrantPaymentRequest `json:"payment"`
@@ -78,6 +79,7 @@ type validatedSoulX402GrantIssue struct {
 	capability        string
 	tool              string
 	resource          string
+	scope             string
 	requestHash       string
 	callerSubjectHash string
 	payment           soulX402GrantPaymentBinding
@@ -120,6 +122,7 @@ type soulX402InvocationGrantView struct {
 	Capability         string                      `json:"capability"`
 	Tool               string                      `json:"tool"`
 	Resource           string                      `json:"resource"`
+	Scope              string                      `json:"scope"`
 	RequestHash        string                      `json:"requestHash"`
 	CallerSubjectHash  string                      `json:"callerSubjectHash"`
 	Payment            soulX402GrantPaymentBinding `json:"payment"`
@@ -334,6 +337,10 @@ func parseSoulX402GrantIssueRequest(ctx *apptheory.Context, now time.Time) (vali
 	if appErr != nil {
 		return validatedSoulX402GrantIssue{}, appErr
 	}
+	scope, appErr := normalizeX402GrantAccessScope(raw.Scope)
+	if appErr != nil {
+		return validatedSoulX402GrantIssue{}, appErr
+	}
 	requestHash, appErr := normalizeX402Hash("requestHash", raw.RequestHash, true)
 	if appErr != nil {
 		return validatedSoulX402GrantIssue{}, appErr
@@ -371,6 +378,7 @@ func parseSoulX402GrantIssueRequest(ctx *apptheory.Context, now time.Time) (vali
 		capability:        capability,
 		tool:              tool,
 		resource:          resource,
+		scope:             scope,
 		requestHash:       requestHash,
 		callerSubjectHash: callerSubjectHash,
 		payment:           payment,
@@ -432,6 +440,20 @@ func parseSoulX402GrantConsumeRequest(ctx *apptheory.Context) (validatedSoulX402
 	}
 	out.consumeRequestHash = soulX402ConsumeRequestHash(out)
 	return out, nil
+}
+
+func normalizeX402GrantAccessScope(raw string) (string, *apptheory.AppTheoryError) {
+	scope := strings.ToLower(strings.TrimSpace(raw))
+	switch scope {
+	case models.SoulX402InvocationGrantScopeRead,
+		models.SoulX402InvocationGrantScopeWrite,
+		models.SoulX402InvocationGrantScopeAdmin:
+		return scope, nil
+	case "":
+		return "", newX402Error(x402CodeInvalidRequest, "scope is required", http.StatusBadRequest)
+	default:
+		return "", newX402Error(x402CodeInvalidRequest, "scope is invalid", http.StatusBadRequest)
+	}
 }
 
 func normalizeX402PaymentBinding(raw soulX402GrantPaymentRequest) (soulX402GrantPaymentBinding, *apptheory.AppTheoryError) {
@@ -609,6 +631,7 @@ func soulX402GrantFromIssue(req validatedSoulX402GrantIssue, grantToken string, 
 		Capability:                      req.capability,
 		Tool:                            req.tool,
 		Resource:                        req.resource,
+		Scope:                           req.scope,
 		RequestHash:                     req.requestHash,
 		CallerSubjectHash:               req.callerSubjectHash,
 		PaymentScheme:                   req.payment.Scheme,
@@ -687,6 +710,9 @@ func validateSoulX402GrantForConsume(grant *models.SoulX402InvocationGrant, req 
 		return newX402Error(x402CodeUnauthorized, "unauthorized", http.StatusUnauthorized)
 	}
 	if strings.TrimSpace(grant.Status) != models.SoulX402InvocationGrantStatusIssued {
+		return newX402Error(x402CodeGrantRejected, "grant rejected", http.StatusForbidden)
+	}
+	if _, appErr := normalizeX402GrantAccessScope(grant.Scope); appErr != nil {
 		return newX402Error(x402CodeGrantRejected, "grant rejected", http.StatusForbidden)
 	}
 	if grant.ExpiresAt.IsZero() || !grant.ExpiresAt.After(now) {
@@ -796,6 +822,7 @@ func (s *Server) recordSoulX402InvocationGrantConsumption(ctx context.Context, g
 		Capability:                      grant.Capability,
 		Tool:                            grant.Tool,
 		Resource:                        grant.Resource,
+		Scope:                           grant.Scope,
 		RequestHash:                     grant.RequestHash,
 		CallerSubjectHash:               grant.CallerSubjectHash,
 		PaymentScheme:                   grant.PaymentScheme,
@@ -844,6 +871,7 @@ func soulX402GrantView(grant *models.SoulX402InvocationGrant, grantToken string,
 		Capability:        strings.TrimSpace(grant.Capability),
 		Tool:              strings.TrimSpace(grant.Tool),
 		Resource:          strings.TrimSpace(grant.Resource),
+		Scope:             strings.ToLower(strings.TrimSpace(grant.Scope)),
 		RequestHash:       strings.TrimSpace(grant.RequestHash),
 		CallerSubjectHash: strings.TrimSpace(grant.CallerSubjectHash),
 		Payment: soulX402GrantPaymentBinding{
@@ -889,6 +917,7 @@ func soulX402IssueRequestHash(req validatedSoulX402GrantIssue) string {
 		Capability        string                      `json:"capability"`
 		Tool              string                      `json:"tool"`
 		Resource          string                      `json:"resource"`
+		Scope             string                      `json:"scope"`
 		RequestHash       string                      `json:"requestHash"`
 		CallerSubjectHash string                      `json:"callerSubjectHash"`
 		Payment           soulX402GrantPaymentBinding `json:"payment"`
@@ -901,6 +930,7 @@ func soulX402IssueRequestHash(req validatedSoulX402GrantIssue) string {
 		Capability:        req.capability,
 		Tool:              req.tool,
 		Resource:          req.resource,
+		Scope:             req.scope,
 		RequestHash:       req.requestHash,
 		CallerSubjectHash: req.callerSubjectHash,
 		Payment:           req.payment,

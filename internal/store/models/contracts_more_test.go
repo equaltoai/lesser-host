@@ -136,6 +136,7 @@ func TestModelContracts_TableNameAndKeyAccessors(t *testing.T) {
 		Capability:                      "tool.invoke",
 		Tool:                            "summarize",
 		Resource:                        "mcp://agent/summarize",
+		Scope:                           SoulX402InvocationGrantScopeRead,
 		RequestHash:                     "request-binding-hash",
 		CallerSubjectHash:               "caller-hash",
 		PaymentNetwork:                  "base",

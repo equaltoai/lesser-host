@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://lesser.host/spec/v3/schemas/soul-x402-invocation-grant.schema.json",
   "title": "Soul x402 invocation grant",
-  "description": "A minimized host-issued off-chain grant for one bounded public paid invocation. It is scoped invocation authority only and does not confer principal, operator, wallet, or tenant-data authority.",
+  "description": "A minimized host-issued off-chain grant for one bounded public paid invocation. It is scoped invocation authority only and does not confer principal, operator, wallet, or tenant-data authority. The required access scope is explicit downstream tool vocabulary (`read`, `write`, `admin`) and is intentionally separate from authority.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -11,6 +11,7 @@
     "capability",
     "tool",
     "resource",
+    "scope",
     "requestHash",
     "callerSubjectHash",
     "payment",
@@ -36,6 +37,11 @@
     "capability": { "type": "string", "minLength": 1, "maxLength": 128 },
     "tool": { "type": "string", "minLength": 1, "maxLength": 128 },
     "resource": { "type": "string", "minLength": 1, "maxLength": 512 },
+    "scope": {
+      "type": "string",
+      "enum": ["read", "write", "admin"],
+      "description": "Access scope enforced by the consuming runtime before side effects. This is not principal/operator/session authority."
+    },
     "requestHash": {
       "type": "string",
       "pattern": "^[0-9a-fA-F]{64}$",
