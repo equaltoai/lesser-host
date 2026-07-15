@@ -19,7 +19,10 @@ import (
 	"github.com/equaltoai/lesser-host/internal/testutil"
 )
 
-const x402GrantTestRequestHash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+const (
+	x402GrantTestRequestHash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	x402GrantTestToken       = "raw-grant-token"
+)
 
 type soulX402GrantTestDB struct {
 	db        *ttmocks.MockExtendedDB
@@ -60,18 +63,19 @@ func newSoulX402GrantTestDB() soulX402GrantTestDB {
 func x402IssueBody(t *testing.T, overrides map[string]any) []byte {
 	t.Helper()
 	body := map[string]any{
-		"agentId":        soulLifecycleTestAgentIDHex,
-		"capability":     "tools.invoke",
-		"tool":           "summarize",
-		"resource":       "mcp://agent/summarize",
-		"scope":          "write",
-		"requestHash":    x402GrantTestRequestHash,
-		"caller":         map[string]any{"subject": "did:example:caller-1"},
-		"payment":        map[string]any{"network": "base-sepolia", "asset": "usdc", "amount": "1000", "currency": "usd", "facilitator": "https://facilitator.example", "evidence": "raw-payment-evidence", "paymentId": "payment-1"},
-		"nonce":          "nonce-1",
-		"idempotencyKey": "issue-idem-1",
-		"expiresAt":      time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
-		"maxUsage":       1,
+		"agentId":           soulLifecycleTestAgentIDHex,
+		"capabilityVersion": models.SoulX402InvocationGrantCapabilityVocabularyScopedV1,
+		"capability":        "tools.invoke",
+		"tool":              "summarize",
+		"resource":          "mcp://agent/summarize",
+		"scope":             "write",
+		"requestHash":       x402GrantTestRequestHash,
+		"caller":            map[string]any{"subject": "did:example:caller-1"},
+		"payment":           map[string]any{"network": "base-sepolia", "asset": "usdc", "amount": "1000", "currency": "usd", "facilitator": "https://facilitator.example", "evidence": "raw-payment-evidence", "paymentId": "payment-1"},
+		"nonce":             "nonce-1",
+		"idempotencyKey":    "issue-idem-1",
+		"expiresAt":         time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
+		"maxUsage":          1,
 	}
 	for key, value := range overrides {
 		if value == nil {
@@ -92,6 +96,7 @@ func x402ConsumeBody(t *testing.T, grantToken string, overrides map[string]any) 
 	body := map[string]any{
 		"grantToken":          grantToken,
 		"agentId":             soulLifecycleTestAgentIDHex,
+		"capabilityVersion":   models.SoulX402InvocationGrantCapabilityVocabularyScopedV1,
 		"capability":          "tools.invoke",
 		"tool":                "summarize",
 		"resource":            "mcp://agent/summarize",
@@ -107,6 +112,38 @@ func x402ConsumeBody(t *testing.T, grantToken string, overrides map[string]any) 
 		t.Fatalf("marshal: %v", err)
 	}
 	return out
+}
+
+func x402StoredGrant(grantToken string) models.SoulX402InvocationGrant {
+	grant := models.SoulX402InvocationGrant{
+		GrantID:                         "x402-grant-1",
+		AgentID:                         soulLifecycleTestAgentIDHex,
+		CapabilityVersion:               models.SoulX402InvocationGrantCapabilityVocabularyScopedV1,
+		Capability:                      "tools.invoke",
+		Tool:                            "summarize",
+		Resource:                        "mcp://agent/summarize",
+		Scope:                           models.SoulX402InvocationGrantScopeWrite,
+		RequestHash:                     x402GrantTestRequestHash,
+		CallerSubjectHash:               sha256HexTrimmed("did:example:caller-1"),
+		PaymentScheme:                   models.SoulX402InvocationGrantPaymentSchemeX402,
+		PaymentNetwork:                  "base-sepolia",
+		PaymentAsset:                    "usdc",
+		PaymentAmount:                   "1000",
+		PaymentFacilitatorTrustBoundary: models.SoulX402InvocationGrantFacilitatorTrustCallerProvided,
+		PaymentEvidenceHash:             sha256HexTrimmed("raw-payment-evidence"),
+		Nonce:                           "nonce-1",
+		IdempotencyKeyHash:              sha256HexTrimmed("issue-idem-1"),
+		IssueRequestHash:                strings.Repeat("b", 64),
+		GrantTokenHash:                  sha256HexTrimmed(grantToken),
+		PolicyVersion:                   models.SoulCallerAccessPaymentPolicyVersionV1,
+		Authority:                       models.SoulX402InvocationGrantAuthorityScopedInvocation,
+		Status:                          models.SoulX402InvocationGrantStatusIssued,
+		MaxUsage:                        1,
+		IssuedAt:                        time.Now().Add(-time.Minute).UTC(),
+		ExpiresAt:                       time.Now().Add(time.Hour).UTC(),
+	}
+	_ = grant.UpdateKeys()
+	return grant
 }
 
 func expectX402Identity(t *testing.T, q *ttmocks.MockQuery, access string) {
@@ -236,6 +273,9 @@ func assertX402GrantAuthorityAndScope(t *testing.T, view soulX402InvocationGrant
 	if captured.Scope != models.SoulX402InvocationGrantScopeWrite || view.Scope != models.SoulX402InvocationGrantScopeWrite {
 		t.Fatalf("grant scope must be stored and returned separately from authority: captured=%q response=%q", captured.Scope, view.Scope)
 	}
+	if captured.CapabilityVersion != models.SoulX402InvocationGrantCapabilityVocabularyScopedV1 || view.CapabilityVersion != models.SoulX402InvocationGrantCapabilityVocabularyScopedV1 {
+		t.Fatalf("grant must carry scoped capability vocabulary version separately from authority: captured=%q response=%q", captured.CapabilityVersion, view.CapabilityVersion)
+	}
 }
 
 func TestP0_HandleSoulX402IssueInvocationGrant_SuccessMinimizesPaymentEvidence(t *testing.T) {
@@ -290,34 +330,8 @@ func TestHandleSoulX402IssueInvocationGrant_DeniedPolicyReturnsGenericUnavailabl
 func TestHandleSoulX402ConsumeInvocationGrant_ConsumesAndReplaysByIdempotency(t *testing.T) {
 	t.Parallel()
 
-	grantToken := "raw-grant-token"
-	grant := models.SoulX402InvocationGrant{
-		GrantID:                         "x402-grant-1",
-		AgentID:                         soulLifecycleTestAgentIDHex,
-		Capability:                      "tools.invoke",
-		Tool:                            "summarize",
-		Resource:                        "mcp://agent/summarize",
-		Scope:                           models.SoulX402InvocationGrantScopeWrite,
-		RequestHash:                     x402GrantTestRequestHash,
-		CallerSubjectHash:               sha256HexTrimmed("did:example:caller-1"),
-		PaymentScheme:                   models.SoulX402InvocationGrantPaymentSchemeX402,
-		PaymentNetwork:                  "base-sepolia",
-		PaymentAsset:                    "usdc",
-		PaymentAmount:                   "1000",
-		PaymentFacilitatorTrustBoundary: models.SoulX402InvocationGrantFacilitatorTrustCallerProvided,
-		PaymentEvidenceHash:             sha256HexTrimmed("raw-payment-evidence"),
-		Nonce:                           "nonce-1",
-		IdempotencyKeyHash:              sha256HexTrimmed("issue-idem-1"),
-		IssueRequestHash:                strings.Repeat("b", 64),
-		GrantTokenHash:                  sha256HexTrimmed(grantToken),
-		PolicyVersion:                   models.SoulCallerAccessPaymentPolicyVersionV1,
-		Authority:                       models.SoulX402InvocationGrantAuthorityScopedInvocation,
-		Status:                          models.SoulX402InvocationGrantStatusIssued,
-		MaxUsage:                        1,
-		IssuedAt:                        time.Now().Add(-time.Minute).UTC(),
-		ExpiresAt:                       time.Now().Add(time.Hour).UTC(),
-	}
-	_ = grant.UpdateKeys()
+	grantToken := x402GrantTestToken
+	grant := x402StoredGrant(grantToken)
 
 	tdb := newSoulX402GrantTestDB()
 	expectCommInstanceKey(t, tdb.qKey, models.InstanceKey{ID: sha256HexTrimmed("raw-instance-key"), InstanceSlug: "inst1", CreatedAt: time.Now().Add(-time.Hour)})
@@ -364,6 +378,76 @@ func TestHandleSoulX402ConsumeInvocationGrant_ConsumesAndReplaysByIdempotency(t 
 	if appErr != nil || !replayed || usedCount != 1 || usage == nil {
 		t.Fatalf("expected idempotent replay, usage=%#v used=%d replay=%v err=%v", usage, usedCount, replayed, appErr)
 	}
+}
+
+func TestHandleSoulX402ConsumeInvocationGrant_AcceptsInstanceCapabilityVocabulary(t *testing.T) {
+	t.Parallel()
+
+	grantToken := x402GrantTestToken
+	grant := x402StoredGrant(grantToken)
+	grant.CapabilityVersion = models.SoulX402InvocationGrantCapabilityVocabularyInstanceV1
+	grant.Capability = models.SoulX402InvocationGrantCapabilityInstanceAgentCreate
+	grant.Tool = "agent_create"
+	grant.Resource = "instance://tools/agent_create"
+	_ = grant.UpdateKeys()
+
+	tdb := newSoulX402GrantTestDB()
+	expectCommInstanceKey(t, tdb.qKey, models.InstanceKey{ID: sha256HexTrimmed("raw-instance-key"), InstanceSlug: "inst1", CreatedAt: time.Now().Add(-time.Hour)})
+	expectX402Grant(t, tdb.qGrant, grant)
+	expectX402Identity(t, tdb.qIdentity, models.SoulPublicPaidCallerAccessGrantable)
+	expectCommDomain(t, tdb.qDomain, models.Domain{Domain: "example.com", InstanceSlug: "inst1", Status: models.DomainStatusVerified})
+	tdb.qUsage.On("All", mock.AnythingOfType("*[]*models.SoulX402InvocationGrantUsage")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.SoulX402InvocationGrantUsage](t, args, 0)
+		*dest = nil
+	}).Once()
+	tdb.qUsage.On("Create").Return(nil).Once()
+
+	s := &Server{store: store.New(tdb.db), cfg: config.Config{SoulEnabled: true}}
+	resp, err := s.handleSoulX402ConsumeInvocationGrant(&apptheory.Context{
+		Params: map[string]string{"grantId": "x402-grant-1"},
+		Request: apptheory.Request{
+			Body: x402ConsumeBody(t, grantToken, map[string]any{
+				"capabilityVersion": models.SoulX402InvocationGrantCapabilityVocabularyInstanceV1,
+				"capability":        models.SoulX402InvocationGrantCapabilityInstanceAgentCreate,
+				"tool":              "agent_create",
+				"resource":          "instance://tools/agent_create",
+			}),
+			Headers: map[string][]string{"authorization": {"Bearer raw-instance-key"}},
+		},
+	})
+	out := requireX402ConsumeResponse(t, resp, err)
+	assertX402ConsumeAcceptedOnce(t, out)
+	if out.Grant.CapabilityVersion != models.SoulX402InvocationGrantCapabilityVocabularyInstanceV1 ||
+		out.Grant.Capability != models.SoulX402InvocationGrantCapabilityInstanceAgentCreate {
+		t.Fatalf("expected instance capability vocabulary in response: %#v", out.Grant)
+	}
+}
+
+func TestHandleSoulX402ConsumeInvocationGrant_RejectsPaymentEvidenceBeforeUsage(t *testing.T) {
+	t.Parallel()
+
+	grantToken := x402GrantTestToken
+	grant := x402StoredGrant(grantToken)
+	tdb := newSoulX402GrantTestDB()
+	expectCommInstanceKey(t, tdb.qKey, models.InstanceKey{ID: sha256HexTrimmed("raw-instance-key"), InstanceSlug: "inst1", CreatedAt: time.Now().Add(-time.Hour)})
+	expectX402Grant(t, tdb.qGrant, grant)
+
+	s := &Server{store: store.New(tdb.db), cfg: config.Config{SoulEnabled: true}}
+	_, err := s.handleSoulX402ConsumeInvocationGrant(&apptheory.Context{
+		Params: map[string]string{"grantId": "x402-grant-1"},
+		Request: apptheory.Request{
+			Body: x402ConsumeBody(t, grantToken, map[string]any{
+				"paymentEvidenceHash": sha256HexTrimmed("different-payment-evidence"),
+			}),
+			Headers: map[string][]string{"authorization": {"Bearer raw-instance-key"}},
+		},
+	})
+	appErr := requireCommTheoryError(t, err)
+	if appErr.Code != x402CodeGrantRejected || appErr.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected payment evidence rejection before usage, got %q/%d", appErr.Code, appErr.StatusCode)
+	}
+	tdb.qUsage.AssertNotCalled(t, "All", mock.Anything)
+	tdb.qUsage.AssertNotCalled(t, "Create")
 }
 
 func assertX402ConsumeAcceptedOnce(t *testing.T, out soulX402GrantConsumeResponse) {
@@ -496,11 +580,34 @@ func TestParseSoulX402GrantIssueRequest_NormalizesHashesAndRejectsBadInputs(t *t
 	if req.scope != models.SoulX402InvocationGrantScopeWrite {
 		t.Fatalf("expected scope normalized to write, got %q", req.scope)
 	}
+	if req.capabilityVersion != models.SoulX402InvocationGrantCapabilityVocabularyScopedV1 {
+		t.Fatalf("expected scoped capability vocabulary version, got %q", req.capabilityVersion)
+	}
+
+	instanceBody := x402IssueBody(t, map[string]any{
+		"capabilityVersion": models.SoulX402InvocationGrantCapabilityVocabularyInstanceV1,
+		"capability":        models.SoulX402InvocationGrantCapabilityInstanceInstallPlan,
+		"tool":              "agent_local_install_plan",
+		"resource":          "instance://tools/agent_local_install_plan",
+	})
+	instanceReq, appErr := parseSoulX402GrantIssueRequest(&apptheory.Context{Request: apptheory.Request{Body: instanceBody}}, now)
+	if appErr != nil {
+		t.Fatalf("expected instance capability parse: %v", appErr)
+	}
+	if instanceReq.capabilityVersion != models.SoulX402InvocationGrantCapabilityVocabularyInstanceV1 || instanceReq.capability != models.SoulX402InvocationGrantCapabilityInstanceInstallPlan {
+		t.Fatalf("unexpected instance capability binding: %#v", instanceReq)
+	}
 
 	cases := []struct {
 		name string
 		body []byte
 	}{
+		{name: "missing capability version", body: x402IssueBody(t, map[string]any{"capabilityVersion": nil})},
+		{name: "unknown capability version", body: x402IssueBody(t, map[string]any{"capabilityVersion": "actor/v0"})},
+		{name: "scoped vocabulary cannot bind instance tool", body: x402IssueBody(t, map[string]any{"tool": "agent_create"})},
+		{name: "scoped vocabulary cannot bind instance capability", body: x402IssueBody(t, map[string]any{"capability": models.SoulX402InvocationGrantCapabilityInstanceAgentCreate})},
+		{name: "instance vocabulary rejects actor capability", body: x402IssueBody(t, map[string]any{"capabilityVersion": models.SoulX402InvocationGrantCapabilityVocabularyInstanceV1})},
+		{name: "instance vocabulary rejects mismatched tool", body: x402IssueBody(t, map[string]any{"capabilityVersion": models.SoulX402InvocationGrantCapabilityVocabularyInstanceV1, "capability": models.SoulX402InvocationGrantCapabilityInstanceAgentCreate, "tool": "agent_local_install_plan"})},
 		{name: "missing scope", body: x402IssueBody(t, map[string]any{"scope": nil})},
 		{name: "empty scope", body: x402IssueBody(t, map[string]any{"scope": ""})},
 		{name: "unknown scope", body: x402IssueBody(t, map[string]any{"scope": "owner"})},
@@ -524,26 +631,30 @@ func TestValidateSoulX402GrantForConsume_RejectsInvalidScopeAndLifecycle(t *test
 
 	token := "grant-token"
 	grant := &models.SoulX402InvocationGrant{
-		GrantID:        "x402-grant-1",
-		AgentID:        soulLifecycleTestAgentIDHex,
-		Capability:     "tools.invoke",
-		Tool:           "summarize",
-		Resource:       "mcp://agent/summarize",
-		Scope:          models.SoulX402InvocationGrantScopeWrite,
-		RequestHash:    x402GrantTestRequestHash,
-		GrantTokenHash: sha256HexTrimmed(token),
-		Status:         models.SoulX402InvocationGrantStatusIssued,
-		MaxUsage:       1,
-		IssuedAt:       time.Now().Add(-time.Minute).UTC(),
-		ExpiresAt:      time.Now().Add(time.Hour).UTC(),
+		GrantID:             "x402-grant-1",
+		AgentID:             soulLifecycleTestAgentIDHex,
+		CapabilityVersion:   models.SoulX402InvocationGrantCapabilityVocabularyScopedV1,
+		Capability:          "tools.invoke",
+		Tool:                "summarize",
+		Resource:            "mcp://agent/summarize",
+		Scope:               models.SoulX402InvocationGrantScopeWrite,
+		RequestHash:         x402GrantTestRequestHash,
+		PaymentEvidenceHash: sha256HexTrimmed("raw-payment-evidence"),
+		GrantTokenHash:      sha256HexTrimmed(token),
+		Status:              models.SoulX402InvocationGrantStatusIssued,
+		MaxUsage:            1,
+		IssuedAt:            time.Now().Add(-time.Minute).UTC(),
+		ExpiresAt:           time.Now().Add(time.Hour).UTC(),
 	}
 	valid := validatedSoulX402GrantConsume{
-		grantTokenHash: sha256HexTrimmed(token),
-		agentIDHex:     soulLifecycleTestAgentIDHex,
-		capability:     "tools.invoke",
-		tool:           "summarize",
-		resource:       "mcp://agent/summarize",
-		requestHash:    x402GrantTestRequestHash,
+		grantTokenHash:      sha256HexTrimmed(token),
+		agentIDHex:          soulLifecycleTestAgentIDHex,
+		capabilityVersion:   models.SoulX402InvocationGrantCapabilityVocabularyScopedV1,
+		capability:          "tools.invoke",
+		tool:                "summarize",
+		resource:            "mcp://agent/summarize",
+		requestHash:         x402GrantTestRequestHash,
+		paymentEvidenceHash: sha256HexTrimmed("raw-payment-evidence"),
 	}
 	if appErr := validateSoulX402GrantForConsume(grant, valid, time.Now().UTC()); appErr != nil {
 		t.Fatalf("expected valid grant: %v", appErr)
@@ -562,6 +673,18 @@ func TestValidateSoulX402GrantForConsume_RejectsInvalidScopeAndLifecycle(t *test
 		}},
 		{name: "expired", code: x402CodeGrantRejected, mutate: func(g *models.SoulX402InvocationGrant, _ *validatedSoulX402GrantConsume) {
 			g.ExpiresAt = time.Now().Add(-time.Minute).UTC()
+		}},
+		{name: "missing capability version", code: x402CodeGrantRejected, mutate: func(g *models.SoulX402InvocationGrant, _ *validatedSoulX402GrantConsume) {
+			g.CapabilityVersion = ""
+		}},
+		{name: "unknown capability version", code: x402CodeGrantRejected, mutate: func(g *models.SoulX402InvocationGrant, _ *validatedSoulX402GrantConsume) {
+			g.CapabilityVersion = "actor/v0"
+		}},
+		{name: "capability version mismatch", code: x402CodeGrantRejected, mutate: func(_ *models.SoulX402InvocationGrant, req *validatedSoulX402GrantConsume) {
+			req.capabilityVersion = models.SoulX402InvocationGrantCapabilityVocabularyInstanceV1
+		}},
+		{name: "scoped vocabulary cannot bind instance tool", code: x402CodeGrantRejected, mutate: func(g *models.SoulX402InvocationGrant, _ *validatedSoulX402GrantConsume) {
+			g.Tool = "agent_create"
 		}},
 		{name: "scope mismatch", code: x402CodeGrantRejected, mutate: func(_ *models.SoulX402InvocationGrant, req *validatedSoulX402GrantConsume) { req.tool = "other" }},
 		{name: "missing access scope", code: x402CodeGrantRejected, mutate: func(g *models.SoulX402InvocationGrant, _ *validatedSoulX402GrantConsume) {
