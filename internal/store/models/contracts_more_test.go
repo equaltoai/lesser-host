@@ -133,6 +133,7 @@ func TestModelContracts_TableNameAndKeyAccessors(t *testing.T) {
 	x402Grant := &SoulX402InvocationGrant{
 		GrantID:                         "x402-grant-id",
 		AgentID:                         "0xabc",
+		CapabilityVersion:               SoulX402InvocationGrantCapabilityVocabularyScopedV1,
 		Capability:                      "tool.invoke",
 		Tool:                            "summarize",
 		Resource:                        "mcp://agent/summarize",

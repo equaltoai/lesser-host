@@ -821,10 +821,12 @@ export interface paths {
         /**
          * Issue a scoped x402 invocation grant
          * @description Issues a host-side off-chain invocation grant for a configured public paid caller. The grant binds the
-         *     `agentId`, `capability`, `tool`, `resource`, access `scope`, invocation `requestHash`, caller subject hash, payment evidence
-         *     hash, amount/network metadata, nonce, idempotency key hash, expiry, max usage, and caller-access payment policy
-         *     version. The access `scope` vocabulary is `read`, `write`, or `admin` and stays separate from grant
-         *     `authority`, which remains `scoped_invocation`.
+         *     `agentId`, `capabilityVersion`, `capability`, `tool`, `resource`, access `scope`, invocation `requestHash`, caller subject
+         *     hash, payment evidence hash, amount/network metadata, nonce, idempotency key hash, expiry, max usage, and caller-access
+         *     payment policy version. The access `scope` vocabulary is `read`, `write`, or `admin` and stays separate from grant
+         *     `authority`, which remains `scoped_invocation`. Capability vocabulary is versioned: `scoped-invocation/v1`
+         *     remains the actor/scoped invocation vocabulary, while `instance-capability/v1` is restricted to
+         *     `instance:agent_create` and `instance:install_plan`.
          *
          *     This instance-key authenticated route returns a raw `grantToken` only on the first successful issue. Idempotent replays return the
          *     same grant metadata with `tokenReturned=false`; callers must retain the original token. Host stores only hashes
@@ -853,8 +855,13 @@ export interface paths {
          * @description Consumes a host-issued x402 invocation grant from an authenticated managed instance. The bearer token is the
          *     instance API key; public paid callers never receive principal/operator/session authority. The authenticated
          *     instance must own the agent domain, present the one-time raw grant token, and repeat the original
-         *     agent/capability/tool/resource/request hash binding. Consume responses return the persisted grant `scope` so
-         *     downstream runtimes can reject right-tool/wrong-scope invocations before side effects.
+         *     agent/capabilityVersion/capability/tool/resource/request hash binding. Consume responses return the persisted
+         *     grant `scope` and `capabilityVersion` so downstream runtimes can reject right-tool/wrong-scope or
+         *     actor-capability-on-instance-tool invocations before side effects. Instance tools must use
+         *     `capabilityVersion="instance-capability/v1"` with `capability="instance:agent_create"` for `tool="agent_create"`
+         *     or `capability="instance:install_plan"` for `tool="agent_local_install_plan"` (the shorter
+         *     `tool="install_plan"` is also accepted by Host). Actor/scoped invocation capabilities remain under
+         *     `scoped-invocation/v1` and are rejected for these instance tools.
          *
          *     Consumption writes a bounded usage slot keyed by the consume idempotency key hash. Repeating the same consume
          *     idempotency key with the same consume request hash is a replay and does not increment usage. Distinct consume
@@ -2255,11 +2262,18 @@ export interface components {
         };
         /**
          * POST /api/v1/soul/x402/grants request
-         * @description Issues a host-side scoped x402 invocation grant for configured public paid callers. Raw caller and payment evidence may be supplied for hashing but is never returned by the instance-key authenticated route. The required access scope is an explicit vocabulary (`read`, `write`, `admin`) that downstream runtimes enforce separately from scoped invocation authority.
+         * @description Issues a host-side scoped x402 invocation grant for configured public paid callers. Raw caller and payment evidence may be supplied for hashing but is never returned by the instance-key authenticated route. The required access scope is an explicit vocabulary (`read`, `write`, `admin`) that downstream runtimes enforce separately from scoped invocation authority. Capability vocabulary is versioned: `scoped-invocation/v1` remains the actor/scoped invocation vocabulary, while `instance-capability/v1` is restricted to instance tool capabilities `instance:agent_create` and `instance:install_plan`.
          */
         "soul-x402-invocation-grant.issue.request.schema": {
             agentId: string;
+            /**
+             * @description Versioned capability vocabulary. Use `instance-capability/v1` only for instance minting tools; actor/scoped invocation capabilities stay under `scoped-invocation/v1`.
+             * @enum {string}
+             */
+            capabilityVersion: "scoped-invocation/v1" | "instance-capability/v1";
+            /** @description Capability within `capabilityVersion`. For `instance-capability/v1`, allowed values are `instance:agent_create` and `instance:install_plan`. */
             capability: string;
+            /** @description Concrete downstream tool name. For `instance:agent_create`, use `agent_create`; for `instance:install_plan`, use `agent_local_install_plan` (Host also accepts `install_plan`). */
             tool: string;
             resource: string;
             /**
@@ -2301,17 +2315,24 @@ export interface components {
             expiresAt: string;
             /** @description Optional; host defaults omitted maxUsage to 1. */
             maxUsage?: number;
-        };
+        } & (unknown & unknown);
         /**
          * Soul x402 invocation grant
-         * @description A minimized host-issued off-chain grant for one bounded public paid invocation. It is scoped invocation authority only and does not confer principal, operator, wallet, or tenant-data authority. The required access scope is explicit downstream tool vocabulary (`read`, `write`, `admin`) and is intentionally separate from authority.
+         * @description A minimized host-issued off-chain grant for one bounded public paid invocation. It is scoped invocation authority only and does not confer principal, operator, wallet, or tenant-data authority. The required access scope is explicit downstream tool vocabulary (`read`, `write`, `admin`) and is intentionally separate from authority. Capability vocabulary is versioned: `scoped-invocation/v1` remains actor/scoped invocation vocabulary, while `instance-capability/v1` is restricted to instance tool capabilities `instance:agent_create` and `instance:install_plan`.
          */
         "soul-x402-invocation-grant.schema": {
             grantId: string;
             /** @description Raw opaque grant token returned once on first issue. Host stores only sha256(grantToken); idempotent replays intentionally omit it. */
             grantToken?: string;
             agentId: string;
+            /**
+             * @description Versioned capability vocabulary. Instance tools must use `instance-capability/v1`; actor/scoped invocation capabilities remain separate under `scoped-invocation/v1`.
+             * @enum {string}
+             */
+            capabilityVersion: "scoped-invocation/v1" | "instance-capability/v1";
+            /** @description Capability within `capabilityVersion`. For `instance-capability/v1`, allowed values are `instance:agent_create` and `instance:install_plan`. */
             capability: string;
+            /** @description Concrete downstream tool name. For `instance:agent_create`, use `agent_create`; for `instance:install_plan`, use `agent_local_install_plan` (Host also accepts `install_plan`). */
             tool: string;
             resource: string;
             /**
@@ -2353,7 +2374,7 @@ export interface components {
             issuedAt: string;
             /** Format: date-time */
             expiresAt: string;
-        };
+        } & (unknown & unknown);
         /** POST /api/v1/soul/x402/grants response */
         "soul-x402-invocation-grant.issue.response.schema": {
             grant: components["schemas"]["soul-x402-invocation-grant.schema"];
@@ -2365,14 +2386,21 @@ export interface components {
         "soul-x402-invocation-grant.consume.request.schema": {
             grantToken: string;
             agentId: string;
+            /**
+             * @description Versioned capability vocabulary. Use `instance-capability/v1` with `instance:agent_create` or `instance:install_plan` for instance tools; actor/scoped invocation capabilities remain under `scoped-invocation/v1` and are rejected for instance tools.
+             * @enum {string}
+             */
+            capabilityVersion: "scoped-invocation/v1" | "instance-capability/v1";
+            /** @description Capability within `capabilityVersion`. For `instance-capability/v1`, allowed values are `instance:agent_create` and `instance:install_plan`. */
             capability: string;
+            /** @description Concrete downstream tool name. For `instance:agent_create`, use `agent_create`; for `instance:install_plan`, use `agent_local_install_plan` (Host also accepts `install_plan`). */
             tool: string;
             resource: string;
             requestHash: string;
             /** @description Hash of the x402 payment evidence presented by the caller. Host compares against the stored grant payment evidence hash before any usage is recorded. */
             paymentEvidenceHash: string;
             idempotencyKey: string;
-        };
+        } & (unknown & unknown);
         /** POST /api/v1/soul/x402/grants/{grantId}/consume response */
         "soul-x402-invocation-grant.consume.response.schema": {
             /** @constant */

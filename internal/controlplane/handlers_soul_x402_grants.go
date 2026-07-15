@@ -28,21 +28,25 @@ const (
 	x402GrantMaximumUsage         = 100
 	x402HashPrefix                = "sha256:"
 	x402DefaultGrantPaymentScheme = models.SoulX402InvocationGrantPaymentSchemeX402
+	x402InstanceToolAgentCreate   = "agent_create"
+	x402InstanceToolInstallPlan   = "install_plan"
+	x402InstanceToolLocalPlan     = "agent_local_install_plan"
 )
 
 type soulX402GrantIssueRequest struct {
-	AgentID        string                      `json:"agentId"`
-	Capability     string                      `json:"capability"`
-	Tool           string                      `json:"tool"`
-	Resource       string                      `json:"resource"`
-	Scope          string                      `json:"scope"`
-	RequestHash    string                      `json:"requestHash"`
-	Caller         soulX402GrantCallerRequest  `json:"caller"`
-	Payment        soulX402GrantPaymentRequest `json:"payment"`
-	Nonce          string                      `json:"nonce"`
-	IdempotencyKey string                      `json:"idempotencyKey"`
-	ExpiresAt      string                      `json:"expiresAt"`
-	MaxUsage       int                         `json:"maxUsage,omitempty"`
+	AgentID           string                      `json:"agentId"`
+	CapabilityVersion string                      `json:"capabilityVersion"`
+	Capability        string                      `json:"capability"`
+	Tool              string                      `json:"tool"`
+	Resource          string                      `json:"resource"`
+	Scope             string                      `json:"scope"`
+	RequestHash       string                      `json:"requestHash"`
+	Caller            soulX402GrantCallerRequest  `json:"caller"`
+	Payment           soulX402GrantPaymentRequest `json:"payment"`
+	Nonce             string                      `json:"nonce"`
+	IdempotencyKey    string                      `json:"idempotencyKey"`
+	ExpiresAt         string                      `json:"expiresAt"`
+	MaxUsage          int                         `json:"maxUsage,omitempty"`
 }
 
 type soulX402GrantCallerRequest struct {
@@ -66,6 +70,7 @@ type soulX402GrantPaymentRequest struct {
 type soulX402GrantConsumeRequest struct {
 	GrantToken          string `json:"grantToken"`
 	AgentID             string `json:"agentId"`
+	CapabilityVersion   string `json:"capabilityVersion"`
 	Capability          string `json:"capability"`
 	Tool                string `json:"tool"`
 	Resource            string `json:"resource"`
@@ -76,6 +81,7 @@ type soulX402GrantConsumeRequest struct {
 
 type validatedSoulX402GrantIssue struct {
 	agentIDHex        string
+	capabilityVersion string
 	capability        string
 	tool              string
 	resource          string
@@ -93,6 +99,7 @@ type validatedSoulX402GrantIssue struct {
 type validatedSoulX402GrantConsume struct {
 	grantTokenHash      string
 	agentIDHex          string
+	capabilityVersion   string
 	capability          string
 	tool                string
 	resource            string
@@ -119,6 +126,7 @@ type soulX402InvocationGrantView struct {
 	GrantID            string                      `json:"grantId"`
 	GrantToken         string                      `json:"grantToken,omitempty"`
 	AgentID            string                      `json:"agentId"`
+	CapabilityVersion  string                      `json:"capabilityVersion"`
 	Capability         string                      `json:"capability"`
 	Tool               string                      `json:"tool"`
 	Resource           string                      `json:"resource"`
@@ -325,11 +333,11 @@ func parseSoulX402GrantIssueRequest(ctx *apptheory.Context, now time.Time) (vali
 	if appErr != nil {
 		return validatedSoulX402GrantIssue{}, appErr
 	}
-	capability, appErr := normalizeX402TokenField("capability", raw.Capability, 128)
+	tool, appErr := normalizeX402TokenField("tool", raw.Tool, 128)
 	if appErr != nil {
 		return validatedSoulX402GrantIssue{}, appErr
 	}
-	tool, appErr := normalizeX402TokenField("tool", raw.Tool, 128)
+	capabilityVersion, capability, appErr := normalizeX402CapabilityBinding(raw.CapabilityVersion, raw.Capability, tool)
 	if appErr != nil {
 		return validatedSoulX402GrantIssue{}, appErr
 	}
@@ -372,6 +380,7 @@ func parseSoulX402GrantIssueRequest(ctx *apptheory.Context, now time.Time) (vali
 
 	out := validatedSoulX402GrantIssue{
 		agentIDHex:        agentID,
+		capabilityVersion: capabilityVersion,
 		capability:        capability,
 		tool:              tool,
 		resource:          resource,
@@ -401,11 +410,11 @@ func parseSoulX402GrantConsumeRequest(ctx *apptheory.Context) (validatedSoulX402
 	if appErr != nil {
 		return validatedSoulX402GrantConsume{}, appErr
 	}
-	capability, appErr := normalizeX402TokenField("capability", raw.Capability, 128)
+	tool, appErr := normalizeX402TokenField("tool", raw.Tool, 128)
 	if appErr != nil {
 		return validatedSoulX402GrantConsume{}, appErr
 	}
-	tool, appErr := normalizeX402TokenField("tool", raw.Tool, 128)
+	capabilityVersion, capability, appErr := normalizeX402CapabilityBinding(raw.CapabilityVersion, raw.Capability, tool)
 	if appErr != nil {
 		return validatedSoulX402GrantConsume{}, appErr
 	}
@@ -428,6 +437,7 @@ func parseSoulX402GrantConsumeRequest(ctx *apptheory.Context) (validatedSoulX402
 	out := validatedSoulX402GrantConsume{
 		grantTokenHash:      sha256HexTrimmed(token),
 		agentIDHex:          agentID,
+		capabilityVersion:   capabilityVersion,
 		capability:          capability,
 		tool:                tool,
 		resource:            resource,
@@ -437,6 +447,67 @@ func parseSoulX402GrantConsumeRequest(ctx *apptheory.Context) (validatedSoulX402
 	}
 	out.consumeRequestHash = soulX402ConsumeRequestHash(out)
 	return out, nil
+}
+
+func normalizeX402CapabilityBinding(rawVersion string, rawCapability string, tool string) (string, string, *apptheory.AppTheoryError) {
+	version := strings.ToLower(strings.TrimSpace(rawVersion))
+	if version == "" {
+		return "", "", newX402Error(x402CodeInvalidRequest, "capabilityVersion is required", http.StatusBadRequest)
+	}
+	capability, appErr := normalizeX402TokenField("capability", rawCapability, 128)
+	if appErr != nil {
+		return "", "", appErr
+	}
+
+	switch version {
+	case models.SoulX402InvocationGrantCapabilityVocabularyScopedV1:
+		if isX402InstanceCapability(capability) || isX402InstanceTool(tool) {
+			return "", "", newX402Error(x402CodeInvalidRequest, "capability is invalid for scoped invocation", http.StatusBadRequest)
+		}
+		return version, capability, nil
+	case models.SoulX402InvocationGrantCapabilityVocabularyInstanceV1:
+		if !isX402InstanceCapability(capability) || !x402InstanceCapabilityMatchesTool(capability, tool) {
+			return "", "", newX402Error(x402CodeInvalidRequest, "capability is invalid for instance capability vocabulary", http.StatusBadRequest)
+		}
+		return version, capability, nil
+	default:
+		return "", "", newX402Error(x402CodeInvalidRequest, "capabilityVersion is invalid", http.StatusBadRequest)
+	}
+}
+
+func isX402InstanceCapability(capability string) bool {
+	switch strings.ToLower(strings.TrimSpace(capability)) {
+	case models.SoulX402InvocationGrantCapabilityInstanceAgentCreate,
+		models.SoulX402InvocationGrantCapabilityInstanceInstallPlan:
+		return true
+	default:
+		return false
+	}
+}
+
+func isX402InstanceTool(tool string) bool {
+	switch strings.ToLower(strings.TrimSpace(tool)) {
+	case x402InstanceToolAgentCreate, x402InstanceToolLocalPlan, x402InstanceToolInstallPlan:
+		return true
+	default:
+		return false
+	}
+}
+
+func x402InstanceCapabilityMatchesTool(capability string, tool string) bool {
+	switch strings.ToLower(strings.TrimSpace(capability)) {
+	case models.SoulX402InvocationGrantCapabilityInstanceAgentCreate:
+		return strings.ToLower(strings.TrimSpace(tool)) == x402InstanceToolAgentCreate
+	case models.SoulX402InvocationGrantCapabilityInstanceInstallPlan:
+		switch strings.ToLower(strings.TrimSpace(tool)) {
+		case x402InstanceToolLocalPlan, x402InstanceToolInstallPlan:
+			return true
+		default:
+			return false
+		}
+	default:
+		return false
+	}
 }
 
 func normalizeX402GrantAccessScope(raw string) (string, *apptheory.AppTheoryError) {
@@ -635,6 +706,7 @@ func soulX402GrantFromIssue(req validatedSoulX402GrantIssue, grantToken string, 
 	grant := &models.SoulX402InvocationGrant{
 		GrantID:                         models.SoulX402InvocationGrantID(req.agentIDHex, req.idempotencyHash),
 		AgentID:                         req.agentIDHex,
+		CapabilityVersion:               req.capabilityVersion,
 		Capability:                      req.capability,
 		Tool:                            req.tool,
 		Resource:                        req.resource,
@@ -719,6 +791,9 @@ func validateSoulX402GrantForConsume(grant *models.SoulX402InvocationGrant, req 
 	if strings.TrimSpace(grant.Status) != models.SoulX402InvocationGrantStatusIssued {
 		return newX402Error(x402CodeGrantRejected, "grant rejected", http.StatusForbidden)
 	}
+	if _, _, appErr := normalizeX402CapabilityBinding(grant.CapabilityVersion, grant.Capability, grant.Tool); appErr != nil {
+		return newX402Error(x402CodeGrantRejected, "grant rejected", http.StatusForbidden)
+	}
 	if _, appErr := normalizeX402GrantAccessScope(grant.Scope); appErr != nil {
 		return newX402Error(x402CodeGrantRejected, "grant rejected", http.StatusForbidden)
 	}
@@ -739,6 +814,7 @@ func validateSoulX402GrantForConsume(grant *models.SoulX402InvocationGrant, req 
 
 func soulX402GrantMatchesConsumeRequest(grant *models.SoulX402InvocationGrant, req validatedSoulX402GrantConsume) bool {
 	return strings.EqualFold(strings.TrimSpace(grant.AgentID), req.agentIDHex) &&
+		strings.EqualFold(strings.TrimSpace(grant.CapabilityVersion), req.capabilityVersion) &&
 		strings.EqualFold(strings.TrimSpace(grant.Capability), req.capability) &&
 		strings.EqualFold(strings.TrimSpace(grant.Tool), req.tool) &&
 		strings.TrimSpace(grant.Resource) == strings.TrimSpace(req.resource) &&
@@ -830,6 +906,7 @@ func (s *Server) recordSoulX402InvocationGrantConsumption(ctx context.Context, g
 	update := &models.SoulX402InvocationGrant{
 		GrantID:                         grant.GrantID,
 		AgentID:                         grant.AgentID,
+		CapabilityVersion:               grant.CapabilityVersion,
 		Capability:                      grant.Capability,
 		Tool:                            grant.Tool,
 		Resource:                        grant.Resource,
@@ -879,6 +956,7 @@ func soulX402GrantView(grant *models.SoulX402InvocationGrant, grantToken string,
 		GrantID:           strings.TrimSpace(grant.GrantID),
 		GrantToken:        strings.TrimSpace(grantToken),
 		AgentID:           strings.ToLower(strings.TrimSpace(grant.AgentID)),
+		CapabilityVersion: strings.ToLower(strings.TrimSpace(grant.CapabilityVersion)),
 		Capability:        strings.TrimSpace(grant.Capability),
 		Tool:              strings.TrimSpace(grant.Tool),
 		Resource:          strings.TrimSpace(grant.Resource),
@@ -925,6 +1003,7 @@ func soulX402UsageView(usage *models.SoulX402InvocationGrantUsage, usedCount int
 func soulX402IssueRequestHash(req validatedSoulX402GrantIssue) string {
 	payload := struct {
 		AgentID           string                      `json:"agentId"`
+		CapabilityVersion string                      `json:"capabilityVersion"`
 		Capability        string                      `json:"capability"`
 		Tool              string                      `json:"tool"`
 		Resource          string                      `json:"resource"`
@@ -938,6 +1017,7 @@ func soulX402IssueRequestHash(req validatedSoulX402GrantIssue) string {
 		MaxUsage          int                         `json:"maxUsage"`
 	}{
 		AgentID:           req.agentIDHex,
+		CapabilityVersion: req.capabilityVersion,
 		Capability:        req.capability,
 		Tool:              req.tool,
 		Resource:          req.resource,
@@ -956,6 +1036,7 @@ func soulX402IssueRequestHash(req validatedSoulX402GrantIssue) string {
 func soulX402ConsumeRequestHash(req validatedSoulX402GrantConsume) string {
 	payload := struct {
 		AgentID             string `json:"agentId"`
+		CapabilityVersion   string `json:"capabilityVersion"`
 		Capability          string `json:"capability"`
 		Tool                string `json:"tool"`
 		Resource            string `json:"resource"`
@@ -965,6 +1046,7 @@ func soulX402ConsumeRequestHash(req validatedSoulX402GrantConsume) string {
 		PaymentEvidenceHash string `json:"paymentEvidenceHash"`
 	}{
 		AgentID:             req.agentIDHex,
+		CapabilityVersion:   req.capabilityVersion,
 		Capability:          req.capability,
 		Tool:                req.tool,
 		Resource:            req.resource,
