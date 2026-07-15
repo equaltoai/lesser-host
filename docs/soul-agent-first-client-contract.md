@@ -58,9 +58,13 @@ treat the response as machine-readable identity state rather than scraping legac
 Important fields include:
 
 - core identity: `agent_id`, `domain`, `local_id`, `ens_name`, `wallet`, `token_id`, `meta_uri`
+- registry authority: `authority_model`, `anchor_state`, `operational_binding`
 - declaration metadata: `principal_address`, `principal_signature`, `principal_declaration`, `principal_declared_at`
 - lifecycle metadata: `status`, `lifecycle_status`, `lifecycle_reason`, `successor_agent_id`, `predecessor_agent_id`
 - publication metadata: `self_description_version`, `mint_tx_hash`, `minted_at`, `updated_at`
+- hosted-bound policy metadata: `policy_version`, `capability_policy_version`,
+  `caller_access_payment_policy_version`, `email_default_allowed`, `phone_entitlement_status`,
+  `sms_allowed`, `voice_allowed`, `public_paid_caller_access`, `policy_migration_state`
 - anchor assurance metadata under `anchor_assurance`
   - `state`: `hosted_offchain` or `immutable_onchain`
   - `source`: `host_record` or `onchain_receipt`
@@ -87,6 +91,30 @@ mint conversation, and finalize publication before any on-chain mint receipt is 
 agent namespace with `anchor_state=hosted_offchain`, no `mint_tx_hash` / `minted_at`, and
 `self_description_version` plus version history populated. Recording the prepared mint operation later promotes the
 same identity to `immutable_onchain`; clients must treat that as an anchor upgrade, not a replacement registration.
+
+## Soul-binding ceremony validation
+
+Lesser's server-side soul-binding ceremony validates Host source truth by refetching the public registry projection:
+
+```http
+GET /api/v1/soul/agents/{agentId}
+```
+
+For Ptah-created hosted souls, Lesser fails closed unless the response `agent` proves all binding-critical fields:
+
+- `agent_id` matches the requested soul agent ID.
+- `domain` is the Lesser instance domain and `local_id` is the local agent username.
+- `authority_model=instance_trust`.
+- `anchor_state=hosted_offchain`.
+- `operational_binding=hosted_bound_soul`.
+- `status=active` or `lifecycle_status=active`.
+- publication evidence is present through `self_description_version > 0` (or a future `published_version > 0`
+  equivalent if Host adds that field to this projection).
+- principal evidence is present through `principal_address`, with `wallet` retained as a compatibility fallback.
+
+This Host projection is read-only source truth for registry identity. It does not create Lesser-local
+`SOUL_BODY_BINDING` rows, move binding authority to Host, or let Body/Ptah write Lesser storage. Lesser remains the only
+writer of those local binding rows after validating Host evidence.
 
 Managed ENS material for host-provisioned identities is always instance-scoped:
 
