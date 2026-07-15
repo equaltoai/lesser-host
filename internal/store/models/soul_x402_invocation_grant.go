@@ -15,6 +15,9 @@ const (
 	SoulX402InvocationGrantPaymentSchemeX402              = "x402"
 	SoulX402InvocationGrantFacilitatorTrustCallerProvided = "caller_provided_unverified"
 	SoulX402InvocationGrantAuthorityScopedInvocation      = "scoped_invocation"
+	SoulX402InvocationGrantScopeRead                      = "read"
+	SoulX402InvocationGrantScopeWrite                     = "write"
+	SoulX402InvocationGrantScopeAdmin                     = "admin"
 
 	soulX402InvocationGrantTTLRetention = 90 * 24 * time.Hour
 )
@@ -37,6 +40,7 @@ type SoulX402InvocationGrant struct {
 	Capability  string `theorydb:"attr:capability" json:"capability"`
 	Tool        string `theorydb:"attr:tool" json:"tool"`
 	Resource    string `theorydb:"attr:resource" json:"resource"`
+	Scope       string `theorydb:"attr:scope" json:"scope"`
 	RequestHash string `theorydb:"attr:requestHash" json:"request_hash"`
 
 	CallerSubjectHash string `theorydb:"attr:callerSubjectHash" json:"caller_subject_hash"`
@@ -121,6 +125,9 @@ func (g *SoulX402InvocationGrant) validate() error {
 	if err := requireOneOf("authority", g.Authority, SoulX402InvocationGrantAuthorityScopedInvocation); err != nil {
 		return err
 	}
+	if err := requireOneOf("scope", g.Scope, SoulX402InvocationGrantScopeRead, SoulX402InvocationGrantScopeWrite, SoulX402InvocationGrantScopeAdmin); err != nil {
+		return err
+	}
 	if err := requireOneOf("status", g.Status, SoulX402InvocationGrantStatusIssued, SoulX402InvocationGrantStatusRevoked); err != nil {
 		return err
 	}
@@ -149,6 +156,7 @@ func (g *SoulX402InvocationGrant) validateRequiredFields() error {
 		{"capability", g.Capability},
 		{"tool", g.Tool},
 		{"resource", g.Resource},
+		{"scope", g.Scope},
 		{"requestHash", g.RequestHash},
 		{"callerSubjectHash", g.CallerSubjectHash},
 		{"paymentScheme", g.PaymentScheme},
@@ -177,6 +185,7 @@ func (g *SoulX402InvocationGrant) UpdateKeys() error {
 	g.Capability = strings.ToLower(strings.TrimSpace(g.Capability))
 	g.Tool = strings.ToLower(strings.TrimSpace(g.Tool))
 	g.Resource = strings.TrimSpace(g.Resource)
+	g.Scope = strings.ToLower(strings.TrimSpace(g.Scope))
 	g.RequestHash = strings.ToLower(strings.TrimSpace(g.RequestHash))
 	g.CallerSubjectHash = strings.ToLower(strings.TrimSpace(g.CallerSubjectHash))
 	g.PaymentScheme = strings.ToLower(strings.TrimSpace(g.PaymentScheme))

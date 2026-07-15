@@ -64,6 +64,7 @@ func x402IssueBody(t *testing.T, overrides map[string]any) []byte {
 		"capability":     "tools.invoke",
 		"tool":           "summarize",
 		"resource":       "mcp://agent/summarize",
+		"scope":          "write",
 		"requestHash":    x402GrantTestRequestHash,
 		"caller":         map[string]any{"subject": "did:example:caller-1"},
 		"payment":        map[string]any{"network": "base-sepolia", "asset": "usdc", "amount": "1000", "currency": "usd", "facilitator": "https://facilitator.example", "evidence": "raw-payment-evidence", "paymentId": "payment-1"},
@@ -73,6 +74,10 @@ func x402IssueBody(t *testing.T, overrides map[string]any) []byte {
 		"maxUsage":       1,
 	}
 	for key, value := range overrides {
+		if value == nil {
+			delete(body, key)
+			continue
+		}
 		body[key] = value
 	}
 	out, err := json.Marshal(body)
@@ -166,20 +171,49 @@ func requireX402IssueResponse(t *testing.T, resp *apptheory.Response, err error)
 	return out
 }
 
+func requireX402ConsumeResponse(t *testing.T, resp *apptheory.Response, err error) soulX402GrantConsumeResponse {
+	t.Helper()
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if resp.Status != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", resp.Status, string(resp.Body))
+	}
+	var out soulX402GrantConsumeResponse
+	if err := json.Unmarshal(resp.Body, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	return out
+}
+
 func assertX402IssueMinimized(t *testing.T, resp *apptheory.Response, out soulX402GrantIssueResponse, captured *models.SoulX402InvocationGrant) {
 	t.Helper()
 	if !out.TokenReturned || out.Replayed || strings.TrimSpace(out.Grant.GrantToken) == "" {
 		t.Fatalf("expected first response to return one grant token, got %#v", out)
 	}
+	assertX402IssueResponseDoesNotLeakRawMaterial(t, resp)
+	if captured == nil {
+		t.Fatalf("expected captured grant")
+		return
+	}
+	assertX402CapturedGrantHashes(t, out, captured)
+	assertX402GrantAuthorityAndScope(t, out.Grant, *captured)
+	if captured.PolicyVersion != models.SoulCallerAccessPaymentPolicyVersionV1 {
+		t.Fatalf("unexpected policy version: %q", captured.PolicyVersion)
+	}
+}
+
+func assertX402IssueResponseDoesNotLeakRawMaterial(t *testing.T, resp *apptheory.Response) {
+	t.Helper()
 	for _, forbidden := range []string{"raw-payment-evidence", "payment-1", "did:example:caller-1"} {
 		if strings.Contains(string(resp.Body), forbidden) {
 			t.Fatalf("response leaked raw caller/payment material %q: %s", forbidden, string(resp.Body))
 		}
 	}
-	if captured == nil {
-		t.Fatalf("expected captured grant")
-		return
-	}
+}
+
+func assertX402CapturedGrantHashes(t *testing.T, out soulX402GrantIssueResponse, captured *models.SoulX402InvocationGrant) {
+	t.Helper()
 	if captured.PaymentEvidenceHash != sha256HexTrimmed("raw-payment-evidence") {
 		t.Fatalf("grant did not store payment evidence hash: %#v", captured)
 	}
@@ -192,11 +226,15 @@ func assertX402IssueMinimized(t *testing.T, resp *apptheory.Response, out soulX4
 	if captured.GrantTokenHash != sha256HexTrimmed(out.Grant.GrantToken) {
 		t.Fatalf("grant token hash mismatch")
 	}
-	if captured.Authority != models.SoulX402InvocationGrantAuthorityScopedInvocation || out.Grant.Authority != models.SoulX402InvocationGrantAuthorityScopedInvocation {
-		t.Fatalf("grant authority must stay scoped invocation only: %#v", out.Grant)
+}
+
+func assertX402GrantAuthorityAndScope(t *testing.T, view soulX402InvocationGrantView, captured models.SoulX402InvocationGrant) {
+	t.Helper()
+	if captured.Authority != models.SoulX402InvocationGrantAuthorityScopedInvocation || view.Authority != models.SoulX402InvocationGrantAuthorityScopedInvocation {
+		t.Fatalf("grant authority must stay scoped invocation only: %#v", view)
 	}
-	if captured.PolicyVersion != models.SoulCallerAccessPaymentPolicyVersionV1 {
-		t.Fatalf("unexpected policy version: %q", captured.PolicyVersion)
+	if captured.Scope != models.SoulX402InvocationGrantScopeWrite || view.Scope != models.SoulX402InvocationGrantScopeWrite {
+		t.Fatalf("grant scope must be stored and returned separately from authority: captured=%q response=%q", captured.Scope, view.Scope)
 	}
 }
 
@@ -259,6 +297,7 @@ func TestHandleSoulX402ConsumeInvocationGrant_ConsumesAndReplaysByIdempotency(t 
 		Capability:                      "tools.invoke",
 		Tool:                            "summarize",
 		Resource:                        "mcp://agent/summarize",
+		Scope:                           models.SoulX402InvocationGrantScopeWrite,
 		RequestHash:                     x402GrantTestRequestHash,
 		CallerSubjectHash:               sha256HexTrimmed("did:example:caller-1"),
 		PaymentScheme:                   models.SoulX402InvocationGrantPaymentSchemeX402,
@@ -299,22 +338,8 @@ func TestHandleSoulX402ConsumeInvocationGrant_ConsumesAndReplaysByIdempotency(t 
 			Headers: map[string][]string{"authorization": {"Bearer raw-instance-key"}},
 		},
 	})
-	if err != nil {
-		t.Fatalf("unexpected err: %v", err)
-	}
-	if resp.Status != http.StatusOK {
-		t.Fatalf("expected 200, got %d body=%s", resp.Status, string(resp.Body))
-	}
-	var out soulX402GrantConsumeResponse
-	if err := json.Unmarshal(resp.Body, &out); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if !out.Accepted || out.Replayed || out.Usage.UsedCount != 1 || out.Grant.UsedCount != 1 {
-		t.Fatalf("unexpected consume response: %#v", out)
-	}
-	if out.Usage.IdempotencyKeyHash != sha256HexTrimmed("consume-idem-1") || strings.TrimSpace(out.Usage.ConsumeRequestHash) == "" {
-		t.Fatalf("usage did not return minimized consume idempotency hash: %#v", out.Usage)
-	}
+	out := requireX402ConsumeResponse(t, resp, err)
+	assertX402ConsumeAcceptedOnce(t, out)
 
 	// Direct replay path: same consume idempotency and request hash returns accepted without another slot.
 	tdbReplay := newSoulX402GrantTestDB()
@@ -338,6 +363,19 @@ func TestHandleSoulX402ConsumeInvocationGrant_ConsumesAndReplaysByIdempotency(t 
 	}, time.Now().UTC())
 	if appErr != nil || !replayed || usedCount != 1 || usage == nil {
 		t.Fatalf("expected idempotent replay, usage=%#v used=%d replay=%v err=%v", usage, usedCount, replayed, appErr)
+	}
+}
+
+func assertX402ConsumeAcceptedOnce(t *testing.T, out soulX402GrantConsumeResponse) {
+	t.Helper()
+	if !out.Accepted || out.Replayed || out.Usage.UsedCount != 1 || out.Grant.UsedCount != 1 {
+		t.Fatalf("unexpected consume response: %#v", out)
+	}
+	if out.Grant.Scope != models.SoulX402InvocationGrantScopeWrite || out.Grant.Authority != models.SoulX402InvocationGrantAuthorityScopedInvocation {
+		t.Fatalf("consume response must expose access scope without changing authority: %#v", out.Grant)
+	}
+	if out.Usage.IdempotencyKeyHash != sha256HexTrimmed("consume-idem-1") || strings.TrimSpace(out.Usage.ConsumeRequestHash) == "" {
+		t.Fatalf("usage did not return minimized consume idempotency hash: %#v", out.Usage)
 	}
 }
 
@@ -430,6 +468,7 @@ func TestParseSoulX402GrantIssueRequest_NormalizesHashesAndRejectsBadInputs(t *t
 	evidence := "x402-evidence"
 	paymentID := "payment-id-1"
 	body := x402IssueBody(t, map[string]any{
+		"scope": "WRITE",
 		"caller": map[string]any{
 			"subject":     caller,
 			"subjectHash": "sha256:" + sha256HexTrimmed(caller),
@@ -454,11 +493,17 @@ func TestParseSoulX402GrantIssueRequest_NormalizesHashesAndRejectsBadInputs(t *t
 	if req.payment.Network != "base-sepolia" || req.payment.Asset != "usdc" || req.payment.Scheme != models.SoulX402InvocationGrantPaymentSchemeX402 {
 		t.Fatalf("unexpected normalized payment binding: %#v", req.payment)
 	}
+	if req.scope != models.SoulX402InvocationGrantScopeWrite {
+		t.Fatalf("expected scope normalized to write, got %q", req.scope)
+	}
 
 	cases := []struct {
 		name string
 		body []byte
 	}{
+		{name: "missing scope", body: x402IssueBody(t, map[string]any{"scope": nil})},
+		{name: "empty scope", body: x402IssueBody(t, map[string]any{"scope": ""})},
+		{name: "unknown scope", body: x402IssueBody(t, map[string]any{"scope": "owner"})},
 		{name: "bad request hash", body: x402IssueBody(t, map[string]any{"requestHash": "not-a-hash"})},
 		{name: "subject hash mismatch", body: x402IssueBody(t, map[string]any{"caller": map[string]any{"subject": caller, "subjectHash": strings.Repeat("0", 64)}})},
 		{name: "evidence hash mismatch", body: x402IssueBody(t, map[string]any{"payment": map[string]any{"network": "base", "amount": "1", "evidence": evidence, "evidenceHash": strings.Repeat("0", 64)}})},
@@ -484,6 +529,7 @@ func TestValidateSoulX402GrantForConsume_RejectsInvalidScopeAndLifecycle(t *test
 		Capability:     "tools.invoke",
 		Tool:           "summarize",
 		Resource:       "mcp://agent/summarize",
+		Scope:          models.SoulX402InvocationGrantScopeWrite,
 		RequestHash:    x402GrantTestRequestHash,
 		GrantTokenHash: sha256HexTrimmed(token),
 		Status:         models.SoulX402InvocationGrantStatusIssued,
@@ -518,6 +564,12 @@ func TestValidateSoulX402GrantForConsume_RejectsInvalidScopeAndLifecycle(t *test
 			g.ExpiresAt = time.Now().Add(-time.Minute).UTC()
 		}},
 		{name: "scope mismatch", code: x402CodeGrantRejected, mutate: func(_ *models.SoulX402InvocationGrant, req *validatedSoulX402GrantConsume) { req.tool = "other" }},
+		{name: "missing access scope", code: x402CodeGrantRejected, mutate: func(g *models.SoulX402InvocationGrant, _ *validatedSoulX402GrantConsume) {
+			g.Scope = ""
+		}},
+		{name: "unknown access scope", code: x402CodeGrantRejected, mutate: func(g *models.SoulX402InvocationGrant, _ *validatedSoulX402GrantConsume) {
+			g.Scope = "owner"
+		}},
 		{name: "bad max usage", code: x402CodeGrantRejected, mutate: func(g *models.SoulX402InvocationGrant, _ *validatedSoulX402GrantConsume) { g.MaxUsage = 101 }},
 		{name: "payment evidence hash mismatch", code: x402CodeGrantRejected, mutate: func(g *models.SoulX402InvocationGrant, req *validatedSoulX402GrantConsume) {
 			g.PaymentEvidenceHash = sha256HexTrimmed("stored-evidence")
