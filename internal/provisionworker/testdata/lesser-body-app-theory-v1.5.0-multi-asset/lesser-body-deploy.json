@@ -14,20 +14,20 @@
   "templates": {
     "dev": {
       "path": "lesser-body-managed-dev.template.json",
-      "sha256": "82035ea1a4a35691f26f89c75a7e7fc7f4599d369a8ecfcd96b163c66fe20057",
-      "bytes": 1205,
+      "sha256": "2b09c328291b79d381694058a19348ed23b5b71ac2d45e82878516d27212142f",
+      "bytes": 8883,
       "format": "cloudformation-json"
     },
     "staging": {
       "path": "lesser-body-managed-staging.template.json",
-      "sha256": "53816f5099161d8c345a97a6cd368217427dedfc9cd7076a17c9a17ff099e59e",
-      "bytes": 1209,
+      "sha256": "c35bb899c3378ab5efe92aefa836fafa7a4e61f3814bd115ce206d78b37e4ade",
+      "bytes": 8919,
       "format": "cloudformation-json"
     },
     "live": {
       "path": "lesser-body-managed-live.template.json",
-      "sha256": "b4c23e32d02015d2154ea30f4070cccf74144e52b998405ae586d5076158215a",
-      "bytes": 1206,
+      "sha256": "59395e37a9ce5994ab13adb4704ae1d5b5f60f30da94df7f2ed8d83c71cdd465",
+      "bytes": 8892,
       "format": "cloudformation-json"
     }
   },
@@ -72,6 +72,47 @@
           "key_parameter": "AppTheoryAutoDeleteObjectsCodeObjectKey"
         }
       ]
+    },
+    {
+      "id": "lesser-body-instance-plane-lambda",
+      "required": true,
+      "path": "dist/lesser-body-instance.zip",
+      "sha256": "6d5d6cd12fcbd0992bacf5a8fe3ca802c49bea4c51007bf4e31e01a515a57926",
+      "bytes": 78,
+      "content_type": "application/zip",
+      "s3_key": "dist/lesser-body-instance.zip",
+      "template_parameter": "LesserBodyInstanceCodeObjectKey",
+      "source": {
+        "kind": "cdk-file-asset",
+        "source_hash": "fixture-source-hash-instance-plane",
+        "construct_path": "InstanceMcpHandler/Code/Stage"
+      },
+      "template_references": [
+        {
+          "stage": "dev",
+          "template": "lesser-body-managed-dev.template.json",
+          "logical_id": "InstanceMcpHandler04CF663E",
+          "property_path": "Properties.Code.S3Key",
+          "bucket_parameter": "LesserBodyCodeBucketName",
+          "key_parameter": "LesserBodyInstanceCodeObjectKey"
+        },
+        {
+          "stage": "staging",
+          "template": "lesser-body-managed-staging.template.json",
+          "logical_id": "InstanceMcpHandler04CF663E",
+          "property_path": "Properties.Code.S3Key",
+          "bucket_parameter": "LesserBodyCodeBucketName",
+          "key_parameter": "LesserBodyInstanceCodeObjectKey"
+        },
+        {
+          "stage": "live",
+          "template": "lesser-body-managed-live.template.json",
+          "logical_id": "InstanceMcpHandler04CF663E",
+          "property_path": "Properties.Code.S3Key",
+          "bucket_parameter": "LesserBodyCodeBucketName",
+          "key_parameter": "LesserBodyInstanceCodeObjectKey"
+        }
+      ]
     }
   ],
   "template_parameters": [
@@ -93,6 +134,12 @@
       "required": true,
       "derived_from_auxiliary_asset": "apptheory-s3-auto-delete-objects-provider",
       "description": "S3 object key for the AppTheory stream-spill auto-delete custom resource provider asset."
+    },
+    {
+      "name": "LesserBodyInstanceCodeObjectKey",
+      "required": true,
+      "derived_from_auxiliary_asset": "lesser-body-instance-plane-lambda",
+      "description": "S3 object key for the instance-plane Lambda artifact emitted by scripts/build.sh as dist/lesser-body-instance.zip."
     }
   ],
   "exports": [
@@ -111,6 +158,30 @@
     {
       "name": "mcp_stream_table_name",
       "path": "/<app>/<stage>/lesser-body/exports/v1/mcp_stream_table_name"
+    },
+    {
+      "name": "instance_mcp_lambda_arn",
+      "path": "/<app>/<stage>/lesser-body/exports/v1/instance_mcp_lambda_arn"
+    },
+    {
+      "name": "instance_mcp_endpoint_url",
+      "path": "/<app>/<stage>/lesser-body/exports/v1/instance_mcp_endpoint_url"
+    },
+    {
+      "name": "instance_content_table_name",
+      "path": "/<app>/<stage>/lesser-body/exports/v1/instance_content_table_name"
+    },
+    {
+      "name": "instance_registry_table_name",
+      "path": "/<app>/<stage>/lesser-body/exports/v1/instance_registry_table_name"
+    },
+    {
+      "name": "instance_grant_table_name",
+      "path": "/<app>/<stage>/lesser-body/exports/v1/instance_grant_table_name"
+    },
+    {
+      "name": "instance_session_table_name",
+      "path": "/<app>/<stage>/lesser-body/exports/v1/instance_session_table_name"
     }
   ]
 }

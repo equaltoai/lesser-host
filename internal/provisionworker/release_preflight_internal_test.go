@@ -403,6 +403,50 @@ func lesserBodyAuxiliaryAssetFixture(stage string) map[string]any {
 	}
 }
 
+func lesserBodyInstancePlaneAuxiliaryAssetFixture(stage string) map[string]any {
+	if strings.TrimSpace(stage) == "" {
+		stage = managedStageDev
+	}
+	templatePath := fmt.Sprintf("lesser-body-managed-%s.template.json", stage)
+	return map[string]any{
+		"id":                 "lesser-body-instance-plane-lambda",
+		"required":           true,
+		"path":               managedLesserBodyInstanceLambdaBuildArtifactPath,
+		"sha256":             "instance-zip-sha",
+		"bytes":              84,
+		"content_type":       "application/zip",
+		"s3_key":             managedLesserBodyInstanceLambdaBuildArtifactPath,
+		"template_parameter": "LesserBodyInstanceCodeObjectKey",
+		"source": map[string]any{
+			"kind":           "cdk-file-asset",
+			"source_hash":    "fixture-source-hash-instance-plane",
+			"construct_path": "InstanceMcpHandler/Code/Stage",
+		},
+		"template_references": []map[string]any{{
+			"stage":            stage,
+			"template":         templatePath,
+			"logical_id":       managedLesserBodyInstanceLambdaLogicalID,
+			"property_path":    "Properties.Code.S3Key",
+			"bucket_parameter": "LesserBodyCodeBucketName",
+			"key_parameter":    "LesserBodyInstanceCodeObjectKey",
+		}},
+	}
+}
+
+func lesserBodyReleaseManifestSchema2WithAssetsJSON(t *testing.T, version string, stage string, assets []map[string]any) []byte {
+	t.Helper()
+
+	raw := lesserBodyReleaseManifestSchema2JSON(t, version, stage, "")
+	var doc map[string]any
+	require.NoError(t, json.Unmarshal(raw, &doc))
+	artifacts, ok := doc["artifacts"].(map[string]any)
+	require.True(t, ok)
+	artifacts["auxiliary_assets"] = assets
+	modified, err := json.Marshal(doc)
+	require.NoError(t, err)
+	return modified
+}
+
 func lesserBodyTemplateJSONWithAuxiliary(t *testing.T, stage string) []byte {
 	t.Helper()
 
@@ -442,6 +486,115 @@ func lesserBodyTemplateJSONWithAuxiliary(t *testing.T, stage string) []byte {
 	})
 	require.NoError(t, err)
 	return raw
+}
+
+func lesserBodyTemplateJSONWithInstancePlane(t *testing.T, stage string) []byte {
+	t.Helper()
+
+	stage = normalizeManagedLesserStage(stage)
+	if stage == "" {
+		stage = managedStageDev
+	}
+	raw, err := json.Marshal(map[string]any{
+		"AWSTemplateFormatVersion": "2010-09-09",
+		"Parameters": map[string]any{
+			"LesserBodyCodeBucketName": map[string]any{
+				"Type": "String",
+			},
+			"LesserBodyCodeObjectKey": map[string]any{
+				"Type": "String",
+			},
+			"LesserBodyInstanceCodeObjectKey": map[string]any{
+				"Type": "String",
+			},
+			"AppTheoryAutoDeleteObjectsCodeObjectKey": map[string]any{
+				"Type": "String",
+			},
+		},
+		"Resources": map[string]any{
+			"McpHandler03E6F2E1": map[string]any{
+				"Type": "AWS::Lambda::Function",
+				"Properties": map[string]any{
+					"Code": map[string]any{
+						"S3Bucket": map[string]any{"Ref": "LesserBodyCodeBucketName"},
+						"S3Key":    map[string]any{"Ref": "LesserBodyCodeObjectKey"},
+					},
+				},
+			},
+			"CustomS3AutoDeleteObjectsCustomResourceProviderHandler9D90184F": map[string]any{
+				"Type": "AWS::Lambda::Function",
+				"Properties": map[string]any{
+					"Code": map[string]any{
+						"S3Bucket": map[string]any{"Ref": "LesserBodyCodeBucketName"},
+						"S3Key":    map[string]any{"Ref": "AppTheoryAutoDeleteObjectsCodeObjectKey"},
+					},
+				},
+			},
+			managedLesserBodyInstanceLambdaLogicalID: map[string]any{
+				"Type": "AWS::Lambda::Function",
+				"Properties": map[string]any{
+					"Code": map[string]any{
+						"S3Bucket": map[string]any{"Ref": "LesserBodyCodeBucketName"},
+						"S3Key":    map[string]any{"Ref": "LesserBodyInstanceCodeObjectKey"},
+					},
+				},
+			},
+			"InstanceContentTable":  instancePlaneTableFixture(),
+			"InstanceRegistryTable": instancePlaneTableFixture(),
+			"InstanceGrantTable":    instancePlaneTableFixture(),
+			"InstanceSessionTable":  instancePlaneTableFixture(),
+			"InstanceMcpLambdaArnParam": map[string]any{
+				"Type": "AWS::SSM::Parameter",
+				"Properties": map[string]any{
+					"Name":  fmt.Sprintf("/lesser/%s/lesser-body/exports/v1/instance_mcp_lambda_arn", stage),
+					"Type":  "String",
+					"Value": map[string]any{"Fn::GetAtt": []any{managedLesserBodyInstanceLambdaLogicalID, "Arn"}},
+				},
+			},
+			"InstanceMcpEndpointParam": map[string]any{
+				"Type": "AWS::SSM::Parameter",
+				"Properties": map[string]any{
+					"Name":  fmt.Sprintf("/lesser/%s/lesser-body/exports/v1/instance_mcp_endpoint_url", stage),
+					"Type":  "String",
+					"Value": fmt.Sprintf("https://api.%s.example.com/instance/{surface}/mcp", stage),
+				},
+			},
+			"InstanceContentTableParam":  instancePlaneTableParamFixture(stage, "instance_content_table_name", "InstanceContentTable"),
+			"InstanceRegistryTableParam": instancePlaneTableParamFixture(stage, "instance_registry_table_name", "InstanceRegistryTable"),
+			"InstanceGrantTableParam":    instancePlaneTableParamFixture(stage, "instance_grant_table_name", "InstanceGrantTable"),
+			"InstanceSessionTableParam":  instancePlaneTableParamFixture(stage, "instance_session_table_name", "InstanceSessionTable"),
+		},
+	})
+	require.NoError(t, err)
+	return raw
+}
+
+func instancePlaneTableFixture() map[string]any {
+	return map[string]any{
+		"Type": "AWS::DynamoDB::Table",
+		"Properties": map[string]any{
+			"BillingMode": "PAY_PER_REQUEST",
+			"KeySchema": []map[string]any{
+				{"AttributeName": "pk", "KeyType": "HASH"},
+				{"AttributeName": "sk", "KeyType": "RANGE"},
+			},
+			"AttributeDefinitions": []map[string]any{
+				{"AttributeName": "pk", "AttributeType": "S"},
+				{"AttributeName": "sk", "AttributeType": "S"},
+			},
+		},
+	}
+}
+
+func instancePlaneTableParamFixture(stage string, name string, tableLogicalID string) map[string]any {
+	return map[string]any{
+		"Type": "AWS::SSM::Parameter",
+		"Properties": map[string]any{
+			"Name":  fmt.Sprintf("/lesser/%s/lesser-body/exports/v1/%s", stage, name),
+			"Type":  "String",
+			"Value": map[string]any{"Ref": tableLogicalID},
+		},
+	}
 }
 
 func lesserBodyTemplateJSONWithRawBootstrapAuxiliary(t *testing.T, stage string) []byte {
@@ -494,6 +647,17 @@ func lesserBodyChecksumsSchema2TXT(stage string) []byte {
 		"script-sha  deploy-lesser-body-from-release.sh",
 		"release-sha  lesser-body-release.json",
 		"aux-sha  assets/mcp-stream-spill-auto-delete-provider.zip",
+	}
+	return []byte(strings.Join(lines, "\n") + "\n")
+}
+
+func lesserBodyChecksumsSchema2WithInstancePlaneTXT(stage string, includeInstance bool) []byte {
+	if strings.TrimSpace(stage) == "" {
+		stage = managedStageDev
+	}
+	lines := strings.Split(strings.TrimSpace(string(lesserBodyChecksumsSchema2TXT(stage))), "\n")
+	if includeInstance {
+		lines = append(lines, "instance-zip-sha  "+managedLesserBodyInstanceLambdaBuildArtifactPath)
 	}
 	return []byte(strings.Join(lines, "\n") + "\n")
 }
@@ -632,6 +796,118 @@ func TestPreflightManagedLesserBodyRelease_SupportsSchema2AuxiliaryAssets(t *tes
 	}
 
 	require.NoError(t, srv.preflightManagedLesserBodyRelease(context.Background(), version, stage))
+}
+
+func TestPreflightManagedLesserBodyRelease_SupportsInstancePlaneAuxiliaryArtifact(t *testing.T) {
+	t.Parallel()
+
+	const version = "v0.2.3"
+	const stage = managedStageDev
+	assets := []map[string]any{
+		lesserBodyAuxiliaryAssetFixture(stage),
+		lesserBodyInstancePlaneAuxiliaryAssetFixture(stage),
+	}
+	handler := http.NewServeMux()
+	handler.HandleFunc("/equaltoai/lesser-body/releases/download/"+version+"/lesser-body-release.json", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(lesserBodyReleaseManifestSchema2WithAssetsJSON(t, version, stage, assets))
+	})
+	handler.HandleFunc("/equaltoai/lesser-body/releases/download/"+version+"/lesser-body-deploy.json", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(lesserBodyDeployManifestSchema2JSON(t, stage, "", assets))
+	})
+	handler.HandleFunc("/equaltoai/lesser-body/releases/download/"+version+"/checksums.txt", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write(lesserBodyChecksumsSchema2WithInstancePlaneTXT(stage, true))
+	})
+	handler.HandleFunc("/equaltoai/lesser-body/releases/download/"+version+"/lesser-body-managed-"+stage+".template.json", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(lesserBodyTemplateJSONWithInstancePlane(t, stage))
+	})
+
+	srv := &Server{
+		cfg: config.Config{
+			Stage:                        "lab",
+			ManagedLesserBodyGitHubOwner: "equaltoai",
+			ManagedLesserBodyGitHubRepo:  "lesser-body",
+		},
+		releaseHTTPClient: newManagedReleaseTestClient(t, handler),
+	}
+
+	require.NoError(t, srv.preflightManagedLesserBodyRelease(context.Background(), version, stage))
+}
+
+func TestPreflightManagedLesserBodyRelease_RejectsMissingInstancePlaneChecksum(t *testing.T) {
+	t.Parallel()
+
+	const version = "v0.2.3"
+	const stage = managedStageDev
+	assets := []map[string]any{
+		lesserBodyAuxiliaryAssetFixture(stage),
+		lesserBodyInstancePlaneAuxiliaryAssetFixture(stage),
+	}
+	handler := http.NewServeMux()
+	handler.HandleFunc("/equaltoai/lesser-body/releases/download/"+version+"/lesser-body-release.json", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(lesserBodyReleaseManifestSchema2WithAssetsJSON(t, version, stage, assets))
+	})
+	handler.HandleFunc("/equaltoai/lesser-body/releases/download/"+version+"/lesser-body-deploy.json", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(lesserBodyDeployManifestSchema2JSON(t, stage, "", assets))
+	})
+	handler.HandleFunc("/equaltoai/lesser-body/releases/download/"+version+"/checksums.txt", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write(lesserBodyChecksumsSchema2WithInstancePlaneTXT(stage, false))
+	})
+
+	srv := &Server{
+		cfg: config.Config{
+			Stage:                        "lab",
+			ManagedLesserBodyGitHubOwner: "equaltoai",
+			ManagedLesserBodyGitHubRepo:  "lesser-body",
+		},
+		releaseHTTPClient: newManagedReleaseTestClient(t, handler),
+	}
+
+	err := srv.preflightManagedLesserBodyRelease(context.Background(), version, stage)
+	require.ErrorContains(t, err, "checksum entry missing for "+managedLesserBodyInstanceLambdaBuildArtifactPath)
+}
+
+func TestPreflightManagedLesserBodyRelease_RejectsInstancePlaneWithoutDeclaredArtifact(t *testing.T) {
+	t.Parallel()
+
+	const version = "v0.2.3"
+	const stage = managedStageDev
+	handler := http.NewServeMux()
+	handler.HandleFunc("/equaltoai/lesser-body/releases/download/"+version+"/lesser-body-release.json", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(lesserBodyReleaseManifestSchema2JSON(t, version, stage, ""))
+	})
+	handler.HandleFunc("/equaltoai/lesser-body/releases/download/"+version+"/lesser-body-deploy.json", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(lesserBodyDeployManifestSchema2JSON(t, stage, "", nil))
+	})
+	handler.HandleFunc("/equaltoai/lesser-body/releases/download/"+version+"/checksums.txt", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write(lesserBodyChecksumsSchema2TXT(stage))
+	})
+	handler.HandleFunc("/equaltoai/lesser-body/releases/download/"+version+"/lesser-body-managed-"+stage+".template.json", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(lesserBodyTemplateJSONWithInstancePlane(t, stage))
+	})
+
+	srv := &Server{
+		cfg: config.Config{
+			Stage:                        "lab",
+			ManagedLesserBodyGitHubOwner: "equaltoai",
+			ManagedLesserBodyGitHubRepo:  "lesser-body",
+		},
+		releaseHTTPClient: newManagedReleaseTestClient(t, handler),
+	}
+
+	err := srv.preflightManagedLesserBodyRelease(context.Background(), version, stage)
+	require.ErrorContains(t, err, "references auxiliary code key parameter LesserBodyInstanceCodeObjectKey")
+	require.ErrorContains(t, err, "without a declared auxiliary asset")
 }
 
 func TestPreflightManagedLesserBodyRelease_RejectsUnsupportedSchema2Capability(t *testing.T) {
@@ -783,18 +1059,45 @@ func TestManagedLesserBodySchema2BodyFixtureParsesAuxiliaryUploadPlan(t *testing
 	deployManifest, err := parseManagedLesserBodyDeployManifest(deployRaw)
 	require.NoError(t, err)
 	require.NoError(t, validateManagedLesserBodyDeployManifest(deployManifest, nil, managedStageDev))
-	require.Len(t, deployManifest.AuxiliaryAssets, 1)
+	require.Len(t, deployManifest.AuxiliaryAssets, 2)
 	aux := deployManifest.AuxiliaryAssets[0]
 	require.Equal(t, "assets/mcp-stream-spill-auto-delete-provider.fixture.txt", aux.Path)
 	require.Equal(t, "assets/mcp-stream-spill-auto-delete-provider.fixture.txt", aux.S3Key)
 	require.Equal(t, "AppTheoryAutoDeleteObjectsCodeObjectKey", aux.TemplateParameter)
+	instanceAux := deployManifest.AuxiliaryAssets[1]
+	require.Equal(t, managedLesserBodyInstanceLambdaBuildArtifactPath, instanceAux.Path)
+	require.Equal(t, managedLesserBodyInstanceLambdaBuildArtifactPath, instanceAux.S3Key)
+	require.Equal(t, "LesserBodyInstanceCodeObjectKey", instanceAux.TemplateParameter)
 
 	checksums, err := parseManagedReleaseChecksums(checksumsRaw)
 	require.NoError(t, err)
 	require.NoError(t, validateManagedReleaseChecksumEntries(checksums, map[string]string{
-		aux.Path: aux.SHA256,
+		aux.Path:         aux.SHA256,
+		instanceAux.Path: instanceAux.SHA256,
 	}))
+	var template map[string]any
+	require.NoError(t, json.Unmarshal(templateRaw, &template))
+	resources, ok := template["Resources"].(map[string]any)
+	require.True(t, ok)
+	for _, logicalID := range []string{
+		"McpHandler03E6F2E1",
+		"CustomS3AutoDeleteObjectsCustomResourceProviderHandler9D90184F",
+		managedLesserBodyInstanceLambdaLogicalID,
+		"InstanceContentTable",
+		"InstanceRegistryTable",
+		"InstanceGrantTable",
+		"InstanceSessionTable",
+		"InstanceMcpLambdaArnParam",
+		"InstanceMcpEndpointParam",
+		"InstanceContentTableParam",
+		"InstanceRegistryTableParam",
+		"InstanceGrantTableParam",
+		"InstanceSessionTableParam",
+	} {
+		require.Contains(t, resources, logicalID)
+	}
 	require.NoError(t, validateManagedLesserBodyTemplateAuxiliaryReferences(templateRaw, "lesser-body-managed-dev.template.json", managedStageDev, deployManifest.AuxiliaryAssets))
+	require.NoError(t, validateManagedLesserBodyTemplateInstancePlane(templateRaw, "lesser-body-managed-dev.template.json", managedStageDev, deployManifest.AuxiliaryAssets))
 }
 
 func TestManagedReleaseAssetPath_AllowsNestedAssetsAndRejectsUnsafePaths(t *testing.T) {

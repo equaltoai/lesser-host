@@ -50,6 +50,8 @@ The managed release is only certified when every required check passes.
   - required when the certification run includes `lesser-body` or MCP follow-on wiring
 - `lesser_body_template_preflight_valid`
   - required when the certification run includes `lesser-body` or MCP follow-on wiring
+  - validates the published managed template, schema-2 auxiliary assets, and (when present) the instance-plane Lambda /
+    table / SSM-export logical-ID baseline before the real consumer-path change-set check
 - `lesser_body_template_changeset_valid`
   - required when the certification run includes `lesser-body`
   - the body runner must prove the published template passed `deploy-lesser-body-from-release.sh --no-execute-changeset`

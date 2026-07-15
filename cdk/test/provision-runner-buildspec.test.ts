@@ -40,6 +40,8 @@ test('RUN_MODE=lesser-body uses the release helper instead of a source checkout'
 	assert.match(buildCommands, /managed_instance_key:\$instance_key\[0\]/);
 	assert.match(buildCommands, /prepare_lesser_body_auxiliary_assets/);
 	assert.match(buildCommands, /upload_lesser_body_auxiliary_assets "\$BODY_RELEASE_DIR" "\$BODY_ASSET_BUCKET" "\$BODY_ASSET_PREFIX"/);
+	assert.match(buildCommands, /verify_downloaded_asset_checksum "\$body_release_dir\/checksums.txt" "\$path" "\$body_release_dir\/\$path"/);
+	assert.match(buildCommands, /byte-size mismatch for lesser-body auxiliary asset/);
 	assert.match(buildCommands, /AWS_PROFILE=managed aws s3 cp "\$body_release_dir\/\$path" "s3:\/\/\$body_asset_bucket\/\$object_key"/);
 	assert.match(buildCommands, /managed_auxiliary_assets_v1/);
 	assert.match(buildCommands, /BODY_ASSET_BUCKET="cdk-hnb659fds-assets-\$TARGET_ACCOUNT_ID-\$TARGET_REGION"/);
