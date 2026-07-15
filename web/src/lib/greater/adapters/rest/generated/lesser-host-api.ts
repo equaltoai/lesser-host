@@ -4,6 +4,35 @@
  */
 
 export interface paths {
+    "/api/v1/soul/agents/{agentId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get public soul agent identity (v3)
+         * @description Returns Host's read-only Soul registry projection for a soul agent ID.
+         *     Lesser's server-side soul-binding ceremony uses this projection as Host
+         *     source truth before writing Lesser-local `SOUL_BODY_BINDING` rows. For
+         *     Ptah-created hosted souls, consumers validate `agent_id`, `domain`,
+         *     `local_id`, `authority_model=instance_trust`,
+         *     `anchor_state=hosted_offchain`,
+         *     `operational_binding=hosted_bound_soul`, active lifecycle/status,
+         *     publication evidence through `self_description_version > 0` (or future
+         *     `published_version > 0`), and principal evidence through
+         *     `principal_address` with `wallet` as compatibility fallback.
+         */
+        get: operations["soulGetAgent"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/soul/agents/{agentId}/channels": {
         parameters: {
             query?: never;
@@ -1707,103 +1736,6 @@ export interface components {
             };
         };
         SoulMintConversationFinalizeResponse: components["schemas"]["soul-instance-bootstrap.finalize.response.schema"];
-        /** GET /api/v1/soul/agents/{agentId}/channels/preferences response */
-        "soul-agent-channel-preferences.response.schema": {
-            agentId: string;
-            contactPreferences: {
-                /** @enum {string} */
-                preferred: "email" | "sms" | "voice" | "activitypub" | "mcp";
-                /** @enum {string} */
-                fallback?: "email" | "sms" | "voice" | "activitypub" | "mcp";
-                availability: {
-                    /** @enum {string} */
-                    schedule: "always" | "business-hours" | "custom";
-                    timezone?: string;
-                    windows?: {
-                        days: ("mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun")[];
-                        startTime: string;
-                        endTime: string;
-                    }[] | null;
-                };
-                responseExpectation: {
-                    target: string;
-                    /** @enum {string} */
-                    guarantee: "guaranteed" | "best-effort";
-                };
-                rateLimits?: {
-                    email?: {
-                        maxInboundPerHour?: number;
-                        maxInboundPerDay?: number;
-                    };
-                    sms?: {
-                        maxInboundPerHour?: number;
-                        maxInboundPerDay?: number;
-                    };
-                    voice?: {
-                        maxConcurrentCalls?: number;
-                        maxCallsPerDay?: number;
-                    };
-                };
-                languages: string[];
-                contentTypes?: string[];
-                firstContact?: {
-                    /** @default false */
-                    requireSoul: boolean;
-                    requireReputation?: number | null;
-                    /** @default false */
-                    introductionExpected: boolean;
-                };
-            } | null;
-            /** Format: date-time */
-            updatedAt: string;
-        };
-        /** PUT /api/v1/soul/agents/{agentId}/channels/preferences request */
-        "soul-agent-channel-preferences.request.schema": {
-            contactPreferences: {
-                /** @enum {string} */
-                preferred: "email" | "sms" | "voice" | "activitypub" | "mcp";
-                /** @enum {string} */
-                fallback?: "email" | "sms" | "voice" | "activitypub" | "mcp";
-                availability: {
-                    /** @enum {string} */
-                    schedule: "always" | "business-hours" | "custom";
-                    timezone?: string;
-                    windows?: {
-                        days: ("mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun")[];
-                        startTime: string;
-                        endTime: string;
-                    }[] | null;
-                };
-                responseExpectation: {
-                    target: string;
-                    /** @enum {string} */
-                    guarantee: "guaranteed" | "best-effort";
-                };
-                rateLimits?: {
-                    email?: {
-                        maxInboundPerHour?: number;
-                        maxInboundPerDay?: number;
-                    };
-                    sms?: {
-                        maxInboundPerHour?: number;
-                        maxInboundPerDay?: number;
-                    };
-                    voice?: {
-                        maxConcurrentCalls?: number;
-                        maxCallsPerDay?: number;
-                    };
-                };
-                languages: string[];
-                contentTypes?: string[];
-                firstContact?: {
-                    /** @default false */
-                    requireSoul: boolean;
-                    requireReputation?: number | null;
-                    /** @default false */
-                    introductionExpected: boolean;
-                };
-            };
-        };
         avatar_style: {
             style_id: number;
             style_name?: string;
@@ -1923,6 +1855,103 @@ export interface components {
                     mutable: boolean;
                     revocable: boolean;
                     evidence?: components["schemas"]["anchor_evidence"][];
+                };
+            };
+        };
+        /** GET /api/v1/soul/agents/{agentId}/channels/preferences response */
+        "soul-agent-channel-preferences.response.schema": {
+            agentId: string;
+            contactPreferences: {
+                /** @enum {string} */
+                preferred: "email" | "sms" | "voice" | "activitypub" | "mcp";
+                /** @enum {string} */
+                fallback?: "email" | "sms" | "voice" | "activitypub" | "mcp";
+                availability: {
+                    /** @enum {string} */
+                    schedule: "always" | "business-hours" | "custom";
+                    timezone?: string;
+                    windows?: {
+                        days: ("mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun")[];
+                        startTime: string;
+                        endTime: string;
+                    }[] | null;
+                };
+                responseExpectation: {
+                    target: string;
+                    /** @enum {string} */
+                    guarantee: "guaranteed" | "best-effort";
+                };
+                rateLimits?: {
+                    email?: {
+                        maxInboundPerHour?: number;
+                        maxInboundPerDay?: number;
+                    };
+                    sms?: {
+                        maxInboundPerHour?: number;
+                        maxInboundPerDay?: number;
+                    };
+                    voice?: {
+                        maxConcurrentCalls?: number;
+                        maxCallsPerDay?: number;
+                    };
+                };
+                languages: string[];
+                contentTypes?: string[];
+                firstContact?: {
+                    /** @default false */
+                    requireSoul: boolean;
+                    requireReputation?: number | null;
+                    /** @default false */
+                    introductionExpected: boolean;
+                };
+            } | null;
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        /** PUT /api/v1/soul/agents/{agentId}/channels/preferences request */
+        "soul-agent-channel-preferences.request.schema": {
+            contactPreferences: {
+                /** @enum {string} */
+                preferred: "email" | "sms" | "voice" | "activitypub" | "mcp";
+                /** @enum {string} */
+                fallback?: "email" | "sms" | "voice" | "activitypub" | "mcp";
+                availability: {
+                    /** @enum {string} */
+                    schedule: "always" | "business-hours" | "custom";
+                    timezone?: string;
+                    windows?: {
+                        days: ("mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun")[];
+                        startTime: string;
+                        endTime: string;
+                    }[] | null;
+                };
+                responseExpectation: {
+                    target: string;
+                    /** @enum {string} */
+                    guarantee: "guaranteed" | "best-effort";
+                };
+                rateLimits?: {
+                    email?: {
+                        maxInboundPerHour?: number;
+                        maxInboundPerDay?: number;
+                    };
+                    sms?: {
+                        maxInboundPerHour?: number;
+                        maxInboundPerDay?: number;
+                    };
+                    voice?: {
+                        maxConcurrentCalls?: number;
+                        maxCallsPerDay?: number;
+                    };
+                };
+                languages: string[];
+                contentTypes?: string[];
+                firstContact?: {
+                    /** @default false */
+                    requireSoul: boolean;
+                    requireReputation?: number | null;
+                    /** @default false */
+                    introductionExpected: boolean;
                 };
             };
         };
@@ -2811,6 +2840,31 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    soulGetAgent: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                agentId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Public Soul registry identity projection. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SoulResolveResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            404: components["responses"]["NotFound"];
+            500: components["responses"]["InternalError"];
+        };
+    };
     soulGetAgentChannels: {
         parameters: {
             query?: never;
