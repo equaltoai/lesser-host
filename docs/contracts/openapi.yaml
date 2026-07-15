@@ -1438,6 +1438,42 @@ components:
       $ref: "../spec/v3/schemas/soul-instance-bootstrap.finalize.response.schema.json"
 
 paths:
+  /api/v1/soul/agents/{agentId}:
+    get:
+      operationId: soulGetAgent
+      summary: Get public soul agent identity (v3)
+      description: |
+        Returns Host's read-only Soul registry projection for a soul agent ID.
+        Lesser's server-side soul-binding ceremony uses this projection as Host
+        source truth before writing Lesser-local `SOUL_BODY_BINDING` rows. For
+        Ptah-created hosted souls, consumers validate `agent_id`, `domain`,
+        `local_id`, `authority_model=instance_trust`,
+        `anchor_state=hosted_offchain`,
+        `operational_binding=hosted_bound_soul`, active lifecycle/status,
+        publication evidence through `self_description_version > 0` (or future
+        `published_version > 0`), and principal evidence through
+        `principal_address` with `wallet` as compatibility fallback.
+      parameters:
+        - name: agentId
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: "^0x[0-9a-fA-F]{64}$"
+      responses:
+        "200":
+          description: Public Soul registry identity projection.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SoulResolveResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   /api/v1/soul/agents/{agentId}/channels:
     get:
       operationId: soulGetAgentChannels
