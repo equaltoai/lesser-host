@@ -27,6 +27,7 @@ type ManagedLesserBodyCompatibilityContract struct {
 	SupportedStages                 []string                                 `json:"supported_stages"`
 	DeployTemplates                 ManagedLesserBodyDeployTemplatesContract `json:"deploy_templates"`
 	AuxiliaryAssets                 ManagedLesserBodyAuxiliaryAssetsContract `json:"auxiliary_assets"`
+	InstancePlane                   ManagedLesserBodyInstancePlaneContract   `json:"instance_plane"`
 }
 
 type ManagedReleaseChecksumsContract struct {
@@ -63,6 +64,14 @@ type ManagedLesserBodyAuxiliaryAssetsContract struct {
 	S3KeySemantics     string   `json:"s3_key_semantics"`
 	TemplateParameter  string   `json:"template_parameter"`
 	RequiredFields     []string `json:"required_fields"`
+}
+
+type ManagedLesserBodyInstancePlaneContract struct {
+	BuildArtifactPath          string   `json:"build_artifact_path"`
+	ReleaseAssetRepresentation string   `json:"release_asset_representation"`
+	LambdaLogicalID            string   `json:"lambda_logical_id"`
+	RequiredTables             []string `json:"required_tables"`
+	RequiredSSMParameters      []string `json:"required_ssm_parameters"`
 }
 
 func CurrentManagedLesserBodyCompatibilityContract() ManagedLesserBodyCompatibilityContract {
@@ -106,6 +115,13 @@ func CurrentManagedLesserBodyCompatibilityContract() ManagedLesserBodyCompatibil
 			S3KeySemantics:     "prefix-relative",
 			TemplateParameter:  "cloudformation-parameter-name",
 			RequiredFields:     []string{"id", "path", "sha256", "bytes", "required", "s3_key", "template_parameter", "template_references"},
+		},
+		InstancePlane: ManagedLesserBodyInstancePlaneContract{
+			BuildArtifactPath:          managedLesserBodyInstanceLambdaBuildArtifactPath,
+			ReleaseAssetRepresentation: "schema2_auxiliary_asset",
+			LambdaLogicalID:            managedLesserBodyInstanceLambdaLogicalID,
+			RequiredTables:             managedLesserBodyInstancePlaneTableLogicalIDs(),
+			RequiredSSMParameters:      managedLesserBodyInstancePlaneSSMParameterLogicalIDs(),
 		},
 	}
 }

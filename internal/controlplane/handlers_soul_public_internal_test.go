@@ -376,26 +376,33 @@ func TestHandleSoulPublicGetAgent_Success(t *testing.T) {
 		dest := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
 		*dest = models.SoulAgentIdentity{
 			AgentID:                          agentID,
+			Domain:                           "demo.greater.website",
+			LocalID:                          "oracle",
+			Wallet:                           "0x1111111111111111111111111111111111111111",
+			AuthorityModel:                   models.SoulAuthorityModelInstanceTrust,
+			PrincipalAddress:                 "0x2222222222222222222222222222222222222222",
+			SelfDescriptionVersion:           1,
+			LifecycleStatus:                  models.SoulAgentStatusActive,
 			Status:                           models.SoulAgentStatusActive,
 			PolicyVersion:                    models.SoulPolicyVersionHostedBoundSoulV1,
-			AnchorState:                      models.SoulAnchorStateImmutableOnchain,
+			AnchorState:                      models.SoulAnchorStateHostedOffchain,
 			OperationalBinding:               models.SoulOperationalBindingHostedBoundSoul,
 			CapabilityPolicyVersion:          models.SoulCapabilityPolicyVersionV1,
 			CallerAccessPaymentPolicyVersion: models.SoulCallerAccessPaymentPolicyVersionV1,
 			EmailDefaultAllowed:              true,
-			PhoneEntitlementStatus:           models.SoulPhoneEntitlementProvisioned,
-			SMSAllowed:                       true,
-			VoiceAllowed:                     true,
+			PhoneEntitlementStatus:           models.SoulPhoneEntitlementNotEntitled,
+			SMSAllowed:                       false,
+			VoiceAllowed:                     false,
 			PublicPaidCallerAccess:           models.SoulPublicPaidCallerAccessDenied,
 			PolicyMigrationState:             models.SoulPolicyMigrationStatePersistedV1,
-			MintTxHash:                       "0x" + strings.Repeat("ab", 32),
-			MintedAt:                         time.Date(2026, 5, 17, 1, 2, 3, 0, time.UTC),
+			UpdatedAt:                        time.Date(2026, 7, 15, 1, 2, 3, 0, time.UTC),
 		}
 	}).Once()
 	tdb.qRep.On("First", mock.AnythingOfType("*models.SoulAgentReputation")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.SoulAgentReputation](t, args, 0)
 		*dest = models.SoulAgentReputation{AgentID: agentID, BlockRef: 10, Composite: 0.1, UpdatedAt: time.Now().UTC()}
 	}).Once()
+	tdb.qChannel.On("First", mock.AnythingOfType("*models.SoulAgentChannel")).Return(theoryErrors.ErrItemNotFound).Once()
 
 	ctx := &apptheory.Context{Params: map[string]string{"agentId": agentID}}
 	resp, err := s.handleSoulPublicGetAgent(ctx)
@@ -417,40 +424,82 @@ func TestHandleSoulPublicGetAgent_Success(t *testing.T) {
 	if out.Version != "1" || out.Agent.AgentID != agentID || out.Reputation == nil || out.Reputation.AgentID != agentID {
 		t.Fatalf("unexpected response: %#v", out)
 	}
-	assertSoulPublicAgentOnchainAnchorAssurance(t, out.Agent.AnchorAssurance)
-	assertSoulPublicAgentPolicyFieldsNotLeaked(t, resp.Body)
+	assertSoulPublicAgentHostedBindingContract(t, out.Agent, resp.Body)
 }
 
-func assertSoulPublicAgentOnchainAnchorAssurance(t *testing.T, assurance *soulAnchorAssuranceView) {
+func assertSoulPublicAgentHostedBindingContract(t *testing.T, agent soulPublicAgentView, body []byte) {
 	t.Helper()
 
-	if assurance == nil {
-		t.Fatalf("expected anchor assurance metadata")
-		return
-	}
-	if assurance.State != models.SoulAnchorStateImmutableOnchain ||
-		assurance.Source != soulAnchorAssuranceSourceOnchainReceipt ||
-		assurance.CapabilityGate ||
-		assurance.Mutable ||
-		assurance.Revocable {
-		t.Fatalf("unexpected anchor assurance: %#v", assurance)
-	}
-	if len(assurance.Evidence) != 1 ||
-		assurance.Evidence[0].Kind != soulAnchorEvidenceKindMintTransaction ||
-		assurance.Evidence[0].TxHash == "" ||
-		assurance.Evidence[0].ChainID != 1 ||
-		assurance.Evidence[0].RecordedAt == nil {
-		t.Fatalf("unexpected anchor evidence: %#v", assurance.Evidence)
+	assertSoulPublicAgentHostedIdentityFields(t, agent)
+	assertSoulPublicAgentHostedPolicyFields(t, agent)
+	assertSoulPublicAgentHostedPolicyBooleans(t, agent)
+	assertSoulPublicAgentBindingFieldsPresent(t, body)
+	assertSoulPublicAgentHostedAnchorAssurance(t, agent.AnchorAssurance)
+}
+
+func assertSoulPublicAgentHostedIdentityFields(t *testing.T, agent soulPublicAgentView) {
+	t.Helper()
+
+	assertSoulPublicAgentField(t, "domain", agent.Domain, "demo.greater.website", agent)
+	assertSoulPublicAgentField(t, "local_id", agent.LocalID, "oracle", agent)
+	assertSoulPublicAgentField(t, "authority_model", agent.AuthorityModel, models.SoulAuthorityModelInstanceTrust, agent)
+	assertSoulPublicAgentField(t, "anchor_state", agent.AnchorState, models.SoulAnchorStateHostedOffchain, agent)
+	assertSoulPublicAgentField(t, "operational_binding", agent.OperationalBinding, models.SoulOperationalBindingHostedBoundSoul, agent)
+	assertSoulPublicAgentField(t, "status", agent.Status, models.SoulAgentStatusActive, agent)
+	assertSoulPublicAgentField(t, "lifecycle_status", agent.LifecycleStatus, models.SoulAgentStatusActive, agent)
+	assertSoulPublicAgentField(t, "self_description_version", agent.SelfDescriptionVersion, 1, agent)
+	assertSoulPublicAgentField(t, "principal_address", agent.PrincipalAddress, "0x2222222222222222222222222222222222222222", agent)
+	assertSoulPublicAgentField(t, "wallet", agent.Wallet, "0x1111111111111111111111111111111111111111", agent)
+}
+
+func assertSoulPublicAgentHostedPolicyFields(t *testing.T, agent soulPublicAgentView) {
+	t.Helper()
+
+	assertSoulPublicAgentField(t, "policy_version", agent.PolicyVersion, models.SoulPolicyVersionHostedBoundSoulV1, agent)
+	assertSoulPublicAgentField(t, "capability_policy_version", agent.CapabilityPolicyVersion, models.SoulCapabilityPolicyVersionV1, agent)
+	assertSoulPublicAgentField(t, "caller_access_payment_policy_version", agent.CallerAccessPaymentPolicyVersion, models.SoulCallerAccessPaymentPolicyVersionV1, agent)
+	assertSoulPublicAgentField(t, "phone_entitlement_status", agent.PhoneEntitlementStatus, models.SoulPhoneEntitlementNotEntitled, agent)
+	assertSoulPublicAgentField(t, "public_paid_caller_access", agent.PublicPaidCallerAccess, models.SoulPublicPaidCallerAccessDenied, agent)
+	assertSoulPublicAgentField(t, "policy_migration_state", agent.PolicyMigrationState, models.SoulPolicyMigrationStatePersistedV1, agent)
+}
+
+func assertSoulPublicAgentHostedPolicyBooleans(t *testing.T, agent soulPublicAgentView) {
+	t.Helper()
+
+	assertSoulPublicAgentBoolPointer(t, "email_default_allowed", agent.EmailDefaultAllowed, true, agent)
+	assertSoulPublicAgentBoolPointer(t, "sms_allowed", agent.SMSAllowed, false, agent)
+	assertSoulPublicAgentBoolPointer(t, "voice_allowed", agent.VoiceAllowed, false, agent)
+}
+
+func assertSoulPublicAgentField[T comparable](t *testing.T, name string, got T, want T, agent soulPublicAgentView) {
+	t.Helper()
+
+	if got != want {
+		t.Fatalf("expected public agent %s=%v, got %v (agent=%#v)", name, want, got, agent)
 	}
 }
 
-func assertSoulPublicAgentPolicyFieldsNotLeaked(t *testing.T, body []byte) {
+func assertSoulPublicAgentBoolPointer(t *testing.T, name string, got *bool, want bool, agent soulPublicAgentView) {
 	t.Helper()
 
-	for _, privateField := range []string{
-		"policy_version",
+	if got == nil {
+		t.Fatalf("expected public agent %s=%v, got nil (agent=%#v)", name, want, agent)
+	}
+	if *got != want {
+		t.Fatalf("expected public agent %s=%v, got %v (agent=%#v)", name, want, *got, agent)
+	}
+}
+
+func assertSoulPublicAgentBindingFieldsPresent(t *testing.T, body []byte) {
+	t.Helper()
+
+	for _, expectedField := range []string{
+		"authority_model",
 		"anchor_state",
 		"operational_binding",
+		"self_description_version",
+		"principal_address",
+		"policy_version",
 		"capability_policy_version",
 		"caller_access_payment_policy_version",
 		"email_default_allowed",
@@ -460,9 +509,30 @@ func assertSoulPublicAgentPolicyFieldsNotLeaked(t *testing.T, body []byte) {
 		"public_paid_caller_access",
 		"policy_migration_state",
 	} {
-		if bytes.Contains(body, []byte(privateField)) {
-			t.Fatalf("public agent response leaked private policy field %q: %s", privateField, string(body))
+		if !bytes.Contains(body, []byte(expectedField)) {
+			t.Fatalf("public agent response missing field %q: %s", expectedField, string(body))
 		}
+	}
+}
+
+func assertSoulPublicAgentHostedAnchorAssurance(t *testing.T, assurance *soulAnchorAssuranceView) {
+	t.Helper()
+
+	if assurance == nil {
+		t.Fatalf("expected anchor assurance metadata")
+		return
+	}
+	if assurance.State != models.SoulAnchorStateHostedOffchain ||
+		assurance.Source != soulAnchorAssuranceSourceHostRecord ||
+		assurance.CapabilityGate ||
+		!assurance.Mutable ||
+		!assurance.Revocable {
+		t.Fatalf("unexpected hosted anchor assurance: %#v", assurance)
+	}
+	if len(assurance.Evidence) != 1 ||
+		assurance.Evidence[0].Kind != soulAnchorEvidenceKindHostRecord ||
+		assurance.Evidence[0].RecordedAt == nil {
+		t.Fatalf("unexpected hosted anchor evidence: %#v", assurance.Evidence)
 	}
 }
 

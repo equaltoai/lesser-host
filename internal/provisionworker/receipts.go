@@ -173,6 +173,10 @@ func validateManagedInstanceKeyReceiptSecretARN(binding managedInstanceKeyReceip
 	return nil
 }
 
+func expectedManagedInstanceKeyReceiptStage(controlPlaneStage string) string {
+	return managedInstanceKeySecretStage(normalizeManagedLesserStage(controlPlaneStage))
+}
+
 func (s *Server) validateManagedInstanceKeyReceiptForBinding(binding managedInstanceKeyReceiptBinding, receipt *managedInstanceKeyReceipt) error {
 	if s == nil {
 		return fmt.Errorf("server is nil")
@@ -199,7 +203,7 @@ func (s *Server) validateManagedInstanceKeyReceiptForBinding(binding managedInst
 	if strings.TrimSpace(receipt.Stage) == "" {
 		return fmt.Errorf("managed instance key receipt stage is missing")
 	}
-	if got, want := managedInstanceKeySecretStage(receipt.Stage), managedInstanceKeySecretStage(s.cfg.Stage); got != want {
+	if got, want := managedInstanceKeySecretStage(receipt.Stage), expectedManagedInstanceKeyReceiptStage(s.cfg.Stage); got != want {
 		return fmt.Errorf("managed instance key receipt stage does not match control plane stage")
 	}
 	if err := validateManagedInstanceKeyReceiptSecretARN(binding, receipt.SecretARN); err != nil {

@@ -1438,6 +1438,42 @@ components:
       $ref: "../spec/v3/schemas/soul-instance-bootstrap.finalize.response.schema.json"
 
 paths:
+  /api/v1/soul/agents/{agentId}:
+    get:
+      operationId: soulGetAgent
+      summary: Get public soul agent identity (v3)
+      description: |
+        Returns Host's read-only Soul registry projection for a soul agent ID.
+        Lesser's server-side soul-binding ceremony uses this projection as Host
+        source truth before writing Lesser-local `SOUL_BODY_BINDING` rows. For
+        Ptah-created hosted souls, consumers validate `agent_id`, `domain`,
+        `local_id`, `authority_model=instance_trust`,
+        `anchor_state=hosted_offchain`,
+        `operational_binding=hosted_bound_soul`, active lifecycle/status,
+        publication evidence through `self_description_version > 0` (or future
+        `published_version > 0`), and principal evidence through
+        `principal_address` with `wallet` as compatibility fallback.
+      parameters:
+        - name: agentId
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: "^0x[0-9a-fA-F]{64}$"
+      responses:
+        "200":
+          description: Public Soul registry identity projection.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SoulResolveResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   /api/v1/soul/agents/{agentId}/channels:
     get:
       operationId: soulGetAgentChannels
@@ -3858,9 +3894,12 @@ paths:
         - instanceKeyAuth: []
       description: |
         Issues a host-side off-chain invocation grant for a configured public paid caller. The grant binds the
-        `agentId`, `capability`, `tool`, `resource`, invocation `requestHash`, caller subject hash, payment evidence
-        hash, amount/network metadata, nonce, idempotency key hash, expiry, max usage, and caller-access payment policy
-        version.
+        `agentId`, `capabilityVersion`, `capability`, `tool`, `resource`, access `scope`, invocation `requestHash`, caller subject
+        hash, payment evidence hash, amount/network metadata, nonce, idempotency key hash, expiry, max usage, and caller-access
+        payment policy version. The access `scope` vocabulary is `read`, `write`, or `admin` and stays separate from grant
+        `authority`, which remains `scoped_invocation`. Capability vocabulary is versioned: `scoped-invocation/v1`
+        remains the actor/scoped invocation vocabulary, while `instance-capability/v1` is restricted to
+        `instance:agent_create` and `instance:install_plan`.
 
         This instance-key authenticated route returns a raw `grantToken` only on the first successful issue. Idempotent replays return the
         same grant metadata with `tokenReturned=false`; callers must retain the original token. Host stores only hashes
@@ -3893,7 +3932,13 @@ paths:
         Consumes a host-issued x402 invocation grant from an authenticated managed instance. The bearer token is the
         instance API key; public paid callers never receive principal/operator/session authority. The authenticated
         instance must own the agent domain, present the one-time raw grant token, and repeat the original
-        agent/capability/tool/resource/request hash binding.
+        agent/capabilityVersion/capability/tool/resource/request hash binding. Consume responses return the persisted
+        grant `scope` and `capabilityVersion` so downstream runtimes can reject right-tool/wrong-scope or
+        actor-capability-on-instance-tool invocations before side effects. Instance tools must use
+        `capabilityVersion="instance-capability/v1"` with `capability="instance:agent_create"` for `tool="agent_create"`
+        or `capability="instance:install_plan"` for `tool="agent_local_install_plan"` (the shorter
+        `tool="install_plan"` is also accepted by Host). Actor/scoped invocation capabilities remain under
+        `scoped-invocation/v1` and are rejected for these instance tools.
 
         Consumption writes a bounded usage slot keyed by the consume idempotency key hash. Repeating the same consume
         idempotency key with the same consume request hash is a replay and does not increment usage. Distinct consume

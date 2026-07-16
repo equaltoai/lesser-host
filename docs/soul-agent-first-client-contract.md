@@ -58,9 +58,13 @@ treat the response as machine-readable identity state rather than scraping legac
 Important fields include:
 
 - core identity: `agent_id`, `domain`, `local_id`, `ens_name`, `wallet`, `token_id`, `meta_uri`
+- registry authority: `authority_model`, `anchor_state`, `operational_binding`
 - declaration metadata: `principal_address`, `principal_signature`, `principal_declaration`, `principal_declared_at`
 - lifecycle metadata: `status`, `lifecycle_status`, `lifecycle_reason`, `successor_agent_id`, `predecessor_agent_id`
 - publication metadata: `self_description_version`, `mint_tx_hash`, `minted_at`, `updated_at`
+- hosted-bound policy metadata: `policy_version`, `capability_policy_version`,
+  `caller_access_payment_policy_version`, `email_default_allowed`, `phone_entitlement_status`,
+  `sms_allowed`, `voice_allowed`, `public_paid_caller_access`, `policy_migration_state`
 - anchor assurance metadata under `anchor_assurance`
   - `state`: `hosted_offchain` or `immutable_onchain`
   - `source`: `host_record` or `onchain_receipt`
@@ -87,6 +91,30 @@ mint conversation, and finalize publication before any on-chain mint receipt is 
 agent namespace with `anchor_state=hosted_offchain`, no `mint_tx_hash` / `minted_at`, and
 `self_description_version` plus version history populated. Recording the prepared mint operation later promotes the
 same identity to `immutable_onchain`; clients must treat that as an anchor upgrade, not a replacement registration.
+
+## Soul-binding ceremony validation
+
+Lesser's server-side soul-binding ceremony validates Host source truth by refetching the public registry projection:
+
+```http
+GET /api/v1/soul/agents/{agentId}
+```
+
+For Ptah-created hosted souls, Lesser fails closed unless the response `agent` proves all binding-critical fields:
+
+- `agent_id` matches the requested soul agent ID.
+- `domain` is the Lesser instance domain and `local_id` is the local agent username.
+- `authority_model=instance_trust`.
+- `anchor_state=hosted_offchain`.
+- `operational_binding=hosted_bound_soul`.
+- `status=active` or `lifecycle_status=active`.
+- publication evidence is present through `self_description_version > 0` (or a future `published_version > 0`
+  equivalent if Host adds that field to this projection).
+- principal evidence is present through `principal_address`, with `wallet` retained as a compatibility fallback.
+
+This Host projection is read-only source truth for registry identity. It does not create Lesser-local
+`SOUL_BODY_BINDING` rows, move binding authority to Host, or let Body/Ptah write Lesser storage. Lesser remains the only
+writer of those local binding rows after validating Host evidence.
 
 Managed ENS material for host-provisioned identities is always instance-scoped:
 
@@ -303,16 +331,16 @@ For the Lesser instance-key hosted-genesis path:
 The POST response and GET status read are durable JSON HostConversation envelopes. `HTTP 200` / `HTTP 202` is transport
 success only. Lesser must persist `conversation_id` immediately and project `in_progress` and
 `declaration_extraction_pending` as progress. When the registration-scoped status read observes
-`declaration_ready` with `produced_declarations`, Host auto-finalizes the instance-trust hosted/off-chain
-publication before returning the status envelope; Lesser should then resolve the published agent from Host rather than
-waiting for a separate browser-visible finalize action.
+`declaration_ready` with `produced_declarations`, Lesser should treat the declaration evidence as terminal and then call
+the explicit instance-key `/finalize` route (`PublishHostedSoul`) to publish the instance-trust hosted/off-chain
+registration. The status read is read-only with respect to publication and must not be used as a substitute for publish.
 
 When the latest assistant turn asks the final minted-soul affirmation question, the user's affirmative reply is the
 review-completion action for the Lesser instance-key route. Lesser should send that affirmation as the next ordinary
 `POST /mint-conversation` turn; Host records the affirmation in the durable transcript and transitions to
 `declaration_extraction_pending` instead of generating another assistant turn. Clients should then poll the canonical
-GET status until `declaration_ready` with `produced_declarations`; that GET also reconciles the hosted/off-chain
-publication for explicit instance-trust identities.
+GET status until `declaration_ready` with `produced_declarations`, then call the instance-key finalize route to publish
+explicit instance-trust identities.
 
 For portal/native Host UI routes:
 
@@ -338,8 +366,8 @@ Important behavior:
 
 For the Lesser instance-key hosted-genesis path, this step is normally driven by the final affirmation turn described
 above, not by a separate browser-visible Host button. The explicit `/complete` route remains available for controlled
-recovery and compatibility; the normal final-affirmation path proceeds through declaration extraction and GET-time
-hosted/off-chain auto-finalization.
+recovery and compatibility; the normal final-affirmation path proceeds through declaration extraction, status polling to
+`declaration_ready`, and explicit instance-key finalize publication.
 
 Response is the completed conversation record with extracted declarations stored on the backend.
 
@@ -373,9 +401,9 @@ Clients should not reconstruct these values locally when the server already prov
 
 ### 8. Finalize and publish graduation
 
-For the Lesser instance-key hosted-genesis path with `authority_model=instance_trust`, Host performs this publication
-automatically when the registration-scoped status GET observes a publish-ready `HostedGenesisSession`. The explicit
-finalize routes remain the recovery/compatibility surface and the portal/native Host UI flow.
+For the Lesser instance-key hosted-genesis path with `authority_model=instance_trust`, this explicit finalize route is
+the publish boundary after status GET observes a publish-ready `HostedGenesisSession`. Status polling exposes readiness;
+finalize publishes or returns a typed actionable error.
 
 - registration-scoped:
   - `POST /api/v1/soul/agents/register/{id}/mint-conversation/{conversationId}/finalize`

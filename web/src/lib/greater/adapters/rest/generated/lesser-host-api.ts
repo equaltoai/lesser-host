@@ -4,6 +4,35 @@
  */
 
 export interface paths {
+    "/api/v1/soul/agents/{agentId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get public soul agent identity (v3)
+         * @description Returns Host's read-only Soul registry projection for a soul agent ID.
+         *     Lesser's server-side soul-binding ceremony uses this projection as Host
+         *     source truth before writing Lesser-local `SOUL_BODY_BINDING` rows. For
+         *     Ptah-created hosted souls, consumers validate `agent_id`, `domain`,
+         *     `local_id`, `authority_model=instance_trust`,
+         *     `anchor_state=hosted_offchain`,
+         *     `operational_binding=hosted_bound_soul`, active lifecycle/status,
+         *     publication evidence through `self_description_version > 0` (or future
+         *     `published_version > 0`), and principal evidence through
+         *     `principal_address` with `wallet` as compatibility fallback.
+         */
+        get: operations["soulGetAgent"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/soul/agents/{agentId}/channels": {
         parameters: {
             query?: never;
@@ -792,9 +821,12 @@ export interface paths {
         /**
          * Issue a scoped x402 invocation grant
          * @description Issues a host-side off-chain invocation grant for a configured public paid caller. The grant binds the
-         *     `agentId`, `capability`, `tool`, `resource`, invocation `requestHash`, caller subject hash, payment evidence
-         *     hash, amount/network metadata, nonce, idempotency key hash, expiry, max usage, and caller-access payment policy
-         *     version.
+         *     `agentId`, `capabilityVersion`, `capability`, `tool`, `resource`, access `scope`, invocation `requestHash`, caller subject
+         *     hash, payment evidence hash, amount/network metadata, nonce, idempotency key hash, expiry, max usage, and caller-access
+         *     payment policy version. The access `scope` vocabulary is `read`, `write`, or `admin` and stays separate from grant
+         *     `authority`, which remains `scoped_invocation`. Capability vocabulary is versioned: `scoped-invocation/v1`
+         *     remains the actor/scoped invocation vocabulary, while `instance-capability/v1` is restricted to
+         *     `instance:agent_create` and `instance:install_plan`.
          *
          *     This instance-key authenticated route returns a raw `grantToken` only on the first successful issue. Idempotent replays return the
          *     same grant metadata with `tokenReturned=false`; callers must retain the original token. Host stores only hashes
@@ -823,7 +855,13 @@ export interface paths {
          * @description Consumes a host-issued x402 invocation grant from an authenticated managed instance. The bearer token is the
          *     instance API key; public paid callers never receive principal/operator/session authority. The authenticated
          *     instance must own the agent domain, present the one-time raw grant token, and repeat the original
-         *     agent/capability/tool/resource/request hash binding.
+         *     agent/capabilityVersion/capability/tool/resource/request hash binding. Consume responses return the persisted
+         *     grant `scope` and `capabilityVersion` so downstream runtimes can reject right-tool/wrong-scope or
+         *     actor-capability-on-instance-tool invocations before side effects. Instance tools must use
+         *     `capabilityVersion="instance-capability/v1"` with `capability="instance:agent_create"` for `tool="agent_create"`
+         *     or `capability="instance:install_plan"` for `tool="agent_local_install_plan"` (the shorter
+         *     `tool="install_plan"` is also accepted by Host). Actor/scoped invocation capabilities remain under
+         *     `scoped-invocation/v1` and are rejected for these instance tools.
          *
          *     Consumption writes a bounded usage slot keyed by the consume idempotency key hash. Repeating the same consume
          *     idempotency key with the same consume request hash is a replay and does not increment usage. Distinct consume
@@ -1705,103 +1743,6 @@ export interface components {
             };
         };
         SoulMintConversationFinalizeResponse: components["schemas"]["soul-instance-bootstrap.finalize.response.schema"];
-        /** GET /api/v1/soul/agents/{agentId}/channels/preferences response */
-        "soul-agent-channel-preferences.response.schema": {
-            agentId: string;
-            contactPreferences: {
-                /** @enum {string} */
-                preferred: "email" | "sms" | "voice" | "activitypub" | "mcp";
-                /** @enum {string} */
-                fallback?: "email" | "sms" | "voice" | "activitypub" | "mcp";
-                availability: {
-                    /** @enum {string} */
-                    schedule: "always" | "business-hours" | "custom";
-                    timezone?: string;
-                    windows?: {
-                        days: ("mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun")[];
-                        startTime: string;
-                        endTime: string;
-                    }[] | null;
-                };
-                responseExpectation: {
-                    target: string;
-                    /** @enum {string} */
-                    guarantee: "guaranteed" | "best-effort";
-                };
-                rateLimits?: {
-                    email?: {
-                        maxInboundPerHour?: number;
-                        maxInboundPerDay?: number;
-                    };
-                    sms?: {
-                        maxInboundPerHour?: number;
-                        maxInboundPerDay?: number;
-                    };
-                    voice?: {
-                        maxConcurrentCalls?: number;
-                        maxCallsPerDay?: number;
-                    };
-                };
-                languages: string[];
-                contentTypes?: string[];
-                firstContact?: {
-                    /** @default false */
-                    requireSoul: boolean;
-                    requireReputation?: number | null;
-                    /** @default false */
-                    introductionExpected: boolean;
-                };
-            } | null;
-            /** Format: date-time */
-            updatedAt: string;
-        };
-        /** PUT /api/v1/soul/agents/{agentId}/channels/preferences request */
-        "soul-agent-channel-preferences.request.schema": {
-            contactPreferences: {
-                /** @enum {string} */
-                preferred: "email" | "sms" | "voice" | "activitypub" | "mcp";
-                /** @enum {string} */
-                fallback?: "email" | "sms" | "voice" | "activitypub" | "mcp";
-                availability: {
-                    /** @enum {string} */
-                    schedule: "always" | "business-hours" | "custom";
-                    timezone?: string;
-                    windows?: {
-                        days: ("mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun")[];
-                        startTime: string;
-                        endTime: string;
-                    }[] | null;
-                };
-                responseExpectation: {
-                    target: string;
-                    /** @enum {string} */
-                    guarantee: "guaranteed" | "best-effort";
-                };
-                rateLimits?: {
-                    email?: {
-                        maxInboundPerHour?: number;
-                        maxInboundPerDay?: number;
-                    };
-                    sms?: {
-                        maxInboundPerHour?: number;
-                        maxInboundPerDay?: number;
-                    };
-                    voice?: {
-                        maxConcurrentCalls?: number;
-                        maxCallsPerDay?: number;
-                    };
-                };
-                languages: string[];
-                contentTypes?: string[];
-                firstContact?: {
-                    /** @default false */
-                    requireSoul: boolean;
-                    requireReputation?: number | null;
-                    /** @default false */
-                    introductionExpected: boolean;
-                };
-            };
-        };
         avatar_style: {
             style_id: number;
             style_name?: string;
@@ -1921,6 +1862,103 @@ export interface components {
                     mutable: boolean;
                     revocable: boolean;
                     evidence?: components["schemas"]["anchor_evidence"][];
+                };
+            };
+        };
+        /** GET /api/v1/soul/agents/{agentId}/channels/preferences response */
+        "soul-agent-channel-preferences.response.schema": {
+            agentId: string;
+            contactPreferences: {
+                /** @enum {string} */
+                preferred: "email" | "sms" | "voice" | "activitypub" | "mcp";
+                /** @enum {string} */
+                fallback?: "email" | "sms" | "voice" | "activitypub" | "mcp";
+                availability: {
+                    /** @enum {string} */
+                    schedule: "always" | "business-hours" | "custom";
+                    timezone?: string;
+                    windows?: {
+                        days: ("mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun")[];
+                        startTime: string;
+                        endTime: string;
+                    }[] | null;
+                };
+                responseExpectation: {
+                    target: string;
+                    /** @enum {string} */
+                    guarantee: "guaranteed" | "best-effort";
+                };
+                rateLimits?: {
+                    email?: {
+                        maxInboundPerHour?: number;
+                        maxInboundPerDay?: number;
+                    };
+                    sms?: {
+                        maxInboundPerHour?: number;
+                        maxInboundPerDay?: number;
+                    };
+                    voice?: {
+                        maxConcurrentCalls?: number;
+                        maxCallsPerDay?: number;
+                    };
+                };
+                languages: string[];
+                contentTypes?: string[];
+                firstContact?: {
+                    /** @default false */
+                    requireSoul: boolean;
+                    requireReputation?: number | null;
+                    /** @default false */
+                    introductionExpected: boolean;
+                };
+            } | null;
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        /** PUT /api/v1/soul/agents/{agentId}/channels/preferences request */
+        "soul-agent-channel-preferences.request.schema": {
+            contactPreferences: {
+                /** @enum {string} */
+                preferred: "email" | "sms" | "voice" | "activitypub" | "mcp";
+                /** @enum {string} */
+                fallback?: "email" | "sms" | "voice" | "activitypub" | "mcp";
+                availability: {
+                    /** @enum {string} */
+                    schedule: "always" | "business-hours" | "custom";
+                    timezone?: string;
+                    windows?: {
+                        days: ("mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun")[];
+                        startTime: string;
+                        endTime: string;
+                    }[] | null;
+                };
+                responseExpectation: {
+                    target: string;
+                    /** @enum {string} */
+                    guarantee: "guaranteed" | "best-effort";
+                };
+                rateLimits?: {
+                    email?: {
+                        maxInboundPerHour?: number;
+                        maxInboundPerDay?: number;
+                    };
+                    sms?: {
+                        maxInboundPerHour?: number;
+                        maxInboundPerDay?: number;
+                    };
+                    voice?: {
+                        maxConcurrentCalls?: number;
+                        maxCallsPerDay?: number;
+                    };
+                };
+                languages: string[];
+                contentTypes?: string[];
+                firstContact?: {
+                    /** @default false */
+                    requireSoul: boolean;
+                    requireReputation?: number | null;
+                    /** @default false */
+                    introductionExpected: boolean;
                 };
             };
         };
@@ -2224,13 +2262,25 @@ export interface components {
         };
         /**
          * POST /api/v1/soul/x402/grants request
-         * @description Issues a host-side scoped x402 invocation grant for configured public paid callers. Raw caller and payment evidence may be supplied for hashing but is never returned by the instance-key authenticated route.
+         * @description Issues a host-side scoped x402 invocation grant for configured public paid callers. Raw caller and payment evidence may be supplied for hashing but is never returned by the instance-key authenticated route. The required access scope is an explicit vocabulary (`read`, `write`, `admin`) that downstream runtimes enforce separately from scoped invocation authority. Capability vocabulary is versioned: `scoped-invocation/v1` remains the actor/scoped invocation vocabulary, while `instance-capability/v1` is restricted to instance tool capabilities `instance:agent_create` and `instance:install_plan`.
          */
         "soul-x402-invocation-grant.issue.request.schema": {
             agentId: string;
+            /**
+             * @description Versioned capability vocabulary. Use `instance-capability/v1` only for instance minting tools; actor/scoped invocation capabilities stay under `scoped-invocation/v1`.
+             * @enum {string}
+             */
+            capabilityVersion: "scoped-invocation/v1" | "instance-capability/v1";
+            /** @description Capability within `capabilityVersion`. For `instance-capability/v1`, allowed values are `instance:agent_create` and `instance:install_plan`. */
             capability: string;
+            /** @description Concrete downstream tool name. For `instance:agent_create`, use `agent_create`; for `instance:install_plan`, use `agent_local_install_plan` (Host also accepts `install_plan`). */
             tool: string;
             resource: string;
+            /**
+             * @description Access scope for the invocation grant. This is downstream tool access vocabulary and does not change authority, which remains scoped_invocation.
+             * @enum {string}
+             */
+            scope: "read" | "write" | "admin";
             requestHash: string;
             /** @description Provide either subject or subjectHash. If subject is supplied, host hashes it and returns only subjectHash. */
             caller: {
@@ -2265,19 +2315,31 @@ export interface components {
             expiresAt: string;
             /** @description Optional; host defaults omitted maxUsage to 1. */
             maxUsage?: number;
-        };
+        } & (unknown & unknown);
         /**
          * Soul x402 invocation grant
-         * @description A minimized host-issued off-chain grant for one bounded public paid invocation. It is scoped invocation authority only and does not confer principal, operator, wallet, or tenant-data authority.
+         * @description A minimized host-issued off-chain grant for one bounded public paid invocation. It is scoped invocation authority only and does not confer principal, operator, wallet, or tenant-data authority. The required access scope is explicit downstream tool vocabulary (`read`, `write`, `admin`) and is intentionally separate from authority. Capability vocabulary is versioned: `scoped-invocation/v1` remains actor/scoped invocation vocabulary, while `instance-capability/v1` is restricted to instance tool capabilities `instance:agent_create` and `instance:install_plan`.
          */
         "soul-x402-invocation-grant.schema": {
             grantId: string;
             /** @description Raw opaque grant token returned once on first issue. Host stores only sha256(grantToken); idempotent replays intentionally omit it. */
             grantToken?: string;
             agentId: string;
+            /**
+             * @description Versioned capability vocabulary. Instance tools must use `instance-capability/v1`; actor/scoped invocation capabilities remain separate under `scoped-invocation/v1`.
+             * @enum {string}
+             */
+            capabilityVersion: "scoped-invocation/v1" | "instance-capability/v1";
+            /** @description Capability within `capabilityVersion`. For `instance-capability/v1`, allowed values are `instance:agent_create` and `instance:install_plan`. */
             capability: string;
+            /** @description Concrete downstream tool name. For `instance:agent_create`, use `agent_create`; for `instance:install_plan`, use `agent_local_install_plan` (Host also accepts `install_plan`). */
             tool: string;
             resource: string;
+            /**
+             * @description Access scope enforced by the consuming runtime before side effects. This is not principal/operator/session authority.
+             * @enum {string}
+             */
+            scope: "read" | "write" | "admin";
             /** @description sha256 hash of the concrete invocation request Body must present later; raw request body is not stored. */
             requestHash: string;
             /** @description sha256 hash of the public caller subject. The raw subject is not returned. */
@@ -2312,7 +2374,7 @@ export interface components {
             issuedAt: string;
             /** Format: date-time */
             expiresAt: string;
-        };
+        } & (unknown & unknown);
         /** POST /api/v1/soul/x402/grants response */
         "soul-x402-invocation-grant.issue.response.schema": {
             grant: components["schemas"]["soul-x402-invocation-grant.schema"];
@@ -2324,14 +2386,21 @@ export interface components {
         "soul-x402-invocation-grant.consume.request.schema": {
             grantToken: string;
             agentId: string;
+            /**
+             * @description Versioned capability vocabulary. Use `instance-capability/v1` with `instance:agent_create` or `instance:install_plan` for instance tools; actor/scoped invocation capabilities remain under `scoped-invocation/v1` and are rejected for instance tools.
+             * @enum {string}
+             */
+            capabilityVersion: "scoped-invocation/v1" | "instance-capability/v1";
+            /** @description Capability within `capabilityVersion`. For `instance-capability/v1`, allowed values are `instance:agent_create` and `instance:install_plan`. */
             capability: string;
+            /** @description Concrete downstream tool name. For `instance:agent_create`, use `agent_create`; for `instance:install_plan`, use `agent_local_install_plan` (Host also accepts `install_plan`). */
             tool: string;
             resource: string;
             requestHash: string;
             /** @description Hash of the x402 payment evidence presented by the caller. Host compares against the stored grant payment evidence hash before any usage is recorded. */
             paymentEvidenceHash: string;
             idempotencyKey: string;
-        };
+        } & (unknown & unknown);
         /** POST /api/v1/soul/x402/grants/{grantId}/consume response */
         "soul-x402-invocation-grant.consume.response.schema": {
             /** @constant */
@@ -2799,6 +2868,31 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    soulGetAgent: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                agentId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Public Soul registry identity projection. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SoulResolveResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            404: components["responses"]["NotFound"];
+            500: components["responses"]["InternalError"];
+        };
+    };
     soulGetAgentChannels: {
         parameters: {
             query?: never;

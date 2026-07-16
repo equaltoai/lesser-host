@@ -15,6 +15,13 @@ const (
 	SoulX402InvocationGrantPaymentSchemeX402              = "x402"
 	SoulX402InvocationGrantFacilitatorTrustCallerProvided = "caller_provided_unverified"
 	SoulX402InvocationGrantAuthorityScopedInvocation      = "scoped_invocation"
+	SoulX402InvocationGrantCapabilityVocabularyScopedV1   = "scoped-invocation/v1"
+	SoulX402InvocationGrantCapabilityVocabularyInstanceV1 = "instance-capability/v1"
+	SoulX402InvocationGrantCapabilityInstanceAgentCreate  = "instance:agent_create"
+	SoulX402InvocationGrantCapabilityInstanceInstallPlan  = "instance:install_plan"
+	SoulX402InvocationGrantScopeRead                      = "read"
+	SoulX402InvocationGrantScopeWrite                     = "write"
+	SoulX402InvocationGrantScopeAdmin                     = "admin"
 
 	soulX402InvocationGrantTTLRetention = 90 * 24 * time.Hour
 )
@@ -34,10 +41,12 @@ type SoulX402InvocationGrant struct {
 	GrantID string `theorydb:"attr:grantId" json:"grant_id"`
 	AgentID string `theorydb:"attr:agentId" json:"agent_id"`
 
-	Capability  string `theorydb:"attr:capability" json:"capability"`
-	Tool        string `theorydb:"attr:tool" json:"tool"`
-	Resource    string `theorydb:"attr:resource" json:"resource"`
-	RequestHash string `theorydb:"attr:requestHash" json:"request_hash"`
+	CapabilityVersion string `theorydb:"attr:capabilityVersion" json:"capability_version"`
+	Capability        string `theorydb:"attr:capability" json:"capability"`
+	Tool              string `theorydb:"attr:tool" json:"tool"`
+	Resource          string `theorydb:"attr:resource" json:"resource"`
+	Scope             string `theorydb:"attr:scope" json:"scope"`
+	RequestHash       string `theorydb:"attr:requestHash" json:"request_hash"`
 
 	CallerSubjectHash string `theorydb:"attr:callerSubjectHash" json:"caller_subject_hash"`
 
@@ -121,6 +130,12 @@ func (g *SoulX402InvocationGrant) validate() error {
 	if err := requireOneOf("authority", g.Authority, SoulX402InvocationGrantAuthorityScopedInvocation); err != nil {
 		return err
 	}
+	if err := requireOneOf("capabilityVersion", g.CapabilityVersion, SoulX402InvocationGrantCapabilityVocabularyScopedV1, SoulX402InvocationGrantCapabilityVocabularyInstanceV1); err != nil {
+		return err
+	}
+	if err := requireOneOf("scope", g.Scope, SoulX402InvocationGrantScopeRead, SoulX402InvocationGrantScopeWrite, SoulX402InvocationGrantScopeAdmin); err != nil {
+		return err
+	}
 	if err := requireOneOf("status", g.Status, SoulX402InvocationGrantStatusIssued, SoulX402InvocationGrantStatusRevoked); err != nil {
 		return err
 	}
@@ -146,9 +161,11 @@ func (g *SoulX402InvocationGrant) validateRequiredFields() error {
 	}{
 		{"grantId", g.GrantID},
 		{"agentId", g.AgentID},
+		{"capabilityVersion", g.CapabilityVersion},
 		{"capability", g.Capability},
 		{"tool", g.Tool},
 		{"resource", g.Resource},
+		{"scope", g.Scope},
 		{"requestHash", g.RequestHash},
 		{"callerSubjectHash", g.CallerSubjectHash},
 		{"paymentScheme", g.PaymentScheme},
@@ -174,9 +191,11 @@ func (g *SoulX402InvocationGrant) validateRequiredFields() error {
 func (g *SoulX402InvocationGrant) UpdateKeys() error {
 	g.GrantID = strings.TrimSpace(g.GrantID)
 	g.AgentID = strings.ToLower(strings.TrimSpace(g.AgentID))
+	g.CapabilityVersion = strings.ToLower(strings.TrimSpace(g.CapabilityVersion))
 	g.Capability = strings.ToLower(strings.TrimSpace(g.Capability))
 	g.Tool = strings.ToLower(strings.TrimSpace(g.Tool))
 	g.Resource = strings.TrimSpace(g.Resource)
+	g.Scope = strings.ToLower(strings.TrimSpace(g.Scope))
 	g.RequestHash = strings.ToLower(strings.TrimSpace(g.RequestHash))
 	g.CallerSubjectHash = strings.ToLower(strings.TrimSpace(g.CallerSubjectHash))
 	g.PaymentScheme = strings.ToLower(strings.TrimSpace(g.PaymentScheme))

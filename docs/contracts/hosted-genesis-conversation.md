@@ -65,7 +65,10 @@ For the production Lesser instance-key path, the final minted-soul affirmation i
 completion semantics. When the previous assistant message asks the final affirmation question and the user affirms,
 Host persists that affirmation and transitions to `declaration_extraction_pending` rather than enqueueing another
 assistant response. The MicroVM declaration extraction then advances the same durable conversation to
-`declaration_ready` with `produced_declarations`; the registration-scoped instance-key status read then auto-finalizes hosted/off-chain publication from that Host state. Lesser polls Host status and then resolves the published agent; it does not need a browser-visible Host `/complete` or `/finalize` action for the normal final-affirmation path.
+`declaration_ready` with `produced_declarations`; the registration-scoped instance-key status read projects that
+terminal declaration evidence without publishing as a read side effect. Lesser polls Host status until
+`declaration_ready`, then calls the explicit instance-key `/finalize` publish route (`PublishHostedSoul`) to publish the
+hosted/off-chain registration from the same Host state.
 
 ### Idempotency ledger semantics
 

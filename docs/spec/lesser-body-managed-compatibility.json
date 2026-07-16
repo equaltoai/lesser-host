@@ -62,5 +62,24 @@
       "template_parameter",
       "template_references"
     ]
+  },
+  "instance_plane": {
+    "build_artifact_path": "dist/lesser-body-instance.zip",
+    "release_asset_representation": "schema2_auxiliary_asset",
+    "lambda_logical_id": "InstanceMcpHandler04CF663E",
+    "required_tables": [
+      "InstanceContentTable",
+      "InstanceRegistryTable",
+      "InstanceGrantTable",
+      "InstanceSessionTable"
+    ],
+    "required_ssm_parameters": [
+      "InstanceMcpLambdaArnParam",
+      "InstanceMcpEndpointParam",
+      "InstanceContentTableParam",
+      "InstanceRegistryTableParam",
+      "InstanceGrantTableParam",
+      "InstanceSessionTableParam"
+    ]
   }
 }

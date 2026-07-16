@@ -39,29 +39,41 @@ const (
 )
 
 type soulPublicAgentView struct {
-	AgentID                string                   `json:"agent_id,omitempty"`
-	Domain                 string                   `json:"domain,omitempty"`
-	LocalID                string                   `json:"local_id,omitempty"`
-	ENSName                string                   `json:"ens_name,omitempty"`
-	Wallet                 string                   `json:"wallet,omitempty"`
-	TokenID                string                   `json:"token_id,omitempty"`
-	MetaURI                string                   `json:"meta_uri,omitempty"`
-	Avatar                 *soulPublicAvatarView    `json:"avatar,omitempty"`
-	AnchorAssurance        *soulAnchorAssuranceView `json:"anchor_assurance,omitempty"`
-	Capabilities           []string                 `json:"capabilities,omitempty"`
-	PrincipalAddress       string                   `json:"principal_address,omitempty"`
-	PrincipalSignature     string                   `json:"principal_signature,omitempty"`
-	PrincipalDeclaration   string                   `json:"principal_declaration,omitempty"`
-	PrincipalDeclaredAt    string                   `json:"principal_declared_at,omitempty"`
-	SelfDescriptionVersion int                      `json:"self_description_version,omitempty"`
-	LifecycleStatus        string                   `json:"lifecycle_status,omitempty"`
-	LifecycleReason        string                   `json:"lifecycle_reason,omitempty"`
-	SuccessorAgentID       string                   `json:"successor_agent_id,omitempty"`
-	PredecessorAgentID     string                   `json:"predecessor_agent_id,omitempty"`
-	Status                 string                   `json:"status,omitempty"`
-	MintTxHash             string                   `json:"mint_tx_hash,omitempty"`
-	MintedAt               *time.Time               `json:"minted_at,omitempty"`
-	UpdatedAt              time.Time                `json:"updated_at,omitempty"`
+	AgentID                          string                   `json:"agent_id,omitempty"`
+	Domain                           string                   `json:"domain,omitempty"`
+	LocalID                          string                   `json:"local_id,omitempty"`
+	ENSName                          string                   `json:"ens_name,omitempty"`
+	Wallet                           string                   `json:"wallet,omitempty"`
+	AuthorityModel                   string                   `json:"authority_model,omitempty"`
+	TokenID                          string                   `json:"token_id,omitempty"`
+	MetaURI                          string                   `json:"meta_uri,omitempty"`
+	Avatar                           *soulPublicAvatarView    `json:"avatar,omitempty"`
+	AnchorAssurance                  *soulAnchorAssuranceView `json:"anchor_assurance,omitempty"`
+	Capabilities                     []string                 `json:"capabilities,omitempty"`
+	PrincipalAddress                 string                   `json:"principal_address,omitempty"`
+	PrincipalSignature               string                   `json:"principal_signature,omitempty"`
+	PrincipalDeclaration             string                   `json:"principal_declaration,omitempty"`
+	PrincipalDeclaredAt              string                   `json:"principal_declared_at,omitempty"`
+	SelfDescriptionVersion           int                      `json:"self_description_version,omitempty"`
+	LifecycleStatus                  string                   `json:"lifecycle_status,omitempty"`
+	LifecycleReason                  string                   `json:"lifecycle_reason,omitempty"`
+	SuccessorAgentID                 string                   `json:"successor_agent_id,omitempty"`
+	PredecessorAgentID               string                   `json:"predecessor_agent_id,omitempty"`
+	Status                           string                   `json:"status,omitempty"`
+	MintTxHash                       string                   `json:"mint_tx_hash,omitempty"`
+	MintedAt                         *time.Time               `json:"minted_at,omitempty"`
+	PolicyVersion                    string                   `json:"policy_version,omitempty"`
+	AnchorState                      string                   `json:"anchor_state,omitempty"`
+	OperationalBinding               string                   `json:"operational_binding,omitempty"`
+	CapabilityPolicyVersion          string                   `json:"capability_policy_version,omitempty"`
+	CallerAccessPaymentPolicyVersion string                   `json:"caller_access_payment_policy_version,omitempty"`
+	EmailDefaultAllowed              *bool                    `json:"email_default_allowed,omitempty"`
+	PhoneEntitlementStatus           string                   `json:"phone_entitlement_status,omitempty"`
+	SMSAllowed                       *bool                    `json:"sms_allowed,omitempty"`
+	VoiceAllowed                     *bool                    `json:"voice_allowed,omitempty"`
+	PublicPaidCallerAccess           string                   `json:"public_paid_caller_access,omitempty"`
+	PolicyMigrationState             string                   `json:"policy_migration_state,omitempty"`
+	UpdatedAt                        time.Time                `json:"updated_at,omitempty"`
 }
 
 type soulPublicAvatarView struct {
@@ -131,29 +143,56 @@ func buildSoulPublicAgentIdentityView(identity *models.SoulAgentIdentity, chainI
 		return soulPublicAgentView{}
 	}
 	anchorAssurance := buildSoulAnchorAssuranceFromIdentity(identity, chainID)
-	return soulPublicAgentView{
-		AgentID:                identity.AgentID,
-		Domain:                 identity.Domain,
-		LocalID:                identity.LocalID,
-		Wallet:                 identity.Wallet,
-		TokenID:                identity.TokenID,
-		MetaURI:                identity.MetaURI,
-		AnchorAssurance:        &anchorAssurance,
-		Capabilities:           append([]string(nil), identity.Capabilities...),
-		PrincipalAddress:       identity.PrincipalAddress,
-		PrincipalSignature:     identity.PrincipalSignature,
-		PrincipalDeclaration:   identity.PrincipalDeclaration,
-		PrincipalDeclaredAt:    identity.PrincipalDeclaredAt,
-		SelfDescriptionVersion: identity.SelfDescriptionVersion,
-		LifecycleStatus:        identity.LifecycleStatus,
-		LifecycleReason:        identity.LifecycleReason,
-		SuccessorAgentID:       identity.SuccessorAgentID,
-		PredecessorAgentID:     identity.PredecessorAgentID,
-		Status:                 identity.Status,
-		MintTxHash:             identity.MintTxHash,
-		MintedAt:               timePtrIfNonZero(identity.MintedAt),
-		UpdatedAt:              identity.UpdatedAt,
+	view := soulPublicAgentView{
+		AgentID:                          identity.AgentID,
+		Domain:                           identity.Domain,
+		LocalID:                          identity.LocalID,
+		Wallet:                           identity.Wallet,
+		AuthorityModel:                   identity.AuthorityModel,
+		TokenID:                          identity.TokenID,
+		MetaURI:                          identity.MetaURI,
+		AnchorAssurance:                  &anchorAssurance,
+		Capabilities:                     append([]string(nil), identity.Capabilities...),
+		PrincipalAddress:                 identity.PrincipalAddress,
+		PrincipalSignature:               identity.PrincipalSignature,
+		PrincipalDeclaration:             identity.PrincipalDeclaration,
+		PrincipalDeclaredAt:              identity.PrincipalDeclaredAt,
+		SelfDescriptionVersion:           identity.SelfDescriptionVersion,
+		LifecycleStatus:                  identity.LifecycleStatus,
+		LifecycleReason:                  identity.LifecycleReason,
+		SuccessorAgentID:                 identity.SuccessorAgentID,
+		PredecessorAgentID:               identity.PredecessorAgentID,
+		Status:                           identity.Status,
+		MintTxHash:                       identity.MintTxHash,
+		MintedAt:                         timePtrIfNonZero(identity.MintedAt),
+		PolicyVersion:                    identity.PolicyVersion,
+		AnchorState:                      identity.AnchorState,
+		OperationalBinding:               identity.OperationalBinding,
+		CapabilityPolicyVersion:          identity.CapabilityPolicyVersion,
+		CallerAccessPaymentPolicyVersion: identity.CallerAccessPaymentPolicyVersion,
+		PhoneEntitlementStatus:           identity.PhoneEntitlementStatus,
+		PublicPaidCallerAccess:           identity.PublicPaidCallerAccess,
+		PolicyMigrationState:             identity.PolicyMigrationState,
+		UpdatedAt:                        identity.UpdatedAt,
 	}
+	if soulIdentityHasHostedPolicyVocabulary(identity) {
+		view.EmailDefaultAllowed = boolPtr(identity.EmailDefaultAllowed)
+		view.SMSAllowed = boolPtr(identity.SMSAllowed)
+		view.VoiceAllowed = boolPtr(identity.VoiceAllowed)
+	}
+	return view
+}
+
+func soulIdentityHasHostedPolicyVocabulary(identity *models.SoulAgentIdentity) bool {
+	if identity == nil {
+		return false
+	}
+	return strings.TrimSpace(identity.PolicyVersion) != "" ||
+		strings.TrimSpace(identity.CapabilityPolicyVersion) != "" ||
+		strings.TrimSpace(identity.CallerAccessPaymentPolicyVersion) != "" ||
+		strings.TrimSpace(identity.PhoneEntitlementStatus) != "" ||
+		strings.TrimSpace(identity.PublicPaidCallerAccess) != "" ||
+		strings.TrimSpace(identity.PolicyMigrationState) != ""
 }
 
 func (s *Server) loadSoulPublicAgentENSName(ctx context.Context, agentIDHex string) (string, error) {
