@@ -27,6 +27,9 @@ Every managed-consumable `lesser-body` release must publish:
 - `deploy-lesser-body-from-release.sh`
 - `lesser-body-managed-<stage>.template.json`
 - every required schema-2 `auxiliary_assets[].path` asset, when the deploy manifest declares auxiliary assets
+  - for instance-plane enabled Body templates, the Body build artifact `dist/lesser-body-instance.zip` is represented as
+    a required schema-2 auxiliary asset (or an equivalent AppTheory/CDK-managed auxiliary release asset) whose template
+    reference points at the instance Lambda `InstanceMcpHandler04CF663E`
 
 The managed runner verifies the checksum coverage for:
 
@@ -36,6 +39,7 @@ The managed runner verifies the checksum coverage for:
 - `deploy-lesser-body-from-release.sh`
 - `lesser-body-managed-<stage>.template.json`
 - every declared schema-2 auxiliary asset path
+  - this includes the instance-plane Lambda artifact when the selected managed template contains the instance plane
 
 ## Required release-manifest fields
 
@@ -116,9 +120,28 @@ Host fails closed before deploy if:
 - any managed Body Lambda `Code.S3Bucket` / `Code.S3Key` uses a literal, `Fn::Sub`, CDK bootstrap bucket
   (`cdk-hnb659fds-*`), or any non-Host-managed bucket/key instead of `Ref: LesserBodyCodeBucketName` plus either
   `Ref: LesserBodyCodeObjectKey` or a declared auxiliary asset parameter
+- an instance-plane template is partial: if any instance-plane resource is present, Host requires the instance Lambda
+  `InstanceMcpHandler04CF663E`, the instance content/registry/grant/session tables, and the additive instance SSM export
+  parameters to be present with their stable logical IDs
+- the instance Lambda reuses the primary `lesser-body.zip` key; it must use a declared, required auxiliary asset parameter
+  so `dist/lesser-body-instance.zip` (or the AppTheory/CDK-managed release asset derived from it) receives independent
+  checksum verification and staging
 
 `content_type` is optional. If present, Host preserves it on the S3 upload; Host does not require MIME metadata for
 CloudFormation Lambda code assets.
+
+## Instance-plane include / omit behavior
+
+Host does not fork Body templates. It consumes the Body/AppTheory-produced managed templates exactly as release assets:
+
+- When the Body managed template includes the instance plane, Host verifies the instance Lambda artifact through the
+  schema-2 auxiliary-asset path above, uploads it under the managed release prefix, and passes the corresponding
+  CloudFormation object-key parameter to the release deploy helper.
+- When the selected Body managed template omits the instance plane, Host does not require those instance-plane resources
+  or the instance Lambda auxiliary asset. This preserves the safe omit path for Lesser deployments whose
+  `instancePlaneEnabled`/`BODY_ENABLED` path is false.
+- Host's initial Lesser provisioning phase still sets `BODY_ENABLED=false`; the Body and MCP follow-on phases remain the
+  point at which Body/instance-plane availability is introduced.
 
 ## lesser-body managed receipt contract
 

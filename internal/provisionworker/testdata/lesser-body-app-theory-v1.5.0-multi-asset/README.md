@@ -2,7 +2,7 @@
 
 This directory is a **non-deployable contract fixture** for lesser-host and other managed consumers. It models the
 release shape Body will emit when AppTheory/CDK generates auxiliary file assets, such as the stream-spill S3 auto-delete
-custom resource provider Lambda.
+custom resource provider Lambda and the instance-plane Lambda artifact built as `dist/lesser-body-instance.zip`.
 
 Consumers should use this fixture to test parsing, checksum verification, auxiliary asset upload planning, template
 parameter derivation, and fail-closed behavior. The `.fixture.txt` files are intentionally text, not runnable Lambda
@@ -15,6 +15,8 @@ Key expectations represented here:
   `s3_key`, and the template parameter that receives the staged object key.
 - Stage templates reference the same artifact bucket parameter (`LesserBodyCodeBucketName`) and per-asset object-key
   parameters instead of CDK bootstrap buckets.
+- The additive instance-plane resources use stable logical IDs: `InstanceMcpHandler04CF663E`, the four
+  `Instance*Table` DynamoDB tables, and the six additive instance SSM export parameters.
 - `checksums.txt` covers every fixture asset except itself.
 
 This fixture is the M1 contract artifact for Project 27.

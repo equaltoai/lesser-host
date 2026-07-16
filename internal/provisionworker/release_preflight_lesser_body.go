@@ -25,7 +25,38 @@ const (
 	requiredLesserBodyLambdaZipPath                         = "lesser-body.zip"
 	requiredLesserBodyDeployScriptPath                      = "deploy-lesser-body-from-release.sh"
 	managedLesserBodyCapabilityAuxiliaryAssetsV1            = "managed_auxiliary_assets_v1"
+	managedLesserBodyInstanceLambdaBuildArtifactPath        = "dist/lesser-body-instance.zip"
+	managedLesserBodyInstanceLambdaLogicalID                = "InstanceMcpHandler04CF663E"
 )
+
+var managedLesserBodyInstancePlaneResourceTypes = map[string]string{
+	managedLesserBodyInstanceLambdaLogicalID: "AWS::Lambda::Function",
+	"InstanceContentTable":                   "AWS::DynamoDB::Table",
+	"InstanceRegistryTable":                  "AWS::DynamoDB::Table",
+	"InstanceGrantTable":                     "AWS::DynamoDB::Table",
+	"InstanceSessionTable":                   "AWS::DynamoDB::Table",
+	"InstanceMcpLambdaArnParam":              "AWS::SSM::Parameter",
+	"InstanceMcpEndpointParam":               "AWS::SSM::Parameter",
+	"InstanceContentTableParam":              "AWS::SSM::Parameter",
+	"InstanceRegistryTableParam":             "AWS::SSM::Parameter",
+	"InstanceGrantTableParam":                "AWS::SSM::Parameter",
+	"InstanceSessionTableParam":              "AWS::SSM::Parameter",
+}
+
+type managedLesserBodyInstancePlaneSSMParamExpectation struct {
+	nameFragment string
+	valueRef     string
+	valueGetAtt  string
+}
+
+var managedLesserBodyInstancePlaneSSMParamExpectations = map[string]managedLesserBodyInstancePlaneSSMParamExpectation{
+	"InstanceMcpLambdaArnParam":  {nameFragment: "instance_mcp_lambda_arn", valueGetAtt: managedLesserBodyInstanceLambdaLogicalID},
+	"InstanceMcpEndpointParam":   {nameFragment: "instance_mcp_endpoint_url"},
+	"InstanceContentTableParam":  {nameFragment: "instance_content_table_name", valueRef: "InstanceContentTable"},
+	"InstanceRegistryTableParam": {nameFragment: "instance_registry_table_name", valueRef: "InstanceRegistryTable"},
+	"InstanceGrantTableParam":    {nameFragment: "instance_grant_table_name", valueRef: "InstanceGrantTable"},
+	"InstanceSessionTableParam":  {nameFragment: "instance_session_table_name", valueRef: "InstanceSessionTable"},
+}
 
 type managedLesserBodyAuxiliaryAssetTemplateReference struct {
 	Stage           string `json:"stage"`
@@ -961,6 +992,173 @@ func managedTemplateRef(value any) string {
 	return strings.TrimSpace(ref)
 }
 
+func managedLesserBodyInstancePlaneTableLogicalIDs() []string {
+	return []string{
+		"InstanceContentTable",
+		"InstanceRegistryTable",
+		"InstanceGrantTable",
+		"InstanceSessionTable",
+	}
+}
+
+func managedLesserBodyInstancePlaneSSMParameterLogicalIDs() []string {
+	return []string{
+		"InstanceMcpLambdaArnParam",
+		"InstanceMcpEndpointParam",
+		"InstanceContentTableParam",
+		"InstanceRegistryTableParam",
+		"InstanceGrantTableParam",
+		"InstanceSessionTableParam",
+	}
+}
+
+func validateManagedLesserBodyTemplateInstancePlane(
+	raw []byte,
+	templatePath string,
+	stage string,
+	assets []managedLesserBodyAuxiliaryAsset,
+) error {
+	raw = []byte(strings.TrimSpace(string(raw)))
+	templatePath = strings.TrimSpace(templatePath)
+	if len(raw) == 0 {
+		return managedTemplatePathErrorf(templatePath, "is empty")
+	}
+
+	var parsed map[string]any
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		return managedTemplatePathErrorf(templatePath, "is not valid JSON: %v", err)
+	}
+	resources, ok := parsed["Resources"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	if !managedLesserBodyTemplateHasInstancePlane(resources) {
+		return nil
+	}
+	if err := validateManagedLesserBodyInstancePlaneResourceSet(resources, templatePath); err != nil {
+		return err
+	}
+	if err := validateManagedLesserBodyInstancePlaneLambda(resources, templatePath, stage, assets); err != nil {
+		return err
+	}
+	return validateManagedLesserBodyInstancePlaneSSMParams(resources, templatePath)
+}
+
+func managedLesserBodyTemplateHasInstancePlane(resources map[string]any) bool {
+	for logicalID := range managedLesserBodyInstancePlaneResourceTypes {
+		if _, ok := resources[logicalID]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func validateManagedLesserBodyInstancePlaneResourceSet(resources map[string]any, templatePath string) error {
+	for logicalID, expectedType := range managedLesserBodyInstancePlaneResourceTypes {
+		resource, ok := resources[logicalID].(map[string]any)
+		if !ok {
+			return managedTemplatePathErrorf(templatePath, "is missing instance-plane resource %s", logicalID)
+		}
+		if got := strings.TrimSpace(fmt.Sprint(resource["Type"])); got != expectedType {
+			return managedTemplatePathErrorf(templatePath, "instance-plane resource %s expected type %s, got %q", logicalID, expectedType, got)
+		}
+	}
+	return nil
+}
+
+func validateManagedLesserBodyInstancePlaneLambda(
+	resources map[string]any,
+	templatePath string,
+	stage string,
+	assets []managedLesserBodyAuxiliaryAsset,
+) error {
+	lambdaResource, _ := resources[managedLesserBodyInstanceLambdaLogicalID].(map[string]any)
+	codeRaw, ok := managedTemplateValueAtPath(lambdaResource, "Properties.Code")
+	if !ok {
+		return managedTemplatePathErrorf(templatePath, "instance-plane lambda %s is missing Properties.Code", managedLesserBodyInstanceLambdaLogicalID)
+	}
+	code, ok := codeRaw.(map[string]any)
+	if !ok {
+		return managedTemplatePathErrorf(templatePath, "instance-plane lambda %s Properties.Code must be an object", managedLesserBodyInstanceLambdaLogicalID)
+	}
+	if got := managedTemplateRef(code["S3Bucket"]); got != "LesserBodyCodeBucketName" {
+		return managedTemplatePathErrorf(templatePath, "instance-plane lambda %s Code.S3Bucket must Ref LesserBodyCodeBucketName", managedLesserBodyInstanceLambdaLogicalID)
+	}
+	keyRef := managedTemplateRef(code["S3Key"])
+	if keyRef == "" {
+		return managedTemplatePathErrorf(templatePath, "instance-plane lambda %s Code.S3Key must Ref a declared auxiliary asset parameter", managedLesserBodyInstanceLambdaLogicalID)
+	}
+	if keyRef == "LesserBodyCodeObjectKey" {
+		return managedTemplatePathErrorf(templatePath, "instance-plane lambda %s must not reuse primary lesser-body.zip Code.S3Key", managedLesserBodyInstanceLambdaLogicalID)
+	}
+
+	auxiliaryAsset, ok := managedLesserBodyAuxiliaryAssetByTemplateParameter(assets, keyRef)
+	if !ok {
+		return managedTemplatePathErrorf(templatePath, "instance-plane lambda %s requires declared auxiliary asset parameter %s", managedLesserBodyInstanceLambdaLogicalID, keyRef)
+	}
+	if !auxiliaryAsset.Required {
+		return managedTemplatePathErrorf(templatePath, "instance-plane lambda %s auxiliary asset %s must be required", managedLesserBodyInstanceLambdaLogicalID, strings.TrimSpace(auxiliaryAsset.ID))
+	}
+	if !managedLesserBodyAuxiliaryAssetAppliesToTemplate(auxiliaryAsset, stage, templatePath) {
+		return managedTemplatePathErrorf(templatePath, "instance-plane lambda %s auxiliary asset %s has no matching template reference", managedLesserBodyInstanceLambdaLogicalID, strings.TrimSpace(auxiliaryAsset.ID))
+	}
+	return nil
+}
+
+func managedLesserBodyAuxiliaryAssetByTemplateParameter(assets []managedLesserBodyAuxiliaryAsset, parameter string) (managedLesserBodyAuxiliaryAsset, bool) {
+	parameter = strings.TrimSpace(parameter)
+	if parameter == "" {
+		return managedLesserBodyAuxiliaryAsset{}, false
+	}
+	for _, asset := range assets {
+		if strings.TrimSpace(asset.TemplateParameter) == parameter {
+			return asset, true
+		}
+	}
+	return managedLesserBodyAuxiliaryAsset{}, false
+}
+
+func validateManagedLesserBodyInstancePlaneSSMParams(resources map[string]any, templatePath string) error {
+	for logicalID, expected := range managedLesserBodyInstancePlaneSSMParamExpectations {
+		resource, _ := resources[logicalID].(map[string]any)
+		props, ok := resource["Properties"].(map[string]any)
+		if !ok {
+			return managedTemplatePathErrorf(templatePath, "instance-plane SSM parameter %s is missing Properties", logicalID)
+		}
+		if !strings.Contains(managedTemplateStableJSON(props["Name"]), expected.nameFragment) {
+			return managedTemplatePathErrorf(templatePath, "instance-plane SSM parameter %s name must contain %s", logicalID, expected.nameFragment)
+		}
+		value := props["Value"]
+		switch {
+		case expected.valueRef != "":
+			if managedTemplateRef(value) != expected.valueRef {
+				return managedTemplatePathErrorf(templatePath, "instance-plane SSM parameter %s value must Ref %s", logicalID, expected.valueRef)
+			}
+		case expected.valueGetAtt != "":
+			if !managedTemplateValueReferencesLogicalID(value, expected.valueGetAtt) {
+				return managedTemplatePathErrorf(templatePath, "instance-plane SSM parameter %s value must reference %s", logicalID, expected.valueGetAtt)
+			}
+		}
+	}
+	return nil
+}
+
+func managedTemplateValueReferencesLogicalID(value any, logicalID string) bool {
+	logicalID = strings.TrimSpace(logicalID)
+	if logicalID == "" {
+		return false
+	}
+	return strings.Contains(managedTemplateStableJSON(value), `"`+logicalID+`"`)
+}
+
+func managedTemplateStableJSON(value any) string {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return fmt.Sprint(value)
+	}
+	return string(raw)
+}
+
 func buildManagedLesserBodyChecksumRequirements(parsed *managedLesserBodyReleaseManifest, stage string, deployManifests ...*managedLesserBodyDeployManifest) map[string]string {
 	required := map[string]string{
 		managedLesserBodyReleaseManifestAsset:                      "",
@@ -1095,10 +1293,15 @@ func validateManagedLesserBodyTemplateAssetForPreflight(
 	if err := validateManagedLesserBodyTemplateJSON(templateRaw, templatePath); err != nil {
 		return templatePath, err
 	}
+	auxiliaryAssets := []managedLesserBodyAuxiliaryAsset(nil)
 	if deployManifest != nil {
+		auxiliaryAssets = deployManifest.AuxiliaryAssets
 		if err := validateManagedLesserBodyTemplateAuxiliaryReferences(templateRaw, templatePath, stage, deployManifest.AuxiliaryAssets); err != nil {
 			return templatePath, err
 		}
+	}
+	if err := validateManagedLesserBodyTemplateInstancePlane(templateRaw, templatePath, stage, auxiliaryAssets); err != nil {
+		return templatePath, err
 	}
 	if err := validateManagedLesserBodyLargeTemplateScriptSupport(ctx, client, owner, repo, version, releaseManifest, templatePath, templateRaw); err != nil {
 		return templatePath, err

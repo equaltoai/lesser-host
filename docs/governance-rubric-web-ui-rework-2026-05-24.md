@@ -151,7 +151,15 @@ Plus a presence check: at least one bundled module imports `startAwsOacFormTrans
 - `scripts/managed-release-certification/main.go`
 - `scripts/managed-release-readiness/**/*.go`
 
-**Pass/Fail**: Full points if no diff (or whitespace-only); zero on any semantic diff.
+**Pass/Fail**: Full points if no diff (or whitespace-only), or if the full locked-file semantic diff exactly matches a
+reviewed governance-event fingerprint embedded in the verifier; zero on any other semantic diff. Reviewed fingerprints are
+not blanket exceptions: the verifier hashes the entire locked-file diff, so any additional drift changes the fingerprint
+and fails SEC-10.
+
+**Reviewed event**: Project 48 M10/H2 (`lesser-host#700` / PR #921) intentionally hardens managed Body instance-plane
+release verification by requiring `dist/lesser-body-instance.zip` to be declared as a required auxiliary asset,
+checksum-covered, and template-bound before managed rollout. Its reviewed semantic diff fingerprint is
+`d25674c5c67269e48c659449de25487efe6fcd3366c8f6329ed68f1cbf48df4e`.
 
 **Input surface**: `git diff` against `origin/main`. Deterministic.
 

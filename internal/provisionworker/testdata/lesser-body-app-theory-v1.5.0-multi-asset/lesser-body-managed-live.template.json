@@ -2,18 +2,38 @@
   "AWSTemplateFormatVersion": "2010-09-09",
   "Description": "Non-deployable lesser-body managed multi-asset fixture for live.",
   "Parameters": {
-    "AppName": {"Type": "String", "Default": "lesser"},
-    "LesserBodyCodeBucketName": {"Type": "String"},
-    "LesserBodyCodeObjectKey": {"Type": "String"},
-    "AppTheoryAutoDeleteObjectsCodeObjectKey": {"Type": "String"}
+    "AppName": {
+      "Type": "String",
+      "Default": "lesser"
+    },
+    "LesserBodyCodeBucketName": {
+      "Type": "String"
+    },
+    "LesserBodyCodeObjectKey": {
+      "Type": "String"
+    },
+    "AppTheoryAutoDeleteObjectsCodeObjectKey": {
+      "Type": "String"
+    },
+    "StageName": {
+      "Type": "String",
+      "Default": "live"
+    },
+    "LesserBodyInstanceCodeObjectKey": {
+      "Type": "String"
+    }
   },
   "Resources": {
     "McpHandler03E6F2E1": {
       "Type": "AWS::Lambda::Function",
       "Properties": {
         "Code": {
-          "S3Bucket": {"Ref": "LesserBodyCodeBucketName"},
-          "S3Key": {"Ref": "LesserBodyCodeObjectKey"}
+          "S3Bucket": {
+            "Ref": "LesserBodyCodeBucketName"
+          },
+          "S3Key": {
+            "Ref": "LesserBodyCodeObjectKey"
+          }
         },
         "Handler": "bootstrap",
         "Runtime": "provided.al2023",
@@ -24,12 +44,317 @@
       "Type": "AWS::Lambda::Function",
       "Properties": {
         "Code": {
-          "S3Bucket": {"Ref": "LesserBodyCodeBucketName"},
-          "S3Key": {"Ref": "AppTheoryAutoDeleteObjectsCodeObjectKey"}
+          "S3Bucket": {
+            "Ref": "LesserBodyCodeBucketName"
+          },
+          "S3Key": {
+            "Ref": "AppTheoryAutoDeleteObjectsCodeObjectKey"
+          }
         },
         "Handler": "index.handler",
         "Runtime": "nodejs22.x",
         "Role": "arn:aws:iam::123456789012:role/fixture"
+      }
+    },
+    "InstanceContentTable": {
+      "Type": "AWS::DynamoDB::Table",
+      "Properties": {
+        "AttributeDefinitions": [
+          {
+            "AttributeName": "pk",
+            "AttributeType": "S"
+          },
+          {
+            "AttributeName": "sk",
+            "AttributeType": "S"
+          }
+        ],
+        "BillingMode": "PAY_PER_REQUEST",
+        "KeySchema": [
+          {
+            "AttributeName": "pk",
+            "KeyType": "HASH"
+          },
+          {
+            "AttributeName": "sk",
+            "KeyType": "RANGE"
+          }
+        ],
+        "PointInTimeRecoverySpecification": {
+          "PointInTimeRecoveryEnabled": true
+        },
+        "SSESpecification": {
+          "SSEEnabled": true
+        },
+        "TableName": {
+          "Fn::Join": [
+            "-",
+            [
+              {
+                "Ref": "AppName"
+              },
+              {
+                "Ref": "StageName"
+              },
+              "instance",
+              "content"
+            ]
+          ]
+        }
+      }
+    },
+    "InstanceRegistryTable": {
+      "Type": "AWS::DynamoDB::Table",
+      "Properties": {
+        "AttributeDefinitions": [
+          {
+            "AttributeName": "pk",
+            "AttributeType": "S"
+          },
+          {
+            "AttributeName": "sk",
+            "AttributeType": "S"
+          }
+        ],
+        "BillingMode": "PAY_PER_REQUEST",
+        "KeySchema": [
+          {
+            "AttributeName": "pk",
+            "KeyType": "HASH"
+          },
+          {
+            "AttributeName": "sk",
+            "KeyType": "RANGE"
+          }
+        ],
+        "PointInTimeRecoverySpecification": {
+          "PointInTimeRecoveryEnabled": true
+        },
+        "SSESpecification": {
+          "SSEEnabled": true
+        },
+        "TableName": {
+          "Fn::Join": [
+            "-",
+            [
+              {
+                "Ref": "AppName"
+              },
+              {
+                "Ref": "StageName"
+              },
+              "instance",
+              "registry"
+            ]
+          ]
+        }
+      }
+    },
+    "InstanceGrantTable": {
+      "Type": "AWS::DynamoDB::Table",
+      "Properties": {
+        "AttributeDefinitions": [
+          {
+            "AttributeName": "pk",
+            "AttributeType": "S"
+          },
+          {
+            "AttributeName": "sk",
+            "AttributeType": "S"
+          }
+        ],
+        "BillingMode": "PAY_PER_REQUEST",
+        "KeySchema": [
+          {
+            "AttributeName": "pk",
+            "KeyType": "HASH"
+          },
+          {
+            "AttributeName": "sk",
+            "KeyType": "RANGE"
+          }
+        ],
+        "PointInTimeRecoverySpecification": {
+          "PointInTimeRecoveryEnabled": true
+        },
+        "SSESpecification": {
+          "SSEEnabled": true
+        },
+        "TableName": {
+          "Fn::Join": [
+            "-",
+            [
+              {
+                "Ref": "AppName"
+              },
+              {
+                "Ref": "StageName"
+              },
+              "instance",
+              "grants"
+            ]
+          ]
+        }
+      }
+    },
+    "InstanceSessionTable": {
+      "Type": "AWS::DynamoDB::Table",
+      "Properties": {
+        "AttributeDefinitions": [
+          {
+            "AttributeName": "pk",
+            "AttributeType": "S"
+          },
+          {
+            "AttributeName": "sk",
+            "AttributeType": "S"
+          }
+        ],
+        "BillingMode": "PAY_PER_REQUEST",
+        "KeySchema": [
+          {
+            "AttributeName": "pk",
+            "KeyType": "HASH"
+          },
+          {
+            "AttributeName": "sk",
+            "KeyType": "RANGE"
+          }
+        ],
+        "PointInTimeRecoverySpecification": {
+          "PointInTimeRecoveryEnabled": true
+        },
+        "SSESpecification": {
+          "SSEEnabled": true
+        },
+        "TableName": {
+          "Fn::Join": [
+            "-",
+            [
+              {
+                "Ref": "AppName"
+              },
+              {
+                "Ref": "StageName"
+              },
+              "instance",
+              "sessions"
+            ]
+          ]
+        },
+        "TimeToLiveSpecification": {
+          "AttributeName": "expiresAt",
+          "Enabled": true
+        }
+      }
+    },
+    "InstanceMcpHandler04CF663E": {
+      "Type": "AWS::Lambda::Function",
+      "Properties": {
+        "Code": {
+          "S3Bucket": {
+            "Ref": "LesserBodyCodeBucketName"
+          },
+          "S3Key": {
+            "Ref": "LesserBodyInstanceCodeObjectKey"
+          }
+        },
+        "Environment": {
+          "Variables": {
+            "SERVICE_VERSION": "v0.0.0-fixture",
+            "INSTANCE_CONTENT_TABLE": {
+              "Ref": "InstanceContentTable"
+            },
+            "INSTANCE_REGISTRY_TABLE": {
+              "Ref": "InstanceRegistryTable"
+            },
+            "INSTANCE_GRANT_TABLE": {
+              "Ref": "InstanceGrantTable"
+            },
+            "INSTANCE_SESSION_TABLE": {
+              "Ref": "InstanceSessionTable"
+            }
+          }
+        },
+        "FunctionName": {
+          "Fn::Join": [
+            "-",
+            [
+              {
+                "Ref": "AppName"
+              },
+              {
+                "Ref": "StageName"
+              },
+              "lesser-body",
+              "instance-mcp"
+            ]
+          ]
+        },
+        "Handler": "instance",
+        "Runtime": "provided.al2023",
+        "Role": "arn:aws:iam::123456789012:role/fixture"
+      }
+    },
+    "InstanceMcpLambdaArnParam": {
+      "Type": "AWS::SSM::Parameter",
+      "Properties": {
+        "Name": "/lesser/live/lesser-body/exports/v1/instance_mcp_lambda_arn",
+        "Type": "String",
+        "Value": {
+          "Fn::GetAtt": [
+            "InstanceMcpHandler04CF663E",
+            "Arn"
+          ]
+        }
+      }
+    },
+    "InstanceMcpEndpointParam": {
+      "Type": "AWS::SSM::Parameter",
+      "Properties": {
+        "Name": "/lesser/live/lesser-body/exports/v1/instance_mcp_endpoint_url",
+        "Type": "String",
+        "Value": "https://api.live.example.com/instance/{surface}/mcp"
+      }
+    },
+    "InstanceContentTableParam": {
+      "Type": "AWS::SSM::Parameter",
+      "Properties": {
+        "Name": "/lesser/live/lesser-body/exports/v1/instance_content_table_name",
+        "Type": "String",
+        "Value": {
+          "Ref": "InstanceContentTable"
+        }
+      }
+    },
+    "InstanceRegistryTableParam": {
+      "Type": "AWS::SSM::Parameter",
+      "Properties": {
+        "Name": "/lesser/live/lesser-body/exports/v1/instance_registry_table_name",
+        "Type": "String",
+        "Value": {
+          "Ref": "InstanceRegistryTable"
+        }
+      }
+    },
+    "InstanceGrantTableParam": {
+      "Type": "AWS::SSM::Parameter",
+      "Properties": {
+        "Name": "/lesser/live/lesser-body/exports/v1/instance_grant_table_name",
+        "Type": "String",
+        "Value": {
+          "Ref": "InstanceGrantTable"
+        }
+      }
+    },
+    "InstanceSessionTableParam": {
+      "Type": "AWS::SSM::Parameter",
+      "Properties": {
+        "Name": "/lesser/live/lesser-body/exports/v1/instance_session_table_name",
+        "Type": "String",
+        "Value": {
+          "Ref": "InstanceSessionTable"
+        }
       }
     }
   }
