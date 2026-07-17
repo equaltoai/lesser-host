@@ -208,6 +208,43 @@ type Failure struct {
 	Recovery  Recovery    `json:"recovery"`
 }
 
+// FailureMessage returns the fixed public message for a failure code. Provider
+// errors and declaration payloads must never replace these messages.
+func FailureMessage(code FailureCode) string {
+	switch code {
+	case FailureCodeLLMUnavailable:
+		return "Assistant turn failed before declaration extraction."
+	case FailureCodeAssistantTurnFailed:
+		return "Assistant turn failed before declaration extraction."
+	case FailureCodeDeclarationExtractionFailed:
+		return "Declaration extraction failed."
+	case FailureCodeMissingProducedDeclarations:
+		return "Produced declarations are missing."
+	case FailureCodeInvalidProducedDeclarations:
+		return "Produced declarations are invalid."
+	case FailureCodeTenantBoundaryViolation:
+		return "Conversation failed instance boundary validation."
+	case FailureCodeOperatorActionRequired:
+		return "Operator action is required."
+	case FailureCodeMicroVMUnavailable:
+		return "MicroVM execution dispatch is unavailable."
+	default:
+		return "Conversation cannot be completed from the current state."
+	}
+}
+
+// SanitizeFailureReason keeps only the bounded declaration field code when it
+// is useful to the caller. All other arbitrary reasons collapse to the typed
+// failure code, preventing provider errors, transcripts, and private
+// declarations from entering durable status or API projections.
+func SanitizeFailureReason(code FailureCode, reason string) string {
+	reason = strings.TrimSpace(reason)
+	if code == FailureCodeInvalidProducedDeclarations && IsDeclarationValidationCode(reason) {
+		return reason
+	}
+	return string(code)
+}
+
 // Validate fails closed unless failure recovery is server-authored and bounded.
 func (f Failure) Validate() error {
 	if !isAllowedFailureCode(f.Code) || strings.TrimSpace(f.Message) == "" {

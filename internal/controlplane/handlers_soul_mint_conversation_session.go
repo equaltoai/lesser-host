@@ -96,15 +96,20 @@ func hostedGenesisFailureFromSession(failure *hostedgenesis.Failure) *hostedGene
 	if failure == nil {
 		return hostedGenesisFailureFromReason(hostedGenesisFailureInvalidCompletionState)
 	}
+	code := failure.Code
+	if hostedgenesis.IsDeclarationValidationCode(failure.Recovery.Reason) {
+		code = hostedgenesis.FailureCodeInvalidProducedDeclarations
+	}
+	reason := hostedgenesis.SanitizeFailureReason(code, failure.Recovery.Reason)
 	return &hostedGenesisFailure{
-		Code:      string(failure.Code),
-		Message:   failure.Message,
+		Code:      string(code),
+		Message:   hostedgenesis.FailureMessage(code),
 		Retryable: failure.Retryable,
 		Recovery: hostedGenesisFailureRecovery{
 			Action:            string(failure.Recovery.Action),
 			MaxAttempts:       failure.Recovery.MaxAttempts,
 			RetryAfterSeconds: failure.Recovery.RetryAfterSeconds,
-			Reason:            failure.Recovery.Reason,
+			Reason:            reason,
 		},
 	}
 }

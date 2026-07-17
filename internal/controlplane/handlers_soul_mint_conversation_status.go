@@ -10,6 +10,7 @@ import (
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
 
+	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
@@ -424,6 +425,9 @@ func hostedGenesisFailureFromReason(reason string) *hostedGenesisFailure {
 	code := normalizeHostedGenesisFailureCode(reason)
 	retryable := code == hostedGenesisFailureLLMUnavailable || code == hostedGenesisFailureAssistantTurnFailed || code == hostedGenesisFailureDeclarationExtractionFailed || code == hostedGenesisFailureMicroVMUnavailable
 	recovery := hostedGenesisFailureRecovery{Action: hostedGenesisRecoveryRefreshState, Reason: code}
+	if hostedgenesis.IsDeclarationValidationCode(reason) {
+		recovery.Reason = strings.TrimSpace(reason)
+	}
 	if retryable {
 		recovery.Action = hostedGenesisRecoveryRetrySameStep
 		recovery.MaxAttempts = 3
@@ -444,6 +448,9 @@ func hostedGenesisFailureFromReason(reason string) *hostedGenesisFailure {
 }
 
 func normalizeHostedGenesisFailureCode(reason string) string {
+	if hostedgenesis.IsDeclarationValidationCode(reason) {
+		return hostedGenesisFailureInvalidProducedDeclarations
+	}
 	switch strings.TrimSpace(reason) {
 	case hostedGenesisFailureLLMUnavailable,
 		hostedGenesisFailureAssistantTurnFailed,

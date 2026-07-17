@@ -163,7 +163,6 @@ func TestSoulInstanceHostedInstanceTrustNoWalletBeginReservesAuthority(t *testin
 		Domain:         "Example.COM",
 		LocalID:        provisionTestAgentLocalID,
 		AuthorityModel: models.SoulAuthorityModelInstanceTrust,
-		Capabilities:   []any{"travel_planning"},
 	})
 
 	resp, err := s.handleSoulInstanceAgentRegistrationBegin(newSoulInstanceBootstrapContext(map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey}, body, nil))
@@ -180,6 +179,9 @@ func TestSoulInstanceHostedInstanceTrustNoWalletBeginReservesAuthority(t *testin
 	}
 	assertSoulInstanceHostedBeginOmitsWallet(t, out, resp.Body)
 	assertSoulInstanceHostedBeginRegistration(t, out.Registration)
+	if len(out.Registration.Capabilities) != 0 {
+		t.Fatalf("hosted begin without explicit capabilities must keep an empty declaration context, got %#v", out.Registration.Capabilities)
+	}
 	assertSoulInstanceHostedBeginPromotion(t, out.Promotion)
 	tdb.qWalletAgent.AssertNotCalled(t, "CreateOrUpdate")
 }
@@ -1273,6 +1275,8 @@ func TestSoulInstanceHostedInstanceTrustCompleteAcceptsDeclarations(t *testing.T
 	t.Parallel()
 
 	reg, identity, _ := soulInstanceHostedInstanceTrustFixture(t)
+	decl := testMintConversationDecl()
+	decl.Capabilities = []soul.CapabilityV2{}
 	tdb := newMintConversationTestDB()
 	s := newMintConversationServer(tdb)
 	expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, soulInstanceBootstrapTestInstanceSlug)
@@ -1290,7 +1294,7 @@ func TestSoulInstanceHostedInstanceTrustCompleteAcceptsDeclarations(t *testing.T
 
 	resp, err := s.handleSoulInstanceCompleteMintConversation(newSoulInstanceBootstrapContext(
 		map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
-		mustMarshalJSON(t, map[string]any{"declarations": testMintConversationDecl()}),
+		mustMarshalJSON(t, map[string]any{"declarations": decl}),
 		map[string]string{"id": reg.ID, "conversationId": mintConversationTestConversationID},
 	))
 	if err != nil {
@@ -1305,6 +1309,9 @@ func TestSoulInstanceHostedInstanceTrustCompleteAcceptsDeclarations(t *testing.T
 	}
 	if out.Conversation.Status != models.SoulMintConversationStatusDeclarationReady || out.Conversation.ProducedDeclarations == nil {
 		t.Fatalf("expected completed hosted conversation, got %#v", out)
+	}
+	if len(out.Conversation.ProducedDeclarations.Declarations.Capabilities) != 0 {
+		t.Fatalf("expected empty hosted capabilities to remain empty, got %#v", out.Conversation.ProducedDeclarations.Declarations.Capabilities)
 	}
 	if strings.Contains(string(resp.Body), `"messages"`) || strings.Contains(string(resp.Body), "describe yourself") || strings.Contains(string(resp.Body), "done") || strings.Contains(string(resp.Body), mintConversationInstanceReadTestRawKey) {
 		t.Fatalf("hosted instance-trust complete leaked private fields: %s", string(resp.Body))

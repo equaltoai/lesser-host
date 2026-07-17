@@ -1074,7 +1074,7 @@ func TestHostedGenesisWorkerFailsClosedOnInvalidDeclarationDraft(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected invalid declaration draft error: %v", err)
 	}
-	assertHostedGenesisWorkerFailure(t, st, hostedGenesisFailureDeclarationExtractionFailed)
+	assertHostedGenesisWorkerFailureWithReason(t, st, hostedGenesisFailureInvalidProducedDeclarations, string(hostedgenesis.DeclarationCodeSelfDescription))
 }
 
 func TestHostedGenesisWorkerReturnsDeclarationModelError(t *testing.T) {
@@ -1209,27 +1209,31 @@ func TestHostedGenesisDeclarationsDraftBuilder(t *testing.T) {
 	}
 }
 
-func TestHostedGenesisDeclarationsDraftBuilderUsesDeclaredCapabilityFallback(t *testing.T) {
+func TestHostedGenesisDeclarationsDraftBuilderAllowsEmptyCapabilities(t *testing.T) {
 	t.Parallel()
 
-	fallbackDraft := validHostedGenesisDraft()
-	fallbackDraft.Capabilities = []soul.CapabilityV2{{Capability: "", Scope: "ignored"}}
-	decl, err := buildHostedGenesisDeclarationsDraft(fallbackDraft, time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC), "anthropic:claude-sonnet-4-6", []string{"simulacrum.hosted-first-default"})
+	draft := validHostedGenesisDraft()
+	draft.Capabilities = nil
+	decl, err := buildHostedGenesisDeclarationsDraft(draft, time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC), "anthropic:claude-sonnet-4-6", []string{"simulacrum.hosted-first-default"})
 	if err != nil {
-		t.Fatalf("unexpected declared-capability fallback error: %v", err)
+		t.Fatalf("unexpected empty-capabilities error: %v", err)
 	}
-	if len(decl.Capabilities) != 1 || decl.Capabilities[0].Capability != "simulacrum.hosted-first-default" || decl.Capabilities[0].ClaimLevel != "self-declared" {
-		t.Fatalf("expected declared capability fallback, got %#v", decl.Capabilities)
+	if len(decl.Capabilities) != 0 {
+		t.Fatalf("expected no fallback capabilities, got %#v", decl.Capabilities)
 	}
 }
 
-func TestHostedGenesisDeclarationsDraftBuilderRequiresCapability(t *testing.T) {
+func TestHostedGenesisDeclarationsDraftBuilderDropsPlaceholder(t *testing.T) {
 	t.Parallel()
 
-	noCapabilityDraft := validHostedGenesisDraft()
-	noCapabilityDraft.Capabilities = nil
-	if _, err := buildHostedGenesisDeclarationsDraft(noCapabilityDraft, time.Now(), "openai:gpt-5"); err == nil || err.Error() != "capabilities is required" {
-		t.Fatalf("expected required capability error, got %v", err)
+	draft := validHostedGenesisDraft()
+	draft.Capabilities = []soul.CapabilityV2{{Capability: "simulacrum.hosted-first-default", Scope: "placeholder", ClaimLevel: "self-declared"}}
+	decl, err := buildHostedGenesisDeclarationsDraft(draft, time.Now(), "openai:gpt-5")
+	if err != nil {
+		t.Fatalf("unexpected placeholder-only capabilities error: %v", err)
+	}
+	if len(decl.Capabilities) != 0 {
+		t.Fatalf("expected placeholder capability to be dropped, got %#v", decl.Capabilities)
 	}
 }
 
@@ -1238,7 +1242,7 @@ func TestHostedGenesisDeclarationsDraftBuilderRequiresBoundary(t *testing.T) {
 
 	noBoundaryDraft := validHostedGenesisDraft()
 	noBoundaryDraft.Boundaries = nil
-	if _, err := buildHostedGenesisDeclarationsDraft(noBoundaryDraft, time.Now(), "openai:gpt-5"); err == nil || err.Error() != "boundaries is required" {
+	if _, err := buildHostedGenesisDeclarationsDraft(noBoundaryDraft, time.Now(), "openai:gpt-5"); err == nil || err.Error() != string(hostedgenesis.DeclarationCodeBoundaries) {
 		t.Fatalf("expected required boundary error, got %v", err)
 	}
 }
@@ -1250,11 +1254,9 @@ func validHostedGenesisDraft() llm.MintConversationDeclarationsDraft {
 		},
 		Capabilities: []soul.CapabilityV2{
 			{Capability: "hosted_genesis_planning", Scope: "Draft safe registration declarations."},
-			{Capability: "", Scope: "ignored"},
 		},
 		Boundaries: []llm.MintConversationBoundaryDraft{
 			{Category: "refusal", Statement: "I will not reveal credentials.", Rationale: "protects operators"},
-			{Category: "", Statement: ""},
 		},
 	}
 }
@@ -1358,13 +1360,17 @@ func hostedGenesisWorkerMicroVMDispatchResult(t *testing.T, requestID string, bi
 }
 
 func assertHostedGenesisWorkerFailure(t *testing.T, st *fakeHostedGenesisStore, reason string) {
+	assertHostedGenesisWorkerFailureWithReason(t, st, reason, reason)
+}
+
+func assertHostedGenesisWorkerFailureWithReason(t *testing.T, st *fakeHostedGenesisStore, reason, statusReason string) {
 	t.Helper()
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	if st.putCount != 1 || st.conv == nil {
 		t.Fatalf("expected one fail-closed conversation write, putCount=%d conv=%#v", st.putCount, st.conv)
 	}
-	if st.conv.Status != models.SoulMintConversationStatusFailed || st.conv.StatusReason != reason {
+	if st.conv.Status != models.SoulMintConversationStatusFailed || st.conv.StatusReason != statusReason {
 		t.Fatalf("expected %s failure, got %#v", reason, st.conv)
 	}
 	if st.session == nil || hostedgenesis.NormalizeStatus(st.session.Status) != hostedgenesis.StatusFailed || st.session.Failure == nil || string(st.session.Failure.Code) != reason {

@@ -17,11 +17,12 @@ import (
 // programmed to return a condition failure to simulate a stale/progressed
 // session.
 type fakeCompletionStore struct {
-	session     *models.HostedGenesisSession
-	updateErr   error
-	lastExpectV int64
-	lastExpectS hostedgenesis.Status
-	written     *models.HostedGenesisSession
+	session      *models.HostedGenesisSession
+	conversation *models.SoulAgentMintConversation
+	updateErr    error
+	lastExpectV  int64
+	lastExpectS  hostedgenesis.Status
+	written      *models.HostedGenesisSession
 }
 
 func (f *fakeCompletionStore) GetHostedGenesisSession(_ context.Context, instanceSlug, conversationID string) (*models.HostedGenesisSession, error) {
@@ -40,6 +41,37 @@ func (f *fakeCompletionStore) UpdateHostedGenesisSession(_ context.Context, item
 	f.written = cloneSessionForCompletion(item)
 	f.session = cloneSessionForCompletion(item)
 	f.session.Version = expectedVersion + 1
+	return nil
+}
+
+func (f *fakeCompletionStore) GetSoulAgentMintConversation(_ context.Context, agentID, conversationID string) (*models.SoulAgentMintConversation, error) {
+	if f.session == nil || !strings.EqualFold(f.session.AgentID, agentID) || f.session.ConversationID != conversationID {
+		return nil, fmt.Errorf("not found")
+	}
+	if f.conversation == nil {
+		return &models.SoulAgentMintConversation{AgentID: agentID, ConversationID: conversationID, Status: models.SoulMintConversationStatusInProgress}, nil
+	}
+	copy := *f.conversation
+	return &copy, nil
+}
+
+func (f *fakeCompletionStore) FailHostedGenesisSessionAndConversation(_ context.Context, session *models.HostedGenesisSession, expectedVersion int64, expectedStatus hostedgenesis.Status, conversation *models.SoulAgentMintConversation) error {
+	f.lastExpectV = expectedVersion
+	f.lastExpectS = expectedStatus
+	if f.updateErr != nil {
+		return f.updateErr
+	}
+	if f.session == nil || f.session.Version != expectedVersion || hostedgenesis.NormalizeStatus(f.session.Status) != expectedStatus {
+		return fmt.Errorf("conditional check failed")
+	}
+	failedSession := cloneSessionForCompletion(session)
+	failedSession.Version = expectedVersion + 1
+	f.written = failedSession
+	f.session = cloneSessionForCompletion(failedSession)
+	if conversation != nil {
+		copy := *conversation
+		f.conversation = &copy
+	}
 	return nil
 }
 
@@ -235,6 +267,37 @@ func TestRecordFailure_AppliesTypedFailure(t *testing.T) {
 	}
 	if !got.Failure.Retryable {
 		t.Fatalf("expected retryable failure")
+	}
+}
+
+func TestRecordFailure_SanitizesProviderAndDeclarationDetailsAcrossProjections(t *testing.T) {
+	store := &fakeCompletionStore{session: newFakeSession("acme", "conv-1", "turn-1", hostedgenesis.StatusInProgress, 3), conversation: &models.SoulAgentMintConversation{
+		AgentID:        "agent-1",
+		ConversationID: "conv-1",
+		Status:         models.SoulMintConversationStatusInProgress,
+	}}
+	w := NewCompletionWriter(store, nil)
+
+	got, err := w.RecordFailure(context.Background(), CompletionTurn{InstanceSlug: "acme", ConversationID: "conv-1", TurnID: "turn-1", RequestID: "req-1"}, CompletionFailure{
+		Code:     hostedgenesis.FailureCodeInvalidProducedDeclarations,
+		Message:  "provider leaked secret transcript and private declaration",
+		Recovery: hostedgenesis.Recovery{Action: hostedgenesis.RecoveryActionRestartSoulBootstrap, Reason: string(hostedgenesis.DeclarationCodeCapabilities)},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Failure == nil || got.Failure.Message != hostedgenesis.FailureMessage(hostedgenesis.FailureCodeInvalidProducedDeclarations) {
+		t.Fatalf("expected fixed failure message, got %#v", got.Failure)
+	}
+	if got.Failure.Recovery.Reason != string(hostedgenesis.DeclarationCodeCapabilities) {
+		t.Fatalf("expected only stable declaration detail, got %#v", got.Failure.Recovery)
+	}
+	if store.conversation == nil || store.conversation.Status != models.SoulMintConversationStatusFailed || store.conversation.StatusReason != string(hostedgenesis.DeclarationCodeCapabilities) {
+		t.Fatalf("expected compatibility failure projection, got %#v", store.conversation)
+	}
+	encoded := fmt.Sprintf("%#v %#v", got.Failure, store.conversation)
+	if strings.Contains(encoded, "secret transcript") || strings.Contains(encoded, "private declaration") {
+		t.Fatalf("failure projection leaked private details: %s", encoded)
 	}
 }
 

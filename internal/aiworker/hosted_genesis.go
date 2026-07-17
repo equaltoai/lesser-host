@@ -31,6 +31,8 @@ const (
 	hostedGenesisFailureDeclarationExtractionFailed = "declaration_extraction_failed"
 	hostedGenesisFailureMicroVMUnavailable          = "microvm_unavailable"
 	hostedGenesisFailureInvalidCompletionState      = "invalid_completion_state"
+	hostedGenesisFailureMissingProducedDeclarations = "missing_produced_declarations"
+	hostedGenesisFailureInvalidProducedDeclarations = "invalid_produced_declarations"
 	hostedGenesisFailureTenantBoundaryViolation     = "tenant_boundary_violation"
 )
 
@@ -153,7 +155,7 @@ func (s *Server) runAndPersistHostedGenesisAssistant(ctx context.Context, st hos
 	defer cancel()
 	fullResponse, usage, err := runHostedGenesisAssistantModel(runCtx, run.apiKey, run.modelSet, hostedGenesisSystemPrompt(reg), run.llmMessages)
 	if err != nil || strings.TrimSpace(fullResponse) == "" {
-		log.Printf("aiworker: hosted genesis assistant turn failed agent_hash=%s conversation_hash=%s provider=%s err=%v", hostedGenesisAuditHash(conv.AgentID), hostedGenesisAuditHash(conv.ConversationID), hostedGenesisProvider(run.modelSet), err)
+		log.Printf("aiworker: hosted genesis assistant turn failed agent_hash=%s conversation_hash=%s provider=%s failure_code=%s", hostedGenesisAuditHash(conv.AgentID), hostedGenesisAuditHash(conv.ConversationID), hostedGenesisProvider(run.modelSet), hostedGenesisFailureAssistantTurnFailed)
 		if persistErr := s.markHostedGenesisConversationFailed(ctx, st, conv, session, hostedGenesisFailureAssistantTurnFailed, workerRequestID); persistErr != nil {
 			return persistErr
 		}
@@ -245,7 +247,7 @@ func hostedGenesisDeclarationInput(reg *models.SoulAgentRegistration, messages [
 			Domain:               strings.TrimSpace(reg.DomainNormalized),
 			LocalID:              strings.TrimSpace(reg.LocalID),
 			AgentID:              strings.TrimSpace(reg.AgentID),
-			DeclaredCapabilities: append([]string(nil), reg.Capabilities...),
+			DeclaredCapabilities: hostedgenesis.FilterDeclaredCapabilitiesForPrompt(reg.Capabilities),
 		},
 		Messages: hostedGenesisLLMMessages(messages),
 	}
@@ -263,7 +265,7 @@ func hostedGenesisLLMMessages(messages []hostedGenesisMessage) []llm.MintConvers
 func (s *Server) runAndPersistHostedGenesisDeclaration(ctx context.Context, st hostedGenesisStore, conv *models.SoulAgentMintConversation, session *models.HostedGenesisSession, msg hostedgenesis.QueueMessage, workerRequestID string, run hostedGenesisDeclarationRun) error {
 	draft, usage, err := runHostedGenesisDeclarationModel(ctx, run.apiKey, run.modelSet, run.input)
 	if err != nil {
-		log.Printf("aiworker: hosted genesis declaration extraction failed agent_hash=%s conversation_hash=%s provider=%s err=%v", hostedGenesisAuditHash(conv.AgentID), hostedGenesisAuditHash(conv.ConversationID), hostedGenesisProvider(run.modelSet), err)
+		log.Printf("aiworker: hosted genesis declaration extraction failed agent_hash=%s conversation_hash=%s provider=%s failure_code=%s", hostedGenesisAuditHash(conv.AgentID), hostedGenesisAuditHash(conv.ConversationID), hostedGenesisProvider(run.modelSet), hostedGenesisFailureDeclarationExtractionFailed)
 		if persistErr := s.markHostedGenesisConversationFailed(ctx, st, conv, session, hostedGenesisFailureDeclarationExtractionFailed, workerRequestID); persistErr != nil {
 			return persistErr
 		}
@@ -271,11 +273,13 @@ func (s *Server) runAndPersistHostedGenesisDeclaration(ctx context.Context, st h
 	}
 	decl, err := buildHostedGenesisDeclarationsDraft(draft, time.Now().UTC(), run.modelSet, run.input.Registration.DeclaredCapabilities)
 	if err != nil {
-		return s.markHostedGenesisConversationFailed(ctx, st, conv, session, hostedGenesisFailureDeclarationExtractionFailed, workerRequestID)
+		detail := string(hostedgenesis.DeclarationValidationCodeFromError(err))
+		log.Printf("aiworker: hosted genesis produced declarations rejected agent_hash=%s conversation_hash=%s failure_code=%s reason_code=%s", hostedGenesisAuditHash(conv.AgentID), hostedGenesisAuditHash(conv.ConversationID), hostedGenesisFailureInvalidProducedDeclarations, detail)
+		return s.markHostedGenesisConversationFailedWithDetail(ctx, st, conv, session, hostedGenesisFailureInvalidProducedDeclarations, detail, workerRequestID)
 	}
 	b, err := json.Marshal(decl)
 	if err != nil {
-		return s.markHostedGenesisConversationFailed(ctx, st, conv, session, hostedGenesisFailureDeclarationExtractionFailed, workerRequestID)
+		return s.markHostedGenesisConversationFailedWithDetail(ctx, st, conv, session, hostedGenesisFailureInvalidProducedDeclarations, string(hostedgenesis.DeclarationCodeInvalid), workerRequestID)
 	}
 	return persistHostedGenesisDeclarationResponse(ctx, st, conv, session, msg, workerRequestID, string(b), usage, run.modelSet)
 }
@@ -532,15 +536,19 @@ func hostedGenesisJobIdempotencyValid(ctx context.Context, st hostedGenesisStore
 }
 
 func (s *Server) markHostedGenesisConversationFailed(ctx context.Context, st hostedGenesisStore, conv *models.SoulAgentMintConversation, session *models.HostedGenesisSession, reason string, requestID string) error {
+	return s.markHostedGenesisConversationFailedWithDetail(ctx, st, conv, session, reason, "", requestID)
+}
+
+func (s *Server) markHostedGenesisConversationFailedWithDetail(ctx context.Context, st hostedGenesisStore, conv *models.SoulAgentMintConversation, session *models.HostedGenesisSession, reason string, detail string, requestID string) error {
 	if st == nil {
 		return fmt.Errorf("hosted genesis store not initialized")
 	}
 	if conv == nil {
-		return s.markHostedGenesisSessionFailed(ctx, st, session, reason, requestID)
+		return s.markHostedGenesisSessionFailedWithDetail(ctx, st, session, reason, detail, requestID)
 	}
 	now := time.Now().UTC()
 	conv.Status = models.SoulMintConversationStatusFailed
-	conv.StatusReason = strings.TrimSpace(reason)
+	conv.StatusReason = hostedGenesisFailureReasonForStorage(reason, detail)
 	conv.RequestID = firstNonEmptyWorker(requestID, conv.RequestID)
 	conv.UpdatedAt = now
 	conv.CompletedAt = now
@@ -553,7 +561,7 @@ func (s *Server) markHostedGenesisConversationFailed(ctx context.Context, st hos
 	}
 	expectedStatus := hostedgenesis.NormalizeStatus(session.Status)
 	session.Status = string(hostedgenesis.StatusFailed)
-	session.Failure = hostedGenesisFailureFromWorkerReason(reason)
+	session.Failure = hostedGenesisFailureFromWorkerReasonWithDetail(reason, detail)
 	session.RequestID = firstNonEmptyWorker(requestID, session.RequestID)
 	session.UpdatedAt = now
 	session.CompletedAt = now
@@ -561,6 +569,10 @@ func (s *Server) markHostedGenesisConversationFailed(ctx context.Context, st hos
 }
 
 func (s *Server) markHostedGenesisSessionFailed(ctx context.Context, st hostedGenesisStore, session *models.HostedGenesisSession, reason string, requestID string) error {
+	return s.markHostedGenesisSessionFailedWithDetail(ctx, st, session, reason, "", requestID)
+}
+
+func (s *Server) markHostedGenesisSessionFailedWithDetail(ctx context.Context, st hostedGenesisStore, session *models.HostedGenesisSession, reason string, detail string, requestID string) error {
 	if st == nil {
 		return fmt.Errorf("hosted genesis store not initialized")
 	}
@@ -570,7 +582,7 @@ func (s *Server) markHostedGenesisSessionFailed(ctx context.Context, st hostedGe
 	now := time.Now().UTC()
 	expectedStatus := hostedgenesis.NormalizeStatus(session.Status)
 	session.Status = string(hostedgenesis.StatusFailed)
-	session.Failure = hostedGenesisFailureFromWorkerReason(reason)
+	session.Failure = hostedGenesisFailureFromWorkerReasonWithDetail(reason, detail)
 	session.RequestID = firstNonEmptyWorker(requestID, session.RequestID)
 	session.UpdatedAt = now
 	session.CompletedAt = now
@@ -633,6 +645,10 @@ func hostedGenesisDeclarationCheckpointFromWorker(session *models.HostedGenesisS
 }
 
 func hostedGenesisFailureFromWorkerReason(reason string) *hostedgenesis.Failure {
+	return hostedGenesisFailureFromWorkerReasonWithDetail(reason, "")
+}
+
+func hostedGenesisFailureFromWorkerReasonWithDetail(reason string, detail string) *hostedgenesis.Failure {
 	code := hostedgenesis.FailureCodeInvalidCompletionState
 	switch strings.TrimSpace(reason) {
 	case hostedGenesisFailureLLMUnavailable:
@@ -643,6 +659,10 @@ func hostedGenesisFailureFromWorkerReason(reason string) *hostedgenesis.Failure 
 		code = hostedgenesis.FailureCodeMicroVMUnavailable
 	case hostedGenesisFailureDeclarationExtractionFailed:
 		code = hostedgenesis.FailureCodeDeclarationExtractionFailed
+	case hostedGenesisFailureMissingProducedDeclarations:
+		code = hostedgenesis.FailureCodeMissingProducedDeclarations
+	case hostedGenesisFailureInvalidProducedDeclarations:
+		code = hostedgenesis.FailureCodeInvalidProducedDeclarations
 	case hostedGenesisFailureTenantBoundaryViolation:
 		code = hostedgenesis.FailureCodeTenantBoundaryViolation
 	}
@@ -655,34 +675,27 @@ func hostedGenesisFailureFromWorkerReason(reason string) *hostedgenesis.Failure 
 	if code == hostedgenesis.FailureCodeTenantBoundaryViolation {
 		action = hostedgenesis.RecoveryActionOperatorAction
 	}
+	if code == hostedgenesis.FailureCodeMissingProducedDeclarations || code == hostedgenesis.FailureCodeInvalidProducedDeclarations {
+		action = hostedgenesis.RecoveryActionRestartSoulBootstrap
+		retryable = false
+	}
+	recoveryReason := hostedgenesis.SanitizeFailureReason(code, detail)
 	return &hostedgenesis.Failure{
 		Code:      code,
-		Message:   failureMessageFromWorkerCode(code),
+		Message:   hostedgenesis.FailureMessage(code),
 		Retryable: retryable,
 		Recovery: hostedgenesis.Recovery{
 			Action:            action,
 			MaxAttempts:       maxAttemptsFromWorkerRecovery(action),
 			RetryAfterSeconds: retryAfterFromWorkerRecovery(action),
-			Reason:            string(code),
+			Reason:            recoveryReason,
 		},
 	}
 }
 
-func failureMessageFromWorkerCode(code hostedgenesis.FailureCode) string {
-	switch code {
-	case hostedgenesis.FailureCodeLLMUnavailable:
-		return "Assistant provider was unavailable."
-	case hostedgenesis.FailureCodeAssistantTurnFailed:
-		return "Assistant turn did not reach declaration extraction."
-	case hostedgenesis.FailureCodeMicroVMUnavailable:
-		return "MicroVM execution dispatch is unavailable."
-	case hostedgenesis.FailureCodeDeclarationExtractionFailed:
-		return "Declaration extraction did not complete."
-	case hostedgenesis.FailureCodeTenantBoundaryViolation:
-		return "Conversation failed instance boundary validation."
-	default:
-		return "Conversation cannot be completed from the current state."
-	}
+func hostedGenesisFailureReasonForStorage(reason string, detail string) string {
+	code := hostedGenesisFailureFromWorkerReason(reason).Code
+	return hostedgenesis.SanitizeFailureReason(code, detail)
 }
 
 func maxAttemptsFromWorkerRecovery(action hostedgenesis.RecoveryAction) int {
@@ -756,15 +769,15 @@ func hostedGenesisSystemPrompt(reg *models.SoulAgentRegistration) string {
 		if strings.TrimSpace(reg.LocalID) != "" {
 			sb.WriteString("Local ID: " + strings.TrimSpace(reg.LocalID) + "\n")
 		}
-		if len(reg.Capabilities) > 0 {
-			b, _ := json.Marshal(reg.Capabilities)
+		if caps := hostedgenesis.FilterDeclaredCapabilitiesForPrompt(reg.Capabilities); len(caps) > 0 {
+			b, _ := json.Marshal(caps)
 			sb.WriteString("Declared capabilities: " + string(b) + "\n")
 		}
 	}
 	return sb.String()
 }
 
-func buildHostedGenesisDeclarationsDraft(draft llm.MintConversationDeclarationsDraft, now time.Time, modelSet string, declaredCapabilities ...[]string) (hostedGenesisProducedDeclarations, error) {
+func buildHostedGenesisDeclarationsDraft(draft llm.MintConversationDeclarationsDraft, now time.Time, modelSet string, _ ...[]string) (hostedGenesisProducedDeclarations, error) {
 	decl := hostedGenesisProducedDeclarations{
 		SelfDescription: draft.SelfDescription,
 		Capabilities:    []soul.CapabilityV2{},
@@ -774,26 +787,14 @@ func buildHostedGenesisDeclarationsDraft(draft llm.MintConversationDeclarationsD
 	decl.SelfDescription.AuthoredBy = "agent"
 	decl.SelfDescription.MintingModel = strings.TrimSpace(modelSet)
 	if err := decl.SelfDescription.Validate(); err != nil {
-		return hostedGenesisProducedDeclarations{}, err
+		return hostedGenesisProducedDeclarations{}, hostedgenesis.NewDeclarationValidationError(hostedgenesis.DeclarationCodeSelfDescription)
 	}
-	for _, c := range draft.Capabilities {
-		c.ClaimLevel = "self-declared"
-		if strings.TrimSpace(c.Capability) == "" || strings.TrimSpace(c.Scope) == "" {
-			continue
-		}
-		if err := c.Validate(); err != nil {
-			continue
-		}
-		decl.Capabilities = append(decl.Capabilities, c)
+	var capErr error
+	decl.Capabilities, capErr = hostedgenesis.ValidateAndNormalizeProducedCapabilities(draft.Capabilities)
+	if capErr != nil {
+		return hostedGenesisProducedDeclarations{}, capErr
 	}
-	declared := []string(nil)
-	if len(declaredCapabilities) > 0 {
-		declared = declaredCapabilities[0]
-	}
-	decl.Capabilities = hostedgenesis.MergeDeclaredCapabilities(decl.Capabilities, declared)
-	if len(decl.Capabilities) == 0 {
-		return hostedGenesisProducedDeclarations{}, fmt.Errorf("capabilities is required")
-	}
+	invalidBoundary := false
 	for i, b := range draft.Boundaries {
 		entry := soul.BoundaryV2{
 			ID:             fmt.Sprintf("mint-%d-%02d", now.Unix(), i+1),
@@ -805,12 +806,19 @@ func buildHostedGenesisDeclarationsDraft(draft llm.MintConversationDeclarationsD
 			Signature:      "0x00",
 		}
 		if err := entry.Validate(); err != nil {
+			invalidBoundary = true
 			continue
 		}
 		decl.Boundaries = append(decl.Boundaries, entry)
 	}
+	if invalidBoundary {
+		return hostedGenesisProducedDeclarations{}, hostedgenesis.NewDeclarationValidationError(hostedgenesis.DeclarationCodeBoundariesBad)
+	}
 	if len(decl.Boundaries) == 0 {
-		return hostedGenesisProducedDeclarations{}, fmt.Errorf("boundaries is required")
+		if len(draft.Boundaries) > 0 {
+			return hostedGenesisProducedDeclarations{}, hostedgenesis.NewDeclarationValidationError(hostedgenesis.DeclarationCodeBoundariesBad)
+		}
+		return hostedGenesisProducedDeclarations{}, hostedgenesis.NewDeclarationValidationError(hostedgenesis.DeclarationCodeBoundaries)
 	}
 	if decl.Transparency == nil {
 		decl.Transparency = map[string]any{}

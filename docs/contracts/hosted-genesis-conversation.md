@@ -83,6 +83,28 @@ execution details. They do not determine user-visible progress, retry, finalize 
 delivery or MicroVM cache is missing or stale, status remains the compact `HostedGenesisSession` projection and
 retry/finalize decisions continue to fail closed from that Host row.
 
+### Hosted instance-trust declarations and restart recovery
+
+For the instance-key hosted/off-chain authority model, an agent may complete a valid genesis conversation without
+declaring any explicit capability. Host preserves the model-produced declaration shape as `"capabilities": []` and
+does not inject a registration capability, a compatibility fallback, or the retired
+`simulacrum.hosted-first-default` placeholder into the produced evidence. The registration capability list is prompt
+context only. Wallet-principal conversations retain their existing requirement for at least one valid capability.
+Every produced declaration still requires a valid self-description, at least one boundary, and a non-null
+transparency object.
+
+Declaration validation failures cross the worker and API boundary only as stable field codes, never provider errors,
+raw model output, transcripts, or private declaration text. Examples are `self_description.invalid`,
+`capabilities.invalid`, `boundaries.required`, and `transparency.required`. A terminal failure's public message is a
+fixed code-derived message such as `Produced declarations are invalid.`; the optional recovery reason is limited to a
+single stable field code.
+
+When produced declarations are missing or invalid, Host writes the terminal `HostedGenesisSession` and the
+`SoulAgentMintConversation` compatibility projection together. `restart_soul_bootstrap` is not a successful no-op:
+the recover endpoint returns an actionable `409` conflict with `recovery_action=restart_soul_bootstrap` and the
+restart path `/api/v1/soul/instance/agents/register/begin`. Re-beginning the same domain/local id after that failure
+creates a fresh registration/conversation lane; a stale failed registration is not replayed.
+
 ## HostConversation envelope
 
 Machine-readable schema:

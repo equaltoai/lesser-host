@@ -396,7 +396,7 @@ func (s *Server) beginSoulAgentRegistration(
 	}
 
 	now := time.Now().UTC()
-	replayed, ok, replayErr := s.replaySoulRegistrationBeginIfHostedInstanceTrust(ctx.Context(), authorityModel, agentIDHex)
+	replayed, ok, replayErr := s.replaySoulRegistrationBeginIfHostedInstanceTrust(ctx.Context(), authorityModel, agentIDHex, actor)
 	if replayErr != nil {
 		return soulAgentRegistrationBeginResponse{}, replayErr
 	}
@@ -525,11 +525,11 @@ func (s *Server) buildSoulAgentRegistrationBeginResponse(
 	return out
 }
 
-func (s *Server) replaySoulRegistrationBeginIfHostedInstanceTrust(ctx context.Context, authorityModel string, agentIDHex string) (soulAgentRegistrationBeginResponse, bool, *apptheory.AppTheoryError) {
+func (s *Server) replaySoulRegistrationBeginIfHostedInstanceTrust(ctx context.Context, authorityModel string, agentIDHex string, actor string) (soulAgentRegistrationBeginResponse, bool, *apptheory.AppTheoryError) {
 	if authorityModel != models.SoulAuthorityModelInstanceTrust {
 		return soulAgentRegistrationBeginResponse{}, false, nil
 	}
-	return s.replaySoulHostedInstanceTrustBegin(ctx, agentIDHex)
+	return s.replaySoulHostedInstanceTrustBegin(ctx, agentIDHex, actor)
 }
 
 func buildSoulRegistrationProofInstructions(domainNormalized string, proofToken string, autoVerified bool) []soulRegistryProofInstructions {
@@ -1285,7 +1285,7 @@ func buildSoulHostedInstanceTrustIdentity(reg *models.SoulAgentRegistration, met
 	return identity
 }
 
-func (s *Server) replaySoulHostedInstanceTrustBegin(ctx context.Context, agentIDHex string) (soulAgentRegistrationBeginResponse, bool, *apptheory.AppTheoryError) {
+func (s *Server) replaySoulHostedInstanceTrustBegin(ctx context.Context, agentIDHex string, actor string) (soulAgentRegistrationBeginResponse, bool, *apptheory.AppTheoryError) {
 	identity, err := s.getSoulAgentIdentity(ctx, agentIDHex)
 	if theoryErrors.IsNotFound(err) {
 		return soulAgentRegistrationBeginResponse{}, false, nil
@@ -1310,14 +1310,21 @@ func (s *Server) replaySoulHostedInstanceTrustBegin(ctx context.Context, agentID
 	if normalizeSoulAuthorityModel(promotion.AuthorityModel) != models.SoulAuthorityModelInstanceTrust {
 		return soulAgentRegistrationBeginResponse{}, false, nil
 	}
-	reg, err := s.getSoulAgentRegistration(ctx, promotion.RegistrationID)
-	if theoryErrors.IsNotFound(err) {
+	shouldRestart, restartErr := s.hostedGenesisRestartRequiredForActor(ctx, actor, promotion.LatestConversationID)
+	if restartErr != nil {
+		return soulAgentRegistrationBeginResponse{}, false, restartErr
+	}
+	if shouldRestart {
+		// The previous registration is a failed lane. Let the normal begin
+		// path mint a fresh registration/conversation lane rather than replaying
+		// stale pending state forever.
 		return soulAgentRegistrationBeginResponse{}, false, nil
 	}
-	if err != nil {
-		return soulAgentRegistrationBeginResponse{}, false, newAppTheoryError("app.internal", "internal error")
+	reg, replay, replayErr := s.loadSoulHostedInstanceTrustReplayRegistration(ctx, promotion.RegistrationID)
+	if replayErr != nil {
+		return soulAgentRegistrationBeginResponse{}, false, replayErr
 	}
-	if normalizeSoulAuthorityModel(reg.AuthorityModel) != models.SoulAuthorityModelInstanceTrust {
+	if !replay {
 		return soulAgentRegistrationBeginResponse{}, false, nil
 	}
 	return soulAgentRegistrationBeginResponse{
@@ -1325,6 +1332,45 @@ func (s *Server) replaySoulHostedInstanceTrustBegin(ctx context.Context, agentID
 		Proofs:       []soulRegistryProofInstructions{},
 		Promotion:    ptrTo(s.buildSoulAgentPromotionView(promotion)),
 	}, true, nil
+}
+
+func (s *Server) loadSoulHostedInstanceTrustReplayRegistration(ctx context.Context, registrationID string) (*models.SoulAgentRegistration, bool, *apptheory.AppTheoryError) {
+	reg, err := s.getSoulAgentRegistration(ctx, registrationID)
+	if theoryErrors.IsNotFound(err) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, newAppTheoryError("app.internal", "internal error")
+	}
+	if reg == nil || normalizeSoulAuthorityModel(reg.AuthorityModel) != models.SoulAuthorityModelInstanceTrust {
+		return nil, false, nil
+	}
+	return reg, true, nil
+}
+
+func (s *Server) hostedGenesisRestartRequiredForActor(ctx context.Context, actor string, conversationID string) (bool, *apptheory.AppTheoryError) {
+	instanceSlug := soulInstanceSlugFromActor(actor)
+	conversationID = strings.TrimSpace(conversationID)
+	if instanceSlug == "" || conversationID == "" {
+		return false, nil
+	}
+	session, err := s.store.GetHostedGenesisSession(ctx, instanceSlug, conversationID)
+	if err != nil && !theoryErrors.IsNotFound(err) {
+		return false, newAppTheoryError("app.internal", "internal error")
+	}
+	return hostedGenesisSessionRequiresRestart(session), nil
+}
+
+func soulInstanceSlugFromActor(actor string) string {
+	actor = strings.TrimSpace(actor)
+	if !strings.HasPrefix(actor, "instance:") {
+		return ""
+	}
+	slug := strings.TrimSpace(strings.TrimPrefix(actor, "instance:"))
+	if slug == "" || slug == "unknown" {
+		return ""
+	}
+	return strings.ToLower(slug)
 }
 
 func (s *Server) reconcileSoulPendingIdentity(

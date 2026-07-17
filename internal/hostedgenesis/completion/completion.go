@@ -38,6 +38,8 @@ import (
 type CompletionStore interface {
 	GetHostedGenesisSession(ctx context.Context, instanceSlug string, conversationID string) (*models.HostedGenesisSession, error)
 	UpdateHostedGenesisSession(ctx context.Context, item *models.HostedGenesisSession, expectedVersion int64, expectedStatus hostedgenesis.Status) error
+	GetSoulAgentMintConversation(ctx context.Context, agentID string, conversationID string) (*models.SoulAgentMintConversation, error)
+	FailHostedGenesisSessionAndConversation(ctx context.Context, session *models.HostedGenesisSession, expectedVersion int64, expectedStatus hostedgenesis.Status, conversation *models.SoulAgentMintConversation) error
 }
 
 // CompletionTurn identifies the turn a completion write targets. The TurnID is
@@ -94,9 +96,10 @@ type CompletionWriter struct {
 
 // Sentinel errors for completion writes.
 var (
-	ErrInvalidCompletionTurn    = errors.New("hosted genesis completion turn is incomplete")
-	ErrCompletionConflict       = errors.New("hosted genesis completion write conflicts with session state")
-	ErrCompletionSessionMissing = errors.New("hosted genesis completion session is missing")
+	ErrInvalidCompletionTurn         = errors.New("hosted genesis completion turn is incomplete")
+	ErrCompletionConflict            = errors.New("hosted genesis completion write conflicts with session state")
+	ErrCompletionSessionMissing      = errors.New("hosted genesis completion session is missing")
+	ErrCompletionConversationMissing = errors.New("hosted genesis completion conversation is missing")
 )
 
 // NewCompletionWriter constructs a CompletionWriter over the given store.
@@ -207,10 +210,11 @@ func (w *CompletionWriter) RecordFailure(ctx context.Context, turn CompletionTur
 	}
 	f := hostedgenesis.Failure{
 		Code:      failure.Code,
-		Message:   strings.TrimSpace(failure.Message),
+		Message:   hostedgenesis.FailureMessage(failure.Code),
 		Retryable: failure.Retryable,
 		Recovery:  failure.Recovery,
 	}
+	f.Recovery.Reason = hostedgenesis.SanitizeFailureReason(f.Code, f.Recovery.Reason)
 	if err := f.Validate(); err != nil {
 		return nil, err
 	}
@@ -226,6 +230,14 @@ func (w *CompletionWriter) RecordFailure(ctx context.Context, turn CompletionTur
 	if err := assertTurnMatch(session, turn, expectedStatus); err != nil {
 		return nil, err
 	}
+	conversation, conversationErr := w.store.GetSoulAgentMintConversation(ctx, session.AgentID, session.ConversationID)
+	if conversationErr != nil || conversation == nil {
+		return nil, fmt.Errorf("%w: %v", ErrCompletionConversationMissing, conversationErr)
+	}
+	if !strings.EqualFold(strings.TrimSpace(conversation.AgentID), strings.TrimSpace(session.AgentID)) ||
+		strings.TrimSpace(conversation.ConversationID) != strings.TrimSpace(session.ConversationID) {
+		return nil, fmt.Errorf("%w: conversation identity does not match session", ErrCompletionConflict)
+	}
 
 	now := w.clock()
 	progressed := cloneSessionForCompletion(session)
@@ -234,8 +246,14 @@ func (w *CompletionWriter) RecordFailure(ctx context.Context, turn CompletionTur
 	progressed.RequestID = strings.TrimSpace(turn.RequestID)
 	progressed.UpdatedAt = now
 	progressed.CompletedAt = now
+	failedConversation := *conversation
+	failedConversation.Status = models.SoulMintConversationStatusFailed
+	failedConversation.StatusReason = f.Recovery.Reason
+	failedConversation.RequestID = strings.TrimSpace(turn.RequestID)
+	failedConversation.UpdatedAt = now
+	failedConversation.CompletedAt = now
 
-	if err := w.store.UpdateHostedGenesisSession(ctx, progressed, session.Version, expectedStatus); err != nil {
+	if err := w.store.FailHostedGenesisSessionAndConversation(ctx, progressed, session.Version, expectedStatus, &failedConversation); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrCompletionConflict, err)
 	}
 	return progressed, nil

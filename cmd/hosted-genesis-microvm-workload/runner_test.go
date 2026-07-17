@@ -55,8 +55,9 @@ func (f *fakeTurnStore) GetSoulAgentRegistration(_ context.Context, _ string) (*
 // conditional version+status advance so the real CompletionWriter's idempotency
 // is exercised end-to-end.
 type fakeCompletionStore struct {
-	session   *models.HostedGenesisSession
-	lastWrite *models.HostedGenesisSession
+	session      *models.HostedGenesisSession
+	conversation *models.SoulAgentMintConversation
+	lastWrite    *models.HostedGenesisSession
 }
 
 func (f *fakeCompletionStore) GetHostedGenesisSession(_ context.Context, _, _ string) (*models.HostedGenesisSession, error) {
@@ -74,6 +75,32 @@ func (f *fakeCompletionStore) UpdateHostedGenesisSession(_ context.Context, item
 	c.Version = expectedVersion + 1
 	f.session = &c
 	f.lastWrite = &c
+	return nil
+}
+
+func (f *fakeCompletionStore) GetSoulAgentMintConversation(_ context.Context, agentID, conversationID string) (*models.SoulAgentMintConversation, error) {
+	if f.session == nil || f.session.AgentID != agentID || f.session.ConversationID != conversationID {
+		return nil, errNotFound
+	}
+	if f.conversation == nil {
+		return &models.SoulAgentMintConversation{AgentID: agentID, ConversationID: conversationID, Status: models.SoulMintConversationStatusInProgress}, nil
+	}
+	c := *f.conversation
+	return &c, nil
+}
+
+func (f *fakeCompletionStore) FailHostedGenesisSessionAndConversation(_ context.Context, item *models.HostedGenesisSession, expectedVersion int64, expectedStatus hostedgenesis.Status, conversation *models.SoulAgentMintConversation) error {
+	if f.session == nil || hostedgenesis.NormalizeStatus(f.session.Status) != expectedStatus || f.session.Version != expectedVersion {
+		return errConflict
+	}
+	c := *item
+	c.Version = expectedVersion + 1
+	f.session = &c
+	f.lastWrite = &c
+	if conversation != nil {
+		copy := *conversation
+		f.conversation = &copy
+	}
 	return nil
 }
 
@@ -106,7 +133,7 @@ func baseTurnInput() (*fakeTurnStore, *fakeCompletionStore, completion.Completio
 			Status: string(hostedgenesis.StatusInProgress), LatestTurnID: "turn-1",
 			TurnLedger:   []hostedgenesis.TurnLedgerEntry{{TurnID: "turn-1", MessageCount: 1, AcceptedAt: time.Now().UTC()}},
 			MessageCount: 1, Version: 2, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
-		}},
+		}, conversation: &models.SoulAgentMintConversation{AgentID: "agent-1", ConversationID: "conv-1", Status: models.SoulMintConversationStatusInProgress}},
 		turn
 }
 
@@ -235,7 +262,7 @@ func TestRunTurnAndPersist_DeclarationExtractionPendingRecordsDeclarationReady(t
 	}
 }
 
-func TestRunTurnAndPersist_DeclarationExtractionPreservesDeclaredCapabilities(t *testing.T) {
+func TestRunTurnAndPersist_DeclarationExtractionDoesNotSynthesizeDeclaredCapabilities(t *testing.T) {
 	draft := validDeclarationDraft()
 	draft["capabilities"] = []any{}
 	declBody := mustMarshal(map[string]any{
@@ -270,9 +297,8 @@ func TestRunTurnAndPersist_DeclarationExtractionPreservesDeclaredCapabilities(t 
 		t.Fatalf("expected declaration_ready, got %q", got)
 	}
 	decodedDeclarations := models.DecodeSoulMintConversationBlob(turnStore.conv.ProducedDeclarations)
-	if !strings.Contains(decodedDeclarations, `"capability":"simulacrum.hosted-first-default"`) ||
-		!strings.Contains(decodedDeclarations, `"claimLevel":"self-declared"`) {
-		t.Fatalf("expected declared capability preserved in produced declarations, got %s", decodedDeclarations)
+	if strings.Contains(decodedDeclarations, "simulacrum.hosted-first-default") || !strings.Contains(decodedDeclarations, `"capabilities":[]`) {
+		t.Fatalf("expected empty placeholder-free capabilities, got %s", decodedDeclarations)
 	}
 }
 

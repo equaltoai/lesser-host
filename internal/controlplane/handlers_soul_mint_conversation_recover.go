@@ -33,6 +33,18 @@ func (s *Server) handleSoulInstanceRecoverMintConversation(ctx *apptheory.Contex
 		return nil, appErr
 	}
 
+	if hostedGenesisSessionRequiresRestart(convCtx.session) {
+		return nil, soulInstanceBootstrapError(
+			soulInstanceBootstrapCodeConflict,
+			"hosted genesis requires a fresh soul bootstrap",
+			http.StatusConflict,
+			map[string]any{
+				"recovery_action": "restart_soul_bootstrap",
+				"restart_path":    "/api/v1/soul/instance/agents/register/begin",
+			},
+		)
+	}
+
 	if !hostedGenesisSessionNeedsAssistantRecovery(convCtx.session) {
 		resp, err := hostedGenesisConversationJSONFromSession(http.StatusOK, convCtx.session, convCtx.conv, hostedGenesisProjectionOptions{
 			RegistrationID:  convCtx.reg.ID,
@@ -108,6 +120,13 @@ func (s *Server) handleSoulInstanceRecoverMintConversation(ctx *apptheory.Contex
 	}
 	s.recordSoulMintInstanceReadAudit(ctx, convCtx.key, convCtx.agentIDHex, convCtx.conversationID, soulMintInstanceReadRouteRecover, "redispatched", resp.Status, len(resp.Body), started)
 	return resp, nil
+}
+
+func hostedGenesisSessionRequiresRestart(session *models.HostedGenesisSession) bool {
+	if session == nil || hostedgenesis.NormalizeStatus(session.Status) != hostedgenesis.StatusFailed || session.Failure == nil {
+		return false
+	}
+	return session.Failure.Recovery.Action == hostedgenesis.RecoveryActionRestartSoulBootstrap
 }
 
 // dispatchHostedGenesisRecoveryTurn re-dispatches a stuck accepted turn through

@@ -340,7 +340,7 @@ func (s *Server) progressHostedGenesisAcceptedTurnSync(ctx context.Context, regC
 		messages:     append([]soulMintConversationMessage(nil), acceptedMessages...),
 	})
 	if err != nil || strings.TrimSpace(result.fullResponse) == "" {
-		log.Printf("controlplane: hosted genesis assistant turn failed agent_hash=%s conversation_hash=%s provider=%s err=%v", soulMintInstanceReadAuditHash(regCtx.agentIDHex), soulMintInstanceReadAuditHash(session.conversationID), hostedGenesisProviderName(session.modelSet), err)
+		log.Printf("controlplane: hosted genesis assistant turn failed agent_hash=%s conversation_hash=%s provider=%s failure_code=%s", soulMintInstanceReadAuditHash(regCtx.agentIDHex), soulMintInstanceReadAuditHash(session.conversationID), hostedGenesisProviderName(session.modelSet), hostedGenesisFailureAssistantTurnFailed)
 		failedSession, failedConv, appErr := s.persistHostedGenesisAcceptedTurnFailure(ctx, session, conv, acceptedMessages, hostedGenesisFailureAssistantTurnFailed, requestID, time.Now().UTC())
 		if appErr != nil {
 			return nil, nil, 0, appErr

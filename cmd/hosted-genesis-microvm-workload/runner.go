@@ -132,7 +132,7 @@ func (r *turnRunner) runDeclarationExtraction(ctx context.Context, in turnInput,
 			Domain:               in.registration.DomainNormalized,
 			LocalID:              in.registration.LocalID,
 			AgentID:              in.registration.AgentID,
-			DeclaredCapabilities: in.registration.Capabilities,
+			DeclaredCapabilities: hostedgenesis.FilterDeclaredCapabilitiesForPrompt(in.registration.Capabilities),
 		},
 		Messages: append([]llm.MintConversationMessage(nil), messages...),
 	}
@@ -255,9 +255,9 @@ func (r *turnRunner) runDeclarationExtractionAndPersist(ctx context.Context, tur
 	if err != nil {
 		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeDeclarationExtractionFailed, err.Error())
 	}
-	declarationsJSON, err := r.buildProducedDeclarationsJSON(draft, in.modelSet, in.registration.Capabilities)
+	declarationsJSON, err := r.buildProducedDeclarationsJSON(draft, in.modelSet)
 	if err != nil {
-		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeInvalidProducedDeclarations, err.Error())
+		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeInvalidProducedDeclarations, string(hostedgenesis.DeclarationValidationCodeFromError(err)))
 	}
 	if persistErr := r.persistConversationDeclarationReady(ctx, &in, turn, declarationsJSON, declarationUsage); persistErr != nil {
 		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeInvalidProducedDeclarations, "persist declarations: "+persistErr.Error())
@@ -339,7 +339,12 @@ func (r *turnRunner) persistConversationDeclarationReady(ctx context.Context, in
 	return nil
 }
 
-func (r *turnRunner) buildProducedDeclarationsJSON(draft llm.MintConversationDeclarationsDraft, modelSet string, declaredCapabilities []string) (string, error) {
+// buildProducedDeclarationsJSON builds the instance-trust hosted/off-chain
+// declaration payload. Registration-declared capabilities are model context,
+// not produced evidence; an empty extracted capabilities array is valid.
+// The variadic parameter is retained for source compatibility with older unit
+// callers but is intentionally ignored.
+func (r *turnRunner) buildProducedDeclarationsJSON(draft llm.MintConversationDeclarationsDraft, modelSet string, _ ...[]string) (string, error) {
 	now := r.now()
 	decl := producedDeclarations{
 		SelfDescription: draft.SelfDescription,
@@ -350,22 +355,14 @@ func (r *turnRunner) buildProducedDeclarationsJSON(draft llm.MintConversationDec
 	decl.SelfDescription.AuthoredBy = "agent"
 	decl.SelfDescription.MintingModel = strings.TrimSpace(modelSet)
 	if err := decl.SelfDescription.Validate(); err != nil {
-		return "", fmt.Errorf("invalid extracted selfDescription: %w", err)
+		return "", hostedgenesis.NewDeclarationValidationError(hostedgenesis.DeclarationCodeSelfDescription)
 	}
-	for _, c := range draft.Capabilities {
-		c.ClaimLevel = "self-declared"
-		if strings.TrimSpace(c.Capability) == "" || strings.TrimSpace(c.Scope) == "" {
-			continue
-		}
-		if err := c.Validate(); err != nil {
-			continue
-		}
-		decl.Capabilities = append(decl.Capabilities, c)
+	var capErr error
+	decl.Capabilities, capErr = hostedgenesis.ValidateAndNormalizeProducedCapabilities(draft.Capabilities)
+	if capErr != nil {
+		return "", capErr
 	}
-	decl.Capabilities = hostedgenesis.MergeDeclaredCapabilities(decl.Capabilities, declaredCapabilities)
-	if len(decl.Capabilities) == 0 {
-		return "", fmt.Errorf("capabilities is required")
-	}
+	invalidBoundary := false
 	for i, b := range draft.Boundaries {
 		entry := soul.BoundaryV2{
 			ID:             fmt.Sprintf("mint-%d-%02d", now.Unix(), i+1),
@@ -377,19 +374,26 @@ func (r *turnRunner) buildProducedDeclarationsJSON(draft llm.MintConversationDec
 			Signature:      "0x00",
 		}
 		if err := entry.Validate(); err != nil {
+			invalidBoundary = true
 			continue
 		}
 		decl.Boundaries = append(decl.Boundaries, entry)
 	}
+	if invalidBoundary {
+		return "", hostedgenesis.NewDeclarationValidationError(hostedgenesis.DeclarationCodeBoundariesBad)
+	}
 	if len(decl.Boundaries) == 0 {
-		return "", fmt.Errorf("boundaries is required")
+		if len(draft.Boundaries) > 0 {
+			return "", hostedgenesis.NewDeclarationValidationError(hostedgenesis.DeclarationCodeBoundariesBad)
+		}
+		return "", hostedgenesis.NewDeclarationValidationError(hostedgenesis.DeclarationCodeBoundaries)
 	}
 	if decl.Transparency == nil {
 		decl.Transparency = map[string]any{}
 	}
 	body, err := json.Marshal(decl)
 	if err != nil {
-		return "", fmt.Errorf("marshal produced declarations: %w", err)
+		return "", hostedgenesis.NewDeclarationValidationError(hostedgenesis.DeclarationCodeInvalid)
 	}
 	return string(body), nil
 }

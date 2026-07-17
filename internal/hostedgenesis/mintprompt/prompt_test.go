@@ -48,6 +48,17 @@ func TestMintConversationSystemPrompt_OmitsEmptyContext(t *testing.T) {
 	}
 }
 
+func TestMintConversationSystemPrompt_FiltersRetiredHostedCapability(t *testing.T) {
+	reg := &models.SoulAgentRegistration{Capabilities: []string{"simulacrum.hosted-first-default", "planning"}}
+	got := MintConversationSystemPrompt(reg)
+	if strings.Contains(got, "simulacrum.hosted-first-default") {
+		t.Fatalf("prompt included retired placeholder capability: %q", got)
+	}
+	if !strings.Contains(got, "planning") {
+		t.Fatalf("prompt omitted real declared capability: %q", got)
+	}
+}
+
 func TestSanitizePromptInline_StripsControlCharsAndTruncates(t *testing.T) {
 	if got := SanitizePromptInline("a\x00b\x1fc", 0); got != "a b c" {
 		t.Fatalf("expected control chars replaced with spaces, got %q", got)
