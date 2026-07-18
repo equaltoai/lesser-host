@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
@@ -34,6 +35,39 @@ func TestMintConversationSystemPrompt_HostedOffchainHygiene(t *testing.T) {
 	for _, forbidden := range []string{"minted on-chain", "peer-validated", "operator-attested"} {
 		if strings.Contains(got, forbidden) {
 			t.Fatalf("prompt advertised stale/unsupported language %q: %q", forbidden, got)
+		}
+	}
+}
+
+func TestMintConversationSystemPrompt_FiveBodyContract(t *testing.T) {
+	got := MintConversationSystemPromptForContract(&models.SoulAgentRegistration{}, hostedgenesis.FiveBodyDeclarationContract())
+	for _, want := range []string{
+		hostedgenesis.DeclarationSchemaVersionV2,
+		hostedgenesis.GuidanceVersionV2,
+		"Phase 1 — identity",
+		"Phase 2 — philosophy",
+		"Phase 3 — discipline",
+		"Phase 4 — boundaries",
+		"Phase 5 — soul",
+		"Capabilities: concrete abilities only",
+		"Transparency: model/provider uncertainty",
+		CanonicalFinalAffirmationQuestion,
+		InjectionHardeningLine,
+		`claimLevel "self-declared"`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected v2 prompt to contain %q, got: %q", want, got)
+		}
+	}
+	if strings.Count(got, "Ground -> Act -> Record -> Re-ground") != 2 {
+		t.Fatalf("expected cadence defined once and echoed once, got prompt: %q", got)
+	}
+	if strings.Contains(strings.ToLower(got), "re-deriv") {
+		t.Fatalf("v2 prompt must not teach re-derivation: %q", got)
+	}
+	for _, forbidden := range []string{"minted on-chain", "peer-validated", "operator-attested"} {
+		if strings.Contains(got, forbidden) {
+			t.Fatalf("v2 prompt advertised stale/unsupported language %q: %q", forbidden, got)
 		}
 	}
 }

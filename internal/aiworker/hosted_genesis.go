@@ -37,6 +37,8 @@ const (
 	hostedGenesisFailureTenantBoundaryViolation     = "tenant_boundary_violation"
 )
 
+const hostedGenesisSelfDescriptionAuthoredByAgent = "agent"
+
 type hostedGenesisStore interface {
 	GetSoulAgentRegistration(ctx context.Context, id string) (*models.SoulAgentRegistration, error)
 	GetDomain(ctx context.Context, domain string) (*models.Domain, error)
@@ -55,10 +57,14 @@ type hostedGenesisMessage struct {
 }
 
 type hostedGenesisProducedDeclarations struct {
-	SelfDescription soul.SelfDescriptionV2 `json:"selfDescription"`
-	Capabilities    []soul.CapabilityV2    `json:"capabilities"`
-	Boundaries      []soul.BoundaryV2      `json:"boundaries"`
-	Transparency    map[string]any         `json:"transparency"`
+	SchemaVersion     string                             `json:"schemaVersion,omitempty"`
+	GuidanceVersion   string                             `json:"guidanceVersion,omitempty"`
+	FiveBodies        *hostedgenesis.FiveBodyDeclaration `json:"fiveBodies,omitempty"`
+	SelfDescription   soul.SelfDescriptionV2             `json:"selfDescription"`
+	Capabilities      []soul.CapabilityV2                `json:"capabilities"`
+	Boundaries        []soul.BoundaryV2                  `json:"boundaries"`
+	Transparency      map[string]any                     `json:"transparency"`
+	AdversarialReview *hostedgenesis.AdversarialReview   `json:"adversarialReview,omitempty"`
 }
 
 func (s *Server) handleHostedGenesisQueueMessage(ctx *apptheory.EventContext, msg events.SQSMessage) error {
@@ -217,6 +223,7 @@ type hostedGenesisDeclarationRun struct {
 	input    llm.MintConversationDeclarationsInput
 	modelSet string
 	apiKey   string
+	contract hostedgenesis.DeclarationContract
 }
 
 func hostedGenesisDeclarationJobReady(reg *models.SoulAgentRegistration, conv *models.SoulAgentMintConversation, session *models.HostedGenesisSession) bool {
@@ -235,15 +242,20 @@ func (s *Server) prepareHostedGenesisDeclarationRun(ctx context.Context, st host
 		persistErr := s.markHostedGenesisConversationFailed(ctx, st, conv, session, hostedGenesisFailureLLMUnavailable, workerRequestID)
 		return hostedGenesisDeclarationRun{}, false, persistErr
 	}
+	contract := hostedgenesis.DeclarationContractFromEnv()
 	return hostedGenesisDeclarationRun{
-		input:    hostedGenesisDeclarationInput(reg, messages),
+		input:    hostedGenesisDeclarationInput(reg, messages, contract),
 		modelSet: modelSet,
 		apiKey:   apiKey,
+		contract: contract,
 	}, true, nil
 }
 
-func hostedGenesisDeclarationInput(reg *models.SoulAgentRegistration, messages []hostedGenesisMessage) llm.MintConversationDeclarationsInput {
+func hostedGenesisDeclarationInput(reg *models.SoulAgentRegistration, messages []hostedGenesisMessage, contract hostedgenesis.DeclarationContract) llm.MintConversationDeclarationsInput {
+	contract = contract.Normalize()
 	in := llm.MintConversationDeclarationsInput{
+		SchemaVersion:   inputSchemaVersion(contract),
+		GuidanceVersion: inputGuidanceVersion(contract),
 		Registration: llm.MintConversationRegistrationContext{
 			Domain:               strings.TrimSpace(reg.DomainNormalized),
 			LocalID:              strings.TrimSpace(reg.LocalID),
@@ -253,6 +265,22 @@ func hostedGenesisDeclarationInput(reg *models.SoulAgentRegistration, messages [
 		Messages: hostedGenesisLLMMessages(messages),
 	}
 	return in
+}
+
+func inputSchemaVersion(contract hostedgenesis.DeclarationContract) string {
+	contract = contract.Normalize()
+	if !contract.IsFiveBody() {
+		return ""
+	}
+	return contract.SchemaVersion
+}
+
+func inputGuidanceVersion(contract hostedgenesis.DeclarationContract) string {
+	contract = contract.Normalize()
+	if !contract.IsFiveBody() {
+		return ""
+	}
+	return contract.GuidanceVersion
 }
 
 func hostedGenesisLLMMessages(messages []hostedGenesisMessage) []llm.MintConversationMessage {
@@ -272,7 +300,7 @@ func (s *Server) runAndPersistHostedGenesisDeclaration(ctx context.Context, st h
 		}
 		return err
 	}
-	decl, err := buildHostedGenesisDeclarationsDraft(draft, time.Now().UTC(), run.modelSet, run.input.Registration.DeclaredCapabilities)
+	decl, err := buildHostedGenesisDeclarationsDraftForContract(draft, time.Now().UTC(), run.modelSet, run.contract, run.input.Registration.DeclaredCapabilities)
 	if err != nil {
 		detail := string(hostedgenesis.DeclarationValidationCodeFromError(err))
 		log.Printf("aiworker: hosted genesis produced declarations rejected agent_hash=%s conversation_hash=%s failure_code=%s reason_code=%s", hostedGenesisAuditHash(conv.AgentID), hostedGenesisAuditHash(conv.ConversationID), hostedGenesisFailureInvalidProducedDeclarations, detail)
@@ -282,10 +310,10 @@ func (s *Server) runAndPersistHostedGenesisDeclaration(ctx context.Context, st h
 	if err != nil {
 		return s.markHostedGenesisConversationFailedWithDetail(ctx, st, conv, session, hostedGenesisFailureInvalidProducedDeclarations, string(hostedgenesis.DeclarationCodeInvalid), workerRequestID)
 	}
-	return persistHostedGenesisDeclarationResponse(ctx, st, conv, session, msg, workerRequestID, string(b), usage, run.modelSet)
+	return persistHostedGenesisDeclarationResponse(ctx, st, conv, session, msg, workerRequestID, string(b), usage, run.modelSet, run.contract)
 }
 
-func persistHostedGenesisDeclarationResponse(ctx context.Context, st hostedGenesisStore, conv *models.SoulAgentMintConversation, session *models.HostedGenesisSession, msg hostedgenesis.QueueMessage, workerRequestID string, declarationsJSON string, usage models.AIUsage, modelSet string) error {
+func persistHostedGenesisDeclarationResponse(ctx context.Context, st hostedGenesisStore, conv *models.SoulAgentMintConversation, session *models.HostedGenesisSession, msg hostedgenesis.QueueMessage, workerRequestID string, declarationsJSON string, usage models.AIUsage, modelSet string, contract hostedgenesis.DeclarationContract) error {
 	now := time.Now().UTC()
 	conv.ProducedDeclarations = models.EncodeSoulMintConversationBlob(declarationsJSON)
 	conv.Usage = addAIUsageWorker(conv.Usage, usage)
@@ -299,7 +327,7 @@ func persistHostedGenesisDeclarationResponse(ctx context.Context, st hostedGenes
 	if err := st.PutSoulAgentMintConversation(ctx, conv); err != nil {
 		return err
 	}
-	checkpoint := hostedGenesisDeclarationCheckpointFromWorker(session, conv, declarationsJSON, now, modelSet, conv.RequestID)
+	checkpoint := hostedGenesisDeclarationCheckpointFromWorker(session, conv, declarationsJSON, now, modelSet, conv.RequestID, contract)
 	session.Status = string(hostedgenesis.StatusDeclarationReady)
 	session.DeclarationCheckpoint = &checkpoint
 	session.Failure = nil
@@ -619,7 +647,7 @@ func hostedGenesisHasAssistant(messages []hostedGenesisMessage) bool {
 	return false
 }
 
-func hostedGenesisDeclarationCheckpointFromWorker(session *models.HostedGenesisSession, conv *models.SoulAgentMintConversation, declarationsJSON string, now time.Time, modelSet string, requestID string) hostedgenesis.DeclarationCheckpoint {
+func hostedGenesisDeclarationCheckpointFromWorker(session *models.HostedGenesisSession, conv *models.SoulAgentMintConversation, declarationsJSON string, now time.Time, modelSet string, requestID string, contract hostedgenesis.DeclarationContract) hostedgenesis.DeclarationCheckpoint {
 	sum := sha256.Sum256([]byte(strings.TrimSpace(declarationsJSON)))
 	hashHex := hex.EncodeToString(sum[:])
 	messageCount := 0
@@ -641,8 +669,26 @@ func hostedGenesisDeclarationCheckpointFromWorker(session *models.HostedGenesisS
 		AgentID:         strings.ToLower(strings.TrimSpace(conv.AgentID)),
 		MessageCount:    messageCount,
 		Model:           strings.TrimSpace(modelSet),
+		SchemaVersion:   checkpointSchemaVersion(contract),
+		GuidanceVersion: checkpointGuidanceVersion(contract),
 		RequestID:       strings.TrimSpace(requestID),
 	}
+}
+
+func checkpointSchemaVersion(contract hostedgenesis.DeclarationContract) string {
+	contract = contract.Normalize()
+	if !contract.IsFiveBody() {
+		return ""
+	}
+	return contract.SchemaVersion
+}
+
+func checkpointGuidanceVersion(contract hostedgenesis.DeclarationContract) string {
+	contract = contract.Normalize()
+	if !contract.IsFiveBody() {
+		return ""
+	}
+	return contract.GuidanceVersion
 }
 
 func hostedGenesisFailureFromWorkerReason(reason string) *hostedgenesis.Failure {
@@ -761,17 +807,25 @@ func hostedGenesisAPIKey(ctx context.Context, modelSet string) (string, error) {
 }
 
 func hostedGenesisSystemPrompt(reg *models.SoulAgentRegistration) string {
-	return mintprompt.MintConversationSystemPrompt(reg)
+	return mintprompt.MintConversationSystemPromptForContract(reg, hostedgenesis.DeclarationContractFromEnv())
 }
 
 func buildHostedGenesisDeclarationsDraft(draft llm.MintConversationDeclarationsDraft, now time.Time, modelSet string, _ ...[]string) (hostedGenesisProducedDeclarations, error) {
+	return buildHostedGenesisDeclarationsDraftForContract(draft, now, modelSet, hostedgenesis.LegacyDeclarationContract())
+}
+
+func buildHostedGenesisDeclarationsDraftForContract(draft llm.MintConversationDeclarationsDraft, now time.Time, modelSet string, contract hostedgenesis.DeclarationContract, _ ...[]string) (hostedGenesisProducedDeclarations, error) {
+	contract = contract.Normalize()
+	if contract.IsFiveBody() {
+		return buildHostedGenesisFiveBodyDeclarationsDraft(draft, now, modelSet, contract)
+	}
 	decl := hostedGenesisProducedDeclarations{
 		SelfDescription: draft.SelfDescription,
 		Capabilities:    []soul.CapabilityV2{},
 		Boundaries:      []soul.BoundaryV2{},
 		Transparency:    draft.Transparency,
 	}
-	decl.SelfDescription.AuthoredBy = "agent"
+	decl.SelfDescription.AuthoredBy = hostedGenesisSelfDescriptionAuthoredByAgent
 	decl.SelfDescription.MintingModel = strings.TrimSpace(modelSet)
 	if err := decl.SelfDescription.Validate(); err != nil {
 		return hostedGenesisProducedDeclarations{}, hostedgenesis.NewDeclarationValidationError(hostedgenesis.DeclarationCodeSelfDescription)
@@ -811,6 +865,63 @@ func buildHostedGenesisDeclarationsDraft(draft llm.MintConversationDeclarationsD
 		decl.Transparency = map[string]any{}
 	}
 	return decl, nil
+}
+
+func buildHostedGenesisFiveBodyDeclarationsDraft(draft llm.MintConversationDeclarationsDraft, now time.Time, modelSet string, contract hostedgenesis.DeclarationContract) (hostedGenesisProducedDeclarations, error) {
+	if err := hostedgenesis.ValidateDeclarationContractVersions(draft.SchemaVersion, draft.GuidanceVersion, contract); err != nil {
+		return hostedGenesisProducedDeclarations{}, err
+	}
+	fiveBodies := hostedgenesis.NormalizeFiveBodyDeclaration(draft.FiveBodies)
+	if err := hostedgenesis.ValidateFiveBodyDeclaration(fiveBodies); err != nil {
+		return hostedGenesisProducedDeclarations{}, err
+	}
+	review, err := hostedgenesis.BuildAdversarialReviewV2(fiveBodies)
+	if err != nil {
+		return hostedGenesisProducedDeclarations{}, err
+	}
+	decl := hostedGenesisProducedDeclarations{
+		SchemaVersion:     contract.SchemaVersion,
+		GuidanceVersion:   contract.GuidanceVersion,
+		FiveBodies:        &fiveBodies,
+		SelfDescription:   fiveBodySelfDescription(draft.SelfDescription, fiveBodies, modelSet),
+		Capabilities:      []soul.CapabilityV2{},
+		Boundaries:        hostedgenesis.FiveBodyBoundaries(fiveBodies.Soul.Refusals, now),
+		Transparency:      draft.Transparency,
+		AdversarialReview: &review,
+	}
+	if err := decl.SelfDescription.Validate(); err != nil {
+		return hostedGenesisProducedDeclarations{}, hostedgenesis.NewDeclarationValidationError(hostedgenesis.DeclarationCodeSelfDescription)
+	}
+	var capErr error
+	decl.Capabilities, capErr = hostedgenesis.ValidateAndNormalizeProducedCapabilities(draft.Capabilities)
+	if capErr != nil {
+		return hostedGenesisProducedDeclarations{}, capErr
+	}
+	if len(decl.Boundaries) < 3 {
+		return hostedGenesisProducedDeclarations{}, hostedgenesis.NewDeclarationValidationError(hostedgenesis.DeclarationCodeSoulRefusals)
+	}
+	for i := range decl.Boundaries {
+		if err := decl.Boundaries[i].Validate(); err != nil {
+			return hostedGenesisProducedDeclarations{}, hostedgenesis.NewDeclarationValidationError(hostedgenesis.DeclarationCodeBoundariesBad)
+		}
+	}
+	if decl.Transparency == nil {
+		decl.Transparency = map[string]any{}
+	}
+	if err := hostedgenesis.ValidateAdversarialReview(review); err != nil {
+		return hostedGenesisProducedDeclarations{}, err
+	}
+	return decl, nil
+}
+
+func fiveBodySelfDescription(source soul.SelfDescriptionV2, fiveBodies hostedgenesis.FiveBodyDeclaration, modelSet string) soul.SelfDescriptionV2 {
+	source.Purpose = firstNonEmptyWorker(source.Purpose, fiveBodies.Identity.Summary)
+	source.Constraints = firstNonEmptyWorker(source.Constraints, fiveBodies.Boundaries.Summary)
+	source.Commitments = firstNonEmptyWorker(source.Commitments, fiveBodies.Philosophy.Summary)
+	source.Limitations = firstNonEmptyWorker(source.Limitations, fiveBodies.Soul.Summary)
+	source.AuthoredBy = hostedGenesisSelfDescriptionAuthoredByAgent
+	source.MintingModel = strings.TrimSpace(modelSet)
+	return source
 }
 
 func addAIUsageWorker(existing models.AIUsage, delta models.AIUsage) models.AIUsage {

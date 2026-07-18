@@ -5,12 +5,15 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/aws/aws-lambda-go/events"
+	"github.com/santhosh-tekuri/jsonschema/v6"
 	apptheory "github.com/theory-cloud/apptheory/runtime"
 	runtimemicrovm "github.com/theory-cloud/apptheory/runtime/microvm"
 	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
@@ -49,6 +52,7 @@ const (
 	hostedGenesisWorkerOpenAIKey   = "openai-test-key"
 	hostedGenesisWorkerOpenAIModel = "openai:gpt-test"
 	hostedGenesisWorkerAgentDomain = "agent.example"
+	hostedGenesisWorkerAgentLocal  = "agent"
 	hostedGenesisWorkerMutated     = "mutated"
 )
 
@@ -204,7 +208,7 @@ func newHostedGenesisWorkerStore(turnID string) *fakeHostedGenesisStore {
 		reg: &models.SoulAgentRegistration{
 			ID:               "reg-worker",
 			DomainNormalized: hostedGenesisWorkerAgentDomain,
-			LocalID:          "agent",
+			LocalID:          hostedGenesisWorkerAgentLocal,
 			AgentID:          "0x" + strings.Repeat("44", 32),
 			CreatedAt:        now,
 			UpdatedAt:        now,
@@ -1200,7 +1204,7 @@ func TestHostedGenesisDeclarationsDraftBuilder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected declarations draft error: %v", err)
 	}
-	if decl.SelfDescription.AuthoredBy != "agent" ||
+	if decl.SelfDescription.AuthoredBy != hostedGenesisSelfDescriptionAuthoredByAgent ||
 		decl.SelfDescription.MintingModel != "anthropic:claude-sonnet-4-6" ||
 		len(decl.Capabilities) != 1 ||
 		len(decl.Boundaries) != 1 ||
@@ -1212,6 +1216,20 @@ func TestHostedGenesisDeclarationsDraftBuilder(t *testing.T) {
 	if _, err := buildHostedGenesisDeclarationsDraft(badDraft, time.Now(), "openai:gpt-5"); err == nil {
 		t.Fatalf("expected invalid self-description error")
 	}
+}
+
+func TestHostedGenesisDeclarationsDraftBuilderLegacyMarshalsWithoutV2EvidenceKeys(t *testing.T) {
+	t.Parallel()
+
+	decl, err := buildHostedGenesisDeclarationsDraftForContract(validHostedGenesisDraft(), time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC), "anthropic:claude-sonnet-4-6", hostedgenesis.LegacyDeclarationContract())
+	if err != nil {
+		t.Fatalf("unexpected declarations draft error: %v", err)
+	}
+	body, err := json.Marshal(decl)
+	if err != nil {
+		t.Fatalf("marshal produced declarations: %v", err)
+	}
+	assertHostedGenesisJSONKeysAbsent(t, body, "schemaVersion", "guidanceVersion", "fiveBodies", "adversarialReview")
 }
 
 func TestHostedGenesisDeclarationsDraftBuilderAllowsEmptyCapabilities(t *testing.T) {
@@ -1264,6 +1282,162 @@ func validHostedGenesisDraft() llm.MintConversationDeclarationsDraft {
 			{Category: "refusal", Statement: "I will not reveal credentials.", Rationale: "protects operators"},
 		},
 	}
+}
+
+func TestHostedGenesisFiveBodyPromptAndInputAreFlagGated(t *testing.T) {
+	t.Setenv(hostedgenesis.EnvDeclarationSchemaVersion, "")
+	reg := newHostedGenesisWorkerStore("turn-worker").reg
+	legacyPrompt := hostedGenesisSystemPrompt(reg)
+	if strings.Contains(legacyPrompt, hostedgenesis.DeclarationSchemaVersionV2) || strings.Contains(legacyPrompt, "Phase 1 — identity") {
+		t.Fatalf("v1 prompt must remain unchanged while flag disabled: %q", legacyPrompt)
+	}
+	legacyInput := hostedGenesisDeclarationInput(reg, []hostedGenesisMessage{{Role: "user", Content: "hello"}}, hostedgenesis.DeclarationContractFromEnv())
+	if legacyInput.SchemaVersion != "" || legacyInput.GuidanceVersion != "" {
+		t.Fatalf("v1 extraction input must not carry v2 version evidence: %#v", legacyInput)
+	}
+
+	t.Setenv(hostedgenesis.EnvDeclarationSchemaVersion, "v2")
+	v2Prompt := hostedGenesisSystemPrompt(reg)
+	if !strings.Contains(v2Prompt, hostedgenesis.DeclarationSchemaVersionV2) || !strings.Contains(v2Prompt, "Phase 5 — soul") {
+		t.Fatalf("v2 prompt missing contract evidence: %q", v2Prompt)
+	}
+	v2Input := hostedGenesisDeclarationInput(reg, []hostedGenesisMessage{{Role: "user", Content: "hello"}}, hostedgenesis.DeclarationContractFromEnv())
+	if v2Input.SchemaVersion != hostedgenesis.DeclarationSchemaVersionV2 || v2Input.GuidanceVersion != hostedgenesis.GuidanceVersionV2 {
+		t.Fatalf("v2 extraction input missing versions: %#v", v2Input)
+	}
+}
+
+func TestHostedGenesisFiveBodyDeclarationsDraftBuilder(t *testing.T) {
+	t.Parallel()
+
+	contract := hostedgenesis.FiveBodyDeclarationContract()
+	now := time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC)
+	decl, err := buildHostedGenesisDeclarationsDraftForContract(validHostedGenesisFiveBodyDraft(), now, "openai:gpt-5", contract)
+	if err != nil {
+		t.Fatalf("unexpected v2 declaration error: %v", err)
+	}
+	if decl.SchemaVersion != hostedgenesis.DeclarationSchemaVersionV2 || decl.GuidanceVersion != hostedgenesis.GuidanceVersionV2 || decl.AdversarialReview == nil {
+		t.Fatalf("expected v2 version and review evidence, got %#v", decl)
+	}
+	if decl.FiveBodies == nil || decl.FiveBodies.Identity.Summary == "" || len(decl.Boundaries) != 3 || !strings.Contains(decl.Boundaries[0].Statement, "closest safe path") {
+		t.Fatalf("expected five bodies mapped to three refusal boundaries, got %#v", decl)
+	}
+	if decl.SelfDescription.Purpose != decl.FiveBodies.Identity.Summary || decl.SelfDescription.MintingModel != "openai:gpt-5" {
+		t.Fatalf("expected lossless v1 mapping for publication, got %#v", decl.SelfDescription)
+	}
+}
+
+func TestHostedGenesisFiveBodyDeclarationsConformToPublishedSchemaWithSparseOptionalEvidence(t *testing.T) {
+	t.Parallel()
+
+	contract := hostedgenesis.FiveBodyDeclarationContract()
+	decl, err := buildHostedGenesisDeclarationsDraftForContract(validHostedGenesisFiveBodyDraft(), time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC), "openai:gpt-5", contract)
+	if err != nil {
+		t.Fatalf("unexpected v2 declaration error: %v", err)
+	}
+	body, err := json.Marshal(decl)
+	if err != nil {
+		t.Fatalf("marshal produced declarations: %v", err)
+	}
+	for _, omitted := range []string{`"notes"`, `"lastValidated"`, `"validationRef"`, `"degradesTo"`} {
+		if strings.Contains(string(body), omitted) {
+			t.Fatalf("expected sparse v2 declaration to omit optional %s, got %s", omitted, string(body))
+		}
+	}
+	validateHostedGenesisPublishedFiveBodySchema(t, body)
+}
+
+func TestHostedGenesisFiveBodyDeclarationsRejectGenericRefusals(t *testing.T) {
+	t.Parallel()
+
+	draft := validHostedGenesisFiveBodyDraft()
+	draft.FiveBodies.Soul.Refusals[0].Bypass = "unsafe requests"
+	_, err := buildHostedGenesisDeclarationsDraftForContract(draft, time.Now(), "openai:gpt-5", hostedgenesis.FiveBodyDeclarationContract())
+	if got := hostedgenesis.DeclarationValidationCodeFromError(err); got != hostedgenesis.DeclarationCodeSoulRefusalsBad {
+		t.Fatalf("expected generic refusal rejection, got err=%v code=%q", err, got)
+	}
+}
+
+func TestHostedGenesisFiveBodyDeclarationsRequireVersionEvidence(t *testing.T) {
+	t.Parallel()
+
+	draft := validHostedGenesisFiveBodyDraft()
+	draft.GuidanceVersion = ""
+	_, err := buildHostedGenesisDeclarationsDraftForContract(draft, time.Now(), "openai:gpt-5", hostedgenesis.FiveBodyDeclarationContract())
+	if got := hostedgenesis.DeclarationValidationCodeFromError(err); got != hostedgenesis.DeclarationCodeInvalid {
+		t.Fatalf("expected missing v2 guidance evidence to fail closed, got err=%v code=%q", err, got)
+	}
+}
+
+func validHostedGenesisFiveBodyDraft() llm.MintConversationDeclarationsDraft {
+	contract := hostedgenesis.FiveBodyDeclarationContract()
+	return llm.MintConversationDeclarationsDraft{
+		SchemaVersion:   contract.SchemaVersion,
+		GuidanceVersion: contract.GuidanceVersion,
+		FiveBodies: hostedgenesis.FiveBodyDeclaration{
+			Identity:   hostedgenesis.FiveBodySection{Summary: "I am Acme Steward, a hosted/off-chain agent for operator support."},
+			Philosophy: hostedgenesis.FiveBodySection{Summary: "I value narrow authority, auditability, and direct statements of uncertainty."},
+			Discipline: hostedgenesis.FiveBodySection{Summary: "I use the named cadence, keep evidence, and pause on unclear authority."},
+			Boundaries: hostedgenesis.FiveBodySection{Summary: "I protect tenant isolation, credentials, and human publish gates."},
+			Soul: hostedgenesis.FiveBodySoulBody{
+				Summary: "I preserve Host safety invariants even when asked to move faster.",
+				Refusals: []hostedgenesis.FiveBodyRefusalRule{
+					{Bypass: "Skip checksum verification for a managed release", Invariant: "consumer release verification must run before deploy", ClosestSafePath: "run managed-release-certification on the published artifact"},
+					{Bypass: "Return a raw Instance API key on reread", Invariant: "Host stores and compares only sha256 key hashes", ClosestSafePath: "issue a new key through controlled rotation and show only the hash id"},
+					{Bypass: "Finalize without explicit human authorization", Invariant: "hosted genesis keeps a human publish gate", ClosestSafePath: "return declaration_ready and wait for the finalize call"},
+				},
+			},
+		},
+		Capabilities: []soul.CapabilityV2{{Capability: "operator_support", Scope: "Help operators reason about hosted genesis state.", ClaimLevel: "self-declared"}},
+		Transparency: map[string]any{"modelProviderUncertainty": "unit test", "operationalNotes": "deterministic", "selfDeclaredNotice": "self-declared"},
+	}
+}
+
+func assertHostedGenesisJSONKeysAbsent(t *testing.T, body []byte, keys ...string) {
+	t.Helper()
+	var parsed map[string]any
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		t.Fatalf("parse produced declarations: %v\n%s", err, string(body))
+	}
+	for _, key := range keys {
+		if _, ok := parsed[key]; ok {
+			t.Fatalf("expected produced declarations to omit %q, got %s", key, string(body))
+		}
+	}
+}
+
+func validateHostedGenesisPublishedFiveBodySchema(t *testing.T, body []byte) {
+	t.Helper()
+	var parsed any
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		t.Fatalf("parse produced declarations: %v\n%s", err, string(body))
+	}
+	if err := mustCompileHostedGenesisPublishedFiveBodySchema(t).Validate(parsed); err != nil {
+		t.Fatalf("produced declarations did not validate against published schema: %v\n%s", err, string(body))
+	}
+}
+
+func mustCompileHostedGenesisPublishedFiveBodySchema(t *testing.T) *jsonschema.Schema {
+	t.Helper()
+	schemaPath := filepath.Join("..", "..", "docs", "contracts", "soul-five-body.schema.v2.json")
+	raw, readErr := os.ReadFile(schemaPath)
+	if readErr != nil {
+		t.Fatalf("read published five-body schema: %v", readErr)
+	}
+	var doc any
+	if unmarshalErr := json.Unmarshal(raw, &doc); unmarshalErr != nil {
+		t.Fatalf("parse published five-body schema: %v", unmarshalErr)
+	}
+	compiler := jsonschema.NewCompiler()
+	compiler.DefaultDraft(jsonschema.Draft2020)
+	if addErr := compiler.AddResource(schemaPath, doc); addErr != nil {
+		t.Fatalf("add published five-body schema resource: %v", addErr)
+	}
+	schema, compileErr := compiler.Compile(schemaPath)
+	if compileErr != nil {
+		t.Fatalf("compile published five-body schema: %v", compileErr)
+	}
+	return schema
 }
 
 type stubHostedGenesisWorkerMicroVMDispatcher struct {
