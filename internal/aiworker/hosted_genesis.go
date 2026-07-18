@@ -57,14 +57,14 @@ type hostedGenesisMessage struct {
 }
 
 type hostedGenesisProducedDeclarations struct {
-	SchemaVersion     string                            `json:"schemaVersion,omitempty"`
-	GuidanceVersion   string                            `json:"guidanceVersion,omitempty"`
-	FiveBodies        hostedgenesis.FiveBodyDeclaration `json:"fiveBodies,omitempty"`
-	SelfDescription   soul.SelfDescriptionV2            `json:"selfDescription"`
-	Capabilities      []soul.CapabilityV2               `json:"capabilities"`
-	Boundaries        []soul.BoundaryV2                 `json:"boundaries"`
-	Transparency      map[string]any                    `json:"transparency"`
-	AdversarialReview *hostedgenesis.AdversarialReview  `json:"adversarialReview,omitempty"`
+	SchemaVersion     string                             `json:"schemaVersion,omitempty"`
+	GuidanceVersion   string                             `json:"guidanceVersion,omitempty"`
+	FiveBodies        *hostedgenesis.FiveBodyDeclaration `json:"fiveBodies,omitempty"`
+	SelfDescription   soul.SelfDescriptionV2             `json:"selfDescription"`
+	Capabilities      []soul.CapabilityV2                `json:"capabilities"`
+	Boundaries        []soul.BoundaryV2                  `json:"boundaries"`
+	Transparency      map[string]any                     `json:"transparency"`
+	AdversarialReview *hostedgenesis.AdversarialReview   `json:"adversarialReview,omitempty"`
 }
 
 func (s *Server) handleHostedGenesisQueueMessage(ctx *apptheory.EventContext, msg events.SQSMessage) error {
@@ -882,7 +882,7 @@ func buildHostedGenesisFiveBodyDeclarationsDraft(draft llm.MintConversationDecla
 	decl := hostedGenesisProducedDeclarations{
 		SchemaVersion:     contract.SchemaVersion,
 		GuidanceVersion:   contract.GuidanceVersion,
-		FiveBodies:        fiveBodies,
+		FiveBodies:        &fiveBodies,
 		SelfDescription:   fiveBodySelfDescription(draft.SelfDescription, fiveBodies, modelSet),
 		Capabilities:      []soul.CapabilityV2{},
 		Boundaries:        hostedgenesis.FiveBodyBoundaries(fiveBodies.Soul.Refusals, now),

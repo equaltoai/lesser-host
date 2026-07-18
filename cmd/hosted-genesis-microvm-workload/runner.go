@@ -303,14 +303,14 @@ func hasAssistantMessage(messages []llm.MintConversationMessage) bool {
 }
 
 type producedDeclarations struct {
-	SchemaVersion     string                            `json:"schemaVersion,omitempty"`
-	GuidanceVersion   string                            `json:"guidanceVersion,omitempty"`
-	FiveBodies        hostedgenesis.FiveBodyDeclaration `json:"fiveBodies,omitempty"`
-	SelfDescription   soul.SelfDescriptionV2            `json:"selfDescription"`
-	Capabilities      []soul.CapabilityV2               `json:"capabilities"`
-	Boundaries        []soul.BoundaryV2                 `json:"boundaries"`
-	Transparency      map[string]any                    `json:"transparency"`
-	AdversarialReview *hostedgenesis.AdversarialReview  `json:"adversarialReview,omitempty"`
+	SchemaVersion     string                             `json:"schemaVersion,omitempty"`
+	GuidanceVersion   string                             `json:"guidanceVersion,omitempty"`
+	FiveBodies        *hostedgenesis.FiveBodyDeclaration `json:"fiveBodies,omitempty"`
+	SelfDescription   soul.SelfDescriptionV2             `json:"selfDescription"`
+	Capabilities      []soul.CapabilityV2                `json:"capabilities"`
+	Boundaries        []soul.BoundaryV2                  `json:"boundaries"`
+	Transparency      map[string]any                     `json:"transparency"`
+	AdversarialReview *hostedgenesis.AdversarialReview   `json:"adversarialReview,omitempty"`
 }
 
 func (r *turnRunner) persistConversationAssistantTurn(ctx context.Context, in *turnInput, turn completion.CompletionTurn, messages []llm.MintConversationMessage, usage models.AIUsage) error {
@@ -444,7 +444,7 @@ func (r *turnRunner) buildFiveBodyProducedDeclarationsJSON(draft llm.MintConvers
 	decl := producedDeclarations{
 		SchemaVersion:     contract.SchemaVersion,
 		GuidanceVersion:   contract.GuidanceVersion,
-		FiveBodies:        fiveBodies,
+		FiveBodies:        &fiveBodies,
 		SelfDescription:   fiveBodySelfDescription(draft.SelfDescription, fiveBodies, modelSet),
 		Capabilities:      []soul.CapabilityV2{},
 		Boundaries:        hostedgenesis.FiveBodyBoundaries(fiveBodies.Soul.Refusals, now),

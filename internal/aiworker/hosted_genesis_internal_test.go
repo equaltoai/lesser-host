@@ -5,12 +5,15 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/aws/aws-lambda-go/events"
+	"github.com/santhosh-tekuri/jsonschema/v6"
 	apptheory "github.com/theory-cloud/apptheory/runtime"
 	runtimemicrovm "github.com/theory-cloud/apptheory/runtime/microvm"
 	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
@@ -1215,6 +1218,20 @@ func TestHostedGenesisDeclarationsDraftBuilder(t *testing.T) {
 	}
 }
 
+func TestHostedGenesisDeclarationsDraftBuilderLegacyMarshalsWithoutV2EvidenceKeys(t *testing.T) {
+	t.Parallel()
+
+	decl, err := buildHostedGenesisDeclarationsDraftForContract(validHostedGenesisDraft(), time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC), "anthropic:claude-sonnet-4-6", hostedgenesis.LegacyDeclarationContract())
+	if err != nil {
+		t.Fatalf("unexpected declarations draft error: %v", err)
+	}
+	body, err := json.Marshal(decl)
+	if err != nil {
+		t.Fatalf("marshal produced declarations: %v", err)
+	}
+	assertHostedGenesisJSONKeysAbsent(t, body, "schemaVersion", "guidanceVersion", "fiveBodies", "adversarialReview")
+}
+
 func TestHostedGenesisDeclarationsDraftBuilderAllowsEmptyCapabilities(t *testing.T) {
 	t.Parallel()
 
@@ -1302,12 +1319,32 @@ func TestHostedGenesisFiveBodyDeclarationsDraftBuilder(t *testing.T) {
 	if decl.SchemaVersion != hostedgenesis.DeclarationSchemaVersionV2 || decl.GuidanceVersion != hostedgenesis.GuidanceVersionV2 || decl.AdversarialReview == nil {
 		t.Fatalf("expected v2 version and review evidence, got %#v", decl)
 	}
-	if decl.FiveBodies.Identity.Summary == "" || len(decl.Boundaries) != 3 || !strings.Contains(decl.Boundaries[0].Statement, "closest safe path") {
+	if decl.FiveBodies == nil || decl.FiveBodies.Identity.Summary == "" || len(decl.Boundaries) != 3 || !strings.Contains(decl.Boundaries[0].Statement, "closest safe path") {
 		t.Fatalf("expected five bodies mapped to three refusal boundaries, got %#v", decl)
 	}
 	if decl.SelfDescription.Purpose != decl.FiveBodies.Identity.Summary || decl.SelfDescription.MintingModel != "openai:gpt-5" {
 		t.Fatalf("expected lossless v1 mapping for publication, got %#v", decl.SelfDescription)
 	}
+}
+
+func TestHostedGenesisFiveBodyDeclarationsConformToPublishedSchemaWithSparseOptionalEvidence(t *testing.T) {
+	t.Parallel()
+
+	contract := hostedgenesis.FiveBodyDeclarationContract()
+	decl, err := buildHostedGenesisDeclarationsDraftForContract(validHostedGenesisFiveBodyDraft(), time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC), "openai:gpt-5", contract)
+	if err != nil {
+		t.Fatalf("unexpected v2 declaration error: %v", err)
+	}
+	body, err := json.Marshal(decl)
+	if err != nil {
+		t.Fatalf("marshal produced declarations: %v", err)
+	}
+	for _, omitted := range []string{`"notes"`, `"lastValidated"`, `"validationRef"`, `"degradesTo"`} {
+		if strings.Contains(string(body), omitted) {
+			t.Fatalf("expected sparse v2 declaration to omit optional %s, got %s", omitted, string(body))
+		}
+	}
+	validateHostedGenesisPublishedFiveBodySchema(t, body)
 }
 
 func TestHostedGenesisFiveBodyDeclarationsRejectGenericRefusals(t *testing.T) {
@@ -1354,6 +1391,53 @@ func validHostedGenesisFiveBodyDraft() llm.MintConversationDeclarationsDraft {
 		Capabilities: []soul.CapabilityV2{{Capability: "operator_support", Scope: "Help operators reason about hosted genesis state.", ClaimLevel: "self-declared"}},
 		Transparency: map[string]any{"modelProviderUncertainty": "unit test", "operationalNotes": "deterministic", "selfDeclaredNotice": "self-declared"},
 	}
+}
+
+func assertHostedGenesisJSONKeysAbsent(t *testing.T, body []byte, keys ...string) {
+	t.Helper()
+	var parsed map[string]any
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		t.Fatalf("parse produced declarations: %v\n%s", err, string(body))
+	}
+	for _, key := range keys {
+		if _, ok := parsed[key]; ok {
+			t.Fatalf("expected produced declarations to omit %q, got %s", key, string(body))
+		}
+	}
+}
+
+func validateHostedGenesisPublishedFiveBodySchema(t *testing.T, body []byte) {
+	t.Helper()
+	var parsed any
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		t.Fatalf("parse produced declarations: %v\n%s", err, string(body))
+	}
+	if err := mustCompileHostedGenesisPublishedFiveBodySchema(t).Validate(parsed); err != nil {
+		t.Fatalf("produced declarations did not validate against published schema: %v\n%s", err, string(body))
+	}
+}
+
+func mustCompileHostedGenesisPublishedFiveBodySchema(t *testing.T) *jsonschema.Schema {
+	t.Helper()
+	schemaPath := filepath.Join("..", "..", "docs", "contracts", "soul-five-body.schema.v2.json")
+	raw, readErr := os.ReadFile(schemaPath)
+	if readErr != nil {
+		t.Fatalf("read published five-body schema: %v", readErr)
+	}
+	var doc any
+	if unmarshalErr := json.Unmarshal(raw, &doc); unmarshalErr != nil {
+		t.Fatalf("parse published five-body schema: %v", unmarshalErr)
+	}
+	compiler := jsonschema.NewCompiler()
+	compiler.DefaultDraft(jsonschema.Draft2020)
+	if addErr := compiler.AddResource(schemaPath, doc); addErr != nil {
+		t.Fatalf("add published five-body schema resource: %v", addErr)
+	}
+	schema, compileErr := compiler.Compile(schemaPath)
+	if compileErr != nil {
+		t.Fatalf("compile published five-body schema: %v", compileErr)
+	}
+	return schema
 }
 
 type stubHostedGenesisWorkerMicroVMDispatcher struct {

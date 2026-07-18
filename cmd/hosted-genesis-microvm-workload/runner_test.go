@@ -7,9 +7,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/santhosh-tekuri/jsonschema/v6"
 
 	"github.com/equaltoai/lesser-host/internal/ai/llm"
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
@@ -454,6 +457,15 @@ func TestLoadTurnInputFiveBodyFlagPinsPromptAndExtractionInput(t *testing.T) {
 	}
 }
 
+func TestBuildProducedDeclarationsJSONLegacyOmitsV2EvidenceKeys(t *testing.T) {
+	runner := &turnRunner{nowFunc: func() time.Time { return time.Unix(3000, 0).UTC() }}
+	body, err := runner.buildProducedDeclarationsJSON(validLegacyDeclarationDraft(), "openai:gpt-test", hostedgenesis.LegacyDeclarationContract())
+	if err != nil {
+		t.Fatalf("buildProducedDeclarationsJSON: %v", err)
+	}
+	assertJSONKeysAbsent(t, []byte(body), "schemaVersion", "guidanceVersion", "fiveBodies", "adversarialReview")
+}
+
 func TestBuildProducedDeclarationsJSONFiveBodyPinsVersionsAndReview(t *testing.T) {
 	runner := &turnRunner{nowFunc: func() time.Time { return time.Unix(3000, 0).UTC() }}
 	body, err := runner.buildProducedDeclarationsJSON(validFiveBodyDeclarationDraft(), "openai:gpt-test")
@@ -468,6 +480,20 @@ func TestBuildProducedDeclarationsJSONFiveBodyPinsVersionsAndReview(t *testing.T
 	if strings.Count(body, "closest safe path") < 3 {
 		t.Fatalf("expected three mapped concrete refusal boundaries, got %s", body)
 	}
+}
+
+func TestBuildProducedDeclarationsJSONFiveBodyConformsToPublishedSchemaWithSparseOptionalEvidence(t *testing.T) {
+	runner := &turnRunner{nowFunc: func() time.Time { return time.Unix(3000, 0).UTC() }}
+	body, err := runner.buildProducedDeclarationsJSON(validFiveBodyDeclarationDraft(), "openai:gpt-test", hostedgenesis.FiveBodyDeclarationContract())
+	if err != nil {
+		t.Fatalf("buildProducedDeclarationsJSON: %v", err)
+	}
+	for _, omitted := range []string{`"notes"`, `"lastValidated"`, `"validationRef"`, `"degradesTo"`} {
+		if strings.Contains(body, omitted) {
+			t.Fatalf("expected sparse v2 declaration to omit optional %s, got %s", omitted, body)
+		}
+	}
+	validatePublishedFiveBodySchema(t, []byte(body))
 }
 
 func TestBuildProducedDeclarationsJSONFiveBodyRejectsRefusalFloor(t *testing.T) {
@@ -487,6 +513,23 @@ func TestBuildProducedDeclarationsJSONFiveBodyRequiresRunContractEvidence(t *tes
 	_, err := runner.buildProducedDeclarationsJSON(draft, "openai:gpt-test", hostedgenesis.FiveBodyDeclarationContract())
 	if got := hostedgenesis.DeclarationValidationCodeFromError(err); got != hostedgenesis.DeclarationCodeInvalid {
 		t.Fatalf("expected missing v2 schema evidence to fail closed, got err=%v code=%q", err, got)
+	}
+}
+
+func validLegacyDeclarationDraft() llm.MintConversationDeclarationsDraft {
+	return llm.MintConversationDeclarationsDraft{
+		SelfDescription: soul.SelfDescriptionV2{
+			Purpose:     "I help operators reason about hosted genesis state.",
+			Constraints: "test only",
+			Commitments: "be concise",
+			Limitations: "unit test",
+			AuthoredBy:  "agent",
+		},
+		Capabilities: []soul.CapabilityV2{{Capability: "reasoning", Scope: "general", ClaimLevel: "self-declared"}},
+		Boundaries: []llm.MintConversationBoundaryDraft{
+			{Category: "scope_limit", Statement: "I will not reveal credentials.", Rationale: "safety"},
+		},
+		Transparency: map[string]any{"modelProviderUncertainty": "test", "operationalNotes": "test"},
 	}
 }
 
@@ -512,6 +555,53 @@ func validFiveBodyDeclarationDraft() llm.MintConversationDeclarationsDraft {
 		Capabilities: []soul.CapabilityV2{{Capability: "operator_support", Scope: "Help operators reason about hosted genesis state.", ClaimLevel: "self-declared"}},
 		Transparency: map[string]any{"modelProviderUncertainty": "unit test", "operationalNotes": "deterministic", "selfDeclaredNotice": "self-declared"},
 	}
+}
+
+func assertJSONKeysAbsent(t *testing.T, body []byte, keys ...string) {
+	t.Helper()
+	var parsed map[string]any
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		t.Fatalf("parse produced declarations: %v\n%s", err, string(body))
+	}
+	for _, key := range keys {
+		if _, ok := parsed[key]; ok {
+			t.Fatalf("expected produced declarations to omit %q, got %s", key, string(body))
+		}
+	}
+}
+
+func validatePublishedFiveBodySchema(t *testing.T, body []byte) {
+	t.Helper()
+	var parsed any
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		t.Fatalf("parse produced declarations: %v\n%s", err, string(body))
+	}
+	if err := mustCompilePublishedFiveBodySchema(t).Validate(parsed); err != nil {
+		t.Fatalf("produced declarations did not validate against published schema: %v\n%s", err, string(body))
+	}
+}
+
+func mustCompilePublishedFiveBodySchema(t *testing.T) *jsonschema.Schema {
+	t.Helper()
+	schemaPath := filepath.Join("..", "..", "docs", "contracts", "soul-five-body.schema.v2.json")
+	raw, readErr := os.ReadFile(schemaPath)
+	if readErr != nil {
+		t.Fatalf("read published five-body schema: %v", readErr)
+	}
+	var doc any
+	if unmarshalErr := json.Unmarshal(raw, &doc); unmarshalErr != nil {
+		t.Fatalf("parse published five-body schema: %v", unmarshalErr)
+	}
+	compiler := jsonschema.NewCompiler()
+	compiler.DefaultDraft(jsonschema.Draft2020)
+	if addErr := compiler.AddResource(schemaPath, doc); addErr != nil {
+		t.Fatalf("add published five-body schema resource: %v", addErr)
+	}
+	schema, compileErr := compiler.Compile(schemaPath)
+	if compileErr != nil {
+		t.Fatalf("compile published five-body schema: %v", compileErr)
+	}
+	return schema
 }
 
 func validDeclarationDraft() map[string]any {
