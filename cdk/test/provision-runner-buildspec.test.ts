@@ -72,6 +72,23 @@ test('runner manages instance-key secret through managed profile receipt proof',
 	assert.doesNotMatch(buildCommands, /secret:\$plaintext/);
 });
 
+test('runner manages soul-binding integration secret and passes one ARN to both children', () => {
+	// Idempotent ensure through the managed profile, distinct from the instance key.
+	assert.match(buildCommands, /ensure_soul_binding_integration_secret/);
+	assert.match(buildCommands, /soul-binding-integration" "\$key_stage" "\$key_slug"/);
+	assert.match(buildCommands, /lesser-host:soul-binding-key-id/);
+	assert.match(buildCommands, /printf "lsbi_%s" "\$token"/);
+	// Lesser receives the ARN via provisioning input and inherits the exported env var.
+	assert.match(buildCommands, /--arg soul_binding_integration_key_arn "\$\{SOUL_BINDING_INTEGRATION_KEY_ARN:-\}"/);
+	assert.match(buildCommands, /\.soul_binding_integration_key_arn = \$soul_binding_integration_key_arn/);
+	assert.match(buildCommands, /"\$\{SOUL_BINDING_INTEGRATION_KEY_ARN:\?SOUL_BINDING_INTEGRATION_KEY_ARN is required\}"/);
+	// lesser-body receives the exact same shell variable as its bearer secret ARN.
+	assert.match(buildCommands, /LESSER_SOUL_BINDING_INTEGRATION_BEARER_ARN="\$SOUL_BINDING_INTEGRATION_KEY_ARN"/);
+	// Receipts prove the ARN/key id without the bearer value.
+	assert.match(buildCommands, /write_soul_binding_integration_receipt "\$SOUL_BINDING_INTEGRATION_RECEIPT_PATH"/);
+	assert.match(buildCommands, /soul_binding_integration:\$soul_binding\[0\]/);
+});
+
 test('runner emits explicit asset-contract failure messages', () => {
 	assert.match(buildCommands, /lesser-body release unexpectedly requires a source checkout/);
 	assert.match(buildCommands, /unexpected lesser-body deploy manifest path/);

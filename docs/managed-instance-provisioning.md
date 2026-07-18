@@ -257,6 +257,32 @@ The instance-account Secrets Manager secret for host instance-auth keys is named
 managed status, and control-plane stage. The live fail-closed rule treats `live`, `prod`, and `production` as the same
 live stage: legacy untagged ARNs are refused for all three aliases instead of being ignored and replaced.
 
+## Soul-binding integration secret (Host-owned automation)
+
+The Ptah-to-Lesser soul-binding credential is a **Host-owned, deploy-runner-managed** secret. There is **no manual
+operator step** to create or pair matching secrets for managed instances: the earlier interpretation that the operator
+configures matching secret ARNs for Body and Lesser is obsolete and wrong for managed instances.
+
+The deploy runner (all of `RUN_MODE=lesser`, `lesser-mcp`, and `lesser-body`) idempotently ensures one Secrets Manager
+secret per managed instance in the instance account, named by the normalized control-plane stage
+(`lab/<slug>/soul-binding-integration`, `live/<slug>/soul-binding-integration`, etc.). The bearer value uses the
+`lsbi_` prefix (distinct from `lhk_` instance keys) and the secret carries host-managed tags for slug
+(`lesser-host:instance-slug`), key ID (`lesser-host:soul-binding-key-id`, the sha256 of the bearer), managed status
+(`lesser-host:managed`), and control-plane stage (`lesser-host:control-plane-stage`). Reruns and updates reuse the
+existing secret; a recorded ARN on the instance/update job is carried forward through the deploy-runner environment
+(`SOUL_BINDING_INTEGRATION_KEY_ARN`).
+
+The **same exact ARN** is injected into both children:
+
+- Lesser (receiver): provisioning input `soul_binding_integration_key_arn` and env `SOUL_BINDING_INTEGRATION_KEY_ARN`
+- lesser-body (Ptah caller): env `LESSER_SOUL_BINDING_INTEGRATION_BEARER_ARN` consumed by
+  `deploy-lesser-body-from-release.sh`
+
+Each runner receipt includes a `soul_binding_integration` proof (`secret_arn`, `key_id`, `instance_slug`, `stage`,
+`source`) that the provisioning worker validates against the job's tenant binding and persists as
+`soul_binding_integration_secret_arn` on the instance and update job. The raw bearer value never appears in receipts,
+logs, job records, or operator output — only the ARN and the sha256 key id.
+
 ## Soul comm mailbox migration
 
 Managed provisioning does not move mailbox authority into the tenant account. Host mints and stores the instance API key

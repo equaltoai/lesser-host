@@ -15,6 +15,7 @@ type provisionDeployRunnerInstanceInputs struct {
 	lesserHostURL             string
 	lesserHostAttestationsURL string
 	instanceKeySecretArn      string
+	soulBindingSecretArn      string
 	translationEnabled        bool
 	tipEnabled                bool
 	tipChainID                int64
@@ -46,6 +47,7 @@ func (s *Server) resolveProvisionDeployRunnerInstanceInputs(ctx context.Context,
 		lesserHostURL:             strings.TrimSpace(inst.LesserHostBaseURL),
 		lesserHostAttestationsURL: strings.TrimSpace(inst.LesserHostAttestationsURL),
 		instanceKeySecretArn:      strings.TrimSpace(inst.LesserHostInstanceKeySecretARN),
+		soulBindingSecretArn:      strings.TrimSpace(inst.SoulBindingIntegrationSecretARN),
 		translationEnabled:        effectiveTranslationEnabled(inst.TranslationEnabled),
 		tipEnabled:                effectiveTipEnabled(inst.TipEnabled),
 		tipChainID:                inst.TipChainID,
@@ -78,6 +80,7 @@ func appendProvisionDeployRunnerInstanceEnv(env []cbtypes.EnvironmentVariable, i
 		cbtypes.EnvironmentVariable{Name: aws.String("LESSER_HOST_ATTESTATIONS_URL"), Value: aws.String(inputs.lesserHostAttestationsURL)},
 		cbtypes.EnvironmentVariable{Name: aws.String("LESSER_HOST_INSTANCE_KEY_ARN"), Value: aws.String(inputs.instanceKeySecretArn)},
 		cbtypes.EnvironmentVariable{Name: aws.String("LESSER_HOST_INSTANCE_KEY_SECRET_ID"), Value: aws.String(inputs.instanceKeySecretArn)},
+		cbtypes.EnvironmentVariable{Name: aws.String("SOUL_BINDING_INTEGRATION_KEY_ARN"), Value: aws.String(inputs.soulBindingSecretArn)},
 		cbtypes.EnvironmentVariable{Name: aws.String("TRANSLATION_ENABLED"), Value: aws.String(fmt.Sprintf("%t", inputs.translationEnabled))},
 		cbtypes.EnvironmentVariable{Name: aws.String("TIP_ENABLED"), Value: aws.String(fmt.Sprintf("%t", inputs.tipEnabled))},
 		cbtypes.EnvironmentVariable{Name: aws.String("AI_ENABLED"), Value: aws.String(fmt.Sprintf("%t", inputs.aiEnabled))},

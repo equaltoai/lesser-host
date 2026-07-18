@@ -1667,11 +1667,17 @@ func (s *Server) advanceProvisionReceiptIngest(ctx context.Context, job *models.
 
 	applyLesserUpReceipt(job, receiptJSON, receipt)
 	instanceKeySecretARN := ""
+	soulBindingSecretARN := ""
 	if receipt != nil {
 		var keyErr error
 		instanceKeySecretARN, keyErr = s.applyProvisionManagedInstanceKeyReceipt(ctx, job, receipt.ManagedInstanceKey)
 		if keyErr != nil {
 			return 0, false, s.failJob(ctx, job, requestID, now, "receipt_instance_key_invalid", "failed to validate managed instance key receipt: "+keyErr.Error())
+		}
+		var soulErr error
+		soulBindingSecretARN, soulErr = s.applyProvisionSoulBindingIntegrationReceipt(job, receipt.SoulBindingIntegration)
+		if soulErr != nil {
+			return 0, false, s.failJob(ctx, job, requestID, now, "receipt_soul_binding_invalid", "failed to validate soul binding integration receipt: "+soulErr.Error())
 		}
 	}
 
@@ -1693,7 +1699,7 @@ func (s *Server) advanceProvisionReceiptIngest(ctx context.Context, job *models.
 	}
 
 	continuing := continueToBody
-	if err := s.persistJobAndInstance(ctx, job, requestID, now, provisionReceiptIngestInstanceUpdate(job, continuing, instanceKeySecretARN)); err != nil {
+	if err := s.persistJobAndInstance(ctx, job, requestID, now, provisionReceiptIngestInstanceUpdate(job, continuing, instanceKeySecretARN, soulBindingSecretARN)); err != nil {
 		return 0, false, err
 	}
 	return 0, !continuing, nil
@@ -1737,7 +1743,7 @@ func applyLesserUpReceipt(job *models.ProvisionJob, receiptJSON string, receipt 
 	}
 }
 
-func provisionReceiptIngestInstanceUpdate(job *models.ProvisionJob, continuing bool, instanceKeySecretARN string) func(core.UpdateBuilder) error {
+func provisionReceiptIngestInstanceUpdate(job *models.ProvisionJob, continuing bool, instanceKeySecretARN string, soulBindingSecretARN string) func(core.UpdateBuilder) error {
 	return func(ub core.UpdateBuilder) error {
 		ub.Set("ProvisionJobID", strings.TrimSpace(job.ID))
 		if continuing {
@@ -1760,6 +1766,7 @@ func provisionReceiptIngestInstanceUpdate(job *models.ProvisionJob, continuing b
 		if strings.TrimSpace(instanceKeySecretARN) != "" {
 			ub.Set("LesserHostInstanceKeySecretARN", strings.TrimSpace(instanceKeySecretARN))
 		}
+		setSoulBindingIntegrationInstanceARN(ub, soulBindingSecretARN)
 		return nil
 	}
 }

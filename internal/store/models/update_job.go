@@ -71,7 +71,10 @@ type UpdateJob struct {
 	LesserHostBaseURL              string `theorydb:"attr:lesserHostBaseUrl" json:"lesser_host_base_url,omitempty"`
 	LesserHostAttestationsURL      string `theorydb:"attr:lesserHostAttestationsUrl" json:"lesser_host_attestations_url,omitempty"`
 	LesserHostInstanceKeySecretARN string `theorydb:"attr:lesserHostInstanceKeySecretArn" json:"lesser_host_instance_key_secret_arn,omitempty"`
-	TranslationEnabled             bool   `theorydb:"attr:translationEnabled" json:"translation_enabled"`
+	// SoulBindingIntegrationSecretARN carries the shared soul-binding integration secret
+	// reference (ARN, or canonical name before first ensure) into the deploy runner.
+	SoulBindingIntegrationSecretARN string `theorydb:"attr:soulBindingIntegrationSecretArn" json:"soul_binding_integration_secret_arn,omitempty"`
+	TranslationEnabled              bool   `theorydb:"attr:translationEnabled" json:"translation_enabled"`
 
 	TipEnabled         bool   `theorydb:"attr:tipEnabled" json:"tip_enabled"`
 	TipChainID         int64  `theorydb:"attr:tipChainId" json:"tip_chain_id,omitempty"`
@@ -180,6 +183,7 @@ func (j *UpdateJob) UpdateKeys() error {
 	j.LesserHostBaseURL = strings.TrimSpace(j.LesserHostBaseURL)
 	j.LesserHostAttestationsURL = strings.TrimSpace(j.LesserHostAttestationsURL)
 	j.LesserHostInstanceKeySecretARN = strings.TrimSpace(j.LesserHostInstanceKeySecretARN)
+	j.SoulBindingIntegrationSecretARN = strings.TrimSpace(j.SoulBindingIntegrationSecretARN)
 	j.TipContractAddress = strings.TrimSpace(j.TipContractAddress)
 	j.RotatedInstanceKeyID = strings.TrimSpace(j.RotatedInstanceKeyID)
 	j.VerifyTranslationErr = strings.TrimSpace(j.VerifyTranslationErr)

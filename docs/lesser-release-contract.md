@@ -72,6 +72,11 @@ The managed runner currently consumes Lesser in two ways:
   --release-dir "$LESSER_RELEASE_DIR")
 ```
 
+  - passes the Host-ensured soul-binding integration secret ARN as provisioning input
+    `soul_binding_integration_key_arn` (also exported as `SOUL_BINDING_INTEGRATION_KEY_ARN` in the runner
+    environment); this is the same exact ARN the runner hands to `lesser-body` as its bearer secret, so no operator
+    step exists to pair matching secrets (see
+    `docs/managed-instance-provisioning.md#soul-binding-integration-secret-host-owned-automation`)
   - when the managed provisioning input includes `consent_message` and `consent_signature`, immediately seeds the
     initial admin from the same verified release CLI:
 

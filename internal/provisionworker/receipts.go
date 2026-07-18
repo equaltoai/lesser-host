@@ -23,6 +23,7 @@ type lesserUpReceipt struct {
 	Region                 string                         `json:"region"`
 	ManagedDeployArtifacts *managedDeployArtifactsReceipt `json:"managed_deploy_artifacts,omitempty"`
 	ManagedInstanceKey     *managedInstanceKeyReceipt     `json:"managed_instance_key,omitempty"`
+	SoulBindingIntegration *soulBindingIntegrationReceipt `json:"soul_binding_integration,omitempty"`
 	HostedZone             struct {
 		ID   string `json:"id"`
 		Name string `json:"name"`
@@ -36,6 +37,7 @@ type lesserBodyReceipt struct {
 	LesserBodyVersion      string                         `json:"lesser_body_version"`
 	ManagedDeployArtifacts *managedDeployArtifactsReceipt `json:"managed_deploy_artifacts,omitempty"`
 	ManagedInstanceKey     *managedInstanceKeyReceipt     `json:"managed_instance_key,omitempty"`
+	SoulBindingIntegration *soulBindingIntegrationReceipt `json:"soul_binding_integration,omitempty"`
 }
 
 type mcpWiringReceipt struct {
@@ -47,6 +49,7 @@ type mcpWiringReceipt struct {
 	McpLambdaARN           string                         `json:"mcp_lambda_arn"`
 	ManagedDeployArtifacts *managedDeployArtifactsReceipt `json:"managed_deploy_artifacts,omitempty"`
 	ManagedInstanceKey     *managedInstanceKeyReceipt     `json:"managed_instance_key,omitempty"`
+	SoulBindingIntegration *soulBindingIntegrationReceipt `json:"soul_binding_integration,omitempty"`
 }
 
 type managedLesserBodyTemplateArtifact struct {

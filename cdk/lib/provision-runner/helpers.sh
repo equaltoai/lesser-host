@@ -647,6 +647,114 @@ ensure_lesser_host_instance_key_secret() {
   rm -f "$payload_path" "$desc_err"
 }
 
+soul_binding_integration_secret_name() {
+  key_stage=$(managed_instance_key_stage)
+  key_slug=$(managed_instance_key_slug)
+  if [ -z "$key_slug" ]; then fail "APP_SLUG is required for soul binding integration secret"; fi
+  printf "%s/%s/soul-binding-integration" "$key_stage" "$key_slug"
+}
+
+new_soul_binding_integration_bearer() {
+  token=$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=\n\r')
+  test -n "$token" || fail "failed to generate soul binding integration bearer"
+  printf "lsbi_%s" "$token"
+}
+
+validate_soul_binding_integration_secret_tags() {
+  desc_path="$1"
+  expected_slug=$(managed_instance_key_slug)
+  expected_stage=$(managed_instance_key_stage)
+  managed_tag=$(managed_instance_key_tag_value "$desc_path" "lesser-host:managed" | tr "[:upper:]" "[:lower:]")
+  slug_tag=$(managed_instance_key_tag_value "$desc_path" "lesser-host:instance-slug" | tr "[:upper:]" "[:lower:]")
+  stage_tag=$(managed_instance_key_tag_value "$desc_path" "lesser-host:control-plane-stage")
+  normalized_stage=$(printf "%s" "$stage_tag" | tr "[:upper:]" "[:lower:]" | tr -cd 'a-z0-9._-' | sed 's/^[._-]*//;s/[._-]*$//')
+  case "$normalized_stage" in prod|production) normalized_stage="live" ;; esac
+  test "$managed_tag" = "true" || fail "soul binding integration secret is missing managed=true tag"
+  test "$slug_tag" = "$expected_slug" || fail "soul binding integration secret slug tag mismatch"
+  test -n "$stage_tag" || fail "soul binding integration secret stage tag is missing"
+  test "$normalized_stage" = "$expected_stage" || fail "soul binding integration secret stage tag mismatch"
+}
+
+tag_soul_binding_integration_secret() {
+  secret_arn="$1"
+  key_id="$2"
+  key_slug=$(managed_instance_key_slug)
+  key_stage=$(managed_instance_key_stage)
+  aws secretsmanager untag-resource --profile managed --secret-id "$secret_arn" --tag-keys "lesser-host:soul-binding-key-id" "lesser-host:control-plane-stage" >/dev/null 2>&1 || true
+  aws secretsmanager tag-resource --profile managed --secret-id "$secret_arn" --tags \
+    Key=lesser-host:instance-slug,Value="$key_slug" \
+    Key=lesser-host:soul-binding-key-id,Value="$key_id" \
+    Key=lesser-host:managed,Value=true \
+    Key=lesser-host:control-plane-stage,Value="$key_stage" >/dev/null
+}
+
+write_soul_binding_integration_receipt() {
+  receipt_path="$1"
+  secret_arn="$2"
+  key_id="$3"
+  key_slug=$(managed_instance_key_slug)
+  key_stage=$(managed_instance_key_stage)
+  jq -n \
+    --arg source "deploy-runner-managed-profile" \
+    --arg secret_arn "$secret_arn" \
+    --arg key_id "$key_id" \
+    --arg instance_slug "$key_slug" \
+    --arg stage "$key_stage" \
+    --arg verified_at "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
+    '{version:1,source:$source,secret_arn:$secret_arn,key_id:$key_id,instance_slug:$instance_slug,stage:$stage,verified_at:$verified_at}' > "$receipt_path"
+}
+
+ensure_soul_binding_integration_secret() {
+  : "${STATE_DIR:?STATE_DIR is required}"
+  secret_ref="${SOUL_BINDING_INTEGRATION_KEY_ARN:-}"
+  if [ -z "$secret_ref" ]; then secret_ref=$(soul_binding_integration_secret_name); fi
+
+  desc_path="$STATE_DIR/soul-binding-integration-describe.json"
+  desc_err="$STATE_DIR/soul-binding-integration-describe.err"
+  payload_path="$STATE_DIR/soul-binding-integration-payload.json"
+  SOUL_BINDING_INTEGRATION_RECEIPT_PATH="$STATE_DIR/soul-binding-integration.json"
+  rm -f "$desc_path" "$desc_err" "$payload_path" "$SOUL_BINDING_INTEGRATION_RECEIPT_PATH"
+
+  if aws secretsmanager describe-secret --profile managed --secret-id "$secret_ref" --output json > "$desc_path" 2>"$desc_err"; then
+    validate_soul_binding_integration_secret_tags "$desc_path"
+    secret_arn=$(jq -r '.ARN // empty' "$desc_path")
+    test -n "$secret_arn" && test "$secret_arn" != "null" || fail "soul binding integration secret ARN is missing"
+    plaintext=$(read_managed_instance_key_plaintext "$secret_arn")
+    key_id=$(managed_instance_key_id_for_plaintext "$plaintext")
+    tagged_key_id=$(managed_instance_key_tag_value "$desc_path" "lesser-host:soul-binding-key-id")
+    if [ -n "$tagged_key_id" ] && [ "$tagged_key_id" != "$key_id" ]; then
+      fail "soul binding integration secret key-id tag mismatch"
+    fi
+  else
+    if ! grep -q "ResourceNotFoundException" "$desc_err"; then
+      cat "$desc_err" >&2
+      fail "failed to describe soul binding integration secret"
+    fi
+    secret_name=$(soul_binding_integration_secret_name)
+    plaintext=$(new_soul_binding_integration_bearer)
+    key_id=$(managed_instance_key_id_for_plaintext "$plaintext")
+    write_managed_instance_key_secret_payload "$plaintext" "$payload_path"
+    secret_arn=$(aws secretsmanager create-secret --profile managed \
+      --name "$secret_name" \
+      --description "managed soul binding integration bearer" \
+      --secret-string "file://$payload_path" \
+      --tags \
+        Key=lesser-host:instance-slug,Value="$(managed_instance_key_slug)" \
+        Key=lesser-host:soul-binding-key-id,Value="$key_id" \
+        Key=lesser-host:managed,Value=true \
+        Key=lesser-host:control-plane-stage,Value="$(managed_instance_key_stage)" \
+      --query ARN --output text)
+    test -n "$secret_arn" && test "$secret_arn" != "None" && test "$secret_arn" != "null" || fail "soul binding integration secret create returned empty ARN"
+  fi
+
+  tag_soul_binding_integration_secret "$secret_arn" "$key_id"
+  write_soul_binding_integration_receipt "$SOUL_BINDING_INTEGRATION_RECEIPT_PATH" "$secret_arn" "$key_id"
+  export SOUL_BINDING_INTEGRATION_KEY_ARN="$secret_arn"
+  export LESSER_SOUL_BINDING_INTEGRATION_BEARER_ARN="$secret_arn"
+  export SOUL_BINDING_INTEGRATION_RECEIPT_PATH
+  rm -f "$payload_path" "$desc_err"
+}
+
 validate_https_custom_domain() {
   NAME="$1"
   VALUE="$2"
