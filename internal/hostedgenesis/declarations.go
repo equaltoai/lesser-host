@@ -20,13 +20,21 @@ const (
 type DeclarationValidationCode string
 
 const (
-	DeclarationCodeInvalid         DeclarationValidationCode = "declarations.invalid"
-	DeclarationCodeSelfDescription DeclarationValidationCode = "self_description.invalid"
-	DeclarationCodeCapabilities    DeclarationValidationCode = "capabilities.required"
-	DeclarationCodeCapabilitiesBad DeclarationValidationCode = "capabilities.invalid"
-	DeclarationCodeBoundaries      DeclarationValidationCode = "boundaries.required"
-	DeclarationCodeBoundariesBad   DeclarationValidationCode = "boundaries.invalid"
-	DeclarationCodeTransparency    DeclarationValidationCode = "transparency.required"
+	DeclarationCodeInvalid            DeclarationValidationCode = "declarations.invalid"
+	DeclarationCodeSelfDescription    DeclarationValidationCode = "self_description.invalid"
+	DeclarationCodeCapabilities       DeclarationValidationCode = "capabilities.required"
+	DeclarationCodeCapabilitiesBad    DeclarationValidationCode = "capabilities.invalid"
+	DeclarationCodeBoundaries         DeclarationValidationCode = "boundaries.required"
+	DeclarationCodeBoundariesBad      DeclarationValidationCode = "boundaries.invalid"
+	DeclarationCodeTransparency       DeclarationValidationCode = "transparency.required"
+	DeclarationCodeFiveBodyIdentity   DeclarationValidationCode = "five_body.identity.required"
+	DeclarationCodeFiveBodyPhilosophy DeclarationValidationCode = "five_body.philosophy.required"
+	DeclarationCodeFiveBodyDiscipline DeclarationValidationCode = "five_body.discipline.required"
+	DeclarationCodeFiveBodyBoundaries DeclarationValidationCode = "five_body.boundaries.required"
+	DeclarationCodeFiveBodySoul       DeclarationValidationCode = "five_body.soul.required"
+	DeclarationCodeSoulRefusals       DeclarationValidationCode = "soul.refusals.required"
+	DeclarationCodeSoulRefusalsBad    DeclarationValidationCode = "soul.refusals.invalid"
+	DeclarationCodeAdversarialReview  DeclarationValidationCode = "adversarial_review.required"
 )
 
 // DeclarationValidationError is the only declaration-builder error that may
@@ -72,7 +80,15 @@ func isDeclarationValidationCode(code DeclarationValidationCode) bool {
 		DeclarationCodeCapabilitiesBad,
 		DeclarationCodeBoundaries,
 		DeclarationCodeBoundariesBad,
-		DeclarationCodeTransparency:
+		DeclarationCodeTransparency,
+		DeclarationCodeFiveBodyIdentity,
+		DeclarationCodeFiveBodyPhilosophy,
+		DeclarationCodeFiveBodyDiscipline,
+		DeclarationCodeFiveBodyBoundaries,
+		DeclarationCodeFiveBodySoul,
+		DeclarationCodeSoulRefusals,
+		DeclarationCodeSoulRefusalsBad,
+		DeclarationCodeAdversarialReview:
 		return true
 	default:
 		return false

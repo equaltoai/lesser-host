@@ -131,6 +131,8 @@ type DeclarationCheckpoint struct {
 	AgentID         string    `json:"agent_id"`
 	MessageCount    int       `json:"message_count"`
 	Model           string    `json:"model,omitempty"`
+	SchemaVersion   string    `json:"schema_version,omitempty"`
+	GuidanceVersion string    `json:"guidance_version,omitempty"`
 	RequestID       string    `json:"request_id"`
 }
 
@@ -149,7 +151,21 @@ func (c DeclarationCheckpoint) Validate() error {
 	if !isSHA256Digest(c.DeclarationHash) {
 		return ErrInvalidDeclarationGate
 	}
+	if !declarationCheckpointVersionsValid(c.SchemaVersion, c.GuidanceVersion) {
+		return ErrInvalidDeclarationGate
+	}
 	return nil
+}
+
+func declarationCheckpointVersionsValid(schemaVersion string, guidanceVersion string) bool {
+	schemaVersion = strings.TrimSpace(schemaVersion)
+	guidanceVersion = strings.TrimSpace(guidanceVersion)
+	if schemaVersion == "" && guidanceVersion == "" {
+		return true
+	}
+	contract := DeclarationContractFromVersions(schemaVersion, guidanceVersion).Normalize()
+	return strings.EqualFold(schemaVersion, contract.SchemaVersion) &&
+		strings.EqualFold(guidanceVersion, contract.GuidanceVersion)
 }
 
 func isSHA256Digest(value string) bool {

@@ -14,6 +14,7 @@ import (
 
 	"github.com/anthropics/anthropic-sdk-go"
 
+	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
@@ -115,6 +116,76 @@ func TestMintConversationDeclarationsPromptAndSchema(t *testing.T) {
 	}
 	if _, _, err := MintConversationDeclarationsAnthropic(t.Context(), "k", "unsupported:model", MintConversationDeclarationsInput{}); err == nil {
 		t.Fatalf("expected unsupported Anthropic declarations model error")
+	}
+}
+
+func TestMintConversationDeclarationsFiveBodyPromptAndSchema(t *testing.T) {
+	t.Parallel()
+
+	contract := hostedgenesis.FiveBodyDeclarationContract()
+	input := MintConversationDeclarationsInput{SchemaVersion: contract.SchemaVersion, GuidanceVersion: contract.GuidanceVersion}
+	cfg := mintConversationDeclarationsConfig(input)
+	if cfg.schemaName != "soul_five_body_declarations" || !strings.Contains(cfg.systemPrompt, contract.SchemaVersion) || !strings.Contains(cfg.systemPrompt, contract.GuidanceVersion) {
+		t.Fatalf("unexpected v2 config: %#v prompt=%q", cfg, cfg.systemPrompt)
+	}
+	if strings.Contains(strings.ToLower(cfg.systemPrompt), "re-deriv") {
+		t.Fatalf("v2 extraction prompt must not teach re-derivation: %q", cfg.systemPrompt)
+	}
+	for _, want := range []string{"five first-class bodies", "identity", "philosophy", "discipline", "boundaries", "soul.refusals", `claimLevel "` + mintConversationClaimLevelSelfDeclared + `"`} {
+		if !strings.Contains(cfg.systemPrompt, want) {
+			t.Fatalf("expected v2 extraction prompt to mention %q, got %q", want, cfg.systemPrompt)
+		}
+	}
+
+	schema := cfg.schema
+	props := requireSchemaMap(t, schema, "properties")
+	if _, exists := props["selfDescription"]; exists {
+		t.Fatalf("v2 schema should make fiveBodies first-class instead of extracting legacy selfDescription directly")
+	}
+	fiveBodies := requireSchemaMap(t, props, "fiveBodies")
+	fiveProps := requireSchemaMap(t, fiveBodies, "properties")
+	for _, body := range []string{"identity", "philosophy", "discipline", "boundaries", "soul"} {
+		if _, exists := fiveProps[body]; !exists {
+			t.Fatalf("expected fiveBodies.%s schema, got %#v", body, fiveProps)
+		}
+	}
+	soulSchema := requireSchemaMap(t, fiveProps, "soul")
+	soulProps := requireSchemaMap(t, soulSchema, "properties")
+	refusals := requireSchemaMap(t, soulProps, "refusals")
+	if got, ok := refusals["minItems"].(int); !ok || got != 3 {
+		t.Fatalf("expected soul.refusals minItems=3, got %#v", refusals["minItems"])
+	}
+	assertOpenAIStrictObjectSchema(t, schema)
+}
+
+func TestMintConversationDeclarationsFiveBodyNormalization(t *testing.T) {
+	t.Parallel()
+
+	contract := hostedgenesis.FiveBodyDeclarationContract()
+	parsed := MintConversationDeclarationsDraft{
+		SchemaVersion:   contract.SchemaVersion,
+		GuidanceVersion: contract.GuidanceVersion,
+		FiveBodies: hostedgenesis.FiveBodyDeclaration{
+			Identity:   hostedgenesis.FiveBodySection{Summary: " identity "},
+			Philosophy: hostedgenesis.FiveBodySection{Summary: " philosophy "},
+			Discipline: hostedgenesis.FiveBodySection{Summary: " discipline "},
+			Boundaries: hostedgenesis.FiveBodySection{Summary: " boundaries "},
+			Soul: hostedgenesis.FiveBodySoulBody{
+				Summary: " soul ",
+				Refusals: []hostedgenesis.FiveBodyRefusalRule{{
+					Bypass:          " Skip checksum verification ",
+					Invariant:       " Consumer release verification remains mandatory ",
+					ClosestSafePath: " Run certification against the published artifact ",
+				}},
+			},
+		},
+	}
+	norm := normalizeMintConversationDeclarationsDraft(parsed)
+	if norm.SchemaVersion != contract.SchemaVersion || norm.GuidanceVersion != contract.GuidanceVersion {
+		t.Fatalf("expected stable v2 versions, got %#v", norm)
+	}
+	if norm.FiveBodies.Identity.Summary != "identity" || norm.FiveBodies.Soul.Refusals[0].Bypass != "Skip checksum verification" {
+		t.Fatalf("expected normalized five-body fields, got %#v", norm.FiveBodies)
 	}
 }
 

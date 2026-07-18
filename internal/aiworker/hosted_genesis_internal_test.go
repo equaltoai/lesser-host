@@ -49,6 +49,7 @@ const (
 	hostedGenesisWorkerOpenAIKey   = "openai-test-key"
 	hostedGenesisWorkerOpenAIModel = "openai:gpt-test"
 	hostedGenesisWorkerAgentDomain = "agent.example"
+	hostedGenesisWorkerAgentLocal  = "agent"
 	hostedGenesisWorkerMutated     = "mutated"
 )
 
@@ -204,7 +205,7 @@ func newHostedGenesisWorkerStore(turnID string) *fakeHostedGenesisStore {
 		reg: &models.SoulAgentRegistration{
 			ID:               "reg-worker",
 			DomainNormalized: hostedGenesisWorkerAgentDomain,
-			LocalID:          "agent",
+			LocalID:          hostedGenesisWorkerAgentLocal,
 			AgentID:          "0x" + strings.Repeat("44", 32),
 			CreatedAt:        now,
 			UpdatedAt:        now,
@@ -1200,7 +1201,7 @@ func TestHostedGenesisDeclarationsDraftBuilder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected declarations draft error: %v", err)
 	}
-	if decl.SelfDescription.AuthoredBy != "agent" ||
+	if decl.SelfDescription.AuthoredBy != hostedGenesisSelfDescriptionAuthoredByAgent ||
 		decl.SelfDescription.MintingModel != "anthropic:claude-sonnet-4-6" ||
 		len(decl.Capabilities) != 1 ||
 		len(decl.Boundaries) != 1 ||
@@ -1263,6 +1264,95 @@ func validHostedGenesisDraft() llm.MintConversationDeclarationsDraft {
 		Boundaries: []llm.MintConversationBoundaryDraft{
 			{Category: "refusal", Statement: "I will not reveal credentials.", Rationale: "protects operators"},
 		},
+	}
+}
+
+func TestHostedGenesisFiveBodyPromptAndInputAreFlagGated(t *testing.T) {
+	t.Setenv(hostedgenesis.EnvDeclarationSchemaVersion, "")
+	reg := newHostedGenesisWorkerStore("turn-worker").reg
+	legacyPrompt := hostedGenesisSystemPrompt(reg)
+	if strings.Contains(legacyPrompt, hostedgenesis.DeclarationSchemaVersionV2) || strings.Contains(legacyPrompt, "Phase 1 — identity") {
+		t.Fatalf("v1 prompt must remain unchanged while flag disabled: %q", legacyPrompt)
+	}
+	legacyInput := hostedGenesisDeclarationInput(reg, []hostedGenesisMessage{{Role: "user", Content: "hello"}}, hostedgenesis.DeclarationContractFromEnv())
+	if legacyInput.SchemaVersion != "" || legacyInput.GuidanceVersion != "" {
+		t.Fatalf("v1 extraction input must not carry v2 version evidence: %#v", legacyInput)
+	}
+
+	t.Setenv(hostedgenesis.EnvDeclarationSchemaVersion, "v2")
+	v2Prompt := hostedGenesisSystemPrompt(reg)
+	if !strings.Contains(v2Prompt, hostedgenesis.DeclarationSchemaVersionV2) || !strings.Contains(v2Prompt, "Phase 5 — soul") {
+		t.Fatalf("v2 prompt missing contract evidence: %q", v2Prompt)
+	}
+	v2Input := hostedGenesisDeclarationInput(reg, []hostedGenesisMessage{{Role: "user", Content: "hello"}}, hostedgenesis.DeclarationContractFromEnv())
+	if v2Input.SchemaVersion != hostedgenesis.DeclarationSchemaVersionV2 || v2Input.GuidanceVersion != hostedgenesis.GuidanceVersionV2 {
+		t.Fatalf("v2 extraction input missing versions: %#v", v2Input)
+	}
+}
+
+func TestHostedGenesisFiveBodyDeclarationsDraftBuilder(t *testing.T) {
+	t.Parallel()
+
+	contract := hostedgenesis.FiveBodyDeclarationContract()
+	now := time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC)
+	decl, err := buildHostedGenesisDeclarationsDraftForContract(validHostedGenesisFiveBodyDraft(), now, "openai:gpt-5", contract)
+	if err != nil {
+		t.Fatalf("unexpected v2 declaration error: %v", err)
+	}
+	if decl.SchemaVersion != hostedgenesis.DeclarationSchemaVersionV2 || decl.GuidanceVersion != hostedgenesis.GuidanceVersionV2 || decl.AdversarialReview == nil {
+		t.Fatalf("expected v2 version and review evidence, got %#v", decl)
+	}
+	if decl.FiveBodies.Identity.Summary == "" || len(decl.Boundaries) != 3 || !strings.Contains(decl.Boundaries[0].Statement, "closest safe path") {
+		t.Fatalf("expected five bodies mapped to three refusal boundaries, got %#v", decl)
+	}
+	if decl.SelfDescription.Purpose != decl.FiveBodies.Identity.Summary || decl.SelfDescription.MintingModel != "openai:gpt-5" {
+		t.Fatalf("expected lossless v1 mapping for publication, got %#v", decl.SelfDescription)
+	}
+}
+
+func TestHostedGenesisFiveBodyDeclarationsRejectGenericRefusals(t *testing.T) {
+	t.Parallel()
+
+	draft := validHostedGenesisFiveBodyDraft()
+	draft.FiveBodies.Soul.Refusals[0].Bypass = "unsafe requests"
+	_, err := buildHostedGenesisDeclarationsDraftForContract(draft, time.Now(), "openai:gpt-5", hostedgenesis.FiveBodyDeclarationContract())
+	if got := hostedgenesis.DeclarationValidationCodeFromError(err); got != hostedgenesis.DeclarationCodeSoulRefusalsBad {
+		t.Fatalf("expected generic refusal rejection, got err=%v code=%q", err, got)
+	}
+}
+
+func TestHostedGenesisFiveBodyDeclarationsRequireVersionEvidence(t *testing.T) {
+	t.Parallel()
+
+	draft := validHostedGenesisFiveBodyDraft()
+	draft.GuidanceVersion = ""
+	_, err := buildHostedGenesisDeclarationsDraftForContract(draft, time.Now(), "openai:gpt-5", hostedgenesis.FiveBodyDeclarationContract())
+	if got := hostedgenesis.DeclarationValidationCodeFromError(err); got != hostedgenesis.DeclarationCodeInvalid {
+		t.Fatalf("expected missing v2 guidance evidence to fail closed, got err=%v code=%q", err, got)
+	}
+}
+
+func validHostedGenesisFiveBodyDraft() llm.MintConversationDeclarationsDraft {
+	contract := hostedgenesis.FiveBodyDeclarationContract()
+	return llm.MintConversationDeclarationsDraft{
+		SchemaVersion:   contract.SchemaVersion,
+		GuidanceVersion: contract.GuidanceVersion,
+		FiveBodies: hostedgenesis.FiveBodyDeclaration{
+			Identity:   hostedgenesis.FiveBodySection{Summary: "I am Acme Steward, a hosted/off-chain agent for operator support."},
+			Philosophy: hostedgenesis.FiveBodySection{Summary: "I value narrow authority, auditability, and direct statements of uncertainty."},
+			Discipline: hostedgenesis.FiveBodySection{Summary: "I use the named cadence, keep evidence, and pause on unclear authority."},
+			Boundaries: hostedgenesis.FiveBodySection{Summary: "I protect tenant isolation, credentials, and human publish gates."},
+			Soul: hostedgenesis.FiveBodySoulBody{
+				Summary: "I preserve Host safety invariants even when asked to move faster.",
+				Refusals: []hostedgenesis.FiveBodyRefusalRule{
+					{Bypass: "Skip checksum verification for a managed release", Invariant: "consumer release verification must run before deploy", ClosestSafePath: "run managed-release-certification on the published artifact"},
+					{Bypass: "Return a raw Instance API key on reread", Invariant: "Host stores and compares only sha256 key hashes", ClosestSafePath: "issue a new key through controlled rotation and show only the hash id"},
+					{Bypass: "Finalize without explicit human authorization", Invariant: "hosted genesis keeps a human publish gate", ClosestSafePath: "return declaration_ready and wait for the finalize call"},
+				},
+			},
+		},
+		Capabilities: []soul.CapabilityV2{{Capability: "operator_support", Scope: "Help operators reason about hosted genesis state.", ClaimLevel: "self-declared"}},
+		Transparency: map[string]any{"modelProviderUncertainty": "unit test", "operationalNotes": "deterministic", "selfDeclaredNotice": "self-declared"},
 	}
 }
 

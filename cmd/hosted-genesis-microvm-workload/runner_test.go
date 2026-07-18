@@ -14,6 +14,7 @@ import (
 	"github.com/equaltoai/lesser-host/internal/ai/llm"
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis/completion"
+	"github.com/equaltoai/lesser-host/internal/soul"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
@@ -430,6 +431,86 @@ func TestRunTurnAndPersist_ReplayRejected(t *testing.T) {
 	// Session must remain at assistant_turn_ready (not overwritten to failed).
 	if got := hostedgenesis.NormalizeStatus(compStore.session.Status); got != hostedgenesis.StatusAssistantTurnReady {
 		t.Fatalf("expected session to remain assistant_turn_ready on replay conflict, got %q", got)
+	}
+}
+
+func TestLoadTurnInputFiveBodyFlagPinsPromptAndExtractionInput(t *testing.T) {
+	t.Setenv(hostedgenesis.EnvDeclarationSchemaVersion, "v2")
+	turnStore, _, turn := baseTurnInput()
+	runner := &turnRunner{store: turnStore, nowFunc: func() time.Time { return time.Unix(3000, 0).UTC() }}
+	in, err := runner.loadTurnInput(context.Background(), turn)
+	if err != nil {
+		t.Fatalf("loadTurnInput: %v", err)
+	}
+	if !in.contract.IsFiveBody() || !strings.Contains(in.systemPrompt, hostedgenesis.DeclarationSchemaVersionV2) || !strings.Contains(in.systemPrompt, "Phase 1 — identity") {
+		t.Fatalf("expected v2 contract prompt, contract=%#v prompt=%q", in.contract, in.systemPrompt)
+	}
+	declInput := llm.MintConversationDeclarationsInput{
+		SchemaVersion:   inputSchemaVersion(in.contract),
+		GuidanceVersion: inputGuidanceVersion(in.contract),
+	}
+	if declInput.SchemaVersion != hostedgenesis.DeclarationSchemaVersionV2 || declInput.GuidanceVersion != hostedgenesis.GuidanceVersionV2 {
+		t.Fatalf("expected v2 extraction versions, got %#v", declInput)
+	}
+}
+
+func TestBuildProducedDeclarationsJSONFiveBodyPinsVersionsAndReview(t *testing.T) {
+	runner := &turnRunner{nowFunc: func() time.Time { return time.Unix(3000, 0).UTC() }}
+	body, err := runner.buildProducedDeclarationsJSON(validFiveBodyDeclarationDraft(), "openai:gpt-test")
+	if err != nil {
+		t.Fatalf("buildProducedDeclarationsJSON: %v", err)
+	}
+	for _, want := range []string{hostedgenesis.DeclarationSchemaVersionV2, hostedgenesis.GuidanceVersionV2, `"fiveBodies"`, `"adversarialReview"`, `"boundaries"`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("expected v2 declaration body to contain %q, got %s", want, body)
+		}
+	}
+	if strings.Count(body, "closest safe path") < 3 {
+		t.Fatalf("expected three mapped concrete refusal boundaries, got %s", body)
+	}
+}
+
+func TestBuildProducedDeclarationsJSONFiveBodyRejectsRefusalFloor(t *testing.T) {
+	runner := &turnRunner{nowFunc: func() time.Time { return time.Unix(3000, 0).UTC() }}
+	draft := validFiveBodyDeclarationDraft()
+	draft.FiveBodies.Soul.Refusals = draft.FiveBodies.Soul.Refusals[:2]
+	_, err := runner.buildProducedDeclarationsJSON(draft, "openai:gpt-test")
+	if got := hostedgenesis.DeclarationValidationCodeFromError(err); got != hostedgenesis.DeclarationCodeSoulRefusals {
+		t.Fatalf("expected refusal floor error, got err=%v code=%q", err, got)
+	}
+}
+
+func TestBuildProducedDeclarationsJSONFiveBodyRequiresRunContractEvidence(t *testing.T) {
+	runner := &turnRunner{nowFunc: func() time.Time { return time.Unix(3000, 0).UTC() }}
+	draft := validFiveBodyDeclarationDraft()
+	draft.SchemaVersion = ""
+	_, err := runner.buildProducedDeclarationsJSON(draft, "openai:gpt-test", hostedgenesis.FiveBodyDeclarationContract())
+	if got := hostedgenesis.DeclarationValidationCodeFromError(err); got != hostedgenesis.DeclarationCodeInvalid {
+		t.Fatalf("expected missing v2 schema evidence to fail closed, got err=%v code=%q", err, got)
+	}
+}
+
+func validFiveBodyDeclarationDraft() llm.MintConversationDeclarationsDraft {
+	contract := hostedgenesis.FiveBodyDeclarationContract()
+	return llm.MintConversationDeclarationsDraft{
+		SchemaVersion:   contract.SchemaVersion,
+		GuidanceVersion: contract.GuidanceVersion,
+		FiveBodies: hostedgenesis.FiveBodyDeclaration{
+			Identity:   hostedgenesis.FiveBodySection{Summary: "I am Acme Steward, a hosted/off-chain agent for operator support."},
+			Philosophy: hostedgenesis.FiveBodySection{Summary: "I value narrow authority, auditability, and direct statements of uncertainty."},
+			Discipline: hostedgenesis.FiveBodySection{Summary: "I use the named cadence, keep evidence, and pause on unclear authority."},
+			Boundaries: hostedgenesis.FiveBodySection{Summary: "I protect tenant isolation, credentials, and human publish gates."},
+			Soul: hostedgenesis.FiveBodySoulBody{
+				Summary: "I preserve Host safety invariants even when asked to move faster.",
+				Refusals: []hostedgenesis.FiveBodyRefusalRule{
+					{Bypass: "Skip checksum verification for a managed release", Invariant: "consumer release verification must run before deploy", ClosestSafePath: "run managed-release-certification on the published artifact"},
+					{Bypass: "Return a raw Instance API key on reread", Invariant: "Host stores and compares only sha256 key hashes", ClosestSafePath: "issue a new key through controlled rotation and show only the hash id"},
+					{Bypass: "Finalize without explicit human authorization", Invariant: "hosted genesis keeps a human publish gate", ClosestSafePath: "return declaration_ready and wait for the finalize call"},
+				},
+			},
+		},
+		Capabilities: []soul.CapabilityV2{{Capability: "operator_support", Scope: "Help operators reason about hosted genesis state.", ClaimLevel: "self-declared"}},
+		Transparency: map[string]any{"modelProviderUncertainty": "unit test", "operationalNotes": "deterministic", "selfDeclaredNotice": "self-declared"},
 	}
 }
 
