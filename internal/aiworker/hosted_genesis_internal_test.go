@@ -19,6 +19,7 @@ import (
 	"github.com/equaltoai/lesser-host/internal/artifacts"
 	"github.com/equaltoai/lesser-host/internal/config"
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
+	"github.com/equaltoai/lesser-host/internal/hostedgenesis/mintprompt"
 	"github.com/equaltoai/lesser-host/internal/soul"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
@@ -1178,8 +1179,12 @@ func TestHostedGenesisPromptAndUsageHelpers(t *testing.T) {
 
 	reg := newHostedGenesisWorkerStore("turn-worker").reg
 	reg.Capabilities = []string{"planning"}
-	if prompt := hostedGenesisSystemPrompt(reg); !strings.Contains(prompt, hostedGenesisWorkerAgentDomain) || !strings.Contains(prompt, "planning") {
+	prompt := hostedGenesisSystemPrompt(reg)
+	if !strings.Contains(prompt, hostedGenesisWorkerAgentDomain) || !strings.Contains(prompt, "planning") {
 		t.Fatalf("system prompt omitted registration context: %q", prompt)
+	}
+	if prompt != mintprompt.MintConversationSystemPrompt(reg) || strings.Contains(prompt, "minted on-chain") || !strings.Contains(prompt, mintprompt.CanonicalFinalAffirmationQuestion) {
+		t.Fatalf("direct worker prompt drifted from shared hosted genesis prompt: %q", prompt)
 	}
 
 	usage := addAIUsageWorker(models.AIUsage{Provider: testProviderOpenAI, InputTokens: 1}, models.AIUsage{Model: "gpt", InputTokens: 2, OutputTokens: 3, DurationMs: 4, ToolCalls: 1})
