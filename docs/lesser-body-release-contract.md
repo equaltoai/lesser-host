@@ -78,6 +78,14 @@ The runner:
 4. runs `deploy-lesser-body-from-release.sh --no-execute-changeset` against the managed instance account to certify the
    published stage template through the real CloudFormation consumer path
 5. executes `deploy-lesser-body-from-release.sh` for the actual managed body deploy
+
+Both helper invocations receive `LESSER_SOUL_BINDING_INTEGRATION_BEARER_ARN` set to the Host-ensured soul-binding
+integration secret ARN — the same exact ARN passed to Lesser as `soul_binding_integration_key_arn` — so the Ptah
+caller bearer and the Lesser receiver credential are always the one Host-managed secret. Release helper versions that
+predate this variable simply ignore it. No operator step exists to create or match these secrets (see
+`docs/managed-instance-provisioning.md#soul-binding-integration-secret-host-owned-automation`).
+
+The runner then:
 6. reads the instance-scoped SSM export `/${app}/${stage}/lesser-body/exports/v1/mcp_lambda_arn`
 7. writes the managed receipt and uploads it back to the host artifacts bucket
 
