@@ -31,6 +31,7 @@ type updateDeployRunnerInputs struct {
 	baseDomain                string
 	lesserVersion             string
 	instanceKeySecretArn      string
+	soulBindingSecretArn      string
 	adminWallet               string
 	stage                     string
 	receiptKey                string
@@ -71,6 +72,7 @@ func updateDeployRunnerInputsFromJob(job *models.UpdateJob) updateDeployRunnerIn
 		baseDomain:           strings.TrimSpace(job.BaseDomain),
 		lesserVersion:        strings.TrimSpace(job.LesserVersion),
 		instanceKeySecretArn: strings.TrimSpace(job.LesserHostInstanceKeySecretARN),
+		soulBindingSecretArn: strings.TrimSpace(job.SoulBindingIntegrationSecretARN),
 	}
 }
 
@@ -95,6 +97,12 @@ func (s *Server) populateUpdateDeployRunnerDerivedInputs(job *models.UpdateJob, 
 	inputs.adminWallet = walletAddressFromUsername(strings.TrimSpace(inst.Owner))
 	if inputs.adminWallet == "" {
 		return updateDeployRunnerInputs{}, fmt.Errorf("instance owner is not a wallet username")
+	}
+
+	// Update jobs created before the soul-binding automation carry no secret reference;
+	// fall back to the canonical name so the runner can ensure the secret deterministically.
+	if inputs.soulBindingSecretArn == "" {
+		inputs.soulBindingSecretArn = s.resolveUpdateSoulBindingSecretRef(job, inst)
 	}
 
 	inputs.stage = normalizeManagedLesserStage(strings.TrimSpace(s.cfg.Stage))
@@ -178,6 +186,7 @@ func (s *Server) buildUpdateDeployRunnerEnv(job *models.UpdateJob, inputs update
 		{Name: aws.String("LESSER_HOST_INSTANCE_KEY_ARN"), Value: aws.String(inputs.instanceKeySecretArn)},
 		{Name: aws.String("LESSER_HOST_INSTANCE_KEY_SECRET_ID"), Value: aws.String(inputs.instanceKeySecretArn)},
 		{Name: aws.String("LESSER_HOST_INSTANCE_KEY_ROTATE"), Value: aws.String(fmt.Sprintf("%t", shouldRotateUpdateInstanceKey(job)))},
+		{Name: aws.String("SOUL_BINDING_INTEGRATION_KEY_ARN"), Value: aws.String(inputs.soulBindingSecretArn)},
 		{Name: aws.String("TRANSLATION_ENABLED"), Value: aws.String(fmt.Sprintf("%t", job.TranslationEnabled))},
 		{Name: aws.String("TIP_ENABLED"), Value: aws.String(fmt.Sprintf("%t", tipEnabled))},
 		{Name: aws.String("AI_ENABLED"), Value: aws.String(fmt.Sprintf("%t", job.AIEnabled))},

@@ -863,6 +863,7 @@ func updateInstanceConfigInstanceUpdate(publicBaseURL, attestationsURL, secretAr
 		if strings.HasPrefix(strings.TrimSpace(secretArn), "arn:aws:secretsmanager:") {
 			ub.Set("LesserHostInstanceKeySecretARN", strings.TrimSpace(secretArn))
 		}
+		setSoulBindingIntegrationInstanceARN(ub, job.SoulBindingIntegrationSecretARN)
 		ub.Set("TranslationEnabled", job.TranslationEnabled)
 		ub.Set("TipEnabled", job.TipEnabled)
 		ub.Set("TipChainID", job.TipChainID)
@@ -914,6 +915,10 @@ func (s *Server) advanceUpdateInstanceConfig(ctx context.Context, job *models.Up
 	if secretArn == "" {
 		return 0, false, s.failUpdateJob(ctx, job, requestID, now, "instance_key_secret_ref_failed", "failed to derive instance key secret reference")
 	}
+	soulBindingRef := s.resolveUpdateSoulBindingSecretRef(job, inst)
+	if soulBindingRef == "" {
+		return 0, false, s.failUpdateJob(ctx, job, requestID, now, "soul_binding_secret_ref_failed", "failed to derive soul binding integration secret reference")
+	}
 
 	job.AccountID = md.accountID
 	job.Region = md.region
@@ -921,6 +926,7 @@ func (s *Server) advanceUpdateInstanceConfig(ctx context.Context, job *models.Up
 	job.LesserHostBaseURL = publicBaseURL
 	job.LesserHostAttestationsURL = attestationsURL
 	job.LesserHostInstanceKeySecretARN = strings.TrimSpace(secretArn)
+	job.SoulBindingIntegrationSecretARN = strings.TrimSpace(soulBindingRef)
 	if code, msg := applyManagedUpdateRuntimeConfig(job, inst); code != "" {
 		return 0, false, s.failUpdateJob(ctx, job, requestID, now, code, msg)
 	}
