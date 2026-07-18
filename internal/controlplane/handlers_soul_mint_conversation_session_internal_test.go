@@ -39,6 +39,39 @@ func TestHostedGenesisSessionProjectionFallbackAndTraceNil(t *testing.T) {
 	}
 }
 
+func TestHostedGenesisFailureProjectionMatchesCompatibilityAndSanitizesDetail(t *testing.T) {
+	t.Parallel()
+
+	session := testHostedGenesisSessionProjectionBase()
+	session.Status = string(hostedgenesis.StatusFailed)
+	session.Failure = &hostedgenesis.Failure{
+		Code:    hostedgenesis.FailureCodeInvalidProducedDeclarations,
+		Message: "provider output contained private transcript text",
+		Recovery: hostedgenesis.Recovery{
+			Action: hostedgenesis.RecoveryActionRestartSoulBootstrap,
+			Reason: string(hostedgenesis.DeclarationCodeCapabilities),
+		},
+	}
+	fromSession := hostedGenesisFailureFromSession(session.Failure)
+	fromCompatibility := hostedGenesisFailureFromReason(string(hostedgenesis.DeclarationCodeCapabilities))
+	if fromSession == nil || fromCompatibility == nil {
+		t.Fatalf("expected both failure projections, session=%#v compatibility=%#v", fromSession, fromCompatibility)
+	}
+	if fromSession.Code != fromCompatibility.Code || fromSession.Message != fromCompatibility.Message ||
+		fromSession.Recovery.Action != fromCompatibility.Recovery.Action || fromSession.Recovery.Reason != fromCompatibility.Recovery.Reason {
+		t.Fatalf("terminal failure projections disagree: session=%#v compatibility=%#v", fromSession, fromCompatibility)
+	}
+	if strings.Contains(fromSession.Message, "private transcript") || strings.Contains(fromSession.Recovery.Reason, "private") {
+		t.Fatalf("failure projection leaked private detail: session=%#v", fromSession)
+	}
+
+	response := buildHostedGenesisConversationResponseFromSession(session, nil, hostedGenesisProjectionOptions{})
+	if response.Conversation.Status != string(hostedgenesis.StatusFailed) || response.Conversation.Failure == nil ||
+		response.Conversation.Failure.Code != fromSession.Code || response.Conversation.Failure.Recovery.Reason != fromSession.Recovery.Reason {
+		t.Fatalf("response failure projection disagrees with session projection: %#v", response.Conversation.Failure)
+	}
+}
+
 func TestHostedGenesisProducedDeclarationsFromSessionTrustsCheckpointHash(t *testing.T) {
 	t.Parallel()
 

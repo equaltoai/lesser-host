@@ -289,7 +289,7 @@ func validateRegistrationSharedCoreSections(
 	if err := selfDescription.Validate(); err != nil {
 		return fmt.Errorf("selfDescription: %w", err)
 	}
-	if err := validateCapabilitiesV2(capabilities); err != nil {
+	if err := validateCapabilitiesV2ForAuthority(capabilities, authorityModel); err != nil {
 		return err
 	}
 	if err := validateBoundariesV2ForAuthority(boundaries, authorityModel); err != nil {
@@ -307,8 +307,11 @@ func validateRegistrationSharedCoreSections(
 	return nil
 }
 
-func validateCapabilitiesV2(capabilities []CapabilityV2) error {
+func validateCapabilitiesV2ForAuthority(capabilities []CapabilityV2, authorityModel string) error {
 	if len(capabilities) == 0 {
+		if authorityModel == registrationAuthorityInstanceTrust {
+			return nil
+		}
 		return errors.New("capabilities must be a non-empty array")
 	}
 	for i := range capabilities {

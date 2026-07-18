@@ -100,6 +100,19 @@ func TestMintConversationDeclarationsPromptAndSchema(t *testing.T) {
 	}
 
 	schema := mintConversationDeclarationsJSONSchemaV1()
+	assertMintConversationDeclarationsSchema(t, schema)
+
+	if _, _, err := MintConversationDeclarationsOpenAI(t.Context(), "k", "unsupported:model", MintConversationDeclarationsInput{}); err == nil {
+		t.Fatalf("expected unsupported OpenAI declarations model error")
+	}
+	if _, _, err := MintConversationDeclarationsAnthropic(t.Context(), "k", "unsupported:model", MintConversationDeclarationsInput{}); err == nil {
+		t.Fatalf("expected unsupported Anthropic declarations model error")
+	}
+}
+
+func assertMintConversationDeclarationsSchema(t *testing.T, schema map[string]any) {
+	t.Helper()
+
 	props, hasProps := schema["properties"].(map[string]any)
 	if !hasProps {
 		t.Fatalf("expected top-level properties")
@@ -120,17 +133,17 @@ func TestMintConversationDeclarationsPromptAndSchema(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected boundaries schema map")
 	}
-	if got, ok := boundaries["maxItems"].(int); !ok || got != maxMintConversationBoundaryDrafts {
+	if got, typeOK := boundaries["maxItems"].(int); !typeOK || got != maxMintConversationBoundaryDrafts {
 		t.Fatalf("expected boundaries maxItems=%d, got %#v", maxMintConversationBoundaryDrafts, boundaries["maxItems"])
 	}
+	capabilities, ok := props["capabilities"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected capabilities schema map")
+	}
+	if got, typeOK := capabilities["minItems"].(int); !typeOK || got != 0 {
+		t.Fatalf("expected capabilities minItems=0, got %#v", capabilities["minItems"])
+	}
 	assertOpenAIStrictObjectSchema(t, schema)
-
-	if _, _, err := MintConversationDeclarationsOpenAI(t.Context(), "k", "unsupported:model", MintConversationDeclarationsInput{}); err == nil {
-		t.Fatalf("expected unsupported OpenAI declarations model error")
-	}
-	if _, _, err := MintConversationDeclarationsAnthropic(t.Context(), "k", "unsupported:model", MintConversationDeclarationsInput{}); err == nil {
-		t.Fatalf("expected unsupported Anthropic declarations model error")
-	}
 }
 
 func TestMintConversationDeclarationsOpenAI_OmitsTemperatureForGPT5(t *testing.T) {

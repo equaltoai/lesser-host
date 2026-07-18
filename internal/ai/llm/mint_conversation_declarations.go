@@ -152,7 +152,9 @@ You MUST return only a single JSON object that matches the provided JSON schema,
 
 Guidance:
 - Self-description should be honest and specific (purpose, constraints, commitments, limitations).
-- Capabilities must be concrete: what the agent can do, with explicit scope. Use claimLevel "self-declared".
+- Capabilities must be concrete when the transcript supports them: what the agent can do, with explicit scope. Use claimLevel "self-declared".
+- It is valid to return an empty capabilities array when no concrete capability is supported; never invent a fallback or placeholder capability.
+- Never emit "simulacrum.hosted-first-default"; it is a deprecated hosted-genesis placeholder, not a real capability.
 - Boundaries must be concrete refusals/scope limits/ethical commitments/circuit breakers.
 - Prefer the smallest durable set of high-signal boundaries. Return 2-4 boundaries unless the transcript clearly supports fewer.
 - Do not emit redundant or near-duplicate boundaries that would force extra wallet signatures later.
@@ -181,7 +183,7 @@ func mintConversationDeclarationsJSONSchemaV1() map[string]any {
 			},
 			"capabilities": map[string]any{
 				"type":     "array",
-				"minItems": 1,
+				"minItems": 0,
 				"items": map[string]any{
 					"type":                 "object",
 					"additionalProperties": false,

@@ -1542,12 +1542,16 @@ func mintConversationFinalizeDeclarationsForContext(finalizeCtx mintConversation
 	if appErr != nil {
 		return soulMintConversationProducedDeclarations{}, appErr
 	}
-	decl.Capabilities = hostedgenesis.MergeDeclaredCapabilities(decl.Capabilities, mintConversationFinalizeDeclaredCapabilities(finalizeCtx))
-	if len(decl.Capabilities) == 0 {
-		return soulMintConversationProducedDeclarations{}, newAppTheoryError("app.conflict", "conversation has no publishable capabilities; restart soul bootstrap")
+	decl.Capabilities = hostedgenesis.NormalizeProducedCapabilities(decl.Capabilities)
+	instanceTrust := isExplicitInstanceTrustAuthority(finalizeCtx.reg, finalizeCtx.identity)
+	if !instanceTrust {
+		decl.Capabilities = hostedgenesis.MergeDeclaredCapabilities(decl.Capabilities, mintConversationFinalizeDeclaredCapabilities(finalizeCtx))
+	}
+	if !instanceTrust && len(decl.Capabilities) == 0 {
+		return soulMintConversationProducedDeclarations{}, newAppTheoryError("app.conflict", string(hostedgenesis.DeclarationCodeCapabilities))
 	}
 	if len(decl.Boundaries) == 0 {
-		return soulMintConversationProducedDeclarations{}, newAppTheoryError("app.conflict", "conversation has no publishable boundaries; restart soul bootstrap")
+		return soulMintConversationProducedDeclarations{}, newAppTheoryError("app.conflict", string(hostedgenesis.DeclarationCodeBoundaries))
 	}
 	return decl, nil
 }
@@ -1775,8 +1779,12 @@ func (s *Server) resolveMintConversationCompletion(
 ) (string, models.AIUsage, *apptheory.AppTheoryError) {
 	declarationsJSON := parseMintConversationCompleteDeclarations(ctx)
 	if declarationsJSON != "" {
-		if _, appErr := parseAndValidateMintConversationDeclarations(declarationsJSON); appErr != nil {
+		decl, appErr := parseAndValidateMintConversationDeclarations(declarationsJSON)
+		if appErr != nil {
 			return "", models.AIUsage{}, appErr
+		}
+		if !isRegistrationInstanceTrust(regCtx.reg) && len(decl.Capabilities) == 0 {
+			return "", models.AIUsage{}, newAppTheoryError("app.bad_request", string(hostedgenesis.DeclarationCodeCapabilities))
 		}
 		return declarationsJSON, models.AIUsage{}, nil
 	}
@@ -2293,7 +2301,7 @@ func (s *Server) extractMintConversationDeclarations(ctx context.Context, reg *m
 			Domain:               strings.TrimSpace(reg.DomainNormalized),
 			LocalID:              strings.TrimSpace(reg.LocalID),
 			AgentID:              strings.TrimSpace(reg.AgentID),
-			DeclaredCapabilities: append([]string(nil), reg.Capabilities...),
+			DeclaredCapabilities: hostedgenesis.FilterDeclaredCapabilitiesForPrompt(reg.Capabilities),
 		},
 		Messages: make([]llm.MintConversationMessage, 0, len(transcript)),
 	}
@@ -2310,7 +2318,7 @@ func (s *Server) extractMintConversationDeclarations(ctx context.Context, reg *m
 	case strings.HasPrefix(strings.ToLower(modelSet), "openai:"):
 		out, u, err := llm.MintConversationDeclarationsOpenAI(ctx, apiKey, modelSet, in)
 		if err != nil {
-			log.Printf("controlplane: mint conversation declaration extraction failed: provider=openai model=%s err=%v", modelSet, err)
+			log.Printf("controlplane: mint conversation declaration extraction failed: provider=openai model=%s failure_code=%s", modelSet, hostedGenesisFailureDeclarationExtractionFailed)
 			return soulMintConversationProducedDeclarations{}, models.AIUsage{}, newAppTheoryError("app.internal", "failed to extract declarations")
 		}
 		draft = out
@@ -2318,7 +2326,7 @@ func (s *Server) extractMintConversationDeclarations(ctx context.Context, reg *m
 	case strings.HasPrefix(strings.ToLower(modelSet), "anthropic:"):
 		out, u, err := llm.MintConversationDeclarationsAnthropic(ctx, apiKey, modelSet, in)
 		if err != nil {
-			log.Printf("controlplane: mint conversation declaration extraction failed: provider=anthropic model=%s err=%v", modelSet, err)
+			log.Printf("controlplane: mint conversation declaration extraction failed: provider=anthropic model=%s failure_code=%s", modelSet, hostedGenesisFailureDeclarationExtractionFailed)
 			return soulMintConversationProducedDeclarations{}, models.AIUsage{}, newAppTheoryError("app.internal", "failed to extract declarations")
 		}
 		draft = out
@@ -2327,7 +2335,12 @@ func (s *Server) extractMintConversationDeclarations(ctx context.Context, reg *m
 		return soulMintConversationProducedDeclarations{}, models.AIUsage{}, newAppTheoryError("app.bad_request", mintConversationUnsupportedModelSetMessage)
 	}
 
-	decl, appErr := buildMintConversationProducedDeclarations(draft, now, modelSet, reg.Capabilities)
+	declaredCapabilities := reg.Capabilities
+	allowEmptyCapabilities := isRegistrationInstanceTrust(reg)
+	if allowEmptyCapabilities {
+		declaredCapabilities = nil
+	}
+	decl, appErr := buildMintConversationProducedDeclarationsWithOptions(draft, now, modelSet, declaredCapabilities, allowEmptyCapabilities)
 	if appErr != nil {
 		return soulMintConversationProducedDeclarations{}, models.AIUsage{}, appErr
 	}
@@ -2335,6 +2348,14 @@ func (s *Server) extractMintConversationDeclarations(ctx context.Context, reg *m
 }
 
 func buildMintConversationProducedDeclarations(draft llm.MintConversationDeclarationsDraft, now time.Time, modelSet string, declaredCapabilities ...[]string) (soulMintConversationProducedDeclarations, *apptheory.AppTheoryError) {
+	declared := []string(nil)
+	if len(declaredCapabilities) > 0 {
+		declared = declaredCapabilities[0]
+	}
+	return buildMintConversationProducedDeclarationsWithOptions(draft, now, modelSet, declared, false)
+}
+
+func buildMintConversationProducedDeclarationsWithOptions(draft llm.MintConversationDeclarationsDraft, now time.Time, modelSet string, declaredCapabilities []string, allowEmptyCapabilities bool) (soulMintConversationProducedDeclarations, *apptheory.AppTheoryError) {
 	decl := soulMintConversationProducedDeclarations{
 		SelfDescription: draft.SelfDescription,
 		Capabilities:    []soul.CapabilityV2{},
@@ -2345,30 +2366,27 @@ func buildMintConversationProducedDeclarations(draft llm.MintConversationDeclara
 	decl.SelfDescription.AuthoredBy = "agent"
 	decl.SelfDescription.MintingModel = strings.TrimSpace(modelSet)
 	if err := decl.SelfDescription.Validate(); err != nil {
-		return soulMintConversationProducedDeclarations{}, newAppTheoryError("app.internal", "invalid extracted selfDescription")
+		return soulMintConversationProducedDeclarations{}, newAppTheoryError("app.bad_request", string(hostedgenesis.DeclarationCodeSelfDescription))
 	}
 
-	caps := make([]soul.CapabilityV2, 0, len(draft.Capabilities))
-	for _, c := range draft.Capabilities {
-		c.ClaimLevel = soulClaimLevelSelfDeclared
-		if strings.TrimSpace(c.Capability) == "" || strings.TrimSpace(c.Scope) == "" {
-			continue
+	if allowEmptyCapabilities {
+		var capErr error
+		decl.Capabilities, capErr = hostedgenesis.ValidateAndNormalizeProducedCapabilities(draft.Capabilities)
+		if capErr != nil {
+			return soulMintConversationProducedDeclarations{}, newAppTheoryError("app.bad_request", string(hostedgenesis.DeclarationCodeCapabilitiesBad))
 		}
-		if err := c.Validate(); err != nil {
-			continue
-		}
-		caps = append(caps, c)
+	} else {
+		decl.Capabilities = hostedgenesis.NormalizeProducedCapabilities(draft.Capabilities)
 	}
-	declared := []string(nil)
-	if len(declaredCapabilities) > 0 {
-		declared = declaredCapabilities[0]
+	if !allowEmptyCapabilities {
+		decl.Capabilities = hostedgenesis.MergeDeclaredCapabilities(decl.Capabilities, declaredCapabilities)
 	}
-	decl.Capabilities = hostedgenesis.MergeDeclaredCapabilities(caps, declared)
-	if len(decl.Capabilities) == 0 {
-		return soulMintConversationProducedDeclarations{}, newAppTheoryError("app.bad_request", "capabilities is required")
+	if !allowEmptyCapabilities && len(decl.Capabilities) == 0 {
+		return soulMintConversationProducedDeclarations{}, newAppTheoryError("app.bad_request", string(hostedgenesis.DeclarationCodeCapabilities))
 	}
 
 	bounds := make([]soul.BoundaryV2, 0, len(draft.Boundaries))
+	invalidBoundary := false
 	for i, b := range draft.Boundaries {
 		id := fmt.Sprintf("mint-%d-%02d", now.Unix(), i+1)
 		entry := soul.BoundaryV2{
@@ -2381,13 +2399,21 @@ func buildMintConversationProducedDeclarations(draft llm.MintConversationDeclara
 			Signature:      "0x00",
 		}
 		if err := entry.Validate(); err != nil {
+			invalidBoundary = true
 			continue
 		}
 		bounds = append(bounds, entry)
 	}
 	decl.Boundaries = bounds
+	if invalidBoundary {
+		return soulMintConversationProducedDeclarations{}, newAppTheoryError("app.bad_request", string(hostedgenesis.DeclarationCodeBoundariesBad))
+	}
 	if len(decl.Boundaries) == 0 {
-		return soulMintConversationProducedDeclarations{}, newAppTheoryError("app.bad_request", "boundaries is required")
+		code := hostedgenesis.DeclarationCodeBoundaries
+		if len(draft.Boundaries) > 0 {
+			code = hostedgenesis.DeclarationCodeBoundariesBad
+		}
+		return soulMintConversationProducedDeclarations{}, newAppTheoryError("app.bad_request", string(code))
 	}
 
 	if decl.Transparency == nil {
@@ -2405,44 +2431,44 @@ func parseAndValidateMintConversationDeclarations(raw string) (soulMintConversat
 
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(raw), &fields); err != nil {
-		return soulMintConversationProducedDeclarations{}, newAppTheoryError("app.bad_request", "invalid declarations JSON")
+		return soulMintConversationProducedDeclarations{}, newAppTheoryError("app.bad_request", string(hostedgenesis.DeclarationCodeInvalid))
 	}
 	if !mintConversationJSONFieldPresent(fields, "capabilities") {
-		return soulMintConversationProducedDeclarations{}, newAppTheoryError("app.bad_request", "capabilities is required")
+		return soulMintConversationProducedDeclarations{}, newAppTheoryError("app.bad_request", string(hostedgenesis.DeclarationCodeCapabilities))
 	}
 	if !mintConversationJSONFieldPresent(fields, "boundaries") {
-		return soulMintConversationProducedDeclarations{}, newAppTheoryError("app.bad_request", "boundaries is required")
+		return soulMintConversationProducedDeclarations{}, newAppTheoryError("app.bad_request", string(hostedgenesis.DeclarationCodeBoundaries))
 	}
 	if !mintConversationJSONFieldPresent(fields, "transparency") {
-		return soulMintConversationProducedDeclarations{}, newAppTheoryError("app.bad_request", "transparency is required")
+		return soulMintConversationProducedDeclarations{}, newAppTheoryError("app.bad_request", string(hostedgenesis.DeclarationCodeTransparency))
 	}
 	if !mintConversationJSONFieldIsArray(fields["capabilities"]) {
-		return soulMintConversationProducedDeclarations{}, newAppTheoryError("app.bad_request", "capabilities must be an array")
+		return soulMintConversationProducedDeclarations{}, newAppTheoryError("app.bad_request", string(hostedgenesis.DeclarationCodeCapabilitiesBad))
 	}
 	if !mintConversationJSONFieldIsArray(fields["boundaries"]) {
-		return soulMintConversationProducedDeclarations{}, newAppTheoryError("app.bad_request", "boundaries must be an array")
+		return soulMintConversationProducedDeclarations{}, newAppTheoryError("app.bad_request", string(hostedgenesis.DeclarationCodeBoundariesBad))
 	}
 
 	var decl soulMintConversationProducedDeclarations
 	if err := json.Unmarshal([]byte(raw), &decl); err != nil {
-		return soulMintConversationProducedDeclarations{}, newAppTheoryError("app.bad_request", "invalid declarations JSON")
+		return soulMintConversationProducedDeclarations{}, newAppTheoryError("app.bad_request", string(hostedgenesis.DeclarationCodeInvalid))
 	}
 
 	if err := decl.SelfDescription.Validate(); err != nil {
-		return soulMintConversationProducedDeclarations{}, newAppTheoryError("app.bad_request", "invalid selfDescription: "+err.Error())
+		return soulMintConversationProducedDeclarations{}, newAppTheoryError("app.bad_request", string(hostedgenesis.DeclarationCodeSelfDescription))
 	}
 	for i := range decl.Capabilities {
 		if err := decl.Capabilities[i].Validate(); err != nil {
-			return soulMintConversationProducedDeclarations{}, newAppTheoryError("app.bad_request", fmt.Sprintf("invalid capabilities[%d]: %s", i, err.Error()))
+			return soulMintConversationProducedDeclarations{}, newAppTheoryError("app.bad_request", string(hostedgenesis.DeclarationCodeCapabilitiesBad))
 		}
 	}
 	for i := range decl.Boundaries {
 		if err := decl.Boundaries[i].Validate(); err != nil {
-			return soulMintConversationProducedDeclarations{}, newAppTheoryError("app.bad_request", fmt.Sprintf("invalid boundaries[%d]: %s", i, err.Error()))
+			return soulMintConversationProducedDeclarations{}, newAppTheoryError("app.bad_request", string(hostedgenesis.DeclarationCodeBoundariesBad))
 		}
 	}
 	if decl.Transparency == nil {
-		return soulMintConversationProducedDeclarations{}, newAppTheoryError("app.bad_request", "transparency is required")
+		return soulMintConversationProducedDeclarations{}, newAppTheoryError("app.bad_request", string(hostedgenesis.DeclarationCodeTransparency))
 	}
 
 	return decl, nil

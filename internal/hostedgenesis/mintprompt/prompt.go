@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
@@ -48,13 +49,9 @@ When you feel the conversation has covered all four areas sufficiently, summariz
 	if reg.LocalID != "" {
 		fmt.Fprintf(&sb, "- Local ID: %s\n", QuotePromptValue(reg.LocalID))
 	}
-	if len(reg.Capabilities) > 0 {
-		caps := make([]string, 0, len(reg.Capabilities))
-		for _, c := range reg.Capabilities {
-			c = SanitizePromptInline(c, 128)
-			if c != "" {
-				caps = append(caps, c)
-			}
+	if caps := hostedgenesis.FilterDeclaredCapabilitiesForPrompt(reg.Capabilities); len(caps) > 0 {
+		for i := range caps {
+			caps[i] = SanitizePromptInline(caps[i], 128)
 		}
 		b, _ := json.Marshal(caps)
 		fmt.Fprintf(&sb, "- Declared capabilities: %s\n", string(b))

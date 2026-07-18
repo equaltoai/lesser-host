@@ -154,6 +154,10 @@ func TestRegistrationFileV3_HostedInstanceTrustAuthority(t *testing.T) {
 	if err := reg.Validate(); err != nil {
 		t.Fatalf("hosted v3 instance-trust registration should validate: %v", err)
 	}
+	reg.Capabilities = nil
+	if err := reg.Validate(); err != nil {
+		t.Fatalf("hosted v3 instance-trust registration should allow empty capabilities: %v", err)
+	}
 }
 
 func TestRegistrationV3ChannelsLeafValidator(t *testing.T) {

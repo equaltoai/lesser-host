@@ -117,6 +117,46 @@ func TestSoulInstanceRecoverMintConversation_NonStuckIsNoop(t *testing.T) {
 	tdb.db.AssertNotCalled(t, "TransactWrite", mock.Anything, mock.Anything)
 }
 
+func TestSoulInstanceRecoverMintConversation_RestartRequiredReturnsActionableConflict(t *testing.T) {
+	tdb := newMintConversationTestDB()
+	s := newMintConversationServer(tdb)
+	reg := mintConversationHandleReg()
+	now := time.Date(2026, 3, 7, 12, 5, 0, 0, time.UTC)
+
+	expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, soulInstanceBootstrapTestInstanceSlug)
+	stubMintConversationRegistration(t, tdb, reg)
+	stubSoulInstanceBootstrapDomainAndInstance(t, tdb, reg.DomainNormalized, soulInstanceBootstrapTestInstanceSlug)
+	stubFailedRecoveryLegacyMintConversation(t, tdb, reg, now)
+	session := failedRecoveryHostedGenesisSessionFixture(t, reg, now)
+	session.Failure = &hostedgenesis.Failure{
+		Code:    hostedgenesis.FailureCodeInvalidProducedDeclarations,
+		Message: hostedgenesis.FailureMessage(hostedgenesis.FailureCodeInvalidProducedDeclarations),
+		Recovery: hostedgenesis.Recovery{
+			Action: hostedgenesis.RecoveryActionRestartSoulBootstrap,
+			Reason: string(hostedgenesis.DeclarationCodeCapabilities),
+		},
+	}
+	stubSoulInstanceRecoverySession(t, tdb, session)
+
+	_, err := s.handleSoulInstanceRecoverMintConversation(newSoulInstanceBootstrapContext(
+		map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
+		nil,
+		map[string]string{"id": reg.ID, "conversationId": mintConversationTestConversationID},
+	))
+	appErr := requireAppTheoryError(t, err)
+	if appErr.Code != soulInstanceBootstrapCodeConflict || appErr.StatusCode != http.StatusConflict {
+		t.Fatalf("expected restart-required conflict, got %#v", appErr)
+	}
+	if appErr.Details["recovery_action"] != string(hostedgenesis.RecoveryActionRestartSoulBootstrap) ||
+		appErr.Details["restart_path"] != "/api/v1/soul/instance/agents/register/begin" {
+		t.Fatalf("expected actionable restart details, got %#v", appErr.Details)
+	}
+	if strings.Contains(appErr.Message, "capabilities") || strings.Contains(appErr.Message, "transcript") {
+		t.Fatalf("conflict message leaked declaration detail: %#v", appErr)
+	}
+	tdb.db.AssertNotCalled(t, "TransactWrite", mock.Anything, mock.Anything)
+}
+
 func TestSoulInstanceGetRegistrationMintConversation_ReturnsRecoveryWithoutQueueOrLeaks(t *testing.T) {
 	tdb := newMintConversationTestDB()
 	s := newMintConversationServer(tdb)

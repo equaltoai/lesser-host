@@ -32,6 +32,10 @@ func soulRegistrationAuthorityModel(reg *models.SoulAgentRegistration) string {
 	return ""
 }
 
+func isRegistrationInstanceTrust(reg *models.SoulAgentRegistration) bool {
+	return normalizeSoulAuthorityModel(soulRegistrationAuthorityModel(reg)) == models.SoulAuthorityModelInstanceTrust
+}
+
 func soulIdentityAuthorityModel(identity *models.SoulAgentIdentity) string {
 	if identity == nil {
 		return ""
