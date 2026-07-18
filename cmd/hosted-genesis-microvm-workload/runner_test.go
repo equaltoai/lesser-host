@@ -302,6 +302,53 @@ func TestRunTurnAndPersist_DeclarationExtractionDoesNotSynthesizeDeclaredCapabil
 	}
 }
 
+func TestRunTurnAndPersist_DeclarationExtractionFailureFailsConversationProjection(t *testing.T) {
+	respBytes, err := json.Marshal(map[string]any{
+		"id":      "chatcmpl_test",
+		"object":  "chat.completion",
+		"created": 1,
+		"model":   "gpt-test",
+		"choices": []any{map[string]any{"index": 0, "message": map[string]any{"role": "assistant", "content": `{`}}},
+		"usage":   map[string]any{"prompt_tokens": 5, "completion_tokens": 1, "total_tokens": 6},
+	})
+	if err != nil {
+		t.Fatalf("marshal openai failure response: %v", err)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		_ = r.Body.Close()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(respBytes)
+	}))
+	t.Cleanup(srv.Close)
+	withOpenAIBaseURL(t, srv.URL, "sk-test")
+	llm.ConfigureProviderHTTPClient(&http.Client{Timeout: 5 * time.Second})
+	t.Cleanup(func() { llm.ConfigureProviderHTTPClient(nil) })
+
+	turnStore, compStore, turn := baseTurnInput()
+	turnStore.session.Status = string(hostedgenesis.StatusDeclarationExtractionPending)
+	turnStore.conv.Status = models.SoulMintConversationStatusDeclarationExtractionPending
+	turnStore.conv.Messages = models.EncodeSoulMintConversationBlob(`[{"role":"user","content":"describe"},{"role":"assistant","content":"assistant ready"}]`)
+	compStore.session.Status = string(hostedgenesis.StatusDeclarationExtractionPending)
+	compStore.conversation = &models.SoulAgentMintConversation{
+		AgentID:        compStore.session.AgentID,
+		ConversationID: compStore.session.ConversationID,
+		Status:         models.SoulMintConversationStatusDeclarationExtractionPending,
+	}
+	writer := completion.NewCompletionWriter(compStore, func() time.Time { return time.Unix(3000, 0).UTC() })
+	runner := &turnRunner{store: turnStore, writer: writer, nowFunc: func() time.Time { return time.Unix(3000, 0).UTC() }}
+
+	if err := runner.runTurnAndPersist(context.Background(), turn); err != nil {
+		t.Fatalf("declaration extraction failure should be durably recorded, got %v", err)
+	}
+	if hostedgenesis.NormalizeStatus(compStore.session.Status) != hostedgenesis.StatusFailed || compStore.session.Failure == nil || compStore.session.Failure.Code != hostedgenesis.FailureCodeDeclarationExtractionFailed {
+		t.Fatalf("expected terminal declaration extraction failure on session, got %#v", compStore.session)
+	}
+	if compStore.conversation == nil || compStore.conversation.Status != models.SoulMintConversationStatusFailed || compStore.conversation.StatusReason != string(hostedgenesis.FailureCodeDeclarationExtractionFailed) {
+		t.Fatalf("expected stale declaration_extraction_pending conversation reconciled to sanitized failed status, got %#v", compStore.conversation)
+	}
+}
+
 // TestRunTurnAndPersist_MissingSessionRecordsFailure proves a missing
 // authoritative session surfaces as a typed invalid_completion_state failure,
 // not a silent success.

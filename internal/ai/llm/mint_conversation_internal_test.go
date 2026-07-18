@@ -17,6 +17,11 @@ import (
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
+const (
+	mintConversationTestAnthropicModel  = "claude-sonnet-4-6"
+	mintConversationTestAuthoredByAgent = "agent"
+)
+
 func TestMintConversationDeclarationsDraftParsingAndNormalization(t *testing.T) {
 	t.Parallel()
 
@@ -54,7 +59,7 @@ func TestMintConversationDeclarationsDraftParsingAndNormalization(t *testing.T) 
 	if norm.SelfDescription.Purpose != "Help people plan travel" {
 		t.Fatalf("unexpected purpose: %q", norm.SelfDescription.Purpose)
 	}
-	if norm.SelfDescription.AuthoredBy != "agent" {
+	if norm.SelfDescription.AuthoredBy != mintConversationTestAuthoredByAgent {
 		t.Fatalf("unexpected authoredBy: %q", norm.SelfDescription.AuthoredBy)
 	}
 	if len(norm.Capabilities) != 1 {
@@ -97,6 +102,9 @@ func TestMintConversationDeclarationsPromptAndSchema(t *testing.T) {
 	}
 	if !strings.Contains(prompt, "2-4 boundaries") {
 		t.Fatalf("expected prompt to mention boundary target, got %q", prompt)
+	}
+	if !strings.Contains(prompt, "untrusted data") || !strings.Contains(prompt, `claimLevel "self-declared"`) {
+		t.Fatalf("expected prompt hygiene and locked claim-level vocabulary, got %q", prompt)
 	}
 
 	schema := mintConversationDeclarationsJSONSchemaV1()
@@ -144,6 +152,198 @@ func assertMintConversationDeclarationsSchema(t *testing.T, schema map[string]an
 		t.Fatalf("expected capabilities minItems=0, got %#v", capabilities["minItems"])
 	}
 	assertOpenAIStrictObjectSchema(t, schema)
+}
+
+func TestMintConversationDeclarationsProviderParityUsesStrictAnthropicTool(t *testing.T) {
+	fixture := mintConversationDeclarationDraftFixture()
+	openAIContent, err := json.Marshal(fixture)
+	if err != nil {
+		t.Fatalf("marshal declaration fixture: %v", err)
+	}
+	openAIResp, err := json.Marshal(map[string]any{
+		"id":      "chatcmpl_test",
+		"object":  "chat.completion",
+		"created": 123,
+		"model":   "gpt-4.1-mini",
+		"choices": []any{map[string]any{
+			"index": 0,
+			"message": map[string]any{
+				"role":    "assistant",
+				"content": string(openAIContent),
+			},
+		}},
+		"usage": map[string]any{"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30},
+	})
+	if err != nil {
+		t.Fatalf("marshal openai response: %v", err)
+	}
+	anthropicResp := anthropicDeclarationToolResponse(t, fixture, "tool_use")
+
+	input := MintConversationDeclarationsInput{
+		Registration: MintConversationRegistrationContext{
+			Domain:               "agent.example",
+			LocalID:              "agent",
+			AgentID:              "0x" + strings.Repeat("11", 32),
+			DeclaredCapabilities: []string{"hosted_genesis_planning"},
+		},
+		Messages: []MintConversationMessage{
+			{Role: "user", Content: "I help plan hosted genesis declarations."},
+			{Role: "assistant", Content: "Draft: self-description, one capability, one boundary."},
+		},
+	}
+
+	oldOpenAIBase := os.Getenv("OPENAI_BASE_URL")
+	oldAnthropicBase := os.Getenv("ANTHROPIC_BASE_URL")
+	t.Cleanup(func() {
+		_ = os.Setenv("OPENAI_BASE_URL", oldOpenAIBase)
+		_ = os.Setenv("ANTHROPIC_BASE_URL", oldAnthropicBase)
+		openAIHTTPClient = nil
+		anthropicHTTPClient = nil
+	})
+	_ = os.Setenv("OPENAI_BASE_URL", "https://openai.example.test")
+	_ = os.Setenv("ANTHROPIC_BASE_URL", "https://anthropic.example.test")
+
+	var openAIRequest string
+	openAIHTTPClient = &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		body, readErr := io.ReadAll(r.Body)
+		if readErr != nil {
+			return nil, readErr
+		}
+		openAIRequest = string(body)
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(bytes.NewReader(openAIResp)), Request: r}, nil
+	})}
+	openOut, _, err := MintConversationDeclarationsOpenAI(t.Context(), "sk-test", "openai:gpt-4.1-mini", input)
+	if err != nil {
+		t.Fatalf("MintConversationDeclarationsOpenAI: %v", err)
+	}
+
+	var anthropicRequest string
+	anthropicHTTPClient = &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		body, readErr := io.ReadAll(r.Body)
+		if readErr != nil {
+			return nil, readErr
+		}
+		anthropicRequest = string(body)
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(bytes.NewReader(anthropicResp)), Request: r}, nil
+	})}
+	anthropicOut, usage, err := MintConversationDeclarationsAnthropic(t.Context(), "sk-ant-test", "anthropic:"+mintConversationTestAnthropicModel, input)
+	if err != nil {
+		t.Fatalf("MintConversationDeclarationsAnthropic: %v", err)
+	}
+
+	assertMintConversationDeclarationDraftsEquivalent(t, openOut, anthropicOut)
+	if usage.Provider != testProviderAnthropic || usage.Model != mintConversationTestAnthropicModel || usage.ToolCalls != 1 {
+		t.Fatalf("unexpected anthropic usage: %#v", usage)
+	}
+	for _, want := range []string{`"json_schema"`, `"strict":true`, `"selfDescription"`, `"capabilities"`, `"boundaries"`, `"transparency"`} {
+		if !strings.Contains(openAIRequest, want) {
+			t.Fatalf("OpenAI strict schema request missing %s: %s", want, openAIRequest)
+		}
+	}
+	for _, want := range []string{`"tool_choice"`, `"soul_mint_conversation_declarations"`, `"strict":true`, `"max_tokens":8192`, `"selfDescription"`, `"capabilities"`, `"boundaries"`, `"transparency"`} {
+		if !strings.Contains(anthropicRequest, want) {
+			t.Fatalf("Anthropic strict tool request missing %s: %s", want, anthropicRequest)
+		}
+	}
+}
+
+func TestMintConversationDeclarationsAnthropicRejectsTruncatedStopReason(t *testing.T) {
+	respBytes, err := json.Marshal(map[string]any{
+		"id":          "msg_test",
+		"type":        "message",
+		"role":        "assistant",
+		"model":       mintConversationTestAnthropicModel,
+		"stop_reason": "max_tokens",
+		"content":     []any{map[string]any{"type": "text", "text": `{"selfDescription":`}},
+		"usage":       map[string]any{"input_tokens": 11, "output_tokens": 8192},
+	})
+	if err != nil {
+		t.Fatalf("marshal anthropic truncation response: %v", err)
+	}
+
+	oldBase := os.Getenv("ANTHROPIC_BASE_URL")
+	t.Cleanup(func() {
+		_ = os.Setenv("ANTHROPIC_BASE_URL", oldBase)
+		anthropicHTTPClient = nil
+	})
+	_ = os.Setenv("ANTHROPIC_BASE_URL", "https://anthropic.example.test")
+	anthropicHTTPClient = &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(bytes.NewReader(respBytes)), Request: r}, nil
+	})}
+
+	_, _, err = MintConversationDeclarationsAnthropic(t.Context(), "sk-ant-test", "anthropic:"+mintConversationTestAnthropicModel, MintConversationDeclarationsInput{})
+	if err == nil || !strings.Contains(err.Error(), "response truncated") || strings.Contains(err.Error(), "invalid json output") || strings.Contains(err.Error(), "capabilities") {
+		t.Fatalf("expected stable truncation failure before JSON/declaration validation, got %v", err)
+	}
+}
+
+func anthropicDeclarationToolResponse(t *testing.T, fixture map[string]any, stopReason string) []byte {
+	t.Helper()
+	respBytes, err := json.Marshal(map[string]any{
+		"id":          "msg_test",
+		"type":        "message",
+		"role":        "assistant",
+		"model":       mintConversationTestAnthropicModel,
+		"stop_reason": stopReason,
+		"content": []any{map[string]any{
+			"type":  "tool_use",
+			"id":    "toolu_1",
+			"name":  "soul_mint_conversation_declarations",
+			"input": fixture,
+		}},
+		"usage": map[string]any{"input_tokens": 11, "cache_creation_input_tokens": 2, "cache_read_input_tokens": 3, "output_tokens": 7},
+	})
+	if err != nil {
+		t.Fatalf("marshal anthropic response: %v", err)
+	}
+	return respBytes
+}
+
+func mintConversationDeclarationDraftFixture() map[string]any {
+	return map[string]any{
+		"selfDescription": map[string]any{
+			"purpose":      "Help operators prepare hosted genesis declarations.",
+			"constraints":  "Operate only inside Host genesis setup.",
+			"commitments":  "Stay scoped and explain uncertainty.",
+			"limitations":  "Cannot publish or sign without the human gate.",
+			"authoredBy":   mintConversationTestAuthoredByAgent,
+			"mintingModel": "host-populated",
+		},
+		"capabilities": []any{map[string]any{
+			"capability":    "hosted_genesis_planning",
+			"scope":         "Draft safe hosted genesis registration declarations.",
+			"claimLevel":    "self-declared",
+			"lastValidated": "",
+			"validationRef": "",
+			"degradesTo":    "",
+		}},
+		"boundaries": []any{map[string]any{
+			"category":  "scope_limit",
+			"statement": "I will not publish, sign, or deploy on behalf of the operator.",
+			"rationale": "Hosted genesis keeps a human publish gate.",
+		}},
+		"transparency": map[string]any{
+			"modelProviderUncertainty": "Provider chosen by Host model set.",
+			"operationalNotes":         "Generated from a bounded transcript fixture.",
+		},
+	}
+}
+
+func assertMintConversationDeclarationDraftsEquivalent(t *testing.T, openOut MintConversationDeclarationsDraft, anthropicOut MintConversationDeclarationsDraft) {
+	t.Helper()
+	if openOut.SelfDescription.Purpose != anthropicOut.SelfDescription.Purpose || openOut.SelfDescription.AuthoredBy != mintConversationTestAuthoredByAgent || anthropicOut.SelfDescription.AuthoredBy != mintConversationTestAuthoredByAgent {
+		t.Fatalf("self-description mismatch: openai=%#v anthropic=%#v", openOut.SelfDescription, anthropicOut.SelfDescription)
+	}
+	if len(openOut.Capabilities) != 1 || len(anthropicOut.Capabilities) != 1 || openOut.Capabilities[0].Capability != anthropicOut.Capabilities[0].Capability || anthropicOut.Capabilities[0].ClaimLevel != mintConversationClaimLevelSelfDeclared {
+		t.Fatalf("capability mismatch: openai=%#v anthropic=%#v", openOut.Capabilities, anthropicOut.Capabilities)
+	}
+	if len(openOut.Boundaries) != 1 || len(anthropicOut.Boundaries) != 1 || openOut.Boundaries[0].Category != anthropicOut.Boundaries[0].Category {
+		t.Fatalf("boundary mismatch: openai=%#v anthropic=%#v", openOut.Boundaries, anthropicOut.Boundaries)
+	}
+	if openOut.Transparency["operationalNotes"] != anthropicOut.Transparency["operationalNotes"] {
+		t.Fatalf("transparency mismatch: openai=%#v anthropic=%#v", openOut.Transparency, anthropicOut.Transparency)
+	}
 }
 
 func TestMintConversationDeclarationsOpenAI_OmitsTemperatureForGPT5(t *testing.T) {
@@ -278,11 +478,11 @@ func TestExtractJSONObjectFromText(t *testing.T) {
 func TestAnthropicHelpers_ModelTextAndUsage(t *testing.T) {
 	t.Parallel()
 
-	model, err := anthropicModelFromSet("anthropic:claude-sonnet-4-6")
+	model, err := anthropicModelFromSet("anthropic:" + mintConversationTestAnthropicModel)
 	if err != nil {
 		t.Fatalf("model parse: %v", err)
 	}
-	if model != anthropic.Model("claude-sonnet-4-6") {
+	if model != anthropic.Model(mintConversationTestAnthropicModel) {
 		t.Fatalf("unexpected model: %q", model)
 	}
 	if _, unsupportedErr := anthropicModelFromSet("openai:gpt-5.4"); unsupportedErr == nil {
@@ -318,10 +518,11 @@ func TestAnthropicJSONTextBatch_AdapterIsCISafe(t *testing.T) {
 	}
 
 	respBytes, err := json.Marshal(map[string]any{
-		"id":    "msg_test",
-		"type":  "message",
-		"role":  "assistant",
-		"model": "claude-sonnet-4-6",
+		"id":          "msg_test",
+		"type":        "message",
+		"role":        "assistant",
+		"model":       mintConversationTestAnthropicModel,
+		"stop_reason": "end_turn",
 		"content": []any{map[string]any{
 			"type": "text",
 			"text": "Here is the result:\n```json\n{\"answer\":\"ready\"}\n```",
@@ -365,7 +566,7 @@ func TestAnthropicJSONTextBatch_AdapterIsCISafe(t *testing.T) {
 	out, usage, err := anthropicJSONTextBatch(
 		ctx,
 		"sk-ant-test",
-		"anthropic:claude-sonnet-4-6",
+		"anthropic:"+mintConversationTestAnthropicModel,
 		anthropicPrompt{Topic: "soul"},
 		anthropicJSONTextBatchConfig{
 			Schema: map[string]any{
@@ -389,7 +590,7 @@ func TestAnthropicJSONTextBatch_AdapterIsCISafe(t *testing.T) {
 	if out.Answer != "ready" {
 		t.Fatalf("unexpected parsed answer: %#v", out)
 	}
-	if usage.Provider != "anthropic" || usage.Model != "claude-sonnet-4-6" {
+	if usage.Provider != testProviderAnthropic || usage.Model != mintConversationTestAnthropicModel {
 		t.Fatalf("unexpected usage identity: %#v", usage)
 	}
 	if usage.InputTokens != 16 || usage.OutputTokens != 7 || usage.TotalTokens != 23 || usage.ToolCalls != 1 {
@@ -411,7 +612,7 @@ func TestAnthropicJSONTextBatch_InvalidSchemaFailsBeforeRequest(t *testing.T) {
 	_, _, err := anthropicJSONTextBatch(
 		t.Context(),
 		"sk-ant-test",
-		"anthropic:claude-sonnet-4-6",
+		"anthropic:"+mintConversationTestAnthropicModel,
 		map[string]any{"topic": "soul"},
 		anthropicJSONTextBatchConfig{
 			Schema: map[string]any{"bad": make(chan int)},
@@ -431,20 +632,20 @@ func requireAnthropicTestMessage(t *testing.T) anthropic.Message {
 	t.Helper()
 
 	var msg anthropic.Message
-	err := json.Unmarshal([]byte(`{
+	err := json.Unmarshal([]byte(fmt.Sprintf(`{
 		"content": [
 			{"type": "text", "text": "Hello "},
 			{"type": "text", "text": "world"},
 			{"type": "tool_use", "id": "tool_1", "name": "ignored", "input": {}}
 		],
-		"model": "claude-sonnet-4-6",
+		"model": %q,
 		"usage": {
 			"input_tokens": 11,
 			"cache_creation_input_tokens": 2,
 			"cache_read_input_tokens": 3,
 			"output_tokens": 7
 		}
-	}`), &msg)
+	}`, mintConversationTestAnthropicModel)), &msg)
 	if err != nil {
 		t.Fatalf("unmarshal anthropic message: %v", err)
 	}
@@ -454,7 +655,7 @@ func requireAnthropicTestMessage(t *testing.T) anthropic.Message {
 func assertAnthropicUsage(t *testing.T, usage models.AIUsage) {
 	t.Helper()
 
-	if usage.Provider != "anthropic" || usage.Model != "claude-sonnet-4-6" {
+	if usage.Provider != testProviderAnthropic || usage.Model != mintConversationTestAnthropicModel {
 		t.Fatalf("unexpected usage identity: %#v", usage)
 	}
 	if usage.InputTokens != 16 || usage.OutputTokens != 7 || usage.TotalTokens != 23 {

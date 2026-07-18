@@ -16,6 +16,7 @@ import (
 
 	"github.com/equaltoai/lesser-host/internal/ai/llm"
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
+	"github.com/equaltoai/lesser-host/internal/hostedgenesis/mintprompt"
 	"github.com/equaltoai/lesser-host/internal/manageddomain"
 	"github.com/equaltoai/lesser-host/internal/secrets"
 	"github.com/equaltoai/lesser-host/internal/soul"
@@ -760,21 +761,7 @@ func hostedGenesisAPIKey(ctx context.Context, modelSet string) (string, error) {
 }
 
 func hostedGenesisSystemPrompt(reg *models.SoulAgentRegistration) string {
-	var sb strings.Builder
-	sb.WriteString("You are a Soul Registry minting assistant helping an AI agent define self-description, capabilities, boundaries, and transparency. Keep responses concise and safe; never ask for or reveal credentials.\n\n")
-	if reg != nil {
-		if strings.TrimSpace(reg.DomainNormalized) != "" {
-			sb.WriteString("Domain: " + strings.TrimSpace(reg.DomainNormalized) + "\n")
-		}
-		if strings.TrimSpace(reg.LocalID) != "" {
-			sb.WriteString("Local ID: " + strings.TrimSpace(reg.LocalID) + "\n")
-		}
-		if caps := hostedgenesis.FilterDeclaredCapabilitiesForPrompt(reg.Capabilities); len(caps) > 0 {
-			b, _ := json.Marshal(caps)
-			sb.WriteString("Declared capabilities: " + string(b) + "\n")
-		}
-	}
-	return sb.String()
+	return mintprompt.MintConversationSystemPrompt(reg)
 }
 
 func buildHostedGenesisDeclarationsDraft(draft llm.MintConversationDeclarationsDraft, now time.Time, modelSet string, _ ...[]string) (hostedGenesisProducedDeclarations, error) {

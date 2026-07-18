@@ -19,6 +19,25 @@ func TestMintConversationSystemPrompt_ContainsCoreInstructions(t *testing.T) {
 	}
 }
 
+func TestMintConversationSystemPrompt_HostedOffchainHygiene(t *testing.T) {
+	got := MintConversationSystemPrompt(&models.SoulAgentRegistration{})
+	for _, want := range []string{
+		"hosted/off-chain",
+		`claimLevel "self-declared"`,
+		CanonicalFinalAffirmationQuestion,
+		InjectionHardeningLine,
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected prompt to contain %q, got: %q", want, got)
+		}
+	}
+	for _, forbidden := range []string{"minted on-chain", "peer-validated", "operator-attested"} {
+		if strings.Contains(got, forbidden) {
+			t.Fatalf("prompt advertised stale/unsupported language %q: %q", forbidden, got)
+		}
+	}
+}
+
 func TestMintConversationSystemPrompt_IncludesRegistrationContext(t *testing.T) {
 	reg := &models.SoulAgentRegistration{
 		DomainNormalized: "acme.example",

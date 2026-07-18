@@ -145,6 +145,29 @@ func sanitizeAnthropicToolSchemaValue(v any) any {
 	}
 }
 
+func anthropicValidateStopReason(message *anthropic.Message, allowed ...anthropic.StopReason) error {
+	if message == nil {
+		return fmt.Errorf("anthropic: nil message")
+	}
+	stopReason := message.StopReason
+	switch stopReason {
+	case "":
+		return fmt.Errorf("anthropic: missing stop_reason")
+	case anthropic.StopReasonMaxTokens, anthropic.StopReason("model_context_window_exceeded"):
+		return fmt.Errorf("anthropic: response truncated: stop_reason=%s", stopReason)
+	case anthropic.StopReasonPauseTurn:
+		return fmt.Errorf("anthropic: response incomplete: stop_reason=%s", stopReason)
+	case anthropic.StopReasonRefusal:
+		return fmt.Errorf("anthropic: response refused: stop_reason=%s", stopReason)
+	}
+	for _, okReason := range allowed {
+		if stopReason == okReason {
+			return nil
+		}
+	}
+	return fmt.Errorf("anthropic: unexpected stop_reason=%s", stopReason)
+}
+
 func anthropicToolUseInput(message *anthropic.Message, toolName string) (json.RawMessage, error) {
 	if message == nil {
 		return nil, fmt.Errorf("anthropic: nil message")
@@ -285,6 +308,9 @@ func anthropicToolBatch[Prompt any, Parsed any, Out any](
 	if err != nil {
 		return zero, models.AIUsage{}, err
 	}
+	if stopErr := anthropicValidateStopReason(message, anthropic.StopReasonToolUse); stopErr != nil {
+		return zero, models.AIUsage{}, stopErr
+	}
 
 	raw, err := anthropicToolUseInput(message, toolName)
 	if err != nil {
@@ -345,6 +371,9 @@ func anthropicJSONTextBatch[Prompt any, Parsed any, Out any](
 	})
 	if err != nil {
 		return zero, models.AIUsage{}, err
+	}
+	if stopErr := anthropicValidateStopReason(message, anthropic.StopReasonEndTurn, anthropic.StopReasonStopSequence); stopErr != nil {
+		return zero, models.AIUsage{}, stopErr
 	}
 
 	raw, err := anthropicTextOutput(message)
