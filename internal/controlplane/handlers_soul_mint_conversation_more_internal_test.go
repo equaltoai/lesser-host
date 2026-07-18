@@ -499,7 +499,7 @@ func testMintConversationProducedDeclarationsBranches(t *testing.T, now time.Tim
 
 	if _, appErr := buildMintConversationProducedDeclarations(llm.MintConversationDeclarationsDraft{
 		SelfDescription: soul.SelfDescriptionV2{Purpose: "short", AuthoredBy: "agent"},
-	}, now, "openai:gpt-5.4"); appErr == nil || appErr.Message != "invalid extracted selfDescription" {
+	}, now, "openai:gpt-5.4"); appErr == nil || appErr.Message != string(hostedgenesis.DeclarationCodeSelfDescription) {
 		t.Fatalf("expected selfDescription error, got %#v", appErr)
 	}
 	decl, appErr := buildMintConversationProducedDeclarations(llm.MintConversationDeclarationsDraft{
@@ -519,7 +519,7 @@ func testMintConversationProducedDeclarationsBranches(t *testing.T, now time.Tim
 		Capabilities:    []soul.CapabilityV2{{Capability: "", Scope: "skip"}},
 		Boundaries:      []llm.MintConversationBoundaryDraft{{Category: "refusal", Statement: "I will not impersonate humans."}},
 	}, now, "openai:gpt-5.4")
-	if appErr == nil || appErr.Message != "capabilities is required" {
+	if appErr == nil || appErr.Message != string(hostedgenesis.DeclarationCodeCapabilities) {
 		t.Fatalf("expected required capabilities error, got %#v", appErr)
 	}
 
@@ -528,8 +528,8 @@ func testMintConversationProducedDeclarationsBranches(t *testing.T, now time.Tim
 		Capabilities:    []soul.CapabilityV2{{Capability: "travel_planning", Scope: "Draft itineraries."}},
 		Boundaries:      []llm.MintConversationBoundaryDraft{{Category: "", Statement: "skip"}},
 	}, now, "openai:gpt-5.4")
-	if appErr == nil || appErr.Message != "boundaries is required" {
-		t.Fatalf("expected required boundaries error, got %#v", appErr)
+	if appErr == nil || appErr.Message != string(hostedgenesis.DeclarationCodeBoundariesBad) {
+		t.Fatalf("expected invalid boundaries error, got %#v", appErr)
 	}
 
 	decl, appErr = buildMintConversationProducedDeclarations(llm.MintConversationDeclarationsDraft{
@@ -551,16 +551,19 @@ func testMintConversationParseDeclarationsBranches(t *testing.T) {
 	if _, appErr := parseAndValidateMintConversationDeclarations(""); appErr == nil || appErr.Message != "declarations is required" {
 		t.Fatalf("expected required error, got %#v", appErr)
 	}
-	if _, appErr := parseAndValidateMintConversationDeclarations("{"); appErr == nil || appErr.Message != "invalid declarations JSON" {
+	if _, appErr := parseAndValidateMintConversationDeclarations("{"); appErr == nil || appErr.Message != string(hostedgenesis.DeclarationCodeInvalid) {
 		t.Fatalf("expected json error, got %#v", appErr)
 	}
-	if _, appErr := parseAndValidateMintConversationDeclarations(`{"selfDescription":{"purpose":"A sufficiently long purpose string.","authoredBy":"agent"},"boundaries":[{"id":"b1","category":"refusal","statement":"I will not impersonate humans.","addedAt":"2026-03-05T12:00:00Z","addedInVersion":"1","signature":"0x00"}],"transparency":{}}`); appErr == nil || appErr.Message != "capabilities is required" {
+	if _, appErr := parseAndValidateMintConversationDeclarations(`{"selfDescription":{"purpose":"A sufficiently long purpose string.","authoredBy":"agent"},"boundaries":[{"id":"b1","category":"refusal","statement":"I will not impersonate humans.","addedAt":"2026-03-05T12:00:00Z","addedInVersion":"1","signature":"0x00"}],"transparency":{}}`); appErr == nil || appErr.Message != string(hostedgenesis.DeclarationCodeCapabilities) {
 		t.Fatalf("expected capabilities error, got %#v", appErr)
 	}
-	if _, appErr := parseAndValidateMintConversationDeclarations(`{"selfDescription":{"purpose":"A sufficiently long purpose string.","authoredBy":"agent"},"capabilities":[{"capability":"travel_planning","scope":"Draft itineraries.","claimLevel":"self-declared"}],"transparency":{}}`); appErr == nil || appErr.Message != "boundaries is required" {
+	if _, appErr := parseAndValidateMintConversationDeclarations(`{"selfDescription":{"purpose":"A sufficiently long purpose string.","authoredBy":"agent"},"capabilities":[],"boundaries":[{"id":"b1","category":"refusal","statement":"I will not impersonate humans.","addedAt":"2026-03-05T12:00:00Z","addedInVersion":"1","signature":"0x00"}],"transparency":{}}`); appErr != nil {
+		t.Fatalf("expected empty capabilities array to validate, got %#v", appErr)
+	}
+	if _, appErr := parseAndValidateMintConversationDeclarations(`{"selfDescription":{"purpose":"A sufficiently long purpose string.","authoredBy":"agent"},"capabilities":[{"capability":"travel_planning","scope":"Draft itineraries.","claimLevel":"self-declared"}],"transparency":{}}`); appErr == nil || appErr.Message != string(hostedgenesis.DeclarationCodeBoundaries) {
 		t.Fatalf("expected boundaries error, got %#v", appErr)
 	}
-	if _, appErr := parseAndValidateMintConversationDeclarations(`{"selfDescription":{"purpose":"A sufficiently long purpose string.","authoredBy":"agent"},"capabilities":[{"capability":"travel_planning","scope":"Draft itineraries.","claimLevel":"self-declared"}],"boundaries":[{"id":"b1","category":"refusal","statement":"I will not impersonate humans.","addedAt":"2026-03-05T12:00:00Z","addedInVersion":"1","signature":"0x00"}]}`); appErr == nil || appErr.Message != "transparency is required" {
+	if _, appErr := parseAndValidateMintConversationDeclarations(`{"selfDescription":{"purpose":"A sufficiently long purpose string.","authoredBy":"agent"},"capabilities":[{"capability":"travel_planning","scope":"Draft itineraries.","claimLevel":"self-declared"}],"boundaries":[{"id":"b1","category":"refusal","statement":"I will not impersonate humans.","addedAt":"2026-03-05T12:00:00Z","addedInVersion":"1","signature":"0x00"}]}`); appErr == nil || appErr.Message != string(hostedgenesis.DeclarationCodeTransparency) {
 		t.Fatalf("expected transparency error, got %#v", appErr)
 	}
 }

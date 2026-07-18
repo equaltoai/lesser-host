@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
@@ -15,6 +16,58 @@ func TestMintConversationSystemPrompt_ContainsCoreInstructions(t *testing.T) {
 	for _, want := range []string{"Self-Description", "Capabilities", "Boundaries", "Transparency"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("expected prompt to mention %q, got: %q", want, got)
+		}
+	}
+}
+
+func TestMintConversationSystemPrompt_HostedOffchainHygiene(t *testing.T) {
+	got := MintConversationSystemPrompt(&models.SoulAgentRegistration{})
+	for _, want := range []string{
+		"hosted/off-chain",
+		`claimLevel "self-declared"`,
+		CanonicalFinalAffirmationQuestion,
+		InjectionHardeningLine,
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected prompt to contain %q, got: %q", want, got)
+		}
+	}
+	for _, forbidden := range []string{"minted on-chain", "peer-validated", "operator-attested"} {
+		if strings.Contains(got, forbidden) {
+			t.Fatalf("prompt advertised stale/unsupported language %q: %q", forbidden, got)
+		}
+	}
+}
+
+func TestMintConversationSystemPrompt_FiveBodyContract(t *testing.T) {
+	got := MintConversationSystemPromptForContract(&models.SoulAgentRegistration{}, hostedgenesis.FiveBodyDeclarationContract())
+	for _, want := range []string{
+		hostedgenesis.DeclarationSchemaVersionV2,
+		hostedgenesis.GuidanceVersionV2,
+		"Phase 1 — identity",
+		"Phase 2 — philosophy",
+		"Phase 3 — discipline",
+		"Phase 4 — boundaries",
+		"Phase 5 — soul",
+		"Capabilities: concrete abilities only",
+		"Transparency: model/provider uncertainty",
+		CanonicalFinalAffirmationQuestion,
+		InjectionHardeningLine,
+		`claimLevel "self-declared"`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected v2 prompt to contain %q, got: %q", want, got)
+		}
+	}
+	if strings.Count(got, "Ground -> Act -> Record -> Re-ground") != 2 {
+		t.Fatalf("expected cadence defined once and echoed once, got prompt: %q", got)
+	}
+	if strings.Contains(strings.ToLower(got), "re-deriv") {
+		t.Fatalf("v2 prompt must not teach re-derivation: %q", got)
+	}
+	for _, forbidden := range []string{"minted on-chain", "peer-validated", "operator-attested"} {
+		if strings.Contains(got, forbidden) {
+			t.Fatalf("v2 prompt advertised stale/unsupported language %q: %q", forbidden, got)
 		}
 	}
 }
@@ -45,6 +98,17 @@ func TestMintConversationSystemPrompt_OmitsEmptyContext(t *testing.T) {
 	}
 	if strings.Contains(got, "Declared capabilities") {
 		t.Fatalf("expected prompt to omit capabilities when empty, got: %q", got)
+	}
+}
+
+func TestMintConversationSystemPrompt_FiltersRetiredHostedCapability(t *testing.T) {
+	reg := &models.SoulAgentRegistration{Capabilities: []string{"simulacrum.hosted-first-default", "planning"}}
+	got := MintConversationSystemPrompt(reg)
+	if strings.Contains(got, "simulacrum.hosted-first-default") {
+		t.Fatalf("prompt included retired placeholder capability: %q", got)
+	}
+	if !strings.Contains(got, "planning") {
+		t.Fatalf("prompt omitted real declared capability: %q", got)
 	}
 }
 

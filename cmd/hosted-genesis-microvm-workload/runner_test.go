@@ -7,13 +7,17 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/santhosh-tekuri/jsonschema/v6"
+
 	"github.com/equaltoai/lesser-host/internal/ai/llm"
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis/completion"
+	"github.com/equaltoai/lesser-host/internal/soul"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
@@ -55,8 +59,9 @@ func (f *fakeTurnStore) GetSoulAgentRegistration(_ context.Context, _ string) (*
 // conditional version+status advance so the real CompletionWriter's idempotency
 // is exercised end-to-end.
 type fakeCompletionStore struct {
-	session   *models.HostedGenesisSession
-	lastWrite *models.HostedGenesisSession
+	session      *models.HostedGenesisSession
+	conversation *models.SoulAgentMintConversation
+	lastWrite    *models.HostedGenesisSession
 }
 
 func (f *fakeCompletionStore) GetHostedGenesisSession(_ context.Context, _, _ string) (*models.HostedGenesisSession, error) {
@@ -74,6 +79,32 @@ func (f *fakeCompletionStore) UpdateHostedGenesisSession(_ context.Context, item
 	c.Version = expectedVersion + 1
 	f.session = &c
 	f.lastWrite = &c
+	return nil
+}
+
+func (f *fakeCompletionStore) GetSoulAgentMintConversation(_ context.Context, agentID, conversationID string) (*models.SoulAgentMintConversation, error) {
+	if f.session == nil || f.session.AgentID != agentID || f.session.ConversationID != conversationID {
+		return nil, errNotFound
+	}
+	if f.conversation == nil {
+		return &models.SoulAgentMintConversation{AgentID: agentID, ConversationID: conversationID, Status: models.SoulMintConversationStatusInProgress}, nil
+	}
+	c := *f.conversation
+	return &c, nil
+}
+
+func (f *fakeCompletionStore) FailHostedGenesisSessionAndConversation(_ context.Context, item *models.HostedGenesisSession, expectedVersion int64, expectedStatus hostedgenesis.Status, conversation *models.SoulAgentMintConversation) error {
+	if f.session == nil || hostedgenesis.NormalizeStatus(f.session.Status) != expectedStatus || f.session.Version != expectedVersion {
+		return errConflict
+	}
+	c := *item
+	c.Version = expectedVersion + 1
+	f.session = &c
+	f.lastWrite = &c
+	if conversation != nil {
+		copy := *conversation
+		f.conversation = &copy
+	}
 	return nil
 }
 
@@ -106,7 +137,7 @@ func baseTurnInput() (*fakeTurnStore, *fakeCompletionStore, completion.Completio
 			Status: string(hostedgenesis.StatusInProgress), LatestTurnID: "turn-1",
 			TurnLedger:   []hostedgenesis.TurnLedgerEntry{{TurnID: "turn-1", MessageCount: 1, AcceptedAt: time.Now().UTC()}},
 			MessageCount: 1, Version: 2, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
-		}},
+		}, conversation: &models.SoulAgentMintConversation{AgentID: "agent-1", ConversationID: "conv-1", Status: models.SoulMintConversationStatusInProgress}},
 		turn
 }
 
@@ -235,7 +266,7 @@ func TestRunTurnAndPersist_DeclarationExtractionPendingRecordsDeclarationReady(t
 	}
 }
 
-func TestRunTurnAndPersist_DeclarationExtractionPreservesDeclaredCapabilities(t *testing.T) {
+func TestRunTurnAndPersist_DeclarationExtractionDoesNotSynthesizeDeclaredCapabilities(t *testing.T) {
 	draft := validDeclarationDraft()
 	draft["capabilities"] = []any{}
 	declBody := mustMarshal(map[string]any{
@@ -270,9 +301,55 @@ func TestRunTurnAndPersist_DeclarationExtractionPreservesDeclaredCapabilities(t 
 		t.Fatalf("expected declaration_ready, got %q", got)
 	}
 	decodedDeclarations := models.DecodeSoulMintConversationBlob(turnStore.conv.ProducedDeclarations)
-	if !strings.Contains(decodedDeclarations, `"capability":"simulacrum.hosted-first-default"`) ||
-		!strings.Contains(decodedDeclarations, `"claimLevel":"self-declared"`) {
-		t.Fatalf("expected declared capability preserved in produced declarations, got %s", decodedDeclarations)
+	if strings.Contains(decodedDeclarations, "simulacrum.hosted-first-default") || !strings.Contains(decodedDeclarations, `"capabilities":[]`) {
+		t.Fatalf("expected empty placeholder-free capabilities, got %s", decodedDeclarations)
+	}
+}
+
+func TestRunTurnAndPersist_DeclarationExtractionFailureFailsConversationProjection(t *testing.T) {
+	respBytes, err := json.Marshal(map[string]any{
+		"id":      "chatcmpl_test",
+		"object":  "chat.completion",
+		"created": 1,
+		"model":   "gpt-test",
+		"choices": []any{map[string]any{"index": 0, "message": map[string]any{"role": "assistant", "content": `{`}}},
+		"usage":   map[string]any{"prompt_tokens": 5, "completion_tokens": 1, "total_tokens": 6},
+	})
+	if err != nil {
+		t.Fatalf("marshal openai failure response: %v", err)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		_ = r.Body.Close()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(respBytes)
+	}))
+	t.Cleanup(srv.Close)
+	withOpenAIBaseURL(t, srv.URL, "sk-test")
+	llm.ConfigureProviderHTTPClient(&http.Client{Timeout: 5 * time.Second})
+	t.Cleanup(func() { llm.ConfigureProviderHTTPClient(nil) })
+
+	turnStore, compStore, turn := baseTurnInput()
+	turnStore.session.Status = string(hostedgenesis.StatusDeclarationExtractionPending)
+	turnStore.conv.Status = models.SoulMintConversationStatusDeclarationExtractionPending
+	turnStore.conv.Messages = models.EncodeSoulMintConversationBlob(`[{"role":"user","content":"describe"},{"role":"assistant","content":"assistant ready"}]`)
+	compStore.session.Status = string(hostedgenesis.StatusDeclarationExtractionPending)
+	compStore.conversation = &models.SoulAgentMintConversation{
+		AgentID:        compStore.session.AgentID,
+		ConversationID: compStore.session.ConversationID,
+		Status:         models.SoulMintConversationStatusDeclarationExtractionPending,
+	}
+	writer := completion.NewCompletionWriter(compStore, func() time.Time { return time.Unix(3000, 0).UTC() })
+	runner := &turnRunner{store: turnStore, writer: writer, nowFunc: func() time.Time { return time.Unix(3000, 0).UTC() }}
+
+	if err := runner.runTurnAndPersist(context.Background(), turn); err != nil {
+		t.Fatalf("declaration extraction failure should be durably recorded, got %v", err)
+	}
+	if hostedgenesis.NormalizeStatus(compStore.session.Status) != hostedgenesis.StatusFailed || compStore.session.Failure == nil || compStore.session.Failure.Code != hostedgenesis.FailureCodeDeclarationExtractionFailed {
+		t.Fatalf("expected terminal declaration extraction failure on session, got %#v", compStore.session)
+	}
+	if compStore.conversation == nil || compStore.conversation.Status != models.SoulMintConversationStatusFailed || compStore.conversation.StatusReason != string(hostedgenesis.FailureCodeDeclarationExtractionFailed) {
+		t.Fatalf("expected stale declaration_extraction_pending conversation reconciled to sanitized failed status, got %#v", compStore.conversation)
 	}
 }
 
@@ -358,6 +435,173 @@ func TestRunTurnAndPersist_ReplayRejected(t *testing.T) {
 	if got := hostedgenesis.NormalizeStatus(compStore.session.Status); got != hostedgenesis.StatusAssistantTurnReady {
 		t.Fatalf("expected session to remain assistant_turn_ready on replay conflict, got %q", got)
 	}
+}
+
+func TestLoadTurnInputFiveBodyFlagPinsPromptAndExtractionInput(t *testing.T) {
+	t.Setenv(hostedgenesis.EnvDeclarationSchemaVersion, "v2")
+	turnStore, _, turn := baseTurnInput()
+	runner := &turnRunner{store: turnStore, nowFunc: func() time.Time { return time.Unix(3000, 0).UTC() }}
+	in, err := runner.loadTurnInput(context.Background(), turn)
+	if err != nil {
+		t.Fatalf("loadTurnInput: %v", err)
+	}
+	if !in.contract.IsFiveBody() || !strings.Contains(in.systemPrompt, hostedgenesis.DeclarationSchemaVersionV2) || !strings.Contains(in.systemPrompt, "Phase 1 — identity") {
+		t.Fatalf("expected v2 contract prompt, contract=%#v prompt=%q", in.contract, in.systemPrompt)
+	}
+	declInput := llm.MintConversationDeclarationsInput{
+		SchemaVersion:   inputSchemaVersion(in.contract),
+		GuidanceVersion: inputGuidanceVersion(in.contract),
+	}
+	if declInput.SchemaVersion != hostedgenesis.DeclarationSchemaVersionV2 || declInput.GuidanceVersion != hostedgenesis.GuidanceVersionV2 {
+		t.Fatalf("expected v2 extraction versions, got %#v", declInput)
+	}
+}
+
+func TestBuildProducedDeclarationsJSONLegacyOmitsV2EvidenceKeys(t *testing.T) {
+	runner := &turnRunner{nowFunc: func() time.Time { return time.Unix(3000, 0).UTC() }}
+	body, err := runner.buildProducedDeclarationsJSON(validLegacyDeclarationDraft(), "openai:gpt-test", hostedgenesis.LegacyDeclarationContract())
+	if err != nil {
+		t.Fatalf("buildProducedDeclarationsJSON: %v", err)
+	}
+	assertJSONKeysAbsent(t, []byte(body), "schemaVersion", "guidanceVersion", "fiveBodies", "adversarialReview")
+}
+
+func TestBuildProducedDeclarationsJSONFiveBodyPinsVersionsAndReview(t *testing.T) {
+	runner := &turnRunner{nowFunc: func() time.Time { return time.Unix(3000, 0).UTC() }}
+	body, err := runner.buildProducedDeclarationsJSON(validFiveBodyDeclarationDraft(), "openai:gpt-test")
+	if err != nil {
+		t.Fatalf("buildProducedDeclarationsJSON: %v", err)
+	}
+	for _, want := range []string{hostedgenesis.DeclarationSchemaVersionV2, hostedgenesis.GuidanceVersionV2, `"fiveBodies"`, `"adversarialReview"`, `"boundaries"`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("expected v2 declaration body to contain %q, got %s", want, body)
+		}
+	}
+	if strings.Count(body, "closest safe path") < 3 {
+		t.Fatalf("expected three mapped concrete refusal boundaries, got %s", body)
+	}
+}
+
+func TestBuildProducedDeclarationsJSONFiveBodyConformsToPublishedSchemaWithSparseOptionalEvidence(t *testing.T) {
+	runner := &turnRunner{nowFunc: func() time.Time { return time.Unix(3000, 0).UTC() }}
+	body, err := runner.buildProducedDeclarationsJSON(validFiveBodyDeclarationDraft(), "openai:gpt-test", hostedgenesis.FiveBodyDeclarationContract())
+	if err != nil {
+		t.Fatalf("buildProducedDeclarationsJSON: %v", err)
+	}
+	for _, omitted := range []string{`"notes"`, `"lastValidated"`, `"validationRef"`, `"degradesTo"`} {
+		if strings.Contains(body, omitted) {
+			t.Fatalf("expected sparse v2 declaration to omit optional %s, got %s", omitted, body)
+		}
+	}
+	validatePublishedFiveBodySchema(t, []byte(body))
+}
+
+func TestBuildProducedDeclarationsJSONFiveBodyRejectsRefusalFloor(t *testing.T) {
+	runner := &turnRunner{nowFunc: func() time.Time { return time.Unix(3000, 0).UTC() }}
+	draft := validFiveBodyDeclarationDraft()
+	draft.FiveBodies.Soul.Refusals = draft.FiveBodies.Soul.Refusals[:2]
+	_, err := runner.buildProducedDeclarationsJSON(draft, "openai:gpt-test")
+	if got := hostedgenesis.DeclarationValidationCodeFromError(err); got != hostedgenesis.DeclarationCodeSoulRefusals {
+		t.Fatalf("expected refusal floor error, got err=%v code=%q", err, got)
+	}
+}
+
+func TestBuildProducedDeclarationsJSONFiveBodyRequiresRunContractEvidence(t *testing.T) {
+	runner := &turnRunner{nowFunc: func() time.Time { return time.Unix(3000, 0).UTC() }}
+	draft := validFiveBodyDeclarationDraft()
+	draft.SchemaVersion = ""
+	_, err := runner.buildProducedDeclarationsJSON(draft, "openai:gpt-test", hostedgenesis.FiveBodyDeclarationContract())
+	if got := hostedgenesis.DeclarationValidationCodeFromError(err); got != hostedgenesis.DeclarationCodeInvalid {
+		t.Fatalf("expected missing v2 schema evidence to fail closed, got err=%v code=%q", err, got)
+	}
+}
+
+func validLegacyDeclarationDraft() llm.MintConversationDeclarationsDraft {
+	return llm.MintConversationDeclarationsDraft{
+		SelfDescription: soul.SelfDescriptionV2{
+			Purpose:     "I help operators reason about hosted genesis state.",
+			Constraints: "test only",
+			Commitments: "be concise",
+			Limitations: "unit test",
+			AuthoredBy:  "agent",
+		},
+		Capabilities: []soul.CapabilityV2{{Capability: "reasoning", Scope: "general", ClaimLevel: "self-declared"}},
+		Boundaries: []llm.MintConversationBoundaryDraft{
+			{Category: "scope_limit", Statement: "I will not reveal credentials.", Rationale: "safety"},
+		},
+		Transparency: map[string]any{"modelProviderUncertainty": "test", "operationalNotes": "test"},
+	}
+}
+
+func validFiveBodyDeclarationDraft() llm.MintConversationDeclarationsDraft {
+	contract := hostedgenesis.FiveBodyDeclarationContract()
+	return llm.MintConversationDeclarationsDraft{
+		SchemaVersion:   contract.SchemaVersion,
+		GuidanceVersion: contract.GuidanceVersion,
+		FiveBodies: hostedgenesis.FiveBodyDeclaration{
+			Identity:   hostedgenesis.FiveBodySection{Summary: "I am Acme Steward, a hosted/off-chain agent for operator support."},
+			Philosophy: hostedgenesis.FiveBodySection{Summary: "I value narrow authority, auditability, and direct statements of uncertainty."},
+			Discipline: hostedgenesis.FiveBodySection{Summary: "I use the named cadence, keep evidence, and pause on unclear authority."},
+			Boundaries: hostedgenesis.FiveBodySection{Summary: "I protect tenant isolation, credentials, and human publish gates."},
+			Soul: hostedgenesis.FiveBodySoulBody{
+				Summary: "I preserve Host safety invariants even when asked to move faster.",
+				Refusals: []hostedgenesis.FiveBodyRefusalRule{
+					{Bypass: "Skip checksum verification for a managed release", Invariant: "consumer release verification must run before deploy", ClosestSafePath: "run managed-release-certification on the published artifact"},
+					{Bypass: "Return a raw Instance API key on reread", Invariant: "Host stores and compares only sha256 key hashes", ClosestSafePath: "issue a new key through controlled rotation and show only the hash id"},
+					{Bypass: "Finalize without explicit human authorization", Invariant: "hosted genesis keeps a human publish gate", ClosestSafePath: "return declaration_ready and wait for the finalize call"},
+				},
+			},
+		},
+		Capabilities: []soul.CapabilityV2{{Capability: "operator_support", Scope: "Help operators reason about hosted genesis state.", ClaimLevel: "self-declared"}},
+		Transparency: map[string]any{"modelProviderUncertainty": "unit test", "operationalNotes": "deterministic", "selfDeclaredNotice": "self-declared"},
+	}
+}
+
+func assertJSONKeysAbsent(t *testing.T, body []byte, keys ...string) {
+	t.Helper()
+	var parsed map[string]any
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		t.Fatalf("parse produced declarations: %v\n%s", err, string(body))
+	}
+	for _, key := range keys {
+		if _, ok := parsed[key]; ok {
+			t.Fatalf("expected produced declarations to omit %q, got %s", key, string(body))
+		}
+	}
+}
+
+func validatePublishedFiveBodySchema(t *testing.T, body []byte) {
+	t.Helper()
+	var parsed any
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		t.Fatalf("parse produced declarations: %v\n%s", err, string(body))
+	}
+	if err := mustCompilePublishedFiveBodySchema(t).Validate(parsed); err != nil {
+		t.Fatalf("produced declarations did not validate against published schema: %v\n%s", err, string(body))
+	}
+}
+
+func mustCompilePublishedFiveBodySchema(t *testing.T) *jsonschema.Schema {
+	t.Helper()
+	schemaPath := filepath.Join("..", "..", "docs", "contracts", "soul-five-body.schema.v2.json")
+	raw, readErr := os.ReadFile(schemaPath)
+	if readErr != nil {
+		t.Fatalf("read published five-body schema: %v", readErr)
+	}
+	var doc any
+	if unmarshalErr := json.Unmarshal(raw, &doc); unmarshalErr != nil {
+		t.Fatalf("parse published five-body schema: %v", unmarshalErr)
+	}
+	compiler := jsonschema.NewCompiler()
+	compiler.DefaultDraft(jsonschema.Draft2020)
+	if addErr := compiler.AddResource(schemaPath, doc); addErr != nil {
+		t.Fatalf("add published five-body schema resource: %v", addErr)
+	}
+	schema, compileErr := compiler.Compile(schemaPath)
+	if compileErr != nil {
+		t.Fatalf("compile published five-body schema: %v", compileErr)
+	}
+	return schema
 }
 
 func validDeclarationDraft() map[string]any {

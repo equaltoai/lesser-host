@@ -131,6 +131,8 @@ type DeclarationCheckpoint struct {
 	AgentID         string    `json:"agent_id"`
 	MessageCount    int       `json:"message_count"`
 	Model           string    `json:"model,omitempty"`
+	SchemaVersion   string    `json:"schema_version,omitempty"`
+	GuidanceVersion string    `json:"guidance_version,omitempty"`
 	RequestID       string    `json:"request_id"`
 }
 
@@ -149,7 +151,21 @@ func (c DeclarationCheckpoint) Validate() error {
 	if !isSHA256Digest(c.DeclarationHash) {
 		return ErrInvalidDeclarationGate
 	}
+	if !declarationCheckpointVersionsValid(c.SchemaVersion, c.GuidanceVersion) {
+		return ErrInvalidDeclarationGate
+	}
 	return nil
+}
+
+func declarationCheckpointVersionsValid(schemaVersion string, guidanceVersion string) bool {
+	schemaVersion = strings.TrimSpace(schemaVersion)
+	guidanceVersion = strings.TrimSpace(guidanceVersion)
+	if schemaVersion == "" && guidanceVersion == "" {
+		return true
+	}
+	contract := DeclarationContractFromVersions(schemaVersion, guidanceVersion).Normalize()
+	return strings.EqualFold(schemaVersion, contract.SchemaVersion) &&
+		strings.EqualFold(guidanceVersion, contract.GuidanceVersion)
 }
 
 func isSHA256Digest(value string) bool {
@@ -206,6 +222,43 @@ type Failure struct {
 	Message   string      `json:"message"`
 	Retryable bool        `json:"retryable"`
 	Recovery  Recovery    `json:"recovery"`
+}
+
+// FailureMessage returns the fixed public message for a failure code. Provider
+// errors and declaration payloads must never replace these messages.
+func FailureMessage(code FailureCode) string {
+	switch code {
+	case FailureCodeLLMUnavailable:
+		return "Assistant turn failed before declaration extraction."
+	case FailureCodeAssistantTurnFailed:
+		return "Assistant turn failed before declaration extraction."
+	case FailureCodeDeclarationExtractionFailed:
+		return "Declaration extraction failed."
+	case FailureCodeMissingProducedDeclarations:
+		return "Produced declarations are missing."
+	case FailureCodeInvalidProducedDeclarations:
+		return "Produced declarations are invalid."
+	case FailureCodeTenantBoundaryViolation:
+		return "Conversation failed instance boundary validation."
+	case FailureCodeOperatorActionRequired:
+		return "Operator action is required."
+	case FailureCodeMicroVMUnavailable:
+		return "MicroVM execution dispatch is unavailable."
+	default:
+		return "Conversation cannot be completed from the current state."
+	}
+}
+
+// SanitizeFailureReason keeps only the bounded declaration field code when it
+// is useful to the caller. All other arbitrary reasons collapse to the typed
+// failure code, preventing provider errors, transcripts, and private
+// declarations from entering durable status or API projections.
+func SanitizeFailureReason(code FailureCode, reason string) string {
+	reason = strings.TrimSpace(reason)
+	if code == FailureCodeInvalidProducedDeclarations && IsDeclarationValidationCode(reason) {
+		return reason
+	}
+	return string(code)
 }
 
 // Validate fails closed unless failure recovery is server-authored and bounded.

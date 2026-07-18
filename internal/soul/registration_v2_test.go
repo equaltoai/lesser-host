@@ -196,6 +196,10 @@ func TestRegistrationFileV2_HostedInstanceTrustAuthority(t *testing.T) {
 	if err := hosted.Validate(); err != nil {
 		t.Fatalf("hosted instance-trust registration should validate: %v", err)
 	}
+	hosted.Capabilities = nil
+	if err := hosted.Validate(); err != nil {
+		t.Fatalf("hosted instance-trust registration should allow empty capabilities: %v", err)
+	}
 
 	cases := []struct {
 		name string

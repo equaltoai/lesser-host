@@ -11,10 +11,12 @@ import (
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
-func TestSoulInstanceHostedInstanceTrustFinalizePreservesDeclaredCapabilities(t *testing.T) {
+func TestSoulInstanceHostedInstanceTrustFinalizePublishesEmptyCapabilities(t *testing.T) {
 	t.Parallel()
 
 	reg, identity, completedConv := soulInstanceHostedFinalizeFixture(t)
+	reg.Capabilities = []string{"simulacrum.hosted-first-default"}
+	identity.Capabilities = append([]string(nil), reg.Capabilities...)
 	decl := testMintConversationDecl()
 	decl.Capabilities = []soul.CapabilityV2{}
 	completedConv.Status = models.SoulMintConversationStatusDeclarationReady
@@ -45,15 +47,15 @@ func TestSoulInstanceHostedInstanceTrustFinalizePreservesDeclaredCapabilities(t 
 	if err != nil {
 		t.Fatalf("parse hosted registration artifact: %v", err)
 	}
-	if len(parsed.Capabilities) != 1 || parsed.Capabilities[0].Capability != reg.Capabilities[0] || parsed.Capabilities[0].ClaimLevel != "self-declared" {
-		t.Fatalf("expected registration-declared capability to be preserved for publish, got %#v", parsed.Capabilities)
+	if len(parsed.Capabilities) != 0 {
+		t.Fatalf("expected hosted registration to publish empty capabilities without fallback, got %#v", parsed.Capabilities)
 	}
 	if err := parsed.Validate(); err != nil {
 		t.Fatalf("validate hosted registration artifact: %v", err)
 	}
 }
 
-func TestSoulInstanceHostedInstanceTrustFinalizeRejectsNoPublishableCapabilities(t *testing.T) {
+func TestSoulInstanceHostedInstanceTrustFinalizeAllowsNoPublishableCapabilities(t *testing.T) {
 	t.Parallel()
 
 	for _, tc := range soulInstanceFinalizeStateCalls() {
@@ -68,15 +70,20 @@ func TestSoulInstanceHostedInstanceTrustFinalizeRejectsNoPublishableCapabilities
 			completedConv.Status = models.SoulMintConversationStatusDeclarationReady
 			completedConv.ProducedDeclarations = string(mustMarshalJSON(t, decl))
 			stubSoulInstanceFinalizeReadContext(t, tdb, reg, identity, completedConv)
+			if tc.name == "finalize" {
+				expectSoulInstanceFinalizePublishWrites(t, tdb)
+			}
 
-			_, err := tc.call(s, newSoulInstanceBootstrapContext(
+			resp, err := tc.call(s, newSoulInstanceBootstrapContext(
 				map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
 				mustMarshalJSON(t, map[string]any{}),
 				map[string]string{"id": reg.ID, "conversationId": mintConversationTestConversationID},
 			))
-			appErr := requireAppTheoryError(t, err)
-			if appErr.Code != soulInstanceBootstrapCodeConflict || appErr.StatusCode != http.StatusConflict || appErr.Message != "conversation has no publishable capabilities; restart soul bootstrap" {
-				t.Fatalf("expected no-publishable-capabilities conflict, got %#v", appErr)
+			if err != nil {
+				t.Fatalf("unexpected empty-capabilities finalize error: %v", err)
+			}
+			if resp.Status != http.StatusOK {
+				t.Fatalf("expected 200, got %d body=%q", resp.Status, string(resp.Body))
 			}
 		})
 	}

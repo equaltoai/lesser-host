@@ -683,7 +683,7 @@ func soulInstanceBootstrapBoundaryError(field string, reason string) *apptheory.
 }
 
 func soulInstanceMintConversationCompletionConflictFromSession(session *models.HostedGenesisSession, reason string) *apptheory.AppTheoryError {
-	status := "unknown"
+	status := stackDriftUnknown
 	if session != nil {
 		status = string(hostedgenesis.NormalizeStatus(session.Status))
 	}

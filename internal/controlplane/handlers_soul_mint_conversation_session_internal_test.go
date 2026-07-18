@@ -39,6 +39,77 @@ func TestHostedGenesisSessionProjectionFallbackAndTraceNil(t *testing.T) {
 	}
 }
 
+func TestHostedGenesisFailureProjectionMatchesCompatibilityAndSanitizesDetail(t *testing.T) {
+	t.Parallel()
+
+	session := testHostedGenesisSessionProjectionBase()
+	session.Status = string(hostedgenesis.StatusFailed)
+	session.Failure = &hostedgenesis.Failure{
+		Code:    hostedgenesis.FailureCodeInvalidProducedDeclarations,
+		Message: "provider output contained private transcript text",
+		Recovery: hostedgenesis.Recovery{
+			Action: hostedgenesis.RecoveryActionRestartSoulBootstrap,
+			Reason: string(hostedgenesis.DeclarationCodeCapabilities),
+		},
+	}
+	fromSession := hostedGenesisFailureFromSession(session.Failure)
+	fromCompatibility := hostedGenesisFailureFromReason(string(hostedgenesis.DeclarationCodeCapabilities))
+	if fromSession == nil || fromCompatibility == nil {
+		t.Fatalf("expected both failure projections, session=%#v compatibility=%#v", fromSession, fromCompatibility)
+	}
+	if fromSession.Code != fromCompatibility.Code || fromSession.Message != fromCompatibility.Message ||
+		fromSession.Recovery.Action != fromCompatibility.Recovery.Action || fromSession.Recovery.Reason != fromCompatibility.Recovery.Reason {
+		t.Fatalf("terminal failure projections disagree: session=%#v compatibility=%#v", fromSession, fromCompatibility)
+	}
+	if strings.Contains(fromSession.Message, "private transcript") || strings.Contains(fromSession.Recovery.Reason, "private") {
+		t.Fatalf("failure projection leaked private detail: session=%#v", fromSession)
+	}
+
+	response := buildHostedGenesisConversationResponseFromSession(session, nil, hostedGenesisProjectionOptions{})
+	if response.Conversation.Status != string(hostedgenesis.StatusFailed) || response.Conversation.Failure == nil ||
+		response.Conversation.Failure.Code != fromSession.Code || response.Conversation.Failure.Recovery.Reason != fromSession.Recovery.Reason {
+		t.Fatalf("response failure projection disagrees with session projection: %#v", response.Conversation.Failure)
+	}
+}
+
+func TestHostedGenesisSessionProjectionUsesTerminalFailureOverStaleConversation(t *testing.T) {
+	t.Parallel()
+
+	session := testHostedGenesisSessionProjectionBase()
+	session.Status = string(hostedgenesis.StatusFailed)
+	session.CompletedAt = time.Date(2026, 3, 7, 12, 10, 0, 0, time.UTC)
+	session.Failure = &hostedgenesis.Failure{
+		Code:      hostedgenesis.FailureCodeDeclarationExtractionFailed,
+		Message:   hostedgenesis.FailureMessage(hostedgenesis.FailureCodeDeclarationExtractionFailed),
+		Retryable: true,
+		Recovery: hostedgenesis.Recovery{
+			Action:            hostedgenesis.RecoveryActionRetrySameStep,
+			MaxAttempts:       3,
+			RetryAfterSeconds: 30,
+			Reason:            string(hostedgenesis.FailureCodeDeclarationExtractionFailed),
+		},
+	}
+	conv := &models.SoulAgentMintConversation{
+		AgentID:        session.AgentID,
+		ConversationID: session.ConversationID,
+		Status:         models.SoulMintConversationStatusDeclarationExtractionPending,
+		StatusReason:   "provider returned partial private JSON that must not leak",
+		Messages:       models.EncodeSoulMintConversationBlob(`[{"role":"user","content":"private transcript"},{"role":"assistant","content":"private draft"}]`),
+	}
+
+	resp := buildHostedGenesisConversationResponseFromSession(session, conv, hostedGenesisProjectionOptions{RequestID: "req-terminal"})
+	if resp.Conversation.Status != string(hostedgenesis.StatusFailed) || resp.Conversation.PollAfterSeconds != 0 || resp.Conversation.Failure == nil {
+		t.Fatalf("terminal session truth must project failed over stale conversation status: %#v", resp.Conversation)
+	}
+	if resp.Conversation.Failure.Code != string(hostedgenesis.FailureCodeDeclarationExtractionFailed) || resp.Conversation.Failure.Recovery.Reason != string(hostedgenesis.FailureCodeDeclarationExtractionFailed) {
+		t.Fatalf("expected sanitized declaration extraction failure, got %#v", resp.Conversation.Failure)
+	}
+	payload := string(mustMarshalJSON(t, resp))
+	if strings.Contains(payload, "partial private JSON") || strings.Contains(payload, "private transcript") || strings.Contains(payload, string(hostedgenesis.StatusDeclarationExtractionPending)) {
+		t.Fatalf("terminal projection leaked stale/private compatibility state: %s", payload)
+	}
+}
+
 func TestHostedGenesisProducedDeclarationsFromSessionTrustsCheckpointHash(t *testing.T) {
 	t.Parallel()
 
