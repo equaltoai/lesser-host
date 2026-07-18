@@ -49,10 +49,11 @@ func anthropicToolUseResponseJSON(t *testing.T, model string, toolName string, i
 	t.Helper()
 
 	respBytes, err := json.Marshal(map[string]any{
-		"id":    "msg_test",
-		"type":  "message",
-		"role":  "assistant",
-		"model": model,
+		"id":          "msg_test",
+		"type":        "message",
+		"role":        "assistant",
+		"model":       model,
+		"stop_reason": "tool_use",
 		"content": []any{map[string]any{
 			"type":  "tool_use",
 			"id":    "toolu_1",

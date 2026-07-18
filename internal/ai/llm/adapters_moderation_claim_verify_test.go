@@ -105,10 +105,11 @@ func TestModerationBatchAnthropic_AdapterIsCISafe(t *testing.T) {
 	itemID := testItemID
 
 	respBytes, err := json.Marshal(map[string]any{
-		"id":    "msg_test",
-		"type":  "message",
-		"role":  "assistant",
-		"model": "claude-test",
+		"id":          "msg_test",
+		"type":        "message",
+		"role":        "assistant",
+		"model":       "claude-test",
+		"stop_reason": "tool_use",
 		"content": []any{map[string]any{
 			"type": "tool_use",
 			"id":   "toolu_1",
@@ -287,10 +288,11 @@ func TestClaimVerifyBatchAnthropic_AdapterIsCISafe(t *testing.T) {
 	itemID := testItemID
 
 	respBytes, err := json.Marshal(map[string]any{
-		"id":    "msg_test",
-		"type":  "message",
-		"role":  "assistant",
-		"model": "claude-test",
+		"id":          "msg_test",
+		"type":        "message",
+		"role":        "assistant",
+		"model":       "claude-test",
+		"stop_reason": "tool_use",
 		"content": []any{map[string]any{
 			"type": "tool_use",
 			"id":   "toolu_1",

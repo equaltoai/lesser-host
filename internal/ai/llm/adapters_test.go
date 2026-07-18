@@ -98,10 +98,11 @@ func TestRenderSummaryBatchAnthropic_AdapterIsCISafe(t *testing.T) {
 	wantSummary := "Example summary."
 
 	respBytes, err := json.Marshal(map[string]any{
-		"id":    "msg_test",
-		"type":  "message",
-		"role":  "assistant",
-		"model": "claude-test",
+		"id":          "msg_test",
+		"type":        "message",
+		"role":        "assistant",
+		"model":       "claude-test",
+		"stop_reason": "tool_use",
 		"content": []any{map[string]any{
 			"type": "tool_use",
 			"id":   "toolu_1",
