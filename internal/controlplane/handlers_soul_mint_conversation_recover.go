@@ -3,6 +3,7 @@ package controlplane
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"strings"
@@ -43,6 +44,10 @@ func (s *Server) handleSoulInstanceRecoverMintConversation(ctx *apptheory.Contex
 				"restart_path":    "/api/v1/soul/instance/agents/register/begin",
 			},
 		)
+	}
+
+	if hostedGenesisSessionCanRetryDeclarationExtraction(convCtx.session) {
+		return s.handleSoulInstanceDeclarationExtractionRetry(ctx, convCtx, started)
 	}
 
 	if !hostedGenesisSessionNeedsAssistantRecovery(convCtx.session) {
@@ -122,11 +127,197 @@ func (s *Server) handleSoulInstanceRecoverMintConversation(ctx *apptheory.Contex
 	return resp, nil
 }
 
+func (s *Server) handleSoulInstanceDeclarationExtractionRetry(ctx *apptheory.Context, convCtx soulInstanceBootstrapConversationContext, started time.Time) (*apptheory.Response, error) {
+	progressedSession, progressedConv, progressErr := s.retryHostedGenesisFailedDeclarationExtraction(ctx, convCtx)
+	if progressErr != nil {
+		return nil, soulInstanceBootstrapConversationErrorFromAppError(progressErr)
+	}
+	resp, err := hostedGenesisConversationJSONFromSession(http.StatusAccepted, progressedSession, progressedConv, hostedGenesisProjectionOptions{
+		RegistrationID:  convCtx.reg.ID,
+		RequestID:       strings.TrimSpace(ctx.RequestID),
+		CollapseCreated: true,
+	})
+	if err != nil {
+		return nil, err
+	}
+	s.recordSoulMintInstanceReadAudit(ctx, convCtx.key, convCtx.agentIDHex, convCtx.conversationID, soulMintInstanceReadRouteRecover, "retry_declaration_extraction", resp.Status, len(resp.Body), started)
+	return resp, nil
+}
+
 func hostedGenesisSessionRequiresRestart(session *models.HostedGenesisSession) bool {
 	if session == nil || hostedgenesis.NormalizeStatus(session.Status) != hostedgenesis.StatusFailed || session.Failure == nil {
 		return false
 	}
-	return session.Failure.Recovery.Action == hostedgenesis.RecoveryActionRestartSoulBootstrap
+	return session.Failure.Recovery.Action == hostedgenesis.RecoveryActionRestartSoulBootstrap ||
+		hostedGenesisDeclarationExtractionRetriesExhausted(session)
+}
+
+func hostedGenesisSessionCanRetryDeclarationExtraction(session *models.HostedGenesisSession) bool {
+	return hostedGenesisSessionHasRetryableDeclarationExtractionFailure(session) &&
+		session.Failure.Recovery.MaxAttempts > 0
+}
+
+func hostedGenesisDeclarationExtractionRetriesExhausted(session *models.HostedGenesisSession) bool {
+	return hostedGenesisSessionHasDeclarationExtractionRetryFailure(session) &&
+		(!session.Failure.Retryable || session.Failure.Recovery.MaxAttempts <= 0)
+}
+
+func hostedGenesisSessionHasRetryableDeclarationExtractionFailure(session *models.HostedGenesisSession) bool {
+	return hostedGenesisSessionHasDeclarationExtractionRetryFailure(session) &&
+		session.Failure.Retryable
+}
+
+func hostedGenesisSessionHasDeclarationExtractionRetryFailure(session *models.HostedGenesisSession) bool {
+	if session == nil || hostedgenesis.NormalizeStatus(session.Status) != hostedgenesis.StatusFailed || session.Failure == nil {
+		return false
+	}
+	return session.Failure.Code == hostedgenesis.FailureCodeDeclarationExtractionFailed &&
+		session.Failure.Recovery.Action == hostedgenesis.RecoveryActionRetrySameStep
+}
+
+func hostedGenesisDeclarationExtractionRetryCarryForward(failure *hostedgenesis.Failure) *hostedgenesis.Failure {
+	if failure == nil {
+		return nil
+	}
+	carried := *failure
+	carried.Recovery.MaxAttempts--
+	if carried.Recovery.MaxAttempts < 0 {
+		carried.Recovery.MaxAttempts = 0
+	}
+	if carried.Recovery.MaxAttempts == 0 {
+		carried.Retryable = false
+	}
+	return &carried
+}
+
+func (s *Server) retryHostedGenesisFailedDeclarationExtraction(ctx *apptheory.Context, convCtx soulInstanceBootstrapConversationContext) (*models.HostedGenesisSession, *models.SoulAgentMintConversation, *apptheory.AppTheoryError) {
+	if s == nil || s.store == nil || s.store.DB == nil || convCtx.session == nil || convCtx.conv == nil {
+		return nil, nil, newAppTheoryError("app.internal", "internal error")
+	}
+	if !hostedGenesisSessionCanRetryDeclarationExtraction(convCtx.session) {
+		return nil, nil, newAppTheoryError(appErrCodeConflict, "conversation recovery requires a fresh soul bootstrap")
+	}
+	now := time.Now().UTC()
+	expectedVersion := convCtx.session.Version
+	progressedSession := cloneHostedGenesisSession(convCtx.session)
+	progressedConv := cloneSoulAgentMintConversation(convCtx.conv)
+	progressedSession.Status = string(hostedgenesis.StatusDeclarationExtractionPending)
+	progressedSession.Failure = hostedGenesisDeclarationExtractionRetryCarryForward(convCtx.session.Failure)
+	progressedSession.DeclarationCheckpoint = nil
+	progressedSession.RequestID = strings.TrimSpace(ctx.RequestID)
+	progressedSession.UpdatedAt = now
+	progressedSession.CompletedAt = time.Time{}
+	progressedConv.Status = models.SoulMintConversationStatusDeclarationExtractionPending
+	progressedConv.StatusReason = ""
+	progressedConv.RequestID = strings.TrimSpace(ctx.RequestID)
+	progressedConv.UpdatedAt = now
+	progressedConv.CompletedAt = time.Time{}
+	if s.hostedGenesisMicroVMDispatcher == nil {
+		return nil, nil, newAppTheoryError(appErrCodeMicroVMUnavailable, "MicroVM extraction dispatch is unavailable")
+	}
+	if err := progressedSession.MicroVMSessionBinding().Validate(); err != nil {
+		return nil, nil, newAppTheoryError(appErrCodeMicroVMUnavailable, "MicroVM extraction binding is invalid")
+	}
+	creditsDebited, appErr := s.debitSoulMintConversationCredits(
+		ctx.Context(),
+		convCtx.inst,
+		soulMintConversationExtractModule,
+		convCtx.conversationID,
+		firstNonEmpty(progressedConv.IdempotencyKey, ctx.RequestID),
+		soulMintConversationExtractBaseCredits,
+		now,
+		func(tx core.TransactionBuilder, creditsRequested int64) error {
+			if err := addHostedGenesisSessionDeclarationExtractionRetryWrite(tx, progressedSession, expectedVersion); err != nil {
+				return err
+			}
+			update := &models.SoulAgentMintConversation{AgentID: convCtx.agentIDHex, ConversationID: convCtx.conversationID}
+			_ = update.UpdateKeys()
+			tx.UpdateWithBuilder(update, func(ub core.UpdateBuilder) error {
+				ub.Add("ChargedCredits", creditsRequested)
+				ub.Set("Status", models.SoulMintConversationStatusDeclarationExtractionPending)
+				ub.Set("StatusReason", "")
+				ub.Set("RequestID", strings.TrimSpace(ctx.RequestID))
+				ub.Set("UpdatedAt", now)
+				ub.Set("CompletedAt", time.Time{})
+				return nil
+			}, tabletheory.IfExists(), tabletheory.Condition("Status", "=", models.SoulMintConversationStatusFailed))
+			return nil
+		},
+	)
+	if appErr != nil {
+		return nil, nil, appErr
+	}
+	progressedSession.Version = expectedVersion + 1
+	progressedConv.ChargedCredits += creditsDebited
+	retryCtx := convCtx
+	retryCtx.session = progressedSession
+	retryCtx.conv = progressedConv
+	if err := s.dispatchHostedGenesisDeclarationExtraction(ctx, retryCtx, now); err != nil {
+		if appErr, ok := err.(*apptheory.AppTheoryError); ok {
+			return nil, nil, appErr
+		}
+		return nil, nil, newAppTheoryError("app.internal", "failed to retry declaration extraction")
+	}
+	return retryCtx.session, retryCtx.conv, nil
+}
+
+func addHostedGenesisSessionDeclarationExtractionRetryWrite(tx core.TransactionBuilder, session *models.HostedGenesisSession, expectedVersion int64) error {
+	if tx == nil || session == nil {
+		return fmt.Errorf("hosted genesis declaration extraction retry write is invalid")
+	}
+	if hostedgenesis.NormalizeStatus(session.Status) != hostedgenesis.StatusDeclarationExtractionPending ||
+		session.Failure == nil ||
+		session.Failure.Code != hostedgenesis.FailureCodeDeclarationExtractionFailed {
+		return fmt.Errorf("hosted genesis declaration extraction retry write requires pending declaration extraction")
+	}
+	if err := session.Failure.Validate(); err != nil {
+		return err
+	}
+	if err := session.BeforeUpdate(); err != nil {
+		return err
+	}
+	tx.UpdateWithBuilder(session, func(ub core.UpdateBuilder) error {
+		for _, field := range hostedGenesisDeclarationExtractionRetrySessionFields(session) {
+			ub.Set(field.name, field.value)
+		}
+		ub.Add("Version", int64(1))
+		return nil
+	}, tabletheory.IfExists(), tabletheory.AtVersion(expectedVersion), tabletheory.Condition("Status", "=", string(hostedgenesis.StatusFailed)))
+	return nil
+}
+
+type hostedGenesisSessionUpdateValue struct {
+	name  string
+	value any
+}
+
+func hostedGenesisDeclarationExtractionRetrySessionFields(session *models.HostedGenesisSession) []hostedGenesisSessionUpdateValue {
+	return []hostedGenesisSessionUpdateValue{
+		{name: "InstanceSlug", value: session.InstanceSlug},
+		{name: "RegistrationID", value: session.RegistrationID},
+		{name: "AgentID", value: session.AgentID},
+		{name: "ConversationID", value: session.ConversationID},
+		{name: "GSI1PK", value: session.GSI1PK},
+		{name: "GSI1SK", value: session.GSI1SK},
+		{name: "GSI2PK", value: session.GSI2PK},
+		{name: "GSI2SK", value: session.GSI2SK},
+		{name: "Status", value: session.Status},
+		{name: "Model", value: session.Model},
+		{name: "LatestTurnID", value: session.LatestTurnID},
+		{name: "MessageCount", value: session.MessageCount},
+		{name: "TurnLedger", value: session.TurnLedger},
+		{name: "InputCheckpointRef", value: session.InputCheckpointRef},
+		{name: "AssistantCheckpointRef", value: session.AssistantCheckpointRef},
+		{name: "ExecutionStateRef", value: session.ExecutionStateRef},
+		{name: "MicroVMExecutionID", value: session.MicroVMExecutionID},
+		{name: "MicroVMLifecycleRef", value: session.MicroVMLifecycleRef},
+		{name: "DeclarationCheckpoint", value: session.DeclarationCheckpoint},
+		{name: "Failure", value: session.Failure},
+		{name: "TraceIDs", value: session.TraceIDs},
+		{name: "RequestID", value: session.RequestID},
+		{name: "UpdatedAt", value: session.UpdatedAt},
+		{name: "CompletedAt", value: session.CompletedAt},
+	}
 }
 
 // dispatchHostedGenesisRecoveryTurn re-dispatches a stuck accepted turn through

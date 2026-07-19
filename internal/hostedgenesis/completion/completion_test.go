@@ -270,6 +270,81 @@ func TestRecordFailure_AppliesTypedFailure(t *testing.T) {
 	}
 }
 
+func TestRecordFailure_CarriesDeclarationRetryBudget(t *testing.T) {
+	prior := &hostedgenesis.Failure{
+		Code:      hostedgenesis.FailureCodeDeclarationExtractionFailed,
+		Message:   hostedgenesis.FailureMessage(hostedgenesis.FailureCodeDeclarationExtractionFailed),
+		Retryable: true,
+		Recovery: hostedgenesis.Recovery{
+			Action:            hostedgenesis.RecoveryActionRetrySameStep,
+			MaxAttempts:       2,
+			RetryAfterSeconds: 30,
+			Reason:            string(hostedgenesis.FailureCodeDeclarationExtractionFailed),
+		},
+	}
+	session := newFakeSession("acme", "conv-1", "turn-1", hostedgenesis.StatusDeclarationExtractionPending, 3)
+	session.Failure = prior
+	store := &fakeCompletionStore{session: session}
+	w := NewCompletionWriter(store, nil)
+
+	got, err := w.RecordFailure(context.Background(), CompletionTurn{InstanceSlug: "acme", ConversationID: "conv-1", TurnID: "turn-1", RequestID: "req-1"}, CompletionFailure{
+		Code:      hostedgenesis.FailureCodeDeclarationExtractionFailed,
+		Retryable: true,
+		Recovery: hostedgenesis.Recovery{
+			Action:            hostedgenesis.RecoveryActionRetrySameStep,
+			MaxAttempts:       3,
+			RetryAfterSeconds: 30,
+			Reason:            "provider returned partial private JSON",
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Failure == nil ||
+		got.Failure.Recovery.MaxAttempts != 2 ||
+		got.Failure.Recovery.Action != hostedgenesis.RecoveryActionRetrySameStep ||
+		got.Failure.Recovery.Reason != string(hostedgenesis.FailureCodeDeclarationExtractionFailed) {
+		t.Fatalf("expected declaration retry budget carry-forward, got %#v", got.Failure)
+	}
+}
+
+func TestRecordFailure_ExhaustedDeclarationRetryBecomesRestart(t *testing.T) {
+	prior := &hostedgenesis.Failure{
+		Code:      hostedgenesis.FailureCodeDeclarationExtractionFailed,
+		Message:   hostedgenesis.FailureMessage(hostedgenesis.FailureCodeDeclarationExtractionFailed),
+		Retryable: false,
+		Recovery: hostedgenesis.Recovery{
+			Action: hostedgenesis.RecoveryActionRetrySameStep,
+			Reason: string(hostedgenesis.FailureCodeDeclarationExtractionFailed),
+		},
+	}
+	session := newFakeSession("acme", "conv-1", "turn-1", hostedgenesis.StatusDeclarationExtractionPending, 3)
+	session.Failure = prior
+	store := &fakeCompletionStore{session: session}
+	w := NewCompletionWriter(store, nil)
+
+	got, err := w.RecordFailure(context.Background(), CompletionTurn{InstanceSlug: "acme", ConversationID: "conv-1", TurnID: "turn-1", RequestID: "req-1"}, CompletionFailure{
+		Code:      hostedgenesis.FailureCodeDeclarationExtractionFailed,
+		Retryable: true,
+		Recovery: hostedgenesis.Recovery{
+			Action:            hostedgenesis.RecoveryActionRetrySameStep,
+			MaxAttempts:       3,
+			RetryAfterSeconds: 30,
+			Reason:            string(hostedgenesis.FailureCodeDeclarationExtractionFailed),
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Failure == nil ||
+		got.Failure.Retryable ||
+		got.Failure.Recovery.Action != hostedgenesis.RecoveryActionRestartSoulBootstrap ||
+		got.Failure.Recovery.MaxAttempts != 0 ||
+		got.Failure.Recovery.RetryAfterSeconds != 0 {
+		t.Fatalf("expected exhausted declaration retry to become restart guidance, got %#v", got.Failure)
+	}
+}
+
 func TestRecordFailure_SanitizesProviderAndDeclarationDetailsAcrossProjections(t *testing.T) {
 	store := &fakeCompletionStore{session: newFakeSession("acme", "conv-1", "turn-1", hostedgenesis.StatusInProgress, 3), conversation: &models.SoulAgentMintConversation{
 		AgentID:        "agent-1",
