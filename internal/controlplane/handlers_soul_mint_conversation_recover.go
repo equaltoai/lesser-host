@@ -136,6 +136,16 @@ func (s *Server) handleSoulInstanceRetryableMintConversationRecovery(ctx *appthe
 		resp, err := s.handleSoulInstanceAssistantTurnRetry(ctx, convCtx, started)
 		return resp, true, err
 	}
+	if hostedGenesisSessionHasMicroVMUnavailableRetryFailure(convCtx.session) {
+		if !convCtx.session.Failure.Retryable || convCtx.session.Failure.Recovery.MaxAttempts <= 0 {
+			return nil, false, nil
+		}
+		if err := validateHostedGenesisMicroVMRecoveryCheckpoint(convCtx.session); err != nil {
+			return nil, true, soulInstanceBootstrapConversationErrorFromAppError(newAppTheoryError(appErrCodeConflict, "conversation recovery checkpoint is unavailable"))
+		}
+		resp, err := s.handleSoulInstanceMicroVMUnavailableRetry(ctx, convCtx, started)
+		return resp, true, err
+	}
 	return nil, false, nil
 }
 
@@ -170,6 +180,23 @@ func (s *Server) handleSoulInstanceAssistantTurnRetry(ctx *apptheory.Context, co
 		return nil, err
 	}
 	s.recordSoulMintInstanceReadAudit(ctx, convCtx.key, convCtx.agentIDHex, convCtx.conversationID, soulMintInstanceReadRouteRecover, auditOutcome, resp.Status, len(resp.Body), started)
+	return resp, nil
+}
+
+func (s *Server) handleSoulInstanceMicroVMUnavailableRetry(ctx *apptheory.Context, convCtx soulInstanceBootstrapConversationContext, started time.Time) (*apptheory.Response, error) {
+	progressedSession, progressedConv, progressErr := s.retryHostedGenesisMicroVMUnavailable(ctx, convCtx)
+	if progressErr != nil {
+		return nil, soulInstanceBootstrapConversationErrorFromAppError(progressErr)
+	}
+	resp, err := hostedGenesisConversationJSONFromSession(http.StatusAccepted, progressedSession, progressedConv, hostedGenesisProjectionOptions{
+		RegistrationID:  convCtx.reg.ID,
+		RequestID:       strings.TrimSpace(ctx.RequestID),
+		CollapseCreated: true,
+	})
+	if err != nil {
+		return nil, err
+	}
+	s.recordSoulMintInstanceReadAudit(ctx, convCtx.key, convCtx.agentIDHex, convCtx.conversationID, soulMintInstanceReadRouteRecover, "retry_microvm_unavailable", resp.Status, len(resp.Body), started)
 	return resp, nil
 }
 
@@ -237,6 +264,64 @@ func hostedGenesisSessionHasAssistantTurnRetryFailure(session *models.HostedGene
 		session.Failure.Recovery.Action == hostedgenesis.RecoveryActionRetrySameStep
 }
 
+func hostedGenesisSessionHasMicroVMUnavailableRetryFailure(session *models.HostedGenesisSession) bool {
+	if session == nil || hostedgenesis.NormalizeStatus(session.Status) != hostedgenesis.StatusFailed || session.Failure == nil {
+		return false
+	}
+	return session.Failure.Code == hostedgenesis.FailureCodeMicroVMUnavailable &&
+		session.Failure.Recovery.Action == hostedgenesis.RecoveryActionRetrySameStep
+}
+
+func validateHostedGenesisMicroVMRecoveryCheckpoint(session *models.HostedGenesisSession) error {
+	if session == nil || session.VMCheckpoint == nil {
+		return fmt.Errorf("missing vm checkpoint")
+	}
+	checkpoint := session.VMCheckpoint.Normalize()
+	if err := checkpoint.Validate(); err != nil {
+		return fmt.Errorf("invalid vm checkpoint: %w", err)
+	}
+	if strings.TrimSpace(checkpoint.LatestTurnID) == "" ||
+		strings.TrimSpace(checkpoint.LatestTurnID) != strings.TrimSpace(session.LatestTurnID) {
+		return fmt.Errorf("checkpoint turn %q does not match latest turn %q", checkpoint.LatestTurnID, session.LatestTurnID)
+	}
+	if !hostedGenesisTurnLedgerContainsTurn(session.TurnLedger, checkpoint.LatestTurnID) {
+		return fmt.Errorf("checkpoint turn %q is not in the durable turn ledger", checkpoint.LatestTurnID)
+	}
+	expectedRef := hostedgenesis.CheckpointRef(
+		"vm-actor",
+		session.ConversationID,
+		fmt.Sprintf("%s-%d-%s", firstNonEmpty(strings.TrimSpace(checkpoint.Step), strings.TrimSpace(checkpoint.Action), "step"), checkpoint.Sequence, checkpoint.LatestTurnID),
+	)
+	if strings.TrimSpace(checkpoint.Ref) != expectedRef {
+		return fmt.Errorf("checkpoint ref does not match the durable conversation binding")
+	}
+	statusFrom := hostedgenesis.NormalizeStatus(checkpoint.StatusFrom)
+	statusTo := hostedgenesis.NormalizeStatus(checkpoint.StatusTo)
+	if statusTo == hostedgenesis.StatusFailed {
+		return fmt.Errorf("checkpoint failed status cannot be replayed")
+	}
+	if err := hostedgenesis.ValidateTransition(statusFrom, statusTo); err != nil {
+		return err
+	}
+	if checkpoint.Sequence > session.Version+1 {
+		return fmt.Errorf("checkpoint sequence %d is ahead of session version %d", checkpoint.Sequence, session.Version)
+	}
+	return nil
+}
+
+func hostedGenesisTurnLedgerContainsTurn(ledger []hostedgenesis.TurnLedgerEntry, turnID string) bool {
+	turnID = strings.TrimSpace(turnID)
+	if turnID == "" {
+		return false
+	}
+	for _, entry := range ledger {
+		if strings.TrimSpace(entry.Normalize().TurnID) == turnID {
+			return true
+		}
+	}
+	return false
+}
+
 func hostedGenesisSessionHasPendingAssistantRetryFailure(session *models.HostedGenesisSession) bool {
 	if session == nil ||
 		hostedgenesis.NormalizeStatus(session.Status) != hostedgenesis.StatusInProgress ||
@@ -249,21 +334,18 @@ func hostedGenesisSessionHasPendingAssistantRetryFailure(session *models.HostedG
 }
 
 func hostedGenesisDeclarationExtractionRetryCarryForward(failure *hostedgenesis.Failure) *hostedgenesis.Failure {
-	if failure == nil {
-		return nil
-	}
-	carried := *failure
-	carried.Recovery.MaxAttempts--
-	if carried.Recovery.MaxAttempts < 0 {
-		carried.Recovery.MaxAttempts = 0
-	}
-	if carried.Recovery.MaxAttempts == 0 {
-		carried.Retryable = false
-	}
-	return &carried
+	return hostedGenesisRetryCarryForward(failure)
 }
 
 func hostedGenesisAssistantTurnRetryCarryForward(failure *hostedgenesis.Failure) *hostedgenesis.Failure {
+	return hostedGenesisRetryCarryForward(failure)
+}
+
+func hostedGenesisMicroVMUnavailableRetryCarryForward(failure *hostedgenesis.Failure) *hostedgenesis.Failure {
+	return hostedGenesisRetryCarryForward(failure)
+}
+
+func hostedGenesisRetryCarryForward(failure *hostedgenesis.Failure) *hostedgenesis.Failure {
 	if failure == nil {
 		return nil
 	}
@@ -323,6 +405,52 @@ func (s *Server) retryHostedGenesisFailedAssistantTurn(ctx *apptheory.Context, c
 	return s.dispatchHostedGenesisPersistedAssistantRetry(ctx, convCtx, progressedSession, progressedConv)
 }
 
+func (s *Server) retryHostedGenesisMicroVMUnavailable(ctx *apptheory.Context, convCtx soulInstanceBootstrapConversationContext) (*models.HostedGenesisSession, *models.SoulAgentMintConversation, *apptheory.AppTheoryError) {
+	if s == nil || s.store == nil || s.store.DB == nil || convCtx.session == nil || convCtx.conv == nil {
+		return nil, nil, newAppTheoryError("app.internal", "internal error")
+	}
+	if !hostedGenesisSessionHasMicroVMUnavailableRetryFailure(convCtx.session) ||
+		!convCtx.session.Failure.Retryable ||
+		convCtx.session.Failure.Recovery.MaxAttempts <= 0 {
+		return nil, nil, newAppTheoryError(appErrCodeConflict, "conversation recovery requires a fresh soul bootstrap")
+	}
+	if err := validateHostedGenesisMicroVMRecoveryCheckpoint(convCtx.session); err != nil {
+		return nil, nil, newAppTheoryError(appErrCodeConflict, "conversation recovery checkpoint is unavailable")
+	}
+	if s.hostedGenesisMicroVMDispatcher == nil {
+		return nil, nil, newAppTheoryError(appErrCodeMicroVMUnavailable, "MicroVM recovery dispatch is unavailable")
+	}
+	now := time.Now().UTC()
+	progressedSession := cloneHostedGenesisSession(convCtx.session)
+	progressedConv := cloneSoulAgentMintConversation(convCtx.conv)
+	progressedSession.Status = string(hostedgenesis.StatusInProgress)
+	progressedSession.Failure = hostedGenesisMicroVMUnavailableRetryCarryForward(convCtx.session.Failure)
+	progressedSession.AssistantCheckpointRef = ""
+	progressedSession.ExecutionStateRef = ""
+	progressedSession.MicroVMExecutionID = ""
+	progressedSession.MicroVMLifecycleRef = nil
+	progressedSession.DeclarationCheckpoint = nil
+	progressedSession.RequestID = strings.TrimSpace(ctx.RequestID)
+	progressedSession.UpdatedAt = now
+	progressedSession.CompletedAt = time.Time{}
+	progressedConv.Status = models.SoulMintConversationStatusInProgress
+	progressedConv.StatusReason = ""
+	progressedConv.LatestTurnID = firstNonEmpty(progressedSession.LatestTurnID, progressedConv.LatestTurnID)
+	progressedConv.RequestID = strings.TrimSpace(ctx.RequestID)
+	progressedConv.UpdatedAt = now
+	progressedConv.CompletedAt = time.Time{}
+	binding := progressedSession.MicroVMSessionBinding()
+	if err := binding.Validate(); err != nil {
+		log.Printf("controlplane: hosted genesis microvm retry binding invalid agent_hash=%s conversation_hash=%s err=%v", soulMintInstanceReadAuditHash(convCtx.agentIDHex), soulMintInstanceReadAuditHash(convCtx.conversationID), err)
+		return nil, nil, newAppTheoryError(appErrCodeMicroVMUnavailable, "MicroVM recovery dispatch binding is invalid")
+	}
+	if appErr := s.persistHostedGenesisMicroVMRetryPending(ctx.Context(), convCtx.session, progressedSession, progressedConv, now); appErr != nil {
+		return nil, nil, appErr
+	}
+	progressedSession.Version = convCtx.session.Version + 1
+	return s.dispatchHostedGenesisPersistedMicroVMRetry(ctx, convCtx, progressedSession, progressedConv)
+}
+
 func (s *Server) retryHostedGenesisPendingAssistantTurn(ctx *apptheory.Context, convCtx soulInstanceBootstrapConversationContext) (*models.HostedGenesisSession, *models.SoulAgentMintConversation, *apptheory.AppTheoryError) {
 	if s == nil || s.store == nil || s.store.DB == nil || convCtx.session == nil || convCtx.conv == nil {
 		return nil, nil, newAppTheoryError("app.internal", "internal error")
@@ -375,11 +503,19 @@ func (s *Server) retryHostedGenesisPendingAssistantTurn(ctx *apptheory.Context, 
 }
 
 func (s *Server) dispatchHostedGenesisPersistedAssistantRetry(ctx *apptheory.Context, convCtx soulInstanceBootstrapConversationContext, pending *models.HostedGenesisSession, conv *models.SoulAgentMintConversation) (*models.HostedGenesisSession, *models.SoulAgentMintConversation, *apptheory.AppTheoryError) {
+	return s.dispatchHostedGenesisPersistedConversationRetry(ctx, convCtx, pending, conv, hostedGenesisFailureAssistantTurnFailed)
+}
+
+func (s *Server) dispatchHostedGenesisPersistedMicroVMRetry(ctx *apptheory.Context, convCtx soulInstanceBootstrapConversationContext, pending *models.HostedGenesisSession, conv *models.SoulAgentMintConversation) (*models.HostedGenesisSession, *models.SoulAgentMintConversation, *apptheory.AppTheoryError) {
+	return s.dispatchHostedGenesisPersistedConversationRetry(ctx, convCtx, pending, conv, hostedGenesisFailureMicroVMUnavailable)
+}
+
+func (s *Server) dispatchHostedGenesisPersistedConversationRetry(ctx *apptheory.Context, convCtx soulInstanceBootstrapConversationContext, pending *models.HostedGenesisSession, conv *models.SoulAgentMintConversation, failureReason string) (*models.HostedGenesisSession, *models.SoulAgentMintConversation, *apptheory.AppTheoryError) {
 	if s == nil || s.store == nil || s.store.DB == nil || pending == nil || conv == nil {
 		return nil, nil, newAppTheoryError("app.internal", "internal error")
 	}
 	if s.hostedGenesisMicroVMDispatcher == nil {
-		if _, _, appErr := s.persistHostedGenesisAssistantRetryDispatchFailure(ctx.Context(), pending, conv, strings.TrimSpace(ctx.RequestID), time.Now().UTC()); appErr != nil {
+		if _, _, appErr := s.persistHostedGenesisRetryDispatchFailure(ctx.Context(), pending, conv, strings.TrimSpace(ctx.RequestID), time.Now().UTC(), failureReason); appErr != nil {
 			return nil, nil, appErr
 		}
 		return nil, nil, newAppTheoryError(appErrCodeMicroVMUnavailable, "MicroVM recovery dispatch is unavailable")
@@ -394,7 +530,7 @@ func (s *Server) dispatchHostedGenesisPersistedAssistantRetry(ctx *apptheory.Con
 	dispatch, dispatchErr := s.hostedGenesisMicroVMDispatcher.DispatchMicroVMRun(runCtx, strings.TrimSpace(ctx.RequestID), binding)
 	if dispatchErr != nil {
 		log.Printf("controlplane: hosted genesis assistant retry dispatch failed agent_hash=%s conversation_hash=%s err=%v", soulMintInstanceReadAuditHash(convCtx.agentIDHex), soulMintInstanceReadAuditHash(convCtx.conversationID), dispatchErr)
-		if _, _, appErr := s.persistHostedGenesisAssistantRetryDispatchFailure(ctx.Context(), pending, conv, strings.TrimSpace(ctx.RequestID), time.Now().UTC()); appErr != nil {
+		if _, _, appErr := s.persistHostedGenesisRetryDispatchFailure(ctx.Context(), pending, conv, strings.TrimSpace(ctx.RequestID), time.Now().UTC(), failureReason); appErr != nil {
 			return nil, nil, appErr
 		}
 		return nil, nil, newAppTheoryError(appErrCodeMicroVMUnavailable, "MicroVM recovery dispatch failed")
@@ -402,7 +538,7 @@ func (s *Server) dispatchHostedGenesisPersistedAssistantRetry(ctx *apptheory.Con
 	progressedSession := cloneHostedGenesisSession(pending)
 	if err := progressedSession.ApplyMicroVMLifecycleRef(dispatch.LifecycleRef); err != nil {
 		log.Printf("controlplane: hosted genesis assistant retry lifecycle ref rejected agent_hash=%s conversation_hash=%s err=%v", soulMintInstanceReadAuditHash(convCtx.agentIDHex), soulMintInstanceReadAuditHash(convCtx.conversationID), err)
-		if _, _, appErr := s.persistHostedGenesisAssistantRetryDispatchFailure(ctx.Context(), pending, conv, strings.TrimSpace(ctx.RequestID), time.Now().UTC()); appErr != nil {
+		if _, _, appErr := s.persistHostedGenesisRetryDispatchFailure(ctx.Context(), pending, conv, strings.TrimSpace(ctx.RequestID), time.Now().UTC(), failureReason); appErr != nil {
 			return nil, nil, appErr
 		}
 		return nil, nil, newAppTheoryError("app.internal", "failed to record microvm recovery dispatch")
@@ -417,6 +553,14 @@ func (s *Server) dispatchHostedGenesisPersistedAssistantRetry(ctx *apptheory.Con
 }
 
 func (s *Server) persistHostedGenesisAssistantRetryPending(ctx context.Context, failed *models.HostedGenesisSession, progressed *models.HostedGenesisSession, conv *models.SoulAgentMintConversation, now time.Time) *apptheory.AppTheoryError {
+	return s.persistHostedGenesisFailedRetryPending(ctx, failed, progressed, conv, now, hostedgenesis.FailureCodeAssistantTurnFailed)
+}
+
+func (s *Server) persistHostedGenesisMicroVMRetryPending(ctx context.Context, failed *models.HostedGenesisSession, progressed *models.HostedGenesisSession, conv *models.SoulAgentMintConversation, now time.Time) *apptheory.AppTheoryError {
+	return s.persistHostedGenesisFailedRetryPending(ctx, failed, progressed, conv, now, hostedgenesis.FailureCodeMicroVMUnavailable)
+}
+
+func (s *Server) persistHostedGenesisFailedRetryPending(ctx context.Context, failed *models.HostedGenesisSession, progressed *models.HostedGenesisSession, conv *models.SoulAgentMintConversation, now time.Time, failureCode hostedgenesis.FailureCode) *apptheory.AppTheoryError {
 	if s == nil || s.store == nil || s.store.DB == nil || failed == nil || progressed == nil || conv == nil {
 		return newAppTheoryError("app.internal", "internal error")
 	}
@@ -432,7 +576,7 @@ func (s *Server) persistHostedGenesisAssistantRetryPending(ctx context.Context, 
 	}
 	_ = updateConv.UpdateKeys()
 	if err := s.store.DB.TransactWrite(ctx, func(tx core.TransactionBuilder) error {
-		if err := addHostedGenesisSessionAssistantRetryWrite(tx, progressed, failed.Version); err != nil {
+		if err := addHostedGenesisSessionRecoveryRetryWrite(tx, progressed, failed.Version, failureCode); err != nil {
 			return err
 		}
 		tx.UpdateWithBuilder(updateConv, func(ub core.UpdateBuilder) error {
@@ -502,6 +646,10 @@ func (s *Server) persistHostedGenesisAssistantRetryLifecycle(ctx context.Context
 }
 
 func (s *Server) persistHostedGenesisAssistantRetryDispatchFailure(ctx context.Context, pending *models.HostedGenesisSession, conv *models.SoulAgentMintConversation, requestID string, now time.Time) (*models.HostedGenesisSession, *models.SoulAgentMintConversation, *apptheory.AppTheoryError) {
+	return s.persistHostedGenesisRetryDispatchFailure(ctx, pending, conv, requestID, now, hostedGenesisFailureAssistantTurnFailed)
+}
+
+func (s *Server) persistHostedGenesisRetryDispatchFailure(ctx context.Context, pending *models.HostedGenesisSession, conv *models.SoulAgentMintConversation, requestID string, now time.Time, failureReason string) (*models.HostedGenesisSession, *models.SoulAgentMintConversation, *apptheory.AppTheoryError) {
 	if s == nil || s.store == nil || s.store.DB == nil || pending == nil || conv == nil {
 		return nil, nil, newAppTheoryError("app.internal", "internal error")
 	}
@@ -509,13 +657,13 @@ func (s *Server) persistHostedGenesisAssistantRetryDispatchFailure(ctx context.C
 	failedConv := cloneSoulAgentMintConversation(conv)
 	failedSession.Status = string(hostedgenesis.StatusFailed)
 	if failedSession.Failure == nil {
-		failedSession.Failure = hostedGenesisSessionFailureFromReason(hostedGenesisFailureAssistantTurnFailed)
+		failedSession.Failure = hostedGenesisSessionFailureFromReason(failureReason)
 	}
 	failedSession.RequestID = strings.TrimSpace(requestID)
 	failedSession.UpdatedAt = now
 	failedSession.CompletedAt = now
 	failedConv.Status = models.SoulMintConversationStatusFailed
-	failedConv.StatusReason = hostedGenesisFailureAssistantTurnFailed
+	failedConv.StatusReason = strings.TrimSpace(failureReason)
 	failedConv.LatestTurnID = firstNonEmpty(failedSession.LatestTurnID, failedConv.LatestTurnID)
 	failedConv.RequestID = strings.TrimSpace(requestID)
 	failedConv.UpdatedAt = now
@@ -546,15 +694,15 @@ func (s *Server) persistHostedGenesisAssistantRetryDispatchFailure(ctx context.C
 	return failedSession, failedConv, nil
 }
 
-func addHostedGenesisSessionAssistantRetryWrite(tx core.TransactionBuilder, session *models.HostedGenesisSession, expectedVersion int64) error {
+func addHostedGenesisSessionRecoveryRetryWrite(tx core.TransactionBuilder, session *models.HostedGenesisSession, expectedVersion int64, failureCode hostedgenesis.FailureCode) error {
 	return addHostedGenesisSessionFailedRetryWrite(
 		tx,
 		session,
 		expectedVersion,
 		hostedgenesis.StatusInProgress,
-		hostedgenesis.FailureCodeAssistantTurnFailed,
+		failureCode,
 		"hosted genesis assistant retry write is invalid",
-		"hosted genesis assistant retry write requires in-progress assistant retry",
+		"hosted genesis recovery retry write requires in-progress retry",
 	)
 }
 

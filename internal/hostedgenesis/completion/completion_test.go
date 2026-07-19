@@ -190,6 +190,81 @@ func TestRecordAssistantTurnReady_StaleVersionRejected(t *testing.T) {
 	}
 }
 
+func TestRecordAssistantTurnReady_CheckpointGuardsStatusTurnAndSequence(t *testing.T) {
+	base := hostedgenesis.VMCheckpointInput{
+		ConversationID:     "conv-1",
+		LatestTurnID:       "turn-1",
+		RequestID:          "req-1",
+		Sequence:           4,
+		Step:               "assistant_turn",
+		Action:             "ask",
+		StatusFrom:         hostedgenesis.StatusInProgress,
+		StatusTo:           hostedgenesis.StatusAssistantTurnReady,
+		Runtime:            "hosted-genesis-microvm-workload/v1",
+		ProviderFamily:     "anthropic",
+		ModelID:            "claude-sonnet-4-6",
+		AdditionalHashSalt: "fresh",
+	}
+	valid, err := hostedgenesis.NewVMCheckpointMetadata(base)
+	if err != nil {
+		t.Fatalf("valid checkpoint fixture: %v", err)
+	}
+	stale, err := hostedgenesis.NewVMCheckpointMetadata(hostedgenesis.VMCheckpointInput{
+		ConversationID:     "conv-1",
+		LatestTurnID:       "turn-0",
+		RequestID:          "req-0",
+		Sequence:           4,
+		Step:               "assistant_turn",
+		Action:             "ask",
+		StatusFrom:         hostedgenesis.StatusInProgress,
+		StatusTo:           hostedgenesis.StatusAssistantTurnReady,
+		Runtime:            "hosted-genesis-microvm-workload/v1",
+		ProviderFamily:     "anthropic",
+		ModelID:            "claude-sonnet-4-6",
+		AdditionalHashSalt: "prior",
+	})
+	if err != nil {
+		t.Fatalf("stale checkpoint fixture: %v", err)
+	}
+
+	for name, mutate := range map[string]func(hostedgenesis.VMCheckpointMetadata) hostedgenesis.VMCheckpointMetadata{
+		"status_from mismatch": func(cp hostedgenesis.VMCheckpointMetadata) hostedgenesis.VMCheckpointMetadata {
+			cp.StatusFrom = string(hostedgenesis.StatusAssistantTurnReady)
+			return cp
+		},
+		"turn mismatch": func(cp hostedgenesis.VMCheckpointMetadata) hostedgenesis.VMCheckpointMetadata {
+			cp.LatestTurnID = "turn-other"
+			return cp
+		},
+		"conversation ref mismatch": func(cp hostedgenesis.VMCheckpointMetadata) hostedgenesis.VMCheckpointMetadata {
+			cp.Ref = hostedgenesis.CheckpointRef("vm-actor", "other-conversation", fmt.Sprintf("%s-%d-%s", cp.Step, cp.Sequence, cp.LatestTurnID))
+			return cp
+		},
+		"stale sequence": func(cp hostedgenesis.VMCheckpointMetadata) hostedgenesis.VMCheckpointMetadata {
+			cp.Sequence = stale.Sequence
+			return cp
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			session := newFakeSession("acme", "conv-1", "turn-1", hostedgenesis.StatusInProgress, 4)
+			session.VMCheckpoint = &stale
+			store := &fakeCompletionStore{session: session}
+			w := NewCompletionWriter(store, nil)
+			cp := mutate(valid)
+			_, err := w.RecordAssistantTurnReadyWithCheckpoint(context.Background(), CompletionTurn{InstanceSlug: "acme", ConversationID: "conv-1", TurnID: "turn-1", RequestID: "req-1"}, AssistantTurnCompletion{
+				AssistantContent: "hello",
+				MessageCount:     2,
+			}, &cp)
+			if err == nil || !errors.Is(err, ErrCompletionConflict) {
+				t.Fatalf("expected guarded checkpoint conflict, got %v", err)
+			}
+			if store.written != nil {
+				t.Fatalf("checkpoint conflict must not write session: %#v", store.written)
+			}
+		})
+	}
+}
+
 func TestRecordDeclarationReady_AppliesFromActorOwnedStatuses(t *testing.T) {
 	for name, status := range map[string]hostedgenesis.Status{
 		"in-progress actor finalization": hostedgenesis.StatusInProgress,

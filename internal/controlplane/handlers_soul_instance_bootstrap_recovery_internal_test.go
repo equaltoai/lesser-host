@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -16,6 +17,8 @@ import (
 	"github.com/equaltoai/lesser-host/internal/store/models"
 	"github.com/equaltoai/lesser-host/internal/testutil"
 )
+
+const hostedGenesisMicroVMRecoveryTurnID = "turn-microvm"
 
 func TestSoulInstanceRecoverMintConversation_RetriggersStuckTurn(t *testing.T) {
 	tdb := newMintConversationTestDB()
@@ -329,7 +332,8 @@ func TestSoulInstanceRecoverMintConversation_AssistantRetryPersistsPendingBefore
 
 type stateReadingMicroVMDispatcher struct {
 	*stubMicroVMDispatcher
-	readSession func() *models.HostedGenesisSession
+	readSession         func() *models.HostedGenesisSession
+	expectedFailureCode hostedgenesis.FailureCode
 }
 
 func (d *stateReadingMicroVMDispatcher) DispatchMicroVMRun(ctx context.Context, requestID string, binding hostedgenesis.MicroVMSessionBinding) (hostedgenesis.MicroVMDispatchResult, error) {
@@ -338,12 +342,19 @@ func (d *stateReadingMicroVMDispatcher) DispatchMicroVMRun(ctx context.Context, 
 	if session == nil {
 		d.t.Fatalf("workload test double could not read durable Host state")
 	}
+	expectedFailureCode := d.expectedFailureCode
+	if expectedFailureCode == "" {
+		expectedFailureCode = hostedgenesis.FailureCodeAssistantTurnFailed
+	}
 	if hostedgenesis.NormalizeStatus(session.Status) != hostedgenesis.StatusInProgress ||
 		session.LatestTurnID != binding.TurnID ||
 		session.Failure == nil ||
-		session.Failure.Code != hostedgenesis.FailureCodeAssistantTurnFailed ||
+		session.Failure.Code != expectedFailureCode ||
 		session.Failure.Recovery.MaxAttempts != 1 {
 		d.t.Fatalf("workload observed old or invalid durable retry state during dispatch: %#v", session)
+	}
+	if expectedFailureCode == hostedgenesis.FailureCodeMicroVMUnavailable && session.VMCheckpoint == nil {
+		d.t.Fatalf("microvm relaunch did not expose the validated VM checkpoint to the workload: %#v", session)
 	}
 	return d.stubMicroVMDispatcher.DispatchMicroVMRun(ctx, requestID, binding)
 }
@@ -442,6 +453,153 @@ func TestSoulInstanceRecoverMintConversation_SalvagesPendingAssistantRetryWithLi
 		t.Fatalf("expected unambiguous pending retry projection without exposed failure, got %#v", out.Conversation)
 	}
 	tdb.db.AssertNumberOfCalls(t, "TransactWrite", 2)
+}
+
+func TestSoulInstanceRecoverMintConversation_RelaunchesMicroVMUnavailableFromCheckpoint(t *testing.T) {
+	tdb := newMintConversationTestDB()
+	s := newMintConversationServer(tdb)
+	reg := mintConversationHandleReg()
+	now := time.Date(2026, 3, 7, 12, 5, 0, 0, time.UTC)
+	durableSession := failedMicroVMUnavailableRecoverySessionFixture(t, reg, now)
+	dispatcher := &stateReadingMicroVMDispatcher{
+		stubMicroVMDispatcher: &stubMicroVMDispatcher{t: t},
+		expectedFailureCode:   hostedgenesis.FailureCodeMicroVMUnavailable,
+		readSession: func() *models.HostedGenesisSession {
+			return cloneHostedGenesisSession(&durableSession)
+		},
+	}
+	s.hostedGenesisMicroVMDispatcher = dispatcher
+
+	expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, soulInstanceBootstrapTestInstanceSlug)
+	stubMintConversationRegistration(t, tdb, reg)
+	stubSoulInstanceBootstrapDomainAndInstance(t, tdb, reg.DomainNormalized, soulInstanceBootstrapTestInstanceSlug)
+	stubSoulInstanceRecoveryConversation(t, tdb, models.SoulAgentMintConversation{
+		AgentID:        reg.AgentID,
+		ConversationID: mintConversationTestConversationID,
+		Model:          "anthropic:claude-sonnet-4-6",
+		Messages:       encodeMintConversationBlob(`[{"role":"user","content":"describe the agent"}]`),
+		Status:         models.SoulMintConversationStatusFailed,
+		StatusReason:   hostedGenesisFailureMicroVMUnavailable,
+		LatestTurnID:   hostedGenesisMicroVMRecoveryTurnID,
+		ChargedCredits: soulMintConversationStreamBaseCredits,
+		RequestID:      "req-failed",
+		CreatedAt:      time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC),
+		UpdatedAt:      now,
+		CompletedAt:    now,
+	})
+	stubSoulInstanceRecoverySession(t, tdb, durableSession)
+	expectHostedGenesisMicroVMRetryDispatchWriteWithCapture(t, tdb, hostedGenesisMicroVMRecoveryTurnID, func(session *models.HostedGenesisSession) {
+		durableSession = *cloneHostedGenesisSession(session)
+	})
+
+	resp, err := s.handleSoulInstanceRecoverMintConversation(newSoulInstanceBootstrapContext(
+		map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
+		nil,
+		map[string]string{"id": reg.ID, "conversationId": mintConversationTestConversationID},
+	))
+	if err != nil {
+		t.Fatalf("unexpected microvm-unavailable recovery err: %v", err)
+	}
+	if resp.Status != http.StatusAccepted {
+		t.Fatalf("expected 202 microvm relaunch response, got %#v", resp)
+	}
+	if dispatcher.calls != 1 || dispatcher.reconcileCalls != 0 {
+		t.Fatalf("expected one relaunch dispatch and no reconcile, got run=%d reconcile=%d", dispatcher.calls, dispatcher.reconcileCalls)
+	}
+	if dispatcher.lastBinding.ConversationID != mintConversationTestConversationID || dispatcher.lastBinding.TurnID != hostedGenesisMicroVMRecoveryTurnID {
+		t.Fatalf("expected relaunch dispatch bound to failed turn, got %#v", dispatcher.lastBinding)
+	}
+	var out hostedGenesisConversationResponse
+	if err := json.Unmarshal(resp.Body, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.Conversation.Status != models.SoulMintConversationStatusInProgress ||
+		out.Conversation.LatestTurnID != hostedGenesisMicroVMRecoveryTurnID ||
+		out.Conversation.Failure != nil ||
+		out.Conversation.PollAfterSeconds <= 0 {
+		t.Fatalf("expected actionable microvm relaunch projection, got %#v", out.Conversation)
+	}
+	assertHostedGenesisResponseNoForbiddenValues(t, resp.Body, hostedGenesisStatusForbiddenValues())
+	tdb.db.AssertNumberOfCalls(t, "TransactWrite", 2)
+}
+
+func TestSoulInstanceRecoverMintConversation_RejectsMicroVMRelaunchWithoutCheckpoint(t *testing.T) {
+	tdb := newMintConversationTestDB()
+	s := newMintConversationServer(tdb)
+	reg := mintConversationHandleReg()
+	now := time.Date(2026, 3, 7, 12, 5, 0, 0, time.UTC)
+	dispatcher := &stubMicroVMDispatcher{t: t}
+	s.hostedGenesisMicroVMDispatcher = dispatcher
+
+	expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, soulInstanceBootstrapTestInstanceSlug)
+	stubMintConversationRegistration(t, tdb, reg)
+	stubSoulInstanceBootstrapDomainAndInstance(t, tdb, reg.DomainNormalized, soulInstanceBootstrapTestInstanceSlug)
+	stubSoulInstanceRecoveryConversation(t, tdb, models.SoulAgentMintConversation{
+		AgentID:        reg.AgentID,
+		ConversationID: mintConversationTestConversationID,
+		Model:          "anthropic:claude-sonnet-4-6",
+		Messages:       encodeMintConversationBlob(`[{"role":"user","content":"describe the agent"}]`),
+		Status:         models.SoulMintConversationStatusFailed,
+		StatusReason:   hostedGenesisFailureMicroVMUnavailable,
+		LatestTurnID:   hostedGenesisMicroVMRecoveryTurnID,
+		ChargedCredits: soulMintConversationStreamBaseCredits,
+		RequestID:      "req-failed",
+		CreatedAt:      time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC),
+		UpdatedAt:      now,
+		CompletedAt:    now,
+	})
+	session := failedMicroVMUnavailableRecoverySessionFixture(t, reg, now)
+	session.VMCheckpoint = nil
+	stubSoulInstanceRecoverySession(t, tdb, session)
+
+	_, err := s.handleSoulInstanceRecoverMintConversation(newSoulInstanceBootstrapContext(
+		map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
+		nil,
+		map[string]string{"id": reg.ID, "conversationId": mintConversationTestConversationID},
+	))
+	appErr := requireAppTheoryError(t, err)
+	if appErr.Code != soulInstanceBootstrapCodeConflict || appErr.StatusCode != http.StatusConflict {
+		t.Fatalf("expected missing checkpoint conflict, got %#v", appErr)
+	}
+	if dispatcher.calls != 0 || dispatcher.reconcileCalls != 0 {
+		t.Fatalf("checkpoint-less retry must not dispatch, got run=%d reconcile=%d", dispatcher.calls, dispatcher.reconcileCalls)
+	}
+	tdb.db.AssertNotCalled(t, "TransactWrite", mock.Anything, mock.Anything)
+}
+
+func TestHostedGenesisMicroVMRecoveryCheckpointValidationGuardsDurableInvariants(t *testing.T) {
+	reg := mintConversationHandleReg()
+	now := time.Date(2026, 3, 7, 12, 5, 0, 0, time.UTC)
+	valid := failedMicroVMUnavailableRecoverySessionFixture(t, reg, now)
+	if err := validateHostedGenesisMicroVMRecoveryCheckpoint(&valid); err != nil {
+		t.Fatalf("valid recovery checkpoint rejected: %v", err)
+	}
+
+	for name, mutate := range map[string]func(*models.HostedGenesisSession){
+		"latest turn mismatch": func(session *models.HostedGenesisSession) {
+			session.VMCheckpoint.LatestTurnID = "turn-other"
+		},
+		"turn missing from ledger": func(session *models.HostedGenesisSession) {
+			session.TurnLedger = nil
+		},
+		"conversation ref mismatch": func(session *models.HostedGenesisSession) {
+			session.VMCheckpoint.Ref = hostedgenesis.CheckpointRef("vm-actor", "other-conversation", fmt.Sprintf("%s-%d-%s", session.VMCheckpoint.Step, session.VMCheckpoint.Sequence, session.VMCheckpoint.LatestTurnID))
+		},
+		"failed checkpoint status": func(session *models.HostedGenesisSession) {
+			session.VMCheckpoint.StatusTo = string(hostedgenesis.StatusFailed)
+		},
+		"checkpoint ahead of version budget": func(session *models.HostedGenesisSession) {
+			session.VMCheckpoint.Sequence = session.Version + 2
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			session := *cloneHostedGenesisSession(&valid)
+			mutate(&session)
+			if err := validateHostedGenesisMicroVMRecoveryCheckpoint(&session); err == nil {
+				t.Fatalf("expected invalid recovery checkpoint")
+			}
+		})
+	}
 }
 
 func TestSoulInstanceRecoverMintConversation_ExhaustedDeclarationExtractionRetryRequiresRestart(t *testing.T) {
@@ -720,6 +878,56 @@ func failedAssistantTurnRecoveryFailure() *hostedgenesis.Failure {
 	}
 }
 
+func failedMicroVMUnavailableRecoverySessionFixture(t *testing.T, reg models.SoulAgentRegistration, now time.Time) models.HostedGenesisSession {
+	t.Helper()
+	session := failedAssistantTurnRecoveryHostedGenesisSessionFixture(t, reg, now)
+	session.LatestTurnID = hostedGenesisMicroVMRecoveryTurnID
+	session.MessageCount = 1
+	session.TurnLedger = []hostedgenesis.TurnLedgerEntry{{
+		TurnID:         hostedGenesisMicroVMRecoveryTurnID,
+		ChargedCredits: soulMintConversationStreamBaseCredits,
+		MessageCount:   1,
+		AcceptedAt:     now.Add(-5 * time.Minute),
+	}}
+	session.Failure = failedMicroVMUnavailableRecoveryFailure()
+	checkpoint, err := hostedgenesis.NewVMCheckpointMetadata(hostedgenesis.VMCheckpointInput{
+		ConversationID:     session.ConversationID,
+		LatestTurnID:       hostedGenesisMicroVMRecoveryTurnID,
+		RequestID:          "req-checkpoint",
+		Sequence:           session.Version + 1,
+		Step:               "assistant_turn",
+		Action:             "ask",
+		StatusFrom:         hostedgenesis.StatusInProgress,
+		StatusTo:           hostedgenesis.StatusAssistantTurnReady,
+		Runtime:            "hosted-genesis-microvm-workload/v1",
+		ProviderFamily:     "anthropic",
+		ModelID:            "claude-sonnet-4-6",
+		AdditionalHashSalt: "checkpoint-salt",
+	})
+	if err != nil {
+		t.Fatalf("microvm recovery checkpoint fixture: %v", err)
+	}
+	session.VMCheckpoint = &checkpoint
+	if err := session.BeforeCreate(); err != nil {
+		t.Fatalf("microvm unavailable fixture: %v", err)
+	}
+	return session
+}
+
+func failedMicroVMUnavailableRecoveryFailure() *hostedgenesis.Failure {
+	return &hostedgenesis.Failure{
+		Code:      hostedgenesis.FailureCodeMicroVMUnavailable,
+		Message:   hostedGenesisFailureMessage(hostedGenesisFailureMicroVMUnavailable),
+		Retryable: true,
+		Recovery: hostedgenesis.Recovery{
+			Action:            hostedgenesis.RecoveryActionRetrySameStep,
+			Reason:            hostedGenesisFailureMicroVMUnavailable,
+			MaxAttempts:       2,
+			RetryAfterSeconds: 5,
+		},
+	}
+}
+
 func expectHostedGenesisAssistantTurnRetryDispatchWrite(t *testing.T, tdb *mintConversationTestDB, wantTurnID string) {
 	t.Helper()
 	expectHostedGenesisAssistantTurnRetryDispatchWriteWithCapture(t, tdb, wantTurnID, nil)
@@ -727,12 +935,30 @@ func expectHostedGenesisAssistantTurnRetryDispatchWrite(t *testing.T, tdb *mintC
 
 func expectHostedGenesisAssistantTurnRetryDispatchWriteWithCapture(t *testing.T, tdb *mintConversationTestDB, wantTurnID string, capture func(*models.HostedGenesisSession)) {
 	t.Helper()
+	expectHostedGenesisRetryDispatchWriteWithCapture(t, tdb, wantTurnID, "assistant", assertHostedGenesisAssistantRetryPendingSession, assertHostedGenesisAssistantRetryLifecycleSession, capture)
+}
+
+func expectHostedGenesisMicroVMRetryDispatchWriteWithCapture(t *testing.T, tdb *mintConversationTestDB, wantTurnID string, capture func(*models.HostedGenesisSession)) {
+	t.Helper()
+	expectHostedGenesisRetryDispatchWriteWithCapture(t, tdb, wantTurnID, "microvm", assertHostedGenesisMicroVMRetryPendingSession, assertHostedGenesisMicroVMRetryLifecycleSession, capture)
+}
+
+func expectHostedGenesisRetryDispatchWriteWithCapture(
+	t *testing.T,
+	tdb *mintConversationTestDB,
+	wantTurnID string,
+	label string,
+	assertPending func(*testing.T, *models.HostedGenesisSession, string),
+	assertLifecycle func(*testing.T, *models.HostedGenesisSession, string),
+	capture func(*models.HostedGenesisSession),
+) {
+	t.Helper()
 	tb := new(ttmocks.MockTransactionBuilder)
 	tdb.db.TransactWriteBuilder = tb
 	tdb.db.On("TransactWrite", mock.Anything, mock.Anything).Return(nil).Once()
 	tb.On("UpdateWithBuilder", mock.AnythingOfType("*models.HostedGenesisSession"), mock.Anything, mock.Anything).Return(tb).Once().Run(func(args mock.Arguments) {
 		session := testutil.RequireMockArg[*models.HostedGenesisSession](t, args, 0)
-		assertHostedGenesisAssistantRetryPendingSession(t, session, wantTurnID)
+		assertPending(t, session, wantTurnID)
 		if capture != nil {
 			capture(session)
 		}
@@ -743,14 +969,14 @@ func expectHostedGenesisAssistantTurnRetryDispatchWriteWithCapture(t *testing.T,
 			conv.StatusReason != "" ||
 			conv.LatestTurnID != wantTurnID ||
 			!conv.CompletedAt.IsZero() {
-			t.Fatalf("expected assistant retry conversation alignment, got %#v", conv)
+			t.Fatalf("expected %s retry conversation alignment, got %#v", label, conv)
 		}
 	})
 	tb.On("Execute").Return(nil).Once()
 	tdb.db.On("TransactWrite", mock.Anything, mock.Anything).Return(nil).Once()
 	tb.On("UpdateWithBuilder", mock.AnythingOfType("*models.HostedGenesisSession"), mock.Anything, mock.Anything).Return(tb).Once().Run(func(args mock.Arguments) {
 		session := testutil.RequireMockArg[*models.HostedGenesisSession](t, args, 0)
-		assertHostedGenesisAssistantRetryLifecycleSession(t, session, wantTurnID)
+		assertLifecycle(t, session, wantTurnID)
 		if capture != nil {
 			capture(session)
 		}
@@ -803,6 +1029,40 @@ func assertHostedGenesisAssistantRetryLifecycleSession(t *testing.T, session *mo
 	}
 	if session.MicroVMExecutionID == "" || session.ExecutionStateRef == "" || session.MicroVMLifecycleRef == nil {
 		t.Fatalf("expected assistant retry dispatch to refresh MicroVM refs, got %#v", session)
+	}
+}
+
+func assertHostedGenesisMicroVMRetryPendingSession(t *testing.T, session *models.HostedGenesisSession, wantTurnID string) {
+	t.Helper()
+	if hostedgenesis.NormalizeStatus(session.Status) != hostedgenesis.StatusInProgress ||
+		session.LatestTurnID != wantTurnID ||
+		session.Failure == nil ||
+		session.Failure.Code != hostedgenesis.FailureCodeMicroVMUnavailable ||
+		session.Failure.Recovery.MaxAttempts != 1 {
+		t.Fatalf("expected microvm retry session to persist latest turn with carried budget, got %#v", session)
+	}
+	if session.VMCheckpoint == nil {
+		t.Fatalf("microvm retry must preserve validated VM checkpoint for relaunch/replay: %#v", session)
+	}
+	if session.MicroVMExecutionID != "" || session.ExecutionStateRef != "" || session.MicroVMLifecycleRef != nil {
+		t.Fatalf("retry-pending state must be durable before MicroVM dispatch refs are known, got %#v", session)
+	}
+}
+
+func assertHostedGenesisMicroVMRetryLifecycleSession(t *testing.T, session *models.HostedGenesisSession, wantTurnID string) {
+	t.Helper()
+	if hostedgenesis.NormalizeStatus(session.Status) != hostedgenesis.StatusInProgress ||
+		session.LatestTurnID != wantTurnID ||
+		session.Failure == nil ||
+		session.Failure.Code != hostedgenesis.FailureCodeMicroVMUnavailable ||
+		session.Failure.Recovery.MaxAttempts != 1 {
+		t.Fatalf("expected microvm retry lifecycle write to preserve carried budget, got %#v", session)
+	}
+	if session.VMCheckpoint == nil {
+		t.Fatalf("microvm retry lifecycle write must preserve VM checkpoint, got %#v", session)
+	}
+	if session.MicroVMExecutionID == "" || session.ExecutionStateRef == "" || session.MicroVMLifecycleRef == nil {
+		t.Fatalf("expected microvm retry dispatch to refresh MicroVM refs, got %#v", session)
 	}
 }
 

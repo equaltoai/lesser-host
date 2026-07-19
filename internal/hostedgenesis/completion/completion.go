@@ -153,7 +153,7 @@ func (w *CompletionWriter) RecordAssistantTurnReadyWithCheckpoint(ctx context.Co
 	progressed.AssistantCheckpointRef = hostedgenesis.CheckpointRef("assistant", progressed.ConversationID, turn.TurnID)
 	if checkpoint != nil {
 		vmCheckpoint := checkpoint.Normalize()
-		if err := vmCheckpoint.Validate(); err != nil {
+		if err := validateCompletionVMCheckpoint(session, vmCheckpoint, turn, hostedgenesis.StatusInProgress, hostedgenesis.StatusAssistantTurnReady); err != nil {
 			return nil, err
 		}
 		progressed.VMCheckpoint = &vmCheckpoint
@@ -216,7 +216,7 @@ func (w *CompletionWriter) RecordDeclarationReadyWithCheckpoint(ctx context.Cont
 	progressed.DeclarationCheckpoint = &checkpoint
 	if vmCheckpoint != nil {
 		safeCheckpoint := vmCheckpoint.Normalize()
-		if err := safeCheckpoint.Validate(); err != nil {
+		if err := validateCompletionVMCheckpoint(session, safeCheckpoint, turn, expectedStatus, hostedgenesis.StatusDeclarationReady); err != nil {
 			return nil, err
 		}
 		progressed.VMCheckpoint = &safeCheckpoint
@@ -344,6 +344,53 @@ func assertTurnMatch(session *models.HostedGenesisSession, turn CompletionTurn, 
 		return fmt.Errorf("%w: session status %q does not match expected %q", ErrCompletionConflict, session.Status, expectedStatus)
 	}
 	return nil
+}
+
+func validateCompletionVMCheckpoint(session *models.HostedGenesisSession, checkpoint hostedgenesis.VMCheckpointMetadata, turn CompletionTurn, expectedStatus hostedgenesis.Status, targetStatus hostedgenesis.Status) error {
+	if err := checkpoint.Validate(); err != nil {
+		return fmt.Errorf("%w: invalid vm checkpoint: %v", ErrCompletionConflict, err)
+	}
+	if strings.TrimSpace(checkpoint.LatestTurnID) != strings.TrimSpace(turn.TurnID) {
+		return fmt.Errorf("%w: checkpoint turn %q does not match completion turn %q", ErrCompletionConflict, checkpoint.LatestTurnID, turn.TurnID)
+	}
+	if session != nil {
+		expectedRef := hostedgenesis.CheckpointRef(
+			"vm-actor",
+			session.ConversationID,
+			fmt.Sprintf("%s-%d-%s", firstNonEmptyCompletion(strings.TrimSpace(checkpoint.Step), strings.TrimSpace(checkpoint.Action), "step"), checkpoint.Sequence, checkpoint.LatestTurnID),
+		)
+		if strings.TrimSpace(checkpoint.Ref) != expectedRef {
+			return fmt.Errorf("%w: checkpoint ref does not match completion conversation", ErrCompletionConflict)
+		}
+	}
+	if hostedgenesis.NormalizeStatus(checkpoint.StatusFrom) != expectedStatus ||
+		hostedgenesis.NormalizeStatus(checkpoint.StatusTo) != targetStatus {
+		return fmt.Errorf("%w: checkpoint status %q -> %q does not match expected %q -> %q", ErrCompletionConflict, checkpoint.StatusFrom, checkpoint.StatusTo, expectedStatus, targetStatus)
+	}
+	if session.VMCheckpoint == nil {
+		return nil
+	}
+	prior := session.VMCheckpoint.Normalize()
+	if err := prior.Validate(); err != nil {
+		return fmt.Errorf("%w: prior vm checkpoint is invalid: %v", ErrCompletionConflict, err)
+	}
+	if checkpoint.Sequence <= prior.Sequence {
+		return fmt.Errorf("%w: checkpoint sequence %d does not advance prior sequence %d", ErrCompletionConflict, checkpoint.Sequence, prior.Sequence)
+	}
+	if strings.TrimSpace(checkpoint.Ref) == strings.TrimSpace(prior.Ref) ||
+		strings.TrimSpace(checkpoint.Hash) == strings.TrimSpace(prior.Hash) {
+		return fmt.Errorf("%w: checkpoint ref/hash did not advance", ErrCompletionConflict)
+	}
+	return nil
+}
+
+func firstNonEmptyCompletion(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }
 
 // cloneSessionForCompletion copies the loaded session for a progression write,
