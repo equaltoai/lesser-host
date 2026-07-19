@@ -253,6 +253,7 @@ func (w *CompletionWriter) RecordFailure(ctx context.Context, turn CompletionTur
 	failedConversation := *conversation
 	failedConversation.Status = models.SoulMintConversationStatusFailed
 	failedConversation.StatusReason = f.Recovery.Reason
+	failedConversation.LatestTurnID = strings.TrimSpace(turn.TurnID)
 	failedConversation.RequestID = strings.TrimSpace(turn.RequestID)
 	failedConversation.UpdatedAt = now
 	failedConversation.CompletedAt = now
@@ -265,8 +266,9 @@ func (w *CompletionWriter) RecordFailure(ctx context.Context, turn CompletionTur
 
 func applyPriorRecoveryBudget(next hostedgenesis.Failure, prior *hostedgenesis.Failure) hostedgenesis.Failure {
 	if prior == nil ||
-		next.Code != hostedgenesis.FailureCodeDeclarationExtractionFailed ||
-		prior.Code != hostedgenesis.FailureCodeDeclarationExtractionFailed {
+		next.Code != prior.Code ||
+		(next.Code != hostedgenesis.FailureCodeDeclarationExtractionFailed &&
+			next.Code != hostedgenesis.FailureCodeAssistantTurnFailed) {
 		return next
 	}
 	switch prior.Recovery.Action {

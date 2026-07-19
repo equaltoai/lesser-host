@@ -98,11 +98,12 @@ func (s *Store) FailHostedGenesisSessionAndConversation(ctx context.Context, ses
 		tx.UpdateWithBuilder(conversation, func(ub core.UpdateBuilder) error {
 			ub.Set("Status", conversation.Status)
 			ub.Set("StatusReason", conversation.StatusReason)
+			ub.Set("LatestTurnID", conversation.LatestTurnID)
 			ub.Set("RequestID", conversation.RequestID)
 			ub.Set("UpdatedAt", conversation.UpdatedAt)
 			ub.Set("CompletedAt", conversation.CompletedAt)
 			return nil
-		}, tabletheory.IfExists())
+		}, tabletheory.IfExists(), tabletheory.Condition("Status", "=", string(expectedStatus)))
 		return nil
 	})
 }

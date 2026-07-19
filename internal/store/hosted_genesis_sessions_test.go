@@ -154,7 +154,8 @@ func TestStore_FailHostedGenesisSessionAndConversationUsesOneGuardedTransaction(
 			conversation.SK == "MINT_CONVERSATION#conv_123" &&
 			conversation.Status == models.SoulMintConversationStatusFailed
 	}), mock.Anything, mock.MatchedBy(func(conditions []core.TransactCondition) bool {
-		return len(conditions) == 1 && hasConditionKind(conditions, core.TransactConditionKindPrimaryKeyExists)
+		return hasConditionKind(conditions, core.TransactConditionKindPrimaryKeyExists) &&
+			hasStatusCondition(conditions, hostedgenesis.StatusInProgress)
 	})).Return(tx).Once()
 
 	session, conversation := validStoreHostedGenesisFailure()

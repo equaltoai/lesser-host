@@ -270,6 +270,34 @@ func TestRecordFailure_AppliesTypedFailure(t *testing.T) {
 	}
 }
 
+func TestRecordFailureAlignsConversationLatestTurnID(t *testing.T) {
+	store := &fakeCompletionStore{
+		session: newFakeSession("acme", "conv-1", "turn-2", hostedgenesis.StatusInProgress, 3),
+		conversation: &models.SoulAgentMintConversation{
+			AgentID:        "agent-1",
+			ConversationID: "conv-1",
+			Status:         models.SoulMintConversationStatusInProgress,
+			LatestTurnID:   "turn-stale",
+		},
+	}
+	w := NewCompletionWriter(store, nil)
+
+	_, err := w.RecordFailure(context.Background(), CompletionTurn{InstanceSlug: "acme", ConversationID: "conv-1", TurnID: "turn-2", RequestID: "req-2"}, CompletionFailure{
+		Code:      hostedgenesis.FailureCodeAssistantTurnFailed,
+		Retryable: true,
+		Recovery:  hostedgenesis.Recovery{Action: hostedgenesis.RecoveryActionRetrySameStep, MaxAttempts: 3, RetryAfterSeconds: 5, Reason: string(hostedgenesis.FailureCodeAssistantTurnFailed)},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if store.conversation == nil ||
+		store.conversation.Status != models.SoulMintConversationStatusFailed ||
+		store.conversation.LatestTurnID != "turn-2" ||
+		store.conversation.StatusReason != string(hostedgenesis.FailureCodeAssistantTurnFailed) {
+		t.Fatalf("expected failed compatibility conversation aligned to authoritative turn, got %#v", store.conversation)
+	}
+}
+
 func TestRecordFailure_CarriesDeclarationRetryBudget(t *testing.T) {
 	prior := &hostedgenesis.Failure{
 		Code:      hostedgenesis.FailureCodeDeclarationExtractionFailed,
