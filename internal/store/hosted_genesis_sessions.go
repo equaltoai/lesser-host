@@ -140,6 +140,7 @@ func addHostedGenesisSessionUpdate(tx core.TransactionBuilder, item *models.Host
 		ub.Set("DeclarationCheckpoint", item.DeclarationCheckpoint)
 		ub.Set("Failure", item.Failure)
 		ub.Set("TraceIDs", item.TraceIDs)
+		ub.Set("VMCheckpoint", item.VMCheckpoint)
 		ub.Set("RequestID", item.RequestID)
 		ub.Set("UpdatedAt", item.UpdatedAt)
 		ub.Set("CompletedAt", item.CompletedAt)

@@ -2,6 +2,7 @@ package aiworker
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -28,6 +29,8 @@ type hostedGenesisWorkerMicroVMDispatcherOptions struct {
 
 type hostedGenesisMicroVMTurnController interface {
 	StartMicroVMRun(ctx context.Context, requestID string, binding hostedgenesis.MicroVMSessionBinding) (hostedgenesis.MicroVMDispatchResult, error)
+	EnsureMicroVMTurnSession(ctx context.Context, requestID string, binding hostedgenesis.MicroVMSessionBinding, ref hostedgenesis.MicroVMLifecycleRef) (hostedgenesis.MicroVMDispatchResult, error)
+	InvokeMicroVMTurn(ctx context.Context, requestID string, binding hostedgenesis.MicroVMSessionBinding) error
 	WaitAndInvokeMicroVMTurn(ctx context.Context, requestID string, binding hostedgenesis.MicroVMSessionBinding) (hostedgenesis.MicroVMDispatchResult, error)
 }
 
@@ -120,23 +123,31 @@ func (s *Server) processHostedGenesisMicroVMDispatch(ctx context.Context, worker
 	controller, ok := s.hostedGenesisMicroVMDispatcher.(hostedGenesisMicroVMTurnController)
 	if ok {
 		// A HostedGenesisSession is durable conversation truth; an AppTheory
-		// MicroVM session is bounded execution/cache state. A human-paced
-		// minting conversation can spend minutes between turns, so a previous
-		// MicroVM lifecycle ref must never be treated as proof that the next
-		// accepted turn can reuse the same execution. Start a fresh run for each
-		// queued turn, persist that fresh lifecycle ref, then invoke the turn.
-		started, startErr := controller.StartMicroVMRun(runCtx, requestID, binding)
-		if startErr != nil {
-			log.Printf("aiworker: hosted genesis microvm start failed agent_hash=%s conversation_hash=%s err=%v", hostedGenesisAuditHash(msg.AgentID), hostedGenesisAuditHash(msg.ConversationID), startErr)
+		// MicroVM session is bounded execution/cache state. Reuse a Host-recorded
+		// lifecycle ref only after the controller revalidates it, resume suspended
+		// sessions through AppTheory, and relaunch only when the controller proves
+		// the ref is terminal/expired. This keeps checkpoint/relaunch/replay as the
+		// correctness path; process memory remains an optional fast path after Host
+		// status/version/lifecycle revalidation.
+		dispatch, invokeWithWait, dispatchErr := ensureOrStartHostedGenesisMicroVMTurn(runCtx, controller, requestID, binding, session)
+		if dispatchErr != nil {
+			log.Printf("aiworker: hosted genesis microvm dispatch failed agent_hash=%s conversation_hash=%s err=%v", hostedGenesisAuditHash(msg.AgentID), hostedGenesisAuditHash(msg.ConversationID), dispatchErr)
 			return s.markHostedGenesisConversationFailed(ctx, st, conv, session, hostedGenesisFailureMicroVMUnavailable, requestID)
 		}
-		progressed, persistErr := persistHostedGenesisMicroVMDispatchLifecycle(ctx, st, session, started, requestID, time.Now().UTC())
+		progressed, persistErr := persistHostedGenesisMicroVMDispatchLifecycle(ctx, st, session, dispatch, requestID, time.Now().UTC())
 		if persistErr != nil {
 			log.Printf("aiworker: hosted genesis microvm lifecycle persist failed agent_hash=%s conversation_hash=%s err=%v", hostedGenesisAuditHash(msg.AgentID), hostedGenesisAuditHash(msg.ConversationID), persistErr)
 			return persistErr
 		}
 		session = progressed
-		if _, invokeErr := controller.WaitAndInvokeMicroVMTurn(runCtx, requestID, binding); invokeErr != nil {
+		if invokeWithWait {
+			if _, invokeErr := controller.WaitAndInvokeMicroVMTurn(runCtx, requestID, binding); invokeErr != nil {
+				log.Printf("aiworker: hosted genesis microvm invoke failed agent_hash=%s conversation_hash=%s err=%v", hostedGenesisAuditHash(msg.AgentID), hostedGenesisAuditHash(msg.ConversationID), invokeErr)
+				return s.markHostedGenesisConversationFailed(ctx, st, conv, session, hostedGenesisFailureMicroVMUnavailable, requestID)
+			}
+			return nil
+		}
+		if invokeErr := controller.InvokeMicroVMTurn(runCtx, requestID, binding); invokeErr != nil {
 			log.Printf("aiworker: hosted genesis microvm invoke failed agent_hash=%s conversation_hash=%s err=%v", hostedGenesisAuditHash(msg.AgentID), hostedGenesisAuditHash(msg.ConversationID), invokeErr)
 			return s.markHostedGenesisConversationFailed(ctx, st, conv, session, hostedGenesisFailureMicroVMUnavailable, requestID)
 		}
@@ -150,6 +161,26 @@ func (s *Server) processHostedGenesisMicroVMDispatch(ctx context.Context, worker
 	}
 	_, persistErr := persistHostedGenesisMicroVMDispatchLifecycle(ctx, st, session, dispatch, requestID, time.Now().UTC())
 	return persistErr
+}
+
+func ensureOrStartHostedGenesisMicroVMTurn(ctx context.Context, controller hostedGenesisMicroVMTurnController, requestID string, binding hostedgenesis.MicroVMSessionBinding, session *models.HostedGenesisSession) (hostedgenesis.MicroVMDispatchResult, bool, error) {
+	if controller == nil {
+		return hostedgenesis.MicroVMDispatchResult{}, false, hostedgenesis.ErrMicroVMDispatchUnavailable
+	}
+	if session != nil && session.MicroVMLifecycleRef != nil {
+		ensured, err := controller.EnsureMicroVMTurnSession(ctx, requestID, binding, *session.MicroVMLifecycleRef)
+		if err == nil {
+			return ensured, false, nil
+		}
+		if !errors.Is(err, hostedgenesis.ErrMicroVMRelaunchRequired) {
+			return hostedgenesis.MicroVMDispatchResult{}, false, err
+		}
+	}
+	started, err := controller.StartMicroVMRun(ctx, requestID, binding)
+	if err != nil {
+		return hostedgenesis.MicroVMDispatchResult{}, false, err
+	}
+	return started, true, nil
 }
 
 func hostedGenesisMicroVMDispatchJobReady(conv *models.SoulAgentMintConversation, session *models.HostedGenesisSession, msg hostedgenesis.QueueMessage) bool {
@@ -202,6 +233,10 @@ func cloneHostedGenesisSessionForWorker(session *models.HostedGenesisSession) *m
 	if session.TraceIDs != nil {
 		trace := *session.TraceIDs
 		copy.TraceIDs = &trace
+	}
+	if session.VMCheckpoint != nil {
+		checkpoint := *session.VMCheckpoint
+		copy.VMCheckpoint = &checkpoint
 	}
 	return &copy
 }

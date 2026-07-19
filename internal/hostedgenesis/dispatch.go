@@ -19,7 +19,14 @@ import (
 // hosted-genesis accept path cannot dispatch a MicroVM controller run command.
 // It is never a license to fall back to a synchronous control-plane LLM call;
 // callers must surface it loudly (typed AppTheoryError) and persist a failed turn.
-var ErrMicroVMDispatchUnavailable = errors.New("hosted genesis microvm dispatch is unavailable")
+var (
+	ErrMicroVMDispatchUnavailable = errors.New("hosted genesis microvm dispatch is unavailable")
+	// ErrMicroVMRelaunchRequired means the AppTheory controller observed a
+	// tenant/session-bound MicroVM ref that is no longer invokable (terminal or
+	// expired). Callers may relaunch from Host truth/checkpoint; they must not
+	// relaunch on auth, tenant-binding, transport, or validation errors.
+	ErrMicroVMRelaunchRequired = errors.New("hosted genesis microvm relaunch is required")
+)
 
 // MicroVMDispatchResult is the safe, non-secret outcome of a controller run
 // dispatch: the validated execution/cache lifecycle ref Host records on the
@@ -209,10 +216,73 @@ func (d *HTTPControllerDispatcher) StartMicroVMRun(ctx context.Context, requestI
 	return MicroVMDispatchResult{LifecycleRef: ref, SessionID: strings.TrimSpace(resp.SessionID)}, nil
 }
 
+// EnsureMicroVMTurnSession revalidates a Host-recorded AppTheory MicroVM
+// lifecycle ref through the controller get route, resumes suspended sessions
+// through the canonical AppTheory resume route, and returns an invokable
+// lifecycle ref. Terminal/expired sessions return ErrMicroVMRelaunchRequired so
+// the caller can relaunch from Host truth/checkpoint; auth, tenant-binding,
+// transport, and validation errors are never treated as relaunchable.
+func (d *HTTPControllerDispatcher) EnsureMicroVMTurnSession(ctx context.Context, requestID string, binding MicroVMSessionBinding, ref MicroVMLifecycleRef) (MicroVMDispatchResult, error) {
+	if d == nil {
+		return MicroVMDispatchResult{}, ErrMicroVMDispatchUnavailable
+	}
+	if err := binding.Validate(); err != nil {
+		return MicroVMDispatchResult{}, err
+	}
+	if err := ref.Validate(binding); err != nil {
+		return MicroVMDispatchResult{}, err
+	}
+	requestID = strings.TrimSpace(requestID)
+	if requestID == "" {
+		return MicroVMDispatchResult{}, ErrMicroVMDispatchUnavailable
+	}
+	sessionID := strings.TrimSpace(binding.ConversationID)
+	getURL := d.endpoint + "/" + url.PathEscape(sessionID)
+	resp, err := d.doControllerRequest(ctx, http.MethodGet, getURL, requestID, binding, nil)
+	if err != nil {
+		return MicroVMDispatchResult{}, err
+	}
+	if resp.Error != nil && resp.Error.Code != "" {
+		return MicroVMDispatchResult{}, resp.Error
+	}
+	resp, err = d.ensureControllerMicroVMInvokable(ctx, requestID, binding, resp)
+	if err != nil {
+		return MicroVMDispatchResult{}, err
+	}
+	observedAt := time.Now().UTC()
+	if !resp.LastTransition.IsZero() {
+		observedAt = resp.LastTransition.UTC()
+	}
+	lifecycleRef, err := MicroVMLifecycleRefFromResponse(binding, resp, observedAt)
+	if err != nil {
+		return MicroVMDispatchResult{}, err
+	}
+	return MicroVMDispatchResult{LifecycleRef: lifecycleRef, SessionID: strings.TrimSpace(resp.SessionID)}, nil
+}
+
+// InvokeMicroVMTurn invokes Host's hosted-genesis turn endpoint through
+// AppTheory's canonical controller invoke route for an already-validated,
+// invokable MicroVM session. It is split from EnsureMicroVMTurnSession so the
+// worker can persist the latest lifecycle ref before doing provider work.
+func (d *HTTPControllerDispatcher) InvokeMicroVMTurn(ctx context.Context, requestID string, binding MicroVMSessionBinding) error {
+	if d == nil {
+		return ErrMicroVMDispatchUnavailable
+	}
+	if err := binding.Validate(); err != nil {
+		return err
+	}
+	requestID = strings.TrimSpace(requestID)
+	if requestID == "" {
+		return ErrMicroVMDispatchUnavailable
+	}
+	return d.invokeMicroVMTurn(ctx, requestID, binding)
+}
+
 // WaitAndInvokeMicroVMTurn waits for an existing AppTheory MicroVM session to
-// reach running via the controller GET route, then invokes Host's hosted-genesis
-// turn endpoint through AppTheory's canonical controller invoke route. It
-// returns the running lifecycle ref observed immediately before invoke.
+// reach an invokable running/ready state via the controller GET route, then
+// invokes Host's hosted-genesis turn endpoint through AppTheory's canonical
+// controller invoke route. It returns the lifecycle ref observed immediately
+// before invoke.
 func (d *HTTPControllerDispatcher) WaitAndInvokeMicroVMTurn(ctx context.Context, requestID string, binding MicroVMSessionBinding) (MicroVMDispatchResult, error) {
 	if d == nil {
 		return MicroVMDispatchResult{}, ErrMicroVMDispatchUnavailable
@@ -231,7 +301,7 @@ func (d *HTTPControllerDispatcher) WaitAndInvokeMicroVMTurn(ctx context.Context,
 	if resp.Error != nil && resp.Error.Code != "" {
 		return MicroVMDispatchResult{}, resp.Error
 	}
-	readyResp, waitErr := d.waitForControllerMicroVMRunning(ctx, requestID, binding, resp)
+	readyResp, waitErr := d.waitForControllerMicroVMInvokable(ctx, requestID, binding, resp)
 	if waitErr != nil {
 		return MicroVMDispatchResult{}, waitErr
 	}
@@ -283,7 +353,7 @@ func (d *HTTPControllerDispatcher) DispatchMicroVMRun(ctx context.Context, reque
 	if resp.Error != nil && resp.Error.Code != "" {
 		return MicroVMDispatchResult{}, resp.Error
 	}
-	readyResp, waitErr := d.waitForControllerMicroVMRunning(ctx, requestID, binding, resp)
+	readyResp, waitErr := d.waitForControllerMicroVMInvokable(ctx, requestID, binding, resp)
 	if waitErr != nil {
 		return MicroVMDispatchResult{}, waitErr
 	}
@@ -301,29 +371,61 @@ func (d *HTTPControllerDispatcher) DispatchMicroVMRun(ctx context.Context, reque
 	return MicroVMDispatchResult{LifecycleRef: ref, SessionID: strings.TrimSpace(readyResp.SessionID)}, nil
 }
 
-// waitForControllerMicroVMRunning uses AppTheory's canonical controller `get`
-// route to observe the provider state before Host invokes the workload. This
-// replaces the former raw get-microvm polling bridge: Host sees only the
-// sanitized ControllerResponse envelope, and the controller owns AWS access.
-func (d *HTTPControllerDispatcher) waitForControllerMicroVMRunning(ctx context.Context, requestID string, binding MicroVMSessionBinding, runResp runtimemicrovm.ControllerResponse) (runtimemicrovm.ControllerResponse, error) {
+// ensureControllerMicroVMInvokable maps the controller get/resume contract into
+// the Host handoff contract. Suspended sessions are resumed through
+// POST /microvms/{session_id}/resume. Terminal or expired sessions are a safe
+// checkpoint/relaunch signal; all other errors remain fail-closed.
+func (d *HTTPControllerDispatcher) ensureControllerMicroVMInvokable(ctx context.Context, requestID string, binding MicroVMSessionBinding, resp runtimemicrovm.ControllerResponse) (runtimemicrovm.ControllerResponse, error) {
+	observedAt := time.Now().UTC()
+	if !resp.LastTransition.IsZero() {
+		observedAt = resp.LastTransition.UTC()
+	}
+	state := firstNonEmptyLifecycleState(resp.LifecycleState, resp.State)
+	if microVMReconcileIsTerminal(state, resp.ExpiresAt, observedAt) {
+		return runtimemicrovm.ControllerResponse{}, fmt.Errorf("hosted genesis microvm dispatch: %w (state=%s)", ErrMicroVMRelaunchRequired, state)
+	}
+	if microVMInvokableState(state) {
+		return resp, nil
+	}
+	if state == runtimemicrovm.StateSuspended {
+		resumeURL := d.endpoint + "/" + url.PathEscape(strings.TrimSpace(binding.ConversationID)) + "/resume"
+		resumed, err := d.doControllerRequest(ctx, http.MethodPost, resumeURL, requestID, binding, nil)
+		if err != nil {
+			return runtimemicrovm.ControllerResponse{}, err
+		}
+		if resumed.Error != nil && resumed.Error.Code != "" {
+			return runtimemicrovm.ControllerResponse{}, resumed.Error
+		}
+		resp = resumed
+	}
+	return d.waitForControllerMicroVMInvokable(ctx, requestID, binding, resp)
+}
+
+// waitForControllerMicroVMInvokable uses AppTheory's canonical controller `get`
+// route to observe an invokable provider state before Host invokes the workload.
+// Running and ready are both invokable under the v1.17.0 controller/provider
+// contract; terminal/expired sessions return ErrMicroVMRelaunchRequired so the
+// worker can relaunch from Host truth/checkpoint instead of trusting process
+// memory as correctness state.
+func (d *HTTPControllerDispatcher) waitForControllerMicroVMInvokable(ctx context.Context, requestID string, binding MicroVMSessionBinding, runResp runtimemicrovm.ControllerResponse) (runtimemicrovm.ControllerResponse, error) {
 	state := firstNonEmptyLifecycleState(runResp.LifecycleState, runResp.State)
-	if state == runtimemicrovm.StateRunning {
+	if microVMInvokableState(state) {
 		return runResp, nil
 	}
-	if runtimemicrovm.IsTerminalState(state) {
-		return runtimemicrovm.ControllerResponse{}, fmt.Errorf("hosted genesis microvm dispatch: microvm reached terminal state %s", state)
+	if microVMResponseIsTerminal(runResp) {
+		return runtimemicrovm.ControllerResponse{}, fmt.Errorf("hosted genesis microvm dispatch: %w (state=%s)", ErrMicroVMRelaunchRequired, state)
 	}
 	deadline := time.Now().Add(microvmControllerReadyTimeout)
 	for {
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			return runtimemicrovm.ControllerResponse{}, fmt.Errorf("hosted genesis microvm dispatch: wait for running: %w", ctxErr)
+			return runtimemicrovm.ControllerResponse{}, fmt.Errorf("hosted genesis microvm dispatch: wait for invokable: %w", ctxErr)
 		}
 		if time.Now().After(deadline) {
-			return runtimemicrovm.ControllerResponse{}, fmt.Errorf("hosted genesis microvm dispatch: microvm did not reach running state (last state=%s)", state)
+			return runtimemicrovm.ControllerResponse{}, fmt.Errorf("hosted genesis microvm dispatch: microvm did not reach invokable state (last state=%s)", state)
 		}
 		select {
 		case <-ctx.Done():
-			return runtimemicrovm.ControllerResponse{}, fmt.Errorf("hosted genesis microvm dispatch: wait for running: %w", ctx.Err())
+			return runtimemicrovm.ControllerResponse{}, fmt.Errorf("hosted genesis microvm dispatch: wait for invokable: %w", ctx.Err())
 		case <-time.After(microvmControllerReadyPollInterval):
 		}
 		resp, err := d.doControllerRequest(ctx, http.MethodGet, d.endpoint+"/"+url.PathEscape(strings.TrimSpace(binding.ConversationID)), requestID, binding, nil)
@@ -334,13 +436,25 @@ func (d *HTTPControllerDispatcher) waitForControllerMicroVMRunning(ctx context.C
 			return runtimemicrovm.ControllerResponse{}, resp.Error
 		}
 		state = firstNonEmptyLifecycleState(resp.LifecycleState, resp.State)
-		if state == runtimemicrovm.StateRunning {
+		if microVMInvokableState(state) {
 			return resp, nil
 		}
-		if runtimemicrovm.IsTerminalState(state) {
-			return runtimemicrovm.ControllerResponse{}, fmt.Errorf("hosted genesis microvm dispatch: microvm reached terminal state %s", state)
+		if microVMResponseIsTerminal(resp) {
+			return runtimemicrovm.ControllerResponse{}, fmt.Errorf("hosted genesis microvm dispatch: %w (state=%s)", ErrMicroVMRelaunchRequired, state)
 		}
 	}
+}
+
+func microVMInvokableState(state runtimemicrovm.LifecycleState) bool {
+	return state == runtimemicrovm.StateRunning || state == runtimemicrovm.StateReady
+}
+
+func microVMResponseIsTerminal(resp runtimemicrovm.ControllerResponse) bool {
+	observedAt := time.Now().UTC()
+	if !resp.LastTransition.IsZero() {
+		observedAt = resp.LastTransition.UTC()
+	}
+	return microVMReconcileIsTerminal(firstNonEmptyLifecycleState(resp.LifecycleState, resp.State), resp.ExpiresAt, observedAt)
 }
 
 // invokeMicroVMTurn sends the hosted-genesis lifecycle event through

@@ -17,6 +17,7 @@ import (
 	"github.com/equaltoai/lesser-host/internal/ai/llm"
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis/completion"
+	"github.com/equaltoai/lesser-host/internal/hostedgenesis/mintprompt"
 	"github.com/equaltoai/lesser-host/internal/soul"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
@@ -211,6 +212,7 @@ func TestRunTurnAndPersist_InProgressRecordsAssistantTurnReady(t *testing.T) {
 	if compStore.session.DeclarationCheckpoint != nil || models.DecodeSoulMintConversationBlob(turnStore.conv.ProducedDeclarations) != "" {
 		t.Fatalf("in_progress turn must not persist declarations yet: session=%#v declarations=%q", compStore.session, turnStore.conv.ProducedDeclarations)
 	}
+	assertVMCheckpoint(t, compStore.session.VMCheckpoint, actorActionAsk, actorStepAssistantTurn, hostedgenesis.StatusInProgress, hostedgenesis.StatusAssistantTurnReady, "turn-1")
 }
 
 func TestRunTurnAndPersist_DeclarationExtractionPendingRecordsDeclarationReady(t *testing.T) {
@@ -253,6 +255,7 @@ func TestRunTurnAndPersist_DeclarationExtractionPendingRecordsDeclarationReady(t
 	if !strings.HasPrefix(compStore.session.DeclarationCheckpoint.DeclarationHash, "sha256:") {
 		t.Fatalf("expected sha256 declaration hash, got %q", compStore.session.DeclarationCheckpoint.DeclarationHash)
 	}
+	assertVMCheckpoint(t, compStore.session.VMCheckpoint, actorActionExtractFinalize, actorStepDeclarationExtract, hostedgenesis.StatusDeclarationExtractionPending, hostedgenesis.StatusDeclarationReady, "turn-1")
 	decodedDeclarations := models.DecodeSoulMintConversationBlob(turnStore.conv.ProducedDeclarations)
 	if decodedDeclarations == "" || !strings.Contains(decodedDeclarations, `"selfDescription"`) {
 		t.Fatalf("expected produced declarations persisted to conversation, got %s", decodedDeclarations)
@@ -263,6 +266,84 @@ func TestRunTurnAndPersist_DeclarationExtractionPendingRecordsDeclarationReady(t
 	}
 	if gotHash != compStore.session.DeclarationCheckpoint.DeclarationHash {
 		t.Fatalf("checkpoint hash must match persisted declarations: got %s want %s", compStore.session.DeclarationCheckpoint.DeclarationHash, gotHash)
+	}
+}
+
+func TestRunTurnAndPersist_TwoUserTurnsVMActorOwnsDecisionsAndCheckpoint(t *testing.T) {
+	const secondTurnID = "turn-2"
+
+	declBody := mustMarshal(map[string]any{
+		"id": "chatcmpl_test", "object": "chat.completion", "created": 1, "model": "gpt-test",
+		"choices": []any{map[string]any{"index": 0, "message": map[string]any{"role": "assistant", "content": mustMarshal(validDeclarationDraft())}}},
+		"usage":   map[string]any{"prompt_tokens": 5, "completion_tokens": 7, "total_tokens": 12},
+	})
+	streamChunk := "data: " + mustMarshal(map[string]any{
+		"id": "chatcmpl_test", "object": "chat.completion.chunk", "created": 1, "model": "gpt-test",
+		"choices": []any{map[string]any{"index": 0, "delta": map[string]any{"role": "assistant", "content": mintprompt.CanonicalFinalAffirmationQuestion}, "finish_reason": nil}},
+	}) + "\n\ndata: [DONE]\n\n"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		bodyBytes, _ := io.ReadAll(r.Body)
+		_ = r.Body.Close()
+		if strings.Contains(string(bodyBytes), `"stream":true`) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte(streamChunk))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(declBody))
+	}))
+	t.Cleanup(srv.Close)
+	withOpenAIBaseURL(t, srv.URL, "sk-test")
+	llm.ConfigureProviderHTTPClient(&http.Client{Timeout: 5 * time.Second})
+	t.Cleanup(func() { llm.ConfigureProviderHTTPClient(nil) })
+
+	turnStore, compStore, firstTurn := baseTurnInput()
+	writer := completion.NewCompletionWriter(compStore, func() time.Time { return time.Unix(3000, 0).UTC() })
+	runner := &turnRunner{store: turnStore, writer: writer, nowFunc: func() time.Time { return time.Unix(3000, 0).UTC() }}
+	if err := runner.runTurnAndPersist(context.Background(), firstTurn); err != nil {
+		t.Fatalf("first VM actor turn failed: %v", err)
+	}
+	firstCheckpoint := *compStore.session.VMCheckpoint
+	assertVMCheckpoint(t, &firstCheckpoint, actorActionAsk, actorStepAssistantTurn, hostedgenesis.StatusInProgress, hostedgenesis.StatusAssistantTurnReady, "turn-1")
+
+	// Host remains the debit/status/version source of truth: the final owner
+	// affirmation is accepted and authorized by Host as
+	// declaration_extraction_pending before the VM actor may extract/finalize.
+	transcript := models.DecodeSoulMintConversationBlob(turnStore.conv.Messages)
+	var messages []llm.MintConversationMessage
+	if err := json.Unmarshal([]byte(transcript), &messages); err != nil {
+		t.Fatalf("decode first turn transcript: %v", err)
+	}
+	messages = append(messages, llm.MintConversationMessage{Role: "user", Content: "I affirm"})
+	encoded, err := json.Marshal(messages)
+	if err != nil {
+		t.Fatalf("marshal second turn transcript: %v", err)
+	}
+	turnStore.conv.Messages = models.EncodeSoulMintConversationBlob(string(encoded))
+	turnStore.conv.Status = models.SoulMintConversationStatusDeclarationExtractionPending
+	turnStore.conv.LatestTurnID = secondTurnID
+	turnStore.session.Status = string(hostedgenesis.StatusDeclarationExtractionPending)
+	turnStore.session.LatestTurnID = secondTurnID
+	turnStore.session.MessageCount = len(messages)
+	turnStore.session.Version = compStore.session.Version + 1
+	turnStore.session.TurnLedger = append(turnStore.session.TurnLedger, hostedgenesis.TurnLedgerEntry{TurnID: secondTurnID, MessageCount: len(messages), AcceptedAt: time.Unix(3001, 0).UTC()})
+	compStore.session.Status = string(hostedgenesis.StatusDeclarationExtractionPending)
+	compStore.session.LatestTurnID = secondTurnID
+	compStore.session.MessageCount = len(messages)
+	compStore.session.Version = turnStore.session.Version
+	compStore.session.TurnLedger = append(compStore.session.TurnLedger, hostedgenesis.TurnLedgerEntry{TurnID: secondTurnID, MessageCount: len(messages), AcceptedAt: time.Unix(3001, 0).UTC()})
+	compStore.conversation.Status = models.SoulMintConversationStatusDeclarationExtractionPending
+
+	secondTurn := completion.CompletionTurn{InstanceSlug: "acme", ConversationID: "conv-1", TurnID: secondTurnID, RequestID: "req-2"}
+	if err := runner.runTurnAndPersist(context.Background(), secondTurn); err != nil {
+		t.Fatalf("second VM actor turn failed: %v", err)
+	}
+	assertVMCheckpoint(t, compStore.session.VMCheckpoint, actorActionExtractFinalize, actorStepDeclarationExtract, hostedgenesis.StatusDeclarationExtractionPending, hostedgenesis.StatusDeclarationReady, secondTurnID)
+	if compStore.session.VMCheckpoint.Hash == firstCheckpoint.Hash || compStore.session.VMCheckpoint.Ref == firstCheckpoint.Ref {
+		t.Fatalf("second turn checkpoint must advance safely, first=%#v second=%#v", firstCheckpoint, compStore.session.VMCheckpoint)
+	}
+	if got := hostedgenesis.NormalizeStatus(compStore.session.Status); got != hostedgenesis.StatusDeclarationReady {
+		t.Fatalf("expected declaration_ready after second turn, got %q", got)
 	}
 }
 
@@ -602,6 +683,22 @@ func mustCompilePublishedFiveBodySchema(t *testing.T) *jsonschema.Schema {
 		t.Fatalf("compile published five-body schema: %v", compileErr)
 	}
 	return schema
+}
+
+func assertVMCheckpoint(t *testing.T, checkpoint *hostedgenesis.VMCheckpointMetadata, action actorAction, step string, from hostedgenesis.Status, to hostedgenesis.Status, turnID string) {
+	t.Helper()
+	if checkpoint == nil {
+		t.Fatal("expected VM actor checkpoint metadata")
+	}
+	if err := checkpoint.Validate(); err != nil {
+		t.Fatalf("VM checkpoint should validate: %#v err=%v", checkpoint, err)
+	}
+	if checkpoint.Action != string(action) || checkpoint.Step != step || checkpoint.StatusFrom != string(from) || checkpoint.StatusTo != string(to) || checkpoint.LatestTurnID != turnID {
+		t.Fatalf("unexpected VM checkpoint: %#v", checkpoint)
+	}
+	if !strings.HasPrefix(checkpoint.Ref, "checkpoint://hosted-genesis/vm-actor/") || !strings.HasPrefix(checkpoint.Hash, "sha256:") || checkpoint.Runtime != hostedGenesisMicroVMActorRuntime {
+		t.Fatalf("unexpected VM checkpoint ref/hash/runtime: %#v", checkpoint)
+	}
 }
 
 func validDeclarationDraft() map[string]any {

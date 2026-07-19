@@ -120,6 +120,14 @@ func NewCompletionWriter(store CompletionStore, clock func() time.Time) *Complet
 // leaves the session in). The expected-version precondition is the loaded
 // session's current Version; the store's conditional update increments it.
 func (w *CompletionWriter) RecordAssistantTurnReady(ctx context.Context, turn CompletionTurn, completion AssistantTurnCompletion) (*models.HostedGenesisSession, error) {
+	return w.RecordAssistantTurnReadyWithCheckpoint(ctx, turn, completion, nil)
+}
+
+// RecordAssistantTurnReadyWithCheckpoint records an assistant turn plus the
+// in-VM actor's safe checkpoint metadata. The checkpoint is optional for
+// legacy callers; MicroVM actor callers supply it so relaunch/replay has a
+// bounded Host-visible progress marker.
+func (w *CompletionWriter) RecordAssistantTurnReadyWithCheckpoint(ctx context.Context, turn CompletionTurn, completion AssistantTurnCompletion, checkpoint *hostedgenesis.VMCheckpointMetadata) (*models.HostedGenesisSession, error) {
 	if w == nil || w.store == nil {
 		return nil, ErrCompletionSessionMissing
 	}
@@ -143,6 +151,13 @@ func (w *CompletionWriter) RecordAssistantTurnReady(ctx context.Context, turn Co
 	progressed.Status = string(hostedgenesis.StatusAssistantTurnReady)
 	progressed.MessageCount = maxInt(progressed.MessageCount, completion.MessageCount)
 	progressed.AssistantCheckpointRef = hostedgenesis.CheckpointRef("assistant", progressed.ConversationID, turn.TurnID)
+	if checkpoint != nil {
+		vmCheckpoint := checkpoint.Normalize()
+		if err := vmCheckpoint.Validate(); err != nil {
+			return nil, err
+		}
+		progressed.VMCheckpoint = &vmCheckpoint
+	}
 	progressed.Failure = nil
 	progressed.RequestID = strings.TrimSpace(turn.RequestID)
 	progressed.UpdatedAt = now
@@ -161,6 +176,13 @@ func (w *CompletionWriter) RecordAssistantTurnReady(ctx context.Context, turn Co
 //
 // Idempotent per turn ID against the expected status precondition.
 func (w *CompletionWriter) RecordDeclarationReady(ctx context.Context, turn CompletionTurn, checkpoint hostedgenesis.DeclarationCheckpoint) (*models.HostedGenesisSession, error) {
+	return w.RecordDeclarationReadyWithCheckpoint(ctx, turn, checkpoint, nil)
+}
+
+// RecordDeclarationReadyWithCheckpoint records declaration readiness plus the
+// in-VM actor's safe checkpoint metadata. The declaration checkpoint remains
+// the publish gate; VMCheckpoint is replay/relaunch metadata only.
+func (w *CompletionWriter) RecordDeclarationReadyWithCheckpoint(ctx context.Context, turn CompletionTurn, checkpoint hostedgenesis.DeclarationCheckpoint, vmCheckpoint *hostedgenesis.VMCheckpointMetadata) (*models.HostedGenesisSession, error) {
 	if w == nil || w.store == nil {
 		return nil, ErrCompletionSessionMissing
 	}
@@ -187,6 +209,13 @@ func (w *CompletionWriter) RecordDeclarationReady(ctx context.Context, turn Comp
 	progressed := cloneSessionForCompletion(session)
 	progressed.Status = string(hostedgenesis.StatusDeclarationReady)
 	progressed.DeclarationCheckpoint = &checkpoint
+	if vmCheckpoint != nil {
+		safeCheckpoint := vmCheckpoint.Normalize()
+		if err := safeCheckpoint.Validate(); err != nil {
+			return nil, err
+		}
+		progressed.VMCheckpoint = &safeCheckpoint
+	}
 	progressed.Failure = nil
 	progressed.RequestID = strings.TrimSpace(turn.RequestID)
 	progressed.UpdatedAt = now
@@ -336,6 +365,10 @@ func cloneSessionForCompletion(session *models.HostedGenesisSession) *models.Hos
 	if session.TraceIDs != nil {
 		trace := *session.TraceIDs
 		copy.TraceIDs = &trace
+	}
+	if session.VMCheckpoint != nil {
+		checkpoint := *session.VMCheckpoint
+		copy.VMCheckpoint = &checkpoint
 	}
 	return &copy
 }

@@ -366,7 +366,7 @@ func TestHostedGenesisMicroVMDispatchStartsPersistsLifecycleAndInvokes(t *testin
 	}
 }
 
-func TestHostedGenesisMicroVMDispatchStartsFreshWhenPriorLifecycleExists(t *testing.T) {
+func TestHostedGenesisMicroVMDispatchReusesValidatedPriorLifecycle(t *testing.T) {
 	t.Parallel()
 
 	st := newHostedGenesisWorkerStore("turn-worker")
@@ -387,17 +387,49 @@ func TestHostedGenesisMicroVMDispatchStartsFreshWhenPriorLifecycleExists(t *test
 	if err != nil {
 		t.Fatalf("unexpected microvm dispatch error: %v", err)
 	}
-	if dispatcher.startCalls != 1 || dispatcher.invokeCalls != 1 || dispatcher.dispatchCalls != 0 {
-		t.Fatalf("expected fresh start+invoke despite previous lifecycle, got start=%d invoke=%d dispatch=%d", dispatcher.startCalls, dispatcher.invokeCalls, dispatcher.dispatchCalls)
+	if dispatcher.ensureCalls != 1 || dispatcher.startCalls != 0 || dispatcher.invokeCalls != 1 || dispatcher.dispatchCalls != 0 {
+		t.Fatalf("expected validated lifecycle reuse + invoke, got ensure=%d start=%d invoke=%d dispatch=%d", dispatcher.ensureCalls, dispatcher.startCalls, dispatcher.invokeCalls, dispatcher.dispatchCalls)
 	}
 
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	if st.session == nil || st.session.Version != 4 {
-		t.Fatalf("expected fresh lifecycle persist to advance version, got %#v", st.session)
+		t.Fatalf("expected reused lifecycle persist to advance version, got %#v", st.session)
 	}
 	if !strings.Contains(st.session.ExecutionStateRef, "#running@7") {
-		t.Fatalf("expected refreshed running lifecycle execution ref, got %q", st.session.ExecutionStateRef)
+		t.Fatalf("expected revalidated running lifecycle execution ref, got %q", st.session.ExecutionStateRef)
+	}
+}
+
+func TestHostedGenesisMicroVMDispatchRelaunchesWhenPriorLifecycleExpired(t *testing.T) {
+	t.Parallel()
+
+	st := newHostedGenesisWorkerStore("turn-worker")
+	binding := st.session.MicroVMSessionBinding()
+	previous, err := hostedGenesisWorkerMicroVMDispatchResult(t, "previous-req", binding, runtimemicrovm.CommandRun)
+	if err != nil {
+		t.Fatalf("seed lifecycle ref: %v", err)
+	}
+	if applyErr := st.session.ApplyMicroVMLifecycleRef(previous.LifecycleRef); applyErr != nil {
+		t.Fatalf("apply previous lifecycle ref: %v", applyErr)
+	}
+	st.session.Version = 3
+	srv := NewServer(config.Config{}, st, artifacts.New(""), fakeComprehend{}, fakeRekognition{})
+	dispatcher := &stubHostedGenesisWorkerMicroVMDispatcher{t: t, ensureErr: hostedgenesis.ErrMicroVMRelaunchRequired}
+	srv.hostedGenesisMicroVMDispatcher = dispatcher
+
+	err = srv.processHostedGenesisMicroVMDispatch(context.Background(), "worker-req", hostedGenesisWorkerQueueMessage(hostedgenesis.StepMicroVMDispatch, "turn-worker"))
+	if err != nil {
+		t.Fatalf("unexpected microvm relaunch dispatch error: %v", err)
+	}
+	if dispatcher.ensureCalls != 1 || dispatcher.startCalls != 1 || dispatcher.invokeCalls != 1 || dispatcher.dispatchCalls != 0 {
+		t.Fatalf("expected checkpoint relaunch + invoke, got ensure=%d start=%d invoke=%d dispatch=%d", dispatcher.ensureCalls, dispatcher.startCalls, dispatcher.invokeCalls, dispatcher.dispatchCalls)
+	}
+
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if st.session == nil || st.session.Version != 4 {
+		t.Fatalf("expected relaunched lifecycle persist to advance version, got %#v", st.session)
 	}
 }
 
@@ -565,6 +597,17 @@ func TestCloneHostedGenesisSessionForWorkerDeepCopiesMutableFields(t *testing.T)
 		Recovery:  hostedgenesis.Recovery{Action: hostedgenesis.RecoveryActionRetrySameStep},
 	}
 	source.TraceIDs = &hostedgenesis.TraceIDs{HostRequestID: "host-req"}
+	source.VMCheckpoint = &hostedgenesis.VMCheckpointMetadata{
+		Sequence:     1,
+		Ref:          hostedgenesis.CheckpointRef("vm-actor", source.ConversationID, "assistant-1-turn-worker"),
+		Hash:         "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		Step:         "assistant_turn",
+		Action:       "ask",
+		StatusFrom:   string(hostedgenesis.StatusInProgress),
+		StatusTo:     string(hostedgenesis.StatusAssistantTurnReady),
+		Runtime:      "hosted-genesis-microvm-workload/v1",
+		LatestTurnID: "turn-worker",
+	}
 
 	cloned := cloneHostedGenesisSessionForWorker(source)
 	if cloned == source || cloned == nil {
@@ -575,12 +618,14 @@ func TestCloneHostedGenesisSessionForWorkerDeepCopiesMutableFields(t *testing.T)
 	source.DeclarationCheckpoint.DeclarationID = hostedGenesisWorkerMutated
 	source.Failure.Message = hostedGenesisWorkerMutated
 	source.TraceIDs.HostRequestID = hostedGenesisWorkerMutated
+	source.VMCheckpoint.Action = hostedGenesisWorkerMutated
 
 	if cloned.TurnLedger[0].TurnID != "turn-worker" ||
 		cloned.MicroVMLifecycleRef.SessionID != "conv-worker" ||
 		cloned.DeclarationCheckpoint.DeclarationID != "decl-1" ||
 		cloned.Failure.Message != "failed" ||
-		cloned.TraceIDs.HostRequestID != "host-req" {
+		cloned.TraceIDs.HostRequestID != "host-req" ||
+		cloned.VMCheckpoint.Action != "ask" {
 		t.Fatalf("clone shared mutable state with source: %#v", cloned)
 	}
 	if cloneHostedGenesisSessionForWorker(nil) != nil {
@@ -640,8 +685,8 @@ func TestHostedGenesisMicroVMDispatchRetriesWhenFailurePersistenceFails(t *testi
 	if err == nil {
 		t.Fatal("expected lifecycle-persistence error so SQS retries the dispatch message")
 	}
-	if dispatcher.startCalls != 1 || dispatcher.invokeCalls != 0 {
-		t.Fatalf("expected fresh lifecycle persist failure before invoke, got start=%d invoke=%d", dispatcher.startCalls, dispatcher.invokeCalls)
+	if dispatcher.ensureCalls != 1 || dispatcher.startCalls != 0 || dispatcher.invokeCalls != 0 {
+		t.Fatalf("expected lifecycle revalidation persist failure before invoke, got ensure=%d start=%d invoke=%d", dispatcher.ensureCalls, dispatcher.startCalls, dispatcher.invokeCalls)
 	}
 
 	st.mu.Lock()
@@ -1443,10 +1488,12 @@ func mustCompileHostedGenesisPublishedFiveBodySchema(t *testing.T) *jsonschema.S
 type stubHostedGenesisWorkerMicroVMDispatcher struct {
 	t              *testing.T
 	startCalls     int
+	ensureCalls    int
 	invokeCalls    int
 	dispatchCalls  int
 	reconcileCalls int
 	startErr       error
+	ensureErr      error
 	invokeErr      error
 	dispatchErr    error
 	lastBinding    hostedgenesis.MicroVMSessionBinding
@@ -1479,6 +1526,32 @@ func (d *stubHostedGenesisWorkerMicroVMDispatcher) StartMicroVMRun(ctx context.C
 		return hostedgenesis.MicroVMDispatchResult{}, d.startErr
 	}
 	return hostedGenesisWorkerMicroVMDispatchResult(d.t, requestID, binding, runtimemicrovm.CommandRun)
+}
+
+func (d *stubHostedGenesisWorkerMicroVMDispatcher) EnsureMicroVMTurnSession(ctx context.Context, requestID string, binding hostedgenesis.MicroVMSessionBinding, ref hostedgenesis.MicroVMLifecycleRef) (hostedgenesis.MicroVMDispatchResult, error) {
+	d.t.Helper()
+	d.ensureCalls++
+	d.lastBinding = binding
+	if err := ref.Validate(binding); err != nil {
+		return hostedgenesis.MicroVMDispatchResult{}, err
+	}
+	if d.ensureErr != nil {
+		return hostedgenesis.MicroVMDispatchResult{}, d.ensureErr
+	}
+	return hostedGenesisWorkerMicroVMDispatchResult(d.t, requestID, binding, runtimemicrovm.CommandGet)
+}
+
+func (d *stubHostedGenesisWorkerMicroVMDispatcher) InvokeMicroVMTurn(ctx context.Context, requestID string, binding hostedgenesis.MicroVMSessionBinding) error {
+	d.t.Helper()
+	d.invokeCalls++
+	d.lastBinding = binding
+	if strings.TrimSpace(requestID) == "" {
+		d.t.Fatalf("stub microvm dispatcher received empty invoke request id")
+	}
+	if err := binding.Validate(); err != nil {
+		d.t.Fatalf("stub microvm dispatcher received invalid invoke binding: %v", err)
+	}
+	return d.invokeErr
 }
 
 func (d *stubHostedGenesisWorkerMicroVMDispatcher) WaitAndInvokeMicroVMTurn(ctx context.Context, requestID string, binding hostedgenesis.MicroVMSessionBinding) (hostedgenesis.MicroVMDispatchResult, error) {

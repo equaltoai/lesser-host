@@ -16,8 +16,8 @@ import (
 
 // stubControllerServer is an httptest.Server-backed stub of the governed
 // AppTheoryMicrovmController HTTP API. It serves POST /microvms (run), GET
-// /microvms/{session_id} (get), and POST
-// /microvms/{session_id}/invoke/hosted-genesis/turn (canonical invoke),
+// /microvms/{session_id} (get), POST /microvms/{session_id}/resume, and
+// POST /microvms/{session_id}/invoke/hosted-genesis/turn (canonical invoke),
 // serializing the same ControllerResponse / LifecycleResult JSON shapes the
 // real controller route handlers emit, so the HTTPControllerDispatcher under
 // test exercises the real HTTP transport + response decoding path. It validates
@@ -31,6 +31,7 @@ type stubControllerServer struct {
 	sessions      map[string]runtimemicrovm.ControllerResponse
 	invokes       int
 	gets          int
+	resumes       int
 	runState      runtimemicrovm.LifecycleState
 	getState      runtimemicrovm.LifecycleState
 	invokeFailure *runtimemicrovm.SafeError
@@ -70,6 +71,10 @@ func (s *stubControllerServer) authorize(r *http.Request) bool {
 func (s *stubControllerServer) handleMicroVMRoute(w http.ResponseWriter, r *http.Request) {
 	if strings.Contains(r.URL.Path, "/invoke") {
 		s.handleInvoke(w, r)
+		return
+	}
+	if strings.HasSuffix(r.URL.Path, "/resume") {
+		s.handleResume(w, r)
 		return
 	}
 	s.handleGet(w, r)
@@ -165,6 +170,50 @@ func (s *stubControllerServer) handleGet(w http.ResponseWriter, r *http.Request)
 	writeControllerJSON(w, http.StatusOK, resp)
 }
 
+func (s *stubControllerServer) handleResume(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.authorize(r) {
+		writeControllerJSON(w, http.StatusUnauthorized, runtimemicrovm.ControllerResponse{
+			Error: &runtimemicrovm.SafeError{Code: "m15.microvm.unauthenticated_controller", Message: "unauthorized"},
+		})
+		return
+	}
+	sessionID := strings.TrimSuffix(strings.TrimPrefix(strings.TrimPrefix(r.URL.Path, "/microvms/"), "/"), "/resume")
+	if strings.TrimSpace(sessionID) == "" || strings.Contains(sessionID, "/") {
+		writeControllerJSON(w, http.StatusNotFound, runtimemicrovm.ControllerResponse{
+			Error: &runtimemicrovm.SafeError{Code: "m15.microvm.session_registry_incomplete", Message: "session not found"},
+		})
+		return
+	}
+	now := time.Now().UTC()
+	s.mu.Lock()
+	resp, ok := s.sessions[sessionID]
+	if ok {
+		s.resumes++
+		resp.Command = runtimemicrovm.CommandResume
+		resp.LastAction = runtimemicrovm.CommandResume
+		resp.State = runtimemicrovm.StateReady
+		resp.LifecycleState = runtimemicrovm.StateReady
+		resp.DesiredState = runtimemicrovm.StateReady
+		resp.ProviderState = string(runtimemicrovm.StateReady)
+		resp.LastTransition = now
+		resp.RegistryVersion++
+		resp.ExpiresAt = now.Add(time.Hour)
+		s.sessions[sessionID] = resp
+	}
+	s.mu.Unlock()
+	if !ok {
+		writeControllerJSON(w, http.StatusNotFound, runtimemicrovm.ControllerResponse{
+			Error: &runtimemicrovm.SafeError{Code: "m15.microvm.session_registry_incomplete", Message: "session not found"},
+		})
+		return
+	}
+	writeControllerJSON(w, http.StatusOK, resp)
+}
+
 func (s *stubControllerServer) handleInvoke(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -257,6 +306,23 @@ func stubInvokeEventMatches(r *http.Request, event runtimemicrovm.LifecycleEvent
 
 // terminate marks a session terminated so a subsequent get observes a terminal
 // state (the kill-VM recovery arc).
+func (s *stubControllerServer) suspend(sessionID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	resp, ok := s.sessions[sessionID]
+	if !ok {
+		return
+	}
+	resp.State = runtimemicrovm.StateSuspended
+	resp.LifecycleState = runtimemicrovm.StateSuspended
+	resp.DesiredState = runtimemicrovm.StateSuspended
+	resp.ProviderState = "suspended"
+	resp.LastAction = runtimemicrovm.CommandSuspend
+	resp.LastTransition = time.Now().UTC()
+	resp.ExpiresAt = time.Now().UTC().Add(time.Hour)
+	s.sessions[sessionID] = resp
+}
+
 func (s *stubControllerServer) terminate(sessionID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -283,6 +349,12 @@ func (s *stubControllerServer) getCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.gets
+}
+
+func (s *stubControllerServer) resumeCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.resumes
 }
 
 func writeControllerJSON(w http.ResponseWriter, status int, resp runtimemicrovm.ControllerResponse) {
@@ -407,6 +479,46 @@ func TestHTTPControllerDispatcherReconcileTerminalVMReportsTerminal(t *testing.T
 	require.True(t, result.Terminal, "terminated VM must reconcile as terminal")
 	require.Equal(t, runtimemicrovm.StateTerminated, result.LifecycleRef.LifecycleState)
 	require.NoError(t, result.LifecycleRef.Validate(binding))
+}
+
+func TestHTTPControllerDispatcherEnsuresSuspendedSessionViaResumeThenInvoke(t *testing.T) {
+	t.Parallel()
+	stub := newStubControllerServer(t, "stub-bearer")
+	srv := httptest.NewServer(stub.handler())
+	t.Cleanup(srv.Close)
+
+	binding := testMicroVMBinding()
+	dispatcher := testHTTPDispatcher(t, srv.URL+"/microvms", stub.token)
+	started, err := dispatcher.StartMicroVMRun(context.Background(), "req-run", binding)
+	require.NoError(t, err)
+	stub.suspend(binding.ConversationID)
+
+	ensured, err := dispatcher.EnsureMicroVMTurnSession(context.Background(), "req-resume", binding, started.LifecycleRef)
+	require.NoError(t, err)
+	require.Equal(t, runtimemicrovm.StateReady, ensured.LifecycleRef.LifecycleState)
+	require.Equal(t, runtimemicrovm.CommandResume, ensured.LifecycleRef.LastAction)
+	require.Equal(t, 1, stub.resumeCount(), "suspended AppTheory sessions must resume through POST /microvms/{session_id}/resume")
+
+	require.NoError(t, dispatcher.InvokeMicroVMTurn(context.Background(), "req-invoke", binding))
+	require.Equal(t, 1, stub.invokeCount(), "ensured session should be invoked through AppTheory invoke route")
+}
+
+func TestHTTPControllerDispatcherEnsureTerminalSessionRequiresRelaunch(t *testing.T) {
+	t.Parallel()
+	stub := newStubControllerServer(t, "stub-bearer")
+	srv := httptest.NewServer(stub.handler())
+	t.Cleanup(srv.Close)
+
+	binding := testMicroVMBinding()
+	dispatcher := testHTTPDispatcher(t, srv.URL+"/microvms", stub.token)
+	started, err := dispatcher.StartMicroVMRun(context.Background(), "req-run", binding)
+	require.NoError(t, err)
+	stub.terminate(binding.ConversationID)
+
+	_, err = dispatcher.EnsureMicroVMTurnSession(context.Background(), "req-ensure", binding, started.LifecycleRef)
+	require.ErrorIs(t, err, ErrMicroVMRelaunchRequired)
+	require.Equal(t, 0, stub.resumeCount(), "terminal sessions must not be resumed")
+	require.Equal(t, 0, stub.invokeCount(), "terminal sessions must not be invoked")
 }
 
 func TestHTTPControllerDispatcherFailsClosedWhenNil(t *testing.T) {
