@@ -13,6 +13,7 @@ const (
 	checkpointKindInput       = "input"
 	checkpointKindAssistant   = "assistant"
 	checkpointKindDeclaration = "declaration"
+	checkpointKindVMActor     = "vm-actor"
 	checkpointKindRef         = "ref"
 )
 
@@ -65,7 +66,7 @@ func normalizeCheckpointKind(kind string) string {
 
 func isCheckpointKind(kind string) bool {
 	switch kind {
-	case checkpointKindInput, checkpointKindAssistant, checkpointKindDeclaration, checkpointKindRef:
+	case checkpointKindInput, checkpointKindAssistant, checkpointKindDeclaration, checkpointKindVMActor, checkpointKindRef:
 		return true
 	default:
 		return false

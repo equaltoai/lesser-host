@@ -28,15 +28,15 @@ type turnStore interface {
 	GetSoulAgentRegistration(ctx context.Context, id string) (*models.SoulAgentRegistration, error)
 }
 
-// turnRunner is the in-VM hosted-genesis workload's assistant-turn and
-// declaration-extraction executor. It loads the authoritative conversation
-// transcript + registration through the existing store layer, runs exactly the
-// step represented by HostedGenesisSession truth (in_progress => assistant turn,
-// declaration_extraction_pending => declaration extraction) through the existing
-// internal/ai/llm clients (which carry an explicit HTTP timeout configured at
-// process startup), and durably records the outcome through the completion
-// writer. It never receives a raw AWS SDK client, a bearer token, or a raw
-// lifecycle hook payload.
+// turnRunner is the in-VM hosted-genesis workload's conversation actor runtime.
+// It loads the authoritative Host transcript + registration through the
+// existing store layer, lets the in-VM actor decide the next bounded action
+// (ask, wait, revise, extract/finalize, or fail recoverably), executes provider
+// work through the existing internal/ai/llm clients (which carry an explicit
+// HTTP timeout configured at process startup), and durably records the outcome
+// through the completion writer. Host remains the guarded writer for status,
+// version, debit, idempotency, and finalization; the workload never receives a
+// raw AWS SDK client, a bearer token, or a raw lifecycle hook payload.
 //
 // The runner is fail-closed: a missing session/conversation/registration, a
 // missing provider key, an empty assistant response, or a declaration-extraction
@@ -168,12 +168,11 @@ func inputGuidanceVersion(contract hostedgenesis.DeclarationContract) string {
 	return contract.GuidanceVersion
 }
 
-// runTurnAndPersist is the run-hook's durable execution path. It executes one
-// step according to HostedGenesisSession truth: assistant turn for in_progress,
-// declaration extraction for declaration_extraction_pending. Every completion
-// write is idempotent per turn ID and conditional on the session's status +
-// version; a replay against an already-advanced session is recorded as a
-// conflict (not a silent re-apply).
+// runTurnAndPersist is the run-hook's durable execution path. It loads Host
+// truth, asks the in-VM actor for the next action, and applies the resulting
+// completion write under Host-owned status/version/turn guards. A replay
+// against an already-advanced session is recorded as a conflict (not a silent
+// re-apply).
 func (r *turnRunner) runTurnAndPersist(ctx context.Context, turn completion.CompletionTurn) error {
 	runner, in, err := r.prepareTurn(ctx, turn)
 	if err != nil {
@@ -204,15 +203,28 @@ func (r *turnRunner) prepareTurn(ctx context.Context, turn completion.Completion
 }
 
 func (r *turnRunner) runPreparedTurnAndPersist(ctx context.Context, turn completion.CompletionTurn, in turnInput) error {
-	switch hostedgenesis.NormalizeStatus(in.session.Status) {
-	case hostedgenesis.StatusInProgress:
-		return r.runAssistantTurnAndPersist(ctx, turn, in)
-	case hostedgenesis.StatusDeclarationExtractionPending:
-		return r.runDeclarationExtractionAndPersist(ctx, turn, in)
-	case hostedgenesis.StatusAssistantTurnReady, hostedgenesis.StatusDeclarationReady:
+	actor := newConversationActor()
+	decision := actor.decideBeforeProvider(in)
+	switch decision.action {
+	case actorActionAsk, actorActionRevise:
+		return r.runAssistantTurnAndPersist(ctx, turn, in, actor, decision)
+	case actorActionExtractFinalize:
+		// The VM actor owns the extract/finalize decision, but Host billing and
+		// status guards still decide whether extraction was authorized. This slice
+		// only executes extraction after Host truth is already in
+		// declaration_extraction_pending; an in_progress final-affirmation decision
+		// remains a recoverable conflict until the Host debit/checkpoint seam is
+		// inverted in the follow-on gateway work.
+		if hostedgenesis.NormalizeStatus(in.session.Status) != hostedgenesis.StatusDeclarationExtractionPending {
+			return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeInvalidCompletionState, "declaration extraction requires Host debit authorization")
+		}
+		return r.runDeclarationExtractionAndPersist(ctx, turn, in, actor, decision)
+	case actorActionWait:
 		return nil
+	case actorActionFailRecoverably:
+		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeInvalidCompletionState, decision.reason)
 	default:
-		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeInvalidCompletionState, "session is not ready for hosted genesis microvm work")
+		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeInvalidCompletionState, "unknown hosted genesis actor decision")
 	}
 }
 
@@ -239,7 +251,7 @@ func (r *turnRunner) withTurnStore(ctx context.Context) (*turnRunner, error) {
 	return &copy, nil
 }
 
-func (r *turnRunner) runAssistantTurnAndPersist(ctx context.Context, turn completion.CompletionTurn, in turnInput) error {
+func (r *turnRunner) runAssistantTurnAndPersist(ctx context.Context, turn completion.CompletionTurn, in turnInput, actor conversationActor, decision actorDecision) error {
 	assistantContent, assistantUsage, err := r.runAssistantTurn(ctx, in)
 	if err != nil || strings.TrimSpace(assistantContent) == "" {
 		msg := "assistant turn failed"
@@ -257,10 +269,14 @@ func (r *turnRunner) runAssistantTurnAndPersist(ctx context.Context, turn comple
 	if persistErr := r.persistConversationAssistantTurn(ctx, &in, turn, postTurnMessages, assistantUsage); persistErr != nil {
 		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeAssistantTurnFailed, "persist assistant turn: "+persistErr.Error())
 	}
-	if _, werr := r.writer.RecordAssistantTurnReady(ctx, turn, completion.AssistantTurnCompletion{
+	checkpoint, checkpointErr := actor.checkpoint(in, completionTurnView{turnID: turn.TurnID, requestID: turn.RequestID}, decision, hostedgenesis.CheckpointRef("assistant", in.session.ConversationID, turn.TurnID))
+	if checkpointErr != nil {
+		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeInvalidCompletionState, "build assistant checkpoint: "+checkpointErr.Error())
+	}
+	if _, werr := r.writer.RecordAssistantTurnReadyWithCheckpoint(ctx, turn, completion.AssistantTurnCompletion{
 		AssistantContent: assistantContent,
 		MessageCount:     postTurnMessageCount,
-	}); werr != nil {
+	}, checkpoint); werr != nil {
 		// A conflict here means the session already advanced (e.g. a replay or
 		// a concurrent recovery). Do not overwrite; surface the conflict.
 		return fmt.Errorf("record assistant turn ready: %w", werr)
@@ -268,7 +284,7 @@ func (r *turnRunner) runAssistantTurnAndPersist(ctx context.Context, turn comple
 	return nil
 }
 
-func (r *turnRunner) runDeclarationExtractionAndPersist(ctx context.Context, turn completion.CompletionTurn, in turnInput) error {
+func (r *turnRunner) runDeclarationExtractionAndPersist(ctx context.Context, turn completion.CompletionTurn, in turnInput, actor conversationActor, decision actorDecision) error {
 	if !hasAssistantMessage(in.messages) {
 		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeInvalidCompletionState, "declaration extraction requires an assistant transcript")
 	}
@@ -287,7 +303,11 @@ func (r *turnRunner) runDeclarationExtractionAndPersist(ctx context.Context, tur
 	if err != nil {
 		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeInvalidProducedDeclarations, err.Error())
 	}
-	if _, werr := r.writer.RecordDeclarationReady(ctx, turn, checkpoint); werr != nil {
+	vmCheckpoint, checkpointErr := actor.checkpoint(in, completionTurnView{turnID: turn.TurnID, requestID: turn.RequestID}, decision, checkpoint.DeclarationHash)
+	if checkpointErr != nil {
+		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeInvalidCompletionState, "build declaration checkpoint: "+checkpointErr.Error())
+	}
+	if _, werr := r.writer.RecordDeclarationReadyWithCheckpoint(ctx, turn, checkpoint, vmCheckpoint); werr != nil {
 		return fmt.Errorf("record declaration ready: %w", werr)
 	}
 	return nil

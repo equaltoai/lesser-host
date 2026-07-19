@@ -55,6 +55,7 @@ type HostedGenesisSession struct {
 	DeclarationCheckpoint *hostedgenesis.DeclarationCheckpoint `theorydb:"attr:declarationCheckpoint" json:"declaration_checkpoint,omitempty"`
 	Failure               *hostedgenesis.Failure               `theorydb:"attr:failure" json:"failure,omitempty"`
 	TraceIDs              *hostedgenesis.TraceIDs              `theorydb:"attr:traceIds" json:"trace_ids,omitempty"`
+	VMCheckpoint          *hostedgenesis.VMCheckpointMetadata  `theorydb:"attr:vmCheckpoint" json:"vm_checkpoint,omitempty"`
 
 	RequestID string `theorydb:"attr:requestId" json:"request_id,omitempty"`
 
@@ -111,6 +112,13 @@ func (s *HostedGenesisSession) UpdateKeys() error {
 		if err := s.MicroVMLifecycleRef.Validate(binding); err != nil {
 			return err
 		}
+	}
+	if s.VMCheckpoint != nil {
+		checkpoint := s.VMCheckpoint.Normalize()
+		if err := checkpoint.Validate(); err != nil {
+			return err
+		}
+		s.VMCheckpoint = &checkpoint
 	}
 	s.RequestID = strings.TrimSpace(s.RequestID)
 
@@ -287,6 +295,7 @@ func HostedGenesisSessionUpdateFields() []string {
 		"DeclarationCheckpoint",
 		"Failure",
 		"TraceIDs",
+		"VMCheckpoint",
 		"RequestID",
 		"UpdatedAt",
 		"CompletedAt",
