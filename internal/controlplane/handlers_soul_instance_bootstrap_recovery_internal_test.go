@@ -3,6 +3,7 @@ package controlplane
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"testing"
@@ -272,6 +273,175 @@ func TestSoulInstanceRecoverMintConversation_RetriesFailedAssistantTurn(t *testi
 	}
 	assertHostedGenesisResponseNoForbiddenValues(t, resp.Body, hostedGenesisStatusForbiddenValues())
 	tdb.qBudget.AssertNumberOfCalls(t, "First", 0)
+}
+
+func TestSoulInstanceRecoverMintConversation_AssistantRetryPersistsPendingBeforeDispatch(t *testing.T) {
+	tdb := newMintConversationTestDB()
+	s := newMintConversationServer(tdb)
+	reg := mintConversationHandleReg()
+	now := time.Date(2026, 3, 7, 12, 5, 0, 0, time.UTC)
+	durableSession := failedAssistantTurnRecoveryHostedGenesisSessionFixture(t, reg, now)
+	dispatcher := &stateReadingMicroVMDispatcher{
+		stubMicroVMDispatcher: &stubMicroVMDispatcher{t: t},
+		readSession: func() *models.HostedGenesisSession {
+			return cloneHostedGenesisSession(&durableSession)
+		},
+	}
+	s.hostedGenesisMicroVMDispatcher = dispatcher
+
+	expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, soulInstanceBootstrapTestInstanceSlug)
+	stubMintConversationRegistration(t, tdb, reg)
+	stubSoulInstanceBootstrapDomainAndInstance(t, tdb, reg.DomainNormalized, soulInstanceBootstrapTestInstanceSlug)
+	stubSoulInstanceRecoveryConversation(t, tdb, models.SoulAgentMintConversation{
+		AgentID:        reg.AgentID,
+		ConversationID: mintConversationTestConversationID,
+		Model:          "anthropic:claude-sonnet-4-6",
+		Messages:       encodeMintConversationBlob(`[{"role":"user","content":"describe the agent"}]`),
+		Status:         models.SoulMintConversationStatusFailed,
+		StatusReason:   hostedGenesisFailureAssistantTurnFailed,
+		LatestTurnID:   "turn-assistant",
+		ChargedCredits: soulMintConversationStreamBaseCredits,
+		RequestID:      "req-failed",
+		CreatedAt:      time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC),
+		UpdatedAt:      now,
+		CompletedAt:    now,
+	})
+	stubSoulInstanceRecoverySession(t, tdb, durableSession)
+	expectHostedGenesisAssistantTurnRetryDispatchWriteWithCapture(t, tdb, "turn-assistant", func(session *models.HostedGenesisSession) {
+		durableSession = *cloneHostedGenesisSession(session)
+	})
+
+	resp, err := s.handleSoulInstanceRecoverMintConversation(newSoulInstanceBootstrapContext(
+		map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
+		nil,
+		map[string]string{"id": reg.ID, "conversationId": mintConversationTestConversationID},
+	))
+	if err != nil {
+		t.Fatalf("unexpected assistant turn recovery err: %v", err)
+	}
+	if resp.Status != http.StatusAccepted {
+		t.Fatalf("expected 202 assistant retry response, got %#v", resp)
+	}
+	if dispatcher.calls != 1 {
+		t.Fatalf("expected one assistant redispatch, got %d", dispatcher.calls)
+	}
+}
+
+type stateReadingMicroVMDispatcher struct {
+	*stubMicroVMDispatcher
+	readSession func() *models.HostedGenesisSession
+}
+
+func (d *stateReadingMicroVMDispatcher) DispatchMicroVMRun(ctx context.Context, requestID string, binding hostedgenesis.MicroVMSessionBinding) (hostedgenesis.MicroVMDispatchResult, error) {
+	d.t.Helper()
+	session := d.readSession()
+	if session == nil {
+		d.t.Fatalf("workload test double could not read durable Host state")
+	}
+	if hostedgenesis.NormalizeStatus(session.Status) != hostedgenesis.StatusInProgress ||
+		session.LatestTurnID != binding.TurnID ||
+		session.Failure == nil ||
+		session.Failure.Code != hostedgenesis.FailureCodeAssistantTurnFailed ||
+		session.Failure.Recovery.MaxAttempts != 1 {
+		d.t.Fatalf("workload observed old or invalid durable retry state during dispatch: %#v", session)
+	}
+	return d.stubMicroVMDispatcher.DispatchMicroVMRun(ctx, requestID, binding)
+}
+
+func TestSoulInstanceRecoverMintConversation_FailedAssistantRetryDispatchErrorPersistsLoudFailure(t *testing.T) {
+	tdb := newMintConversationTestDB()
+	s := newMintConversationServer(tdb)
+	reg := mintConversationHandleReg()
+	dispatcher := &stubMicroVMDispatcher{t: t, dispatchErr: errors.New("controller invoke failed")}
+	s.hostedGenesisMicroVMDispatcher = dispatcher
+	now := time.Date(2026, 3, 7, 12, 5, 0, 0, time.UTC)
+
+	expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, soulInstanceBootstrapTestInstanceSlug)
+	stubMintConversationRegistration(t, tdb, reg)
+	stubSoulInstanceBootstrapDomainAndInstance(t, tdb, reg.DomainNormalized, soulInstanceBootstrapTestInstanceSlug)
+	stubSoulInstanceRecoveryConversation(t, tdb, models.SoulAgentMintConversation{
+		AgentID:        reg.AgentID,
+		ConversationID: mintConversationTestConversationID,
+		Model:          "anthropic:claude-sonnet-4-6",
+		Messages:       encodeMintConversationBlob(`[{"role":"user","content":"describe the agent"}]`),
+		Status:         models.SoulMintConversationStatusFailed,
+		StatusReason:   hostedGenesisFailureAssistantTurnFailed,
+		LatestTurnID:   "turn-assistant",
+		ChargedCredits: soulMintConversationStreamBaseCredits,
+		RequestID:      "req-failed",
+		CreatedAt:      time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC),
+		UpdatedAt:      now,
+		CompletedAt:    now,
+	})
+	session := failedAssistantTurnRecoveryHostedGenesisSessionFixture(t, reg, now)
+	stubSoulInstanceRecoverySession(t, tdb, session)
+	expectHostedGenesisAssistantTurnRetryDispatchFailureWrites(t, tdb, "turn-assistant")
+
+	_, err := s.handleSoulInstanceRecoverMintConversation(newSoulInstanceBootstrapContext(
+		map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
+		nil,
+		map[string]string{"id": reg.ID, "conversationId": mintConversationTestConversationID},
+	))
+	appErr := requireAppTheoryError(t, err)
+	if appErr.Code != soulInstanceBootstrapCodeMicroVMUnavailable || appErr.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("expected loud microvm_unavailable dispatch failure, got %#v", appErr)
+	}
+	if dispatcher.calls != 1 {
+		t.Fatalf("expected dispatch attempt after durable retry transition, got %d", dispatcher.calls)
+	}
+	tdb.db.AssertNumberOfCalls(t, "TransactWrite", 2)
+}
+
+func TestSoulInstanceRecoverMintConversation_SalvagesPendingAssistantRetryWithLifecycleRef(t *testing.T) {
+	tdb := newMintConversationTestDB()
+	s := newMintConversationServer(tdb)
+	reg := mintConversationHandleReg()
+	dispatcher := &stubMicroVMDispatcher{t: t}
+	s.hostedGenesisMicroVMDispatcher = dispatcher
+
+	expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, soulInstanceBootstrapTestInstanceSlug)
+	stubMintConversationRegistration(t, tdb, reg)
+	stubSoulInstanceBootstrapDomainAndInstance(t, tdb, reg.DomainNormalized, soulInstanceBootstrapTestInstanceSlug)
+	stubSoulInstanceRecoveryConversation(t, tdb, models.SoulAgentMintConversation{
+		AgentID:        reg.AgentID,
+		ConversationID: mintConversationTestConversationID,
+		Model:          "anthropic:claude-sonnet-4-6",
+		Messages:       encodeMintConversationBlob(`[{"role":"user","content":"describe the agent"}]`),
+		Status:         models.SoulMintConversationStatusInProgress,
+		LatestTurnID:   "turn-stuck",
+		ChargedCredits: soulMintConversationStreamBaseCredits,
+		RequestID:      "req-live-bad",
+		CreatedAt:      time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC),
+		UpdatedAt:      time.Date(2026, 3, 7, 12, 5, 0, 0, time.UTC),
+	})
+	session := hostedGenesisH1D3RecoverySessionFixture(t, reg, hostedgenesis.StatusInProgress)
+	session.Failure = failedAssistantTurnRecoveryFailure()
+	session.AssistantCheckpointRef = ""
+	stubSoulInstanceRecoverySession(t, tdb, session)
+	expectHostedGenesisAssistantTurnRetryDispatchWrite(t, tdb, "turn-stuck")
+
+	resp, err := s.handleSoulInstanceRecoverMintConversation(newSoulInstanceBootstrapContext(
+		map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
+		nil,
+		map[string]string{"id": reg.ID, "conversationId": mintConversationTestConversationID},
+	))
+	if err != nil {
+		t.Fatalf("unexpected pending assistant retry salvage err: %v", err)
+	}
+	if resp.Status != http.StatusAccepted {
+		t.Fatalf("expected 202 salvage redispatch response, got %#v", resp)
+	}
+	if dispatcher.calls != 1 || dispatcher.reconcileCalls != 0 {
+		t.Fatalf("expected live-bad shape to redispatch instead of reconciling pending forever, run=%d reconcile=%d", dispatcher.calls, dispatcher.reconcileCalls)
+	}
+	var out hostedGenesisConversationResponse
+	if err := json.Unmarshal(resp.Body, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.Conversation.Status != models.SoulMintConversationStatusInProgress || out.Conversation.Failure != nil || out.Conversation.PollAfterSeconds <= 0 {
+		t.Fatalf("expected unambiguous pending retry projection without exposed failure, got %#v", out.Conversation)
+	}
+	tdb.db.AssertNumberOfCalls(t, "TransactWrite", 2)
 }
 
 func TestSoulInstanceRecoverMintConversation_ExhaustedDeclarationExtractionRetryRequiresRestart(t *testing.T) {
@@ -552,20 +722,19 @@ func failedAssistantTurnRecoveryFailure() *hostedgenesis.Failure {
 
 func expectHostedGenesisAssistantTurnRetryDispatchWrite(t *testing.T, tdb *mintConversationTestDB, wantTurnID string) {
 	t.Helper()
+	expectHostedGenesisAssistantTurnRetryDispatchWriteWithCapture(t, tdb, wantTurnID, nil)
+}
+
+func expectHostedGenesisAssistantTurnRetryDispatchWriteWithCapture(t *testing.T, tdb *mintConversationTestDB, wantTurnID string, capture func(*models.HostedGenesisSession)) {
+	t.Helper()
 	tb := new(ttmocks.MockTransactionBuilder)
 	tdb.db.TransactWriteBuilder = tb
 	tdb.db.On("TransactWrite", mock.Anything, mock.Anything).Return(nil).Once()
 	tb.On("UpdateWithBuilder", mock.AnythingOfType("*models.HostedGenesisSession"), mock.Anything, mock.Anything).Return(tb).Once().Run(func(args mock.Arguments) {
 		session := testutil.RequireMockArg[*models.HostedGenesisSession](t, args, 0)
-		if hostedgenesis.NormalizeStatus(session.Status) != hostedgenesis.StatusInProgress ||
-			session.LatestTurnID != wantTurnID ||
-			session.Failure == nil ||
-			session.Failure.Code != hostedgenesis.FailureCodeAssistantTurnFailed ||
-			session.Failure.Recovery.MaxAttempts != 1 {
-			t.Fatalf("expected assistant retry session to redispatch latest turn with carried budget, got %#v", session)
-		}
-		if session.MicroVMExecutionID == "" || session.ExecutionStateRef == "" || session.MicroVMLifecycleRef == nil {
-			t.Fatalf("expected assistant retry dispatch to refresh MicroVM refs, got %#v", session)
+		assertHostedGenesisAssistantRetryPendingSession(t, session, wantTurnID)
+		if capture != nil {
+			capture(session)
 		}
 	})
 	tb.On("UpdateWithBuilder", mock.AnythingOfType("*models.SoulAgentMintConversation"), mock.Anything, mock.Anything).Return(tb).Once().Run(func(args mock.Arguments) {
@@ -578,6 +747,75 @@ func expectHostedGenesisAssistantTurnRetryDispatchWrite(t *testing.T, tdb *mintC
 		}
 	})
 	tb.On("Execute").Return(nil).Once()
+	tdb.db.On("TransactWrite", mock.Anything, mock.Anything).Return(nil).Once()
+	tb.On("UpdateWithBuilder", mock.AnythingOfType("*models.HostedGenesisSession"), mock.Anything, mock.Anything).Return(tb).Once().Run(func(args mock.Arguments) {
+		session := testutil.RequireMockArg[*models.HostedGenesisSession](t, args, 0)
+		assertHostedGenesisAssistantRetryLifecycleSession(t, session, wantTurnID)
+		if capture != nil {
+			capture(session)
+		}
+	})
+	tb.On("Execute").Return(nil).Once()
+}
+
+func expectHostedGenesisAssistantTurnRetryDispatchFailureWrites(t *testing.T, tdb *mintConversationTestDB, wantTurnID string) {
+	t.Helper()
+	tb := new(ttmocks.MockTransactionBuilder)
+	tdb.db.TransactWriteBuilder = tb
+	tdb.db.On("TransactWrite", mock.Anything, mock.Anything).Return(nil).Once()
+	tb.On("UpdateWithBuilder", mock.AnythingOfType("*models.HostedGenesisSession"), mock.Anything, mock.Anything).Return(tb).Once().Run(func(args mock.Arguments) {
+		session := testutil.RequireMockArg[*models.HostedGenesisSession](t, args, 0)
+		assertHostedGenesisAssistantRetryPendingSession(t, session, wantTurnID)
+	})
+	tb.On("UpdateWithBuilder", mock.AnythingOfType("*models.SoulAgentMintConversation"), mock.Anything, mock.Anything).Return(tb).Once()
+	tb.On("Execute").Return(nil).Once()
+	tdb.db.On("TransactWrite", mock.Anything, mock.Anything).Return(nil).Once()
+	tb.On("UpdateWithBuilder", mock.AnythingOfType("*models.HostedGenesisSession"), mock.Anything, mock.Anything).Return(tb).Once().Run(func(args mock.Arguments) {
+		session := testutil.RequireMockArg[*models.HostedGenesisSession](t, args, 0)
+		assertHostedGenesisAssistantRetryFailedSession(t, session, wantTurnID)
+	})
+	tb.On("UpdateWithBuilder", mock.AnythingOfType("*models.SoulAgentMintConversation"), mock.Anything, mock.Anything).Return(tb).Once()
+	tb.On("Execute").Return(nil).Once()
+}
+
+func assertHostedGenesisAssistantRetryPendingSession(t *testing.T, session *models.HostedGenesisSession, wantTurnID string) {
+	t.Helper()
+	if hostedgenesis.NormalizeStatus(session.Status) != hostedgenesis.StatusInProgress ||
+		session.LatestTurnID != wantTurnID ||
+		session.Failure == nil ||
+		session.Failure.Code != hostedgenesis.FailureCodeAssistantTurnFailed ||
+		session.Failure.Recovery.MaxAttempts != 1 {
+		t.Fatalf("expected assistant retry session to persist latest turn with carried budget, got %#v", session)
+	}
+	if session.MicroVMExecutionID != "" || session.ExecutionStateRef != "" || session.MicroVMLifecycleRef != nil {
+		t.Fatalf("retry-pending state must be durable before MicroVM dispatch refs are known, got %#v", session)
+	}
+}
+
+func assertHostedGenesisAssistantRetryLifecycleSession(t *testing.T, session *models.HostedGenesisSession, wantTurnID string) {
+	t.Helper()
+	if hostedgenesis.NormalizeStatus(session.Status) != hostedgenesis.StatusInProgress ||
+		session.LatestTurnID != wantTurnID ||
+		session.Failure == nil ||
+		session.Failure.Code != hostedgenesis.FailureCodeAssistantTurnFailed ||
+		session.Failure.Recovery.MaxAttempts != 1 {
+		t.Fatalf("expected assistant retry lifecycle write to preserve carried budget, got %#v", session)
+	}
+	if session.MicroVMExecutionID == "" || session.ExecutionStateRef == "" || session.MicroVMLifecycleRef == nil {
+		t.Fatalf("expected assistant retry dispatch to refresh MicroVM refs, got %#v", session)
+	}
+}
+
+func assertHostedGenesisAssistantRetryFailedSession(t *testing.T, session *models.HostedGenesisSession, wantTurnID string) {
+	t.Helper()
+	if hostedgenesis.NormalizeStatus(session.Status) != hostedgenesis.StatusFailed ||
+		session.LatestTurnID != wantTurnID ||
+		session.Failure == nil ||
+		session.Failure.Code != hostedgenesis.FailureCodeAssistantTurnFailed ||
+		!session.Failure.Retryable ||
+		session.Failure.Recovery.MaxAttempts != 1 {
+		t.Fatalf("expected loud retryable assistant failure after rejected dispatch, got %#v", session)
+	}
 }
 
 func assertHostedGenesisFailedRecoveryProjection(t *testing.T, conversation hostedGenesisConversationProjection) {

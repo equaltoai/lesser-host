@@ -101,7 +101,10 @@ func hostedGenesisFailureFromSessionForSession(session *models.HostedGenesisSess
 		return hostedGenesisFailureFromReason(hostedGenesisFailureInvalidCompletionState)
 	}
 	if hostedGenesisDeclarationExtractionRetriesExhausted(session) {
-		failure = hostedGenesisExhaustedDeclarationExtractionFailure(failure)
+		failure = hostedGenesisExhaustedRetryFailure(failure, hostedGenesisFailureDeclarationExtractionFailed)
+	}
+	if hostedGenesisAssistantTurnRetriesExhausted(session) {
+		failure = hostedGenesisExhaustedRetryFailure(failure, hostedGenesisFailureAssistantTurnFailed)
 	}
 	code := failure.Code
 	if hostedgenesis.IsDeclarationValidationCode(failure.Recovery.Reason) {
@@ -121,7 +124,7 @@ func hostedGenesisFailureFromSessionForSession(session *models.HostedGenesisSess
 	}
 }
 
-func hostedGenesisExhaustedDeclarationExtractionFailure(failure *hostedgenesis.Failure) *hostedgenesis.Failure {
+func hostedGenesisExhaustedRetryFailure(failure *hostedgenesis.Failure, reason string) *hostedgenesis.Failure {
 	if failure == nil {
 		return nil
 	}
@@ -130,7 +133,7 @@ func hostedGenesisExhaustedDeclarationExtractionFailure(failure *hostedgenesis.F
 	exhausted.Recovery.Action = hostedgenesis.RecoveryActionRestartSoulBootstrap
 	exhausted.Recovery.MaxAttempts = 0
 	exhausted.Recovery.RetryAfterSeconds = 0
-	exhausted.Recovery.Reason = hostedGenesisFailureDeclarationExtractionFailed
+	exhausted.Recovery.Reason = strings.TrimSpace(reason)
 	return &exhausted
 }
 
