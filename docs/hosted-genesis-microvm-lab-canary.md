@@ -63,6 +63,40 @@ This PR does **not** deploy, run a cloud canary, mutate SSM/Secrets, sign transa
 4. Exercise the controller endpoint with AppTheory M16 controller routes: `POST /microvms`, `GET /microvms`, `GET /microvms/{session_id}`, `POST /microvms/{session_id}/suspend`, `POST /microvms/{session_id}/resume`, `DELETE /microvms/{session_id}`, `POST /microvms/{session_id}/auth-token`, and `POST /microvms/{session_id}/shell-auth-token`.
 5. Verify logs contain no MicroVM endpoint tokens, bearer tokens, raw Instance API keys, provider keys, SSM values, wallet signatures, AWS credentials, raw transcripts, or raw lifecycle payloads.
 
+## Pending Project 48 M11 lab proof: suspend/resume process memory
+
+The existing non-deploying canary and `scripts/hosted-genesis-microvm-e2e-gate.sh` prove AppTheory M16 route coverage,
+happy-path Hosted Genesis execution, kill-VM recovery behavior, metadata-only reads, and `MaximumDurationSeconds`
+wiring. They do **not** prove whether AWS Lambda MicroVM suspend/resume preserves process memory across a human-scale
+idle interval.
+
+#941 acceptance requires a separate lab evidence record before the issue can be closed. If a live lab run is delegated,
+the operator-approved run must use only an explicit allowed AWS profile (`Lesser` or `TheoryLive`) and the normal Host
+deploy/run contract; do not guess profiles, manually mutate SSM, bypass `theory app up --stage lab --execute`, or set a
+CDK deploy timeout.
+
+Required proof shape:
+
+1. Deploy or use an operator-approved lab stack whose Hosted Genesis MicroVM path is already in scope for the run.
+2. Launch a MicroVM test session through AppTheory `POST /microvms` with safe test metadata only.
+3. Invoke a lab-only workload endpoint that stores a randomly generated, non-secret nonce in process memory only and
+   returns a hash/correlation id. The nonce must not be a provider key, bearer token, Instance API key, wallet
+   signature, SSM value, AWS credential, transcript, or customer data.
+4. Persist an ordinary Host-safe checkpoint marker that does **not** include the nonce plaintext.
+5. Call AppTheory `POST /microvms/{session_id}/suspend`.
+6. Wait a human-scale idle interval agreed for the lab run (at minimum long enough to exceed ordinary retry/poll timing;
+   use a longer operator-selected interval when validating production `IdlePolicy` values).
+7. Call AppTheory `POST /microvms/{session_id}/resume`.
+8. Invoke the same workload endpoint and record whether the in-process nonce survived.
+9. Record the exact AppTheory session id, provider MicroVM id before/after, lifecycle states, idle interval,
+   `IdlePolicy`, `MaximumDurationSeconds`, checkpoint marker, result (`memory_preserved=true|false`), command outputs,
+   and log-safety review in a docs/evidence artifact.
+
+If the nonce survives, #942/#943 may use process memory as a fast path after Host status/version/checkpoint
+revalidation. If it does not survive, or if the result is inconclusive, checkpoint/relaunch/replay remains the normal
+correctness path for human gaps. Either way, Host remains the durable source of truth and the in-VM runtime must write
+safe checkpoint metadata before waiting for a human.
+
 ## Truth layering
 
 `HostedGenesisSession` remains Host business/source truth for user-visible status, idempotency, billing, declaration checkpoints, recovery, and publish/finalize gates. The MicroVM registry surface is operational cache only: Host stores it in the repo-owned `HostedGenesisMicroVMExecution` TableTheory model through `store.NewHostedGenesisMicroVMRegistry`, and `MicroVMLifecycleRef` remains the compact execution/cache reference on the source-truth session. Missing or stale cache is reconstructed from `HostedGenesisSession` through `microvm.SessionReconstructionHook` / `microvm.NewReconstructingSessionRegistry`, then written back through the Host-owned cache adapter. Host deployed code must not persist AppTheory's generic `runtimemicrovm.SessionRegistryRecord`, call `NewTableTheorySessionRegistry`, or expose direct `PK`/`SK` table-key mapping at the controller boundary.
