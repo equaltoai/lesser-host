@@ -224,6 +224,11 @@ Lesser-facing route family above remains unchanged, but the execution contract f
 - direct VM writes to Host truth are allowed only through status/version/checkpoint conditional guards plus
   tenant/auth/id envelope checks; retry budgets, billing/debit policy, publication, and final governed commits remain
   Host-owned;
+- if controller reconstruction observes a terminal/expired MicroVM before Host truth has advanced, Host records a loud
+  retryable `failed` state with `failure.code=microvm_unavailable`; recovery may relaunch the actor only after a
+  persisted VM-authored checkpoint validates against the durable conversation id, latest turn id, turn ledger, status
+  transition, and session version budget, and the relaunch write remains conditional on the failed Host status/version;
+  a missing or invalid checkpoint is an actionable conflict, never a silent success and never a Host-run provider loop;
 - `MaximumDurationSeconds` caps one active in-VM provider/declaration step, while `IdlePolicy` and explicit
   checkpoint/relaunch/replay semantics cover human wait gaps;
 - until live lab evidence proves process-memory preservation across human-scale suspend/resume, process memory is an
