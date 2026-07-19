@@ -384,7 +384,7 @@ func TestHostedGenesisSessionHelperBranches(t *testing.T) {
 		})
 	}
 
-	for _, status := range []hostedgenesis.Status{hostedgenesis.StatusCreated, hostedgenesis.StatusInProgress, hostedgenesis.StatusAssistantTurnReady} {
+	for _, status := range []hostedgenesis.Status{hostedgenesis.StatusCreated, hostedgenesis.StatusAssistantTurnReady} {
 		if err := requireHostedGenesisSessionAcceptsTurn(&models.HostedGenesisSession{Status: string(status)}); err != nil {
 			t.Fatalf("status %s should accept turn: %v", status, err)
 		}
@@ -406,6 +406,19 @@ func TestHostedGenesisSessionHelperBranches(t *testing.T) {
 	}
 	if err := assignHostedGenesisTurnID(&session); err != nil || !strings.HasPrefix(session.turnID, "turn_") {
 		t.Fatalf("expected generated turn id, got %q err=%v", session.turnID, err)
+	}
+}
+
+func TestHostedGenesisProcessingStatusesAreWaitOnly(t *testing.T) {
+	t.Parallel()
+
+	for _, status := range []hostedgenesis.Status{hostedgenesis.StatusInProgress, hostedgenesis.StatusDeclarationExtractionPending} {
+		if hostedGenesisStatusAcceptsTurn(status) {
+			t.Fatalf("processing status %s must not accept a new owner turn", status)
+		}
+		if !hostedGenesisStatusRequiresWait(status) {
+			t.Fatalf("processing status %s should return wait-only projection", status)
+		}
 	}
 }
 

@@ -50,6 +50,10 @@ func (s *Server) handleSoulInstanceRecoverMintConversation(ctx *apptheory.Contex
 		return s.handleSoulInstanceDeclarationExtractionRetry(ctx, convCtx, started)
 	}
 
+	if hostedGenesisSessionCanRetryAssistantTurn(convCtx.session) {
+		return s.handleSoulInstanceAssistantTurnRetry(ctx, convCtx, started)
+	}
+
 	if !hostedGenesisSessionNeedsAssistantRecovery(convCtx.session) {
 		resp, err := hostedGenesisConversationJSONFromSession(http.StatusOK, convCtx.session, convCtx.conv, hostedGenesisProjectionOptions{
 			RegistrationID:  convCtx.reg.ID,
@@ -144,12 +148,30 @@ func (s *Server) handleSoulInstanceDeclarationExtractionRetry(ctx *apptheory.Con
 	return resp, nil
 }
 
+func (s *Server) handleSoulInstanceAssistantTurnRetry(ctx *apptheory.Context, convCtx soulInstanceBootstrapConversationContext, started time.Time) (*apptheory.Response, error) {
+	progressedSession, progressedConv, progressErr := s.retryHostedGenesisFailedAssistantTurn(ctx, convCtx)
+	if progressErr != nil {
+		return nil, soulInstanceBootstrapConversationErrorFromAppError(progressErr)
+	}
+	resp, err := hostedGenesisConversationJSONFromSession(http.StatusAccepted, progressedSession, progressedConv, hostedGenesisProjectionOptions{
+		RegistrationID:  convCtx.reg.ID,
+		RequestID:       strings.TrimSpace(ctx.RequestID),
+		CollapseCreated: true,
+	})
+	if err != nil {
+		return nil, err
+	}
+	s.recordSoulMintInstanceReadAudit(ctx, convCtx.key, convCtx.agentIDHex, convCtx.conversationID, soulMintInstanceReadRouteRecover, "retry_assistant_turn", resp.Status, len(resp.Body), started)
+	return resp, nil
+}
+
 func hostedGenesisSessionRequiresRestart(session *models.HostedGenesisSession) bool {
 	if session == nil || hostedgenesis.NormalizeStatus(session.Status) != hostedgenesis.StatusFailed || session.Failure == nil {
 		return false
 	}
 	return session.Failure.Recovery.Action == hostedgenesis.RecoveryActionRestartSoulBootstrap ||
-		hostedGenesisDeclarationExtractionRetriesExhausted(session)
+		hostedGenesisDeclarationExtractionRetriesExhausted(session) ||
+		hostedGenesisAssistantTurnRetriesExhausted(session)
 }
 
 func hostedGenesisSessionCanRetryDeclarationExtraction(session *models.HostedGenesisSession) bool {
@@ -175,6 +197,29 @@ func hostedGenesisSessionHasDeclarationExtractionRetryFailure(session *models.Ho
 		session.Failure.Recovery.Action == hostedgenesis.RecoveryActionRetrySameStep
 }
 
+func hostedGenesisSessionCanRetryAssistantTurn(session *models.HostedGenesisSession) bool {
+	return hostedGenesisSessionHasRetryableAssistantTurnFailure(session) &&
+		session.Failure.Recovery.MaxAttempts > 0
+}
+
+func hostedGenesisAssistantTurnRetriesExhausted(session *models.HostedGenesisSession) bool {
+	return hostedGenesisSessionHasAssistantTurnRetryFailure(session) &&
+		(!session.Failure.Retryable || session.Failure.Recovery.MaxAttempts <= 0)
+}
+
+func hostedGenesisSessionHasRetryableAssistantTurnFailure(session *models.HostedGenesisSession) bool {
+	return hostedGenesisSessionHasAssistantTurnRetryFailure(session) &&
+		session.Failure.Retryable
+}
+
+func hostedGenesisSessionHasAssistantTurnRetryFailure(session *models.HostedGenesisSession) bool {
+	if session == nil || hostedgenesis.NormalizeStatus(session.Status) != hostedgenesis.StatusFailed || session.Failure == nil {
+		return false
+	}
+	return session.Failure.Code == hostedgenesis.FailureCodeAssistantTurnFailed &&
+		session.Failure.Recovery.Action == hostedgenesis.RecoveryActionRetrySameStep
+}
+
 func hostedGenesisDeclarationExtractionRetryCarryForward(failure *hostedgenesis.Failure) *hostedgenesis.Failure {
 	if failure == nil {
 		return nil
@@ -188,6 +233,122 @@ func hostedGenesisDeclarationExtractionRetryCarryForward(failure *hostedgenesis.
 		carried.Retryable = false
 	}
 	return &carried
+}
+
+func hostedGenesisAssistantTurnRetryCarryForward(failure *hostedgenesis.Failure) *hostedgenesis.Failure {
+	if failure == nil {
+		return nil
+	}
+	carried := *failure
+	carried.Recovery.MaxAttempts--
+	if carried.Recovery.MaxAttempts < 0 {
+		carried.Recovery.MaxAttempts = 0
+	}
+	if carried.Recovery.MaxAttempts == 0 {
+		carried.Retryable = false
+	}
+	return &carried
+}
+
+func (s *Server) retryHostedGenesisFailedAssistantTurn(ctx *apptheory.Context, convCtx soulInstanceBootstrapConversationContext) (*models.HostedGenesisSession, *models.SoulAgentMintConversation, *apptheory.AppTheoryError) {
+	if s == nil || s.store == nil || s.store.DB == nil || convCtx.session == nil || convCtx.conv == nil {
+		return nil, nil, newAppTheoryError("app.internal", "internal error")
+	}
+	if !hostedGenesisSessionCanRetryAssistantTurn(convCtx.session) {
+		return nil, nil, newAppTheoryError(appErrCodeConflict, "conversation recovery requires a fresh soul bootstrap")
+	}
+	turnSession, _, buildErr := hostedGenesisRecoveryTurnSession(convCtx)
+	if buildErr != nil {
+		return nil, nil, buildErr
+	}
+	if s.hostedGenesisMicroVMDispatcher == nil {
+		return nil, nil, newAppTheoryError(appErrCodeMicroVMUnavailable, "MicroVM recovery dispatch is unavailable")
+	}
+	now := time.Now().UTC()
+	progressedSession := cloneHostedGenesisSession(convCtx.session)
+	progressedConv := cloneSoulAgentMintConversation(convCtx.conv)
+	progressedSession.Status = string(hostedgenesis.StatusInProgress)
+	progressedSession.Failure = hostedGenesisAssistantTurnRetryCarryForward(convCtx.session.Failure)
+	progressedSession.AssistantCheckpointRef = ""
+	progressedSession.DeclarationCheckpoint = nil
+	progressedSession.RequestID = strings.TrimSpace(ctx.RequestID)
+	progressedSession.UpdatedAt = now
+	progressedSession.CompletedAt = time.Time{}
+	progressedConv.Status = models.SoulMintConversationStatusInProgress
+	progressedConv.StatusReason = ""
+	progressedConv.LatestTurnID = turnSession.turnID
+	progressedConv.RequestID = strings.TrimSpace(ctx.RequestID)
+	progressedConv.UpdatedAt = now
+	progressedConv.CompletedAt = time.Time{}
+	binding := progressedSession.MicroVMSessionBinding()
+	if err := binding.Validate(); err != nil {
+		log.Printf("controlplane: hosted genesis assistant retry binding invalid agent_hash=%s conversation_hash=%s err=%v", soulMintInstanceReadAuditHash(convCtx.agentIDHex), soulMintInstanceReadAuditHash(convCtx.conversationID), err)
+		return nil, nil, newAppTheoryError(appErrCodeMicroVMUnavailable, "MicroVM recovery dispatch binding is invalid")
+	}
+	runCtx, cancel := context.WithTimeout(detachedMintConversationContext(ctx.Context()), hostedGenesisAcceptedTurnDispatchTimeout)
+	defer cancel()
+	dispatch, dispatchErr := s.hostedGenesisMicroVMDispatcher.DispatchMicroVMRun(runCtx, strings.TrimSpace(ctx.RequestID), binding)
+	if dispatchErr != nil {
+		log.Printf("controlplane: hosted genesis assistant retry dispatch failed agent_hash=%s conversation_hash=%s err=%v", soulMintInstanceReadAuditHash(convCtx.agentIDHex), soulMintInstanceReadAuditHash(convCtx.conversationID), dispatchErr)
+		return nil, nil, newAppTheoryError(appErrCodeMicroVMUnavailable, "MicroVM recovery dispatch failed")
+	}
+	if err := progressedSession.ApplyMicroVMLifecycleRef(dispatch.LifecycleRef); err != nil {
+		log.Printf("controlplane: hosted genesis assistant retry lifecycle ref rejected agent_hash=%s conversation_hash=%s err=%v", soulMintInstanceReadAuditHash(convCtx.agentIDHex), soulMintInstanceReadAuditHash(convCtx.conversationID), err)
+		return nil, nil, newAppTheoryError("app.internal", "failed to record microvm recovery dispatch")
+	}
+	if appErr := s.persistHostedGenesisAssistantRetryDispatch(ctx.Context(), convCtx.session, progressedSession, progressedConv, now); appErr != nil {
+		return nil, nil, appErr
+	}
+	progressedSession.Version = convCtx.session.Version + 1
+	return progressedSession, progressedConv, nil
+}
+
+func (s *Server) persistHostedGenesisAssistantRetryDispatch(ctx context.Context, failed *models.HostedGenesisSession, progressed *models.HostedGenesisSession, conv *models.SoulAgentMintConversation, now time.Time) *apptheory.AppTheoryError {
+	if s == nil || s.store == nil || s.store.DB == nil || failed == nil || progressed == nil || conv == nil {
+		return newAppTheoryError("app.internal", "internal error")
+	}
+	updateConv := &models.SoulAgentMintConversation{
+		AgentID:        conv.AgentID,
+		ConversationID: conv.ConversationID,
+		Status:         conv.Status,
+		StatusReason:   conv.StatusReason,
+		LatestTurnID:   conv.LatestTurnID,
+		RequestID:      conv.RequestID,
+		UpdatedAt:      conv.UpdatedAt,
+		CompletedAt:    conv.CompletedAt,
+	}
+	_ = updateConv.UpdateKeys()
+	if err := s.store.DB.TransactWrite(ctx, func(tx core.TransactionBuilder) error {
+		if err := addHostedGenesisSessionAssistantRetryWrite(tx, progressed, failed.Version); err != nil {
+			return err
+		}
+		tx.UpdateWithBuilder(updateConv, func(ub core.UpdateBuilder) error {
+			ub.Set("Status", updateConv.Status)
+			ub.Set("StatusReason", "")
+			ub.Set("LatestTurnID", updateConv.LatestTurnID)
+			ub.Set("RequestID", strings.TrimSpace(updateConv.RequestID))
+			ub.Set("UpdatedAt", now)
+			ub.Set("CompletedAt", time.Time{})
+			return nil
+		}, tabletheory.IfExists(), tabletheory.Condition("Status", "=", models.SoulMintConversationStatusFailed))
+		return nil
+	}); err != nil {
+		log.Printf("controlplane: hosted genesis assistant retry persist failed agent_hash=%s conversation_hash=%s err=%v", soulMintInstanceReadAuditHash(progressed.AgentID), soulMintInstanceReadAuditHash(progressed.ConversationID), err)
+		return newAppTheoryError("app.internal", "failed to persist assistant retry")
+	}
+	return nil
+}
+
+func addHostedGenesisSessionAssistantRetryWrite(tx core.TransactionBuilder, session *models.HostedGenesisSession, expectedVersion int64) error {
+	return addHostedGenesisSessionFailedRetryWrite(
+		tx,
+		session,
+		expectedVersion,
+		hostedgenesis.StatusInProgress,
+		hostedgenesis.FailureCodeAssistantTurnFailed,
+		"hosted genesis assistant retry write is invalid",
+		"hosted genesis assistant retry write requires in-progress assistant retry",
+	)
 }
 
 func (s *Server) retryHostedGenesisFailedDeclarationExtraction(ctx *apptheory.Context, convCtx soulInstanceBootstrapConversationContext) (*models.HostedGenesisSession, *models.SoulAgentMintConversation, *apptheory.AppTheoryError) {
@@ -262,13 +423,25 @@ func (s *Server) retryHostedGenesisFailedDeclarationExtraction(ctx *apptheory.Co
 }
 
 func addHostedGenesisSessionDeclarationExtractionRetryWrite(tx core.TransactionBuilder, session *models.HostedGenesisSession, expectedVersion int64) error {
+	return addHostedGenesisSessionFailedRetryWrite(
+		tx,
+		session,
+		expectedVersion,
+		hostedgenesis.StatusDeclarationExtractionPending,
+		hostedgenesis.FailureCodeDeclarationExtractionFailed,
+		"hosted genesis declaration extraction retry write is invalid",
+		"hosted genesis declaration extraction retry write requires pending declaration extraction",
+	)
+}
+
+func addHostedGenesisSessionFailedRetryWrite(tx core.TransactionBuilder, session *models.HostedGenesisSession, expectedVersion int64, targetStatus hostedgenesis.Status, failureCode hostedgenesis.FailureCode, invalidMessage string, requirementMessage string) error {
 	if tx == nil || session == nil {
-		return fmt.Errorf("hosted genesis declaration extraction retry write is invalid")
+		return fmt.Errorf("%s", invalidMessage)
 	}
-	if hostedgenesis.NormalizeStatus(session.Status) != hostedgenesis.StatusDeclarationExtractionPending ||
+	if hostedgenesis.NormalizeStatus(session.Status) != targetStatus ||
 		session.Failure == nil ||
-		session.Failure.Code != hostedgenesis.FailureCodeDeclarationExtractionFailed {
-		return fmt.Errorf("hosted genesis declaration extraction retry write requires pending declaration extraction")
+		session.Failure.Code != failureCode {
+		return fmt.Errorf("%s", requirementMessage)
 	}
 	if err := session.Failure.Validate(); err != nil {
 		return err

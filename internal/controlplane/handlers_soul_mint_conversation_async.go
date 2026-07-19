@@ -50,6 +50,7 @@ type hostedGenesisTurnSession struct {
 	idempotency        *models.SoulMintConversationIdempotency
 	conv               *models.SoulAgentMintConversation
 	session            *models.HostedGenesisSession
+	waitOnly           bool
 }
 
 func (s *Server) handleSoulMintConversationForRegistrationAsync(ctx *apptheory.Context, regCtx mintConversationRegistrationContext, instanceSlug string) (*apptheory.Response, error) {
@@ -70,14 +71,14 @@ func (s *Server) handleSoulMintConversationForRegistrationAsync(ctx *apptheory.C
 	if loadErr != nil {
 		return nil, loadErr
 	}
-	if session.modelSet == "" {
-		return nil, newAppTheoryError("app.bad_request", "model is required")
+	if appErr := requireHostedGenesisAcceptedTurnModel(session); appErr != nil {
+		return nil, appErr
 	}
 	if appErr := requireHostedGenesisMicroVMBindingReady(regCtx, session.session, instanceSlug, session.conversationID); appErr != nil {
 		return nil, appErr
 	}
-	if session.replayed {
-		return s.handleHostedGenesisReplayedTurn(ctx, regCtx, session, req)
+	if session.waitOnly || session.replayed {
+		return s.handleHostedGenesisWaitOnlyOrReplayedTurn(ctx, regCtx, session, req)
 	}
 	apiKey, apiKeyErr := s.apiKeyForMintConversationModel(ctx.Context(), session.modelSet)
 	if apiKeyErr != nil {
@@ -130,6 +131,20 @@ func (s *Server) handleSoulMintConversationForRegistrationAsync(ctx *apptheory.C
 	})
 }
 
+func (s *Server) handleHostedGenesisWaitOnlyOrReplayedTurn(ctx *apptheory.Context, regCtx mintConversationRegistrationContext, session hostedGenesisTurnSession, req soulMintConversationRequest) (*apptheory.Response, error) {
+	if session.waitOnly {
+		return s.handleHostedGenesisWaitOnlyTurn(ctx, regCtx, session, req)
+	}
+	return s.handleHostedGenesisReplayedTurn(ctx, regCtx, session, req)
+}
+
+func requireHostedGenesisAcceptedTurnModel(session hostedGenesisTurnSession) *apptheory.AppTheoryError {
+	if session.waitOnly || session.modelSet != "" {
+		return nil
+	}
+	return newAppTheoryError("app.bad_request", "model is required")
+}
+
 func (s *Server) handleHostedGenesisReplayedTurn(ctx *apptheory.Context, regCtx mintConversationRegistrationContext, session hostedGenesisTurnSession, req soulMintConversationRequest) (*apptheory.Response, error) {
 	if hostedGenesisReplayedTurnNeedsProgression(session) {
 		apiKey, apiKeyErr := s.apiKeyForMintConversationModel(ctx.Context(), session.modelSet)
@@ -149,6 +164,17 @@ func (s *Server) handleHostedGenesisReplayedTurn(ctx *apptheory.Context, regCtx 
 			LesserRequestID: req.LesserRequestID,
 		})
 	}
+	return hostedGenesisConversationJSONFromSession(http.StatusAccepted, session.session, session.conv, hostedGenesisProjectionOptions{
+		RegistrationID:  regCtx.reg.ID,
+		RequestID:       strings.TrimSpace(ctx.RequestID),
+		CollapseCreated: true,
+		CorrelationID:   req.CorrelationID,
+		IdempotencyKey:  req.IdempotencyKey,
+		LesserRequestID: req.LesserRequestID,
+	})
+}
+
+func (s *Server) handleHostedGenesisWaitOnlyTurn(ctx *apptheory.Context, regCtx mintConversationRegistrationContext, session hostedGenesisTurnSession, req soulMintConversationRequest) (*apptheory.Response, error) {
 	return hostedGenesisConversationJSONFromSession(http.StatusAccepted, session.session, session.conv, hostedGenesisProjectionOptions{
 		RegistrationID:  regCtx.reg.ID,
 		RequestID:       strings.TrimSpace(ctx.RequestID),
@@ -707,6 +733,14 @@ func (s *Server) loadExistingHostedGenesisTurnSession(ctx context.Context, sessi
 	session.session = hostSession
 	session.expectedStatus = hostedgenesis.NormalizeStatus(hostSession.Status)
 	session.expectedVersion = hostSession.Version
+	if appErr := hydrateHostedGenesisSessionRouteBinding(hostSession, regCtx, instanceSlug, session.conversationID); appErr != nil {
+		return hostedGenesisTurnSession{}, appErr
+	}
+	s.hydrateHostedGenesisCompatibilityConversation(ctx, &session, regCtx.agentIDHex)
+	if hostedGenesisStatusRequiresWait(session.expectedStatus) {
+		session.waitOnly = true
+		return session, nil
+	}
 	turnAccepting := hostedGenesisStatusAcceptsTurn(session.expectedStatus)
 	replayOnly := session.idempotency != nil && hostedGenesisStatusAcceptsIdempotentReplay(session.expectedStatus)
 	if !turnAccepting && !replayOnly {
@@ -720,10 +754,6 @@ func (s *Server) loadExistingHostedGenesisTurnSession(ctx context.Context, sessi
 	if appErr := applyHostedGenesisSessionModel(&session, hostSession.Model); appErr != nil {
 		return hostedGenesisTurnSession{}, appErr
 	}
-	if appErr := hydrateHostedGenesisSessionRouteBinding(hostSession, regCtx, instanceSlug, session.conversationID); appErr != nil {
-		return hostedGenesisTurnSession{}, appErr
-	}
-	s.hydrateHostedGenesisCompatibilityConversation(ctx, &session, regCtx.agentIDHex)
 	if session.modelSet == "" {
 		session.modelSet = defaultSoulMintConversationModel
 	}
@@ -815,7 +845,16 @@ func requireHostedGenesisMicroVMBindingReady(regCtx mintConversationRegistration
 
 func hostedGenesisStatusAcceptsTurn(status hostedgenesis.Status) bool {
 	switch status {
-	case hostedgenesis.StatusInProgress, hostedgenesis.StatusAssistantTurnReady, hostedgenesis.StatusCreated:
+	case hostedgenesis.StatusAssistantTurnReady, hostedgenesis.StatusCreated:
+		return true
+	default:
+		return false
+	}
+}
+
+func hostedGenesisStatusRequiresWait(status hostedgenesis.Status) bool {
+	switch status {
+	case hostedgenesis.StatusInProgress, hostedgenesis.StatusDeclarationExtractionPending:
 		return true
 	default:
 		return false

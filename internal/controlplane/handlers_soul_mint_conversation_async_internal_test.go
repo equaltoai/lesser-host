@@ -66,6 +66,75 @@ func TestH1_2_AcceptPathDoesNotPopulateMicroVMRefsBeforeWorkerDispatch(t *testin
 	}
 }
 
+func TestHostedGenesisInProgressNudgeReturnsWaitOnlyProjection(t *testing.T) {
+	const activeTurnID = "turn-active"
+
+	tdb := newMintConversationTestDB()
+	s := newMintConversationServer(tdb)
+	reg := mintConversationHandleReg()
+	dispatcher := &stubMicroVMDispatcher{t: t}
+	s.hostedGenesisMicroVMDispatcher = dispatcher
+	s.enqueueHostedGenesisMessage = func(_ context.Context, msg hostedgenesis.QueueMessage) error {
+		dispatcher.queueCalls++
+		dispatcher.lastQueue = msg
+		return nil
+	}
+	now := time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC)
+
+	expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, soulInstanceBootstrapTestInstanceSlug)
+	stubMintConversationRegistration(t, tdb, reg)
+	stubSoulInstanceBootstrapDomainAndInstance(t, tdb, reg.DomainNormalized, soulInstanceBootstrapTestInstanceSlug)
+	stubMintConversationIdentity(t, tdb, nil, theoryErrors.ErrItemNotFound)
+	stubMintConversationConversation(t, tdb, models.SoulAgentMintConversation{
+		AgentID:        reg.AgentID,
+		ConversationID: mintConversationTestConversationID,
+		Model:          "anthropic:claude-sonnet-4-6",
+		Messages:       encodeMintConversationBlob(`[{"role":"user","content":"first accepted turn"}]`),
+		Status:         models.SoulMintConversationStatusInProgress,
+		LatestTurnID:   activeTurnID,
+		RequestID:      "req-original",
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	})
+	session := hostedGenesisRecoverySessionFixture(t, reg, hostedgenesis.StatusInProgress, "")
+	session.LatestTurnID = activeTurnID
+	session.TurnLedger[0].TurnID = activeTurnID
+	stubSoulInstanceRecoverySession(t, tdb, session)
+
+	resp, err := s.handleSoulInstanceMintConversation(newSoulInstanceBootstrapContext(
+		map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
+		mustMarshalJSON(t, soulMintConversationRequest{
+			ConversationID: mintConversationTestConversationID,
+			Message:        "second nudge while the first turn is still running",
+		}),
+		map[string]string{"id": reg.ID},
+	))
+	if err != nil {
+		t.Fatalf("in-progress nudge should return wait projection, got err: %v", err)
+	}
+	if resp.Status != http.StatusAccepted {
+		t.Fatalf("expected wait-only 202 projection, got %#v", resp)
+	}
+	var out hostedGenesisConversationResponse
+	if err := json.Unmarshal(resp.Body, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.Conversation.Status != models.SoulMintConversationStatusInProgress ||
+		out.Conversation.LatestTurnID != activeTurnID ||
+		out.Conversation.MessageCount != 1 ||
+		out.Conversation.PollAfterSeconds <= 0 {
+		t.Fatalf("expected current in-progress turn projection with poll guidance, got %#v", out.Conversation)
+	}
+	if len(out.Conversation.Messages) != 1 || out.Conversation.Messages[0].Content != "first accepted turn" {
+		t.Fatalf("wait-only projection must not append the nudge, got %#v", out.Conversation.Messages)
+	}
+	if dispatcher.queueCalls != 0 || dispatcher.calls != 0 {
+		t.Fatalf("wait-only nudge must not dispatch a second MicroVM run, queue=%d dispatch=%d", dispatcher.queueCalls, dispatcher.calls)
+	}
+	tdb.db.AssertNotCalled(t, "TransactWrite", mock.Anything, mock.Anything)
+	tdb.qBudget.AssertNumberOfCalls(t, "First", 0)
+}
+
 func TestHostedGenesisFinalAffirmationStartsDeclarationExtraction(t *testing.T) {
 	tdb := newMintConversationTestDB()
 	s := newMintConversationServer(tdb)

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/mock"
+	ttmocks "github.com/theory-cloud/tabletheory/v2/pkg/mocks"
 
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
 	"github.com/equaltoai/lesser-host/internal/store/models"
@@ -211,6 +212,66 @@ func TestSoulInstanceRecoverMintConversation_RetriesFailedDeclarationExtraction(
 		t.Fatalf("expected actionable declaration extraction retry, got %#v", out.Conversation)
 	}
 	assertHostedGenesisResponseNoForbiddenValues(t, resp.Body, hostedGenesisStatusForbiddenValues())
+}
+
+func TestSoulInstanceRecoverMintConversation_RetriesFailedAssistantTurn(t *testing.T) {
+	tdb := newMintConversationTestDB()
+	s := newMintConversationServer(tdb)
+	reg := mintConversationHandleReg()
+	dispatcher := &stubMicroVMDispatcher{t: t}
+	s.hostedGenesisMicroVMDispatcher = dispatcher
+	now := time.Date(2026, 3, 7, 12, 5, 0, 0, time.UTC)
+
+	expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, soulInstanceBootstrapTestInstanceSlug)
+	stubMintConversationRegistration(t, tdb, reg)
+	stubSoulInstanceBootstrapDomainAndInstance(t, tdb, reg.DomainNormalized, soulInstanceBootstrapTestInstanceSlug)
+	stubSoulInstanceRecoveryConversation(t, tdb, models.SoulAgentMintConversation{
+		AgentID:        reg.AgentID,
+		ConversationID: mintConversationTestConversationID,
+		Model:          "anthropic:claude-sonnet-4-6",
+		Messages:       encodeMintConversationBlob(`[{"role":"user","content":"describe the agent"}]`),
+		Status:         models.SoulMintConversationStatusFailed,
+		StatusReason:   hostedGenesisFailureAssistantTurnFailed,
+		LatestTurnID:   "turn-assistant",
+		ChargedCredits: soulMintConversationStreamBaseCredits,
+		RequestID:      "req-failed",
+		CreatedAt:      time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC),
+		UpdatedAt:      now,
+		CompletedAt:    now,
+	})
+	session := failedAssistantTurnRecoveryHostedGenesisSessionFixture(t, reg, now)
+	stubSoulInstanceRecoverySession(t, tdb, session)
+	expectHostedGenesisAssistantTurnRetryDispatchWrite(t, tdb, "turn-assistant")
+
+	resp, err := s.handleSoulInstanceRecoverMintConversation(newSoulInstanceBootstrapContext(
+		map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
+		nil,
+		map[string]string{"id": reg.ID, "conversationId": mintConversationTestConversationID},
+	))
+	if err != nil {
+		t.Fatalf("unexpected assistant turn recovery err: %v", err)
+	}
+	if resp.Status != http.StatusAccepted {
+		t.Fatalf("expected 202 assistant retry response, got %#v", resp)
+	}
+	if dispatcher.calls != 1 || dispatcher.reconcileCalls != 0 {
+		t.Fatalf("expected one assistant redispatch and no reconcile, got run=%d reconcile=%d", dispatcher.calls, dispatcher.reconcileCalls)
+	}
+	if dispatcher.lastBinding.ConversationID != mintConversationTestConversationID || dispatcher.lastBinding.TurnID != "turn-assistant" {
+		t.Fatalf("expected assistant retry dispatch bound to latest failed turn, got %#v", dispatcher.lastBinding)
+	}
+	var out hostedGenesisConversationResponse
+	if err := json.Unmarshal(resp.Body, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.Conversation.Status != models.SoulMintConversationStatusInProgress ||
+		out.Conversation.LatestTurnID != "turn-assistant" ||
+		out.Conversation.Failure != nil ||
+		out.Conversation.PollAfterSeconds <= 0 {
+		t.Fatalf("expected actionable assistant turn retry projection, got %#v", out.Conversation)
+	}
+	assertHostedGenesisResponseNoForbiddenValues(t, resp.Body, hostedGenesisStatusForbiddenValues())
+	tdb.qBudget.AssertNumberOfCalls(t, "First", 0)
 }
 
 func TestSoulInstanceRecoverMintConversation_ExhaustedDeclarationExtractionRetryRequiresRestart(t *testing.T) {
@@ -443,6 +504,80 @@ func failedRecoveryDeclarationFailure() *hostedgenesis.Failure {
 			RetryAfterSeconds: 30,
 		},
 	}
+}
+
+func failedAssistantTurnRecoveryHostedGenesisSessionFixture(t *testing.T, reg models.SoulAgentRegistration, now time.Time) models.HostedGenesisSession {
+	t.Helper()
+	session := models.HostedGenesisSession{
+		InstanceSlug:   soulInstanceBootstrapTestInstanceSlug,
+		RegistrationID: reg.ID,
+		AgentID:        reg.AgentID,
+		ConversationID: mintConversationTestConversationID,
+		Status:         string(hostedgenesis.StatusFailed),
+		Model:          "anthropic:claude-sonnet-4-6",
+		LatestTurnID:   "turn-assistant",
+		MessageCount:   1,
+		TurnLedger: []hostedgenesis.TurnLedgerEntry{{
+			TurnID:         "turn-assistant",
+			ChargedCredits: soulMintConversationStreamBaseCredits,
+			MessageCount:   1,
+			AcceptedAt:     now.Add(-5 * time.Minute),
+		}},
+		RequestID:   "req-failed",
+		TraceIDs:    &hostedgenesis.TraceIDs{HostRequestID: "req-failed", CorrelationID: "corr-safe"},
+		Failure:     failedAssistantTurnRecoveryFailure(),
+		CreatedAt:   time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC),
+		UpdatedAt:   now,
+		CompletedAt: now,
+	}
+	if err := session.BeforeCreate(); err != nil {
+		t.Fatalf("session fixture: %v", err)
+	}
+	return session
+}
+
+func failedAssistantTurnRecoveryFailure() *hostedgenesis.Failure {
+	return &hostedgenesis.Failure{
+		Code:      hostedgenesis.FailureCodeAssistantTurnFailed,
+		Message:   hostedGenesisFailureMessage(hostedGenesisFailureAssistantTurnFailed),
+		Retryable: true,
+		Recovery: hostedgenesis.Recovery{
+			Action:            hostedgenesis.RecoveryActionRetrySameStep,
+			Reason:            hostedGenesisFailureAssistantTurnFailed,
+			MaxAttempts:       2,
+			RetryAfterSeconds: 5,
+		},
+	}
+}
+
+func expectHostedGenesisAssistantTurnRetryDispatchWrite(t *testing.T, tdb *mintConversationTestDB, wantTurnID string) {
+	t.Helper()
+	tb := new(ttmocks.MockTransactionBuilder)
+	tdb.db.TransactWriteBuilder = tb
+	tdb.db.On("TransactWrite", mock.Anything, mock.Anything).Return(nil).Once()
+	tb.On("UpdateWithBuilder", mock.AnythingOfType("*models.HostedGenesisSession"), mock.Anything, mock.Anything).Return(tb).Once().Run(func(args mock.Arguments) {
+		session := testutil.RequireMockArg[*models.HostedGenesisSession](t, args, 0)
+		if hostedgenesis.NormalizeStatus(session.Status) != hostedgenesis.StatusInProgress ||
+			session.LatestTurnID != wantTurnID ||
+			session.Failure == nil ||
+			session.Failure.Code != hostedgenesis.FailureCodeAssistantTurnFailed ||
+			session.Failure.Recovery.MaxAttempts != 1 {
+			t.Fatalf("expected assistant retry session to redispatch latest turn with carried budget, got %#v", session)
+		}
+		if session.MicroVMExecutionID == "" || session.ExecutionStateRef == "" || session.MicroVMLifecycleRef == nil {
+			t.Fatalf("expected assistant retry dispatch to refresh MicroVM refs, got %#v", session)
+		}
+	})
+	tb.On("UpdateWithBuilder", mock.AnythingOfType("*models.SoulAgentMintConversation"), mock.Anything, mock.Anything).Return(tb).Once().Run(func(args mock.Arguments) {
+		conv := testutil.RequireMockArg[*models.SoulAgentMintConversation](t, args, 0)
+		if conv.Status != models.SoulMintConversationStatusInProgress ||
+			conv.StatusReason != "" ||
+			conv.LatestTurnID != wantTurnID ||
+			!conv.CompletedAt.IsZero() {
+			t.Fatalf("expected assistant retry conversation alignment, got %#v", conv)
+		}
+	})
+	tb.On("Execute").Return(nil).Once()
 }
 
 func assertHostedGenesisFailedRecoveryProjection(t *testing.T, conversation hostedGenesisConversationProjection) {

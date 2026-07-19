@@ -840,8 +840,11 @@ func TestSoulInstanceMintConversation_IdempotentRetryDoesNotDebitOrAppend(t *tes
 			t.Fatalf("idempotent replay must not append an inline assistant message: %#v", out.Conversation.Messages)
 		}
 	}
-	if dispatcher.calls != 0 || dispatcher.queueCalls != 1 {
-		t.Fatalf("expected one queued MicroVM dispatch on replay progression, dispatch=%d queue=%d", dispatcher.calls, dispatcher.queueCalls)
+	if out.Conversation.PollAfterSeconds <= 0 {
+		t.Fatalf("expected idempotent in-progress replay to tell caller to poll, got %#v", out.Conversation)
+	}
+	if dispatcher.calls != 0 || dispatcher.queueCalls != 0 {
+		t.Fatalf("idempotent in-progress replay must not dispatch a second MicroVM run, dispatch=%d queue=%d", dispatcher.calls, dispatcher.queueCalls)
 	}
 	tdb.db.AssertNumberOfCalls(t, "TransactWrite", 0)
 	tdb.qBudget.AssertNumberOfCalls(t, "First", 0)
@@ -861,7 +864,8 @@ func TestSoulInstanceMintConversation_ContinueRejectsModelChange(t *testing.T) {
 		AgentID:        reg.AgentID,
 		ConversationID: mintConversationTestConversationID,
 		Model:          "anthropic:claude-sonnet-4-6",
-		Status:         models.SoulMintConversationStatusInProgress,
+		Status:         models.SoulMintConversationStatusAssistantTurnReady,
+		LatestTurnID:   "turn-ready",
 		CreatedAt:      time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC),
 	})
 
