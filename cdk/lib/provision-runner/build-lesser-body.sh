@@ -14,6 +14,7 @@ echo "Deploying lesser-body (AgentCore MCP)..."
 STATE_DIR="$HOME/.lesser/$APP_SLUG/$BASE_DOMAIN"
 mkdir -p "$STATE_DIR"
 ensure_lesser_host_instance_key_secret
+ensure_soul_binding_integration_secret
 STAGE_DOMAIN="$BASE_DOMAIN"
 if [ "$STAGE" != "live" ]; then STAGE_DOMAIN="$STAGE.$BASE_DOMAIN"; fi
 
@@ -42,7 +43,7 @@ BODY_TEMPLATE_CERTIFY="${BODY_TEMPLATE_CERTIFY:-true}"
 BODY_TEMPLATE_CERTIFY_NORMALIZED=$(printf "%s" "$BODY_TEMPLATE_CERTIFY" | tr "[:upper:]" "[:lower:]")
 if [ "$BODY_TEMPLATE_CERTIFY_NORMALIZED" = "true" ] || [ "$BODY_TEMPLATE_CERTIFY_NORMALIZED" = "1" ] || [ "$BODY_TEMPLATE_CERTIFY_NORMALIZED" = "yes" ] || [ "$BODY_TEMPLATE_CERTIFY_NORMALIZED" = "on" ]; then
   echo "Certifying lesser-body CloudFormation changeset..."
-  if run_lesser_body_helper_with_capture "$BODY_TEMPLATE_CERT_LOG" env AWS_PROFILE=managed bash "$BODY_RELEASE_DIR/deploy-lesser-body-from-release.sh" --stack-name "$BODY_STACK_NAME" --asset-bucket "$BODY_ASSET_BUCKET" --asset-prefix "$BODY_ASSET_PREFIX" --app "$APP_SLUG" --stage "$STAGE" --base-domain "$BASE_DOMAIN" --no-execute-changeset; then
+  if run_lesser_body_helper_with_capture "$BODY_TEMPLATE_CERT_LOG" env AWS_PROFILE=managed LESSER_SOUL_BINDING_INTEGRATION_BEARER_ARN="$SOUL_BINDING_INTEGRATION_KEY_ARN" bash "$BODY_RELEASE_DIR/deploy-lesser-body-from-release.sh" --stack-name "$BODY_STACK_NAME" --asset-bucket "$BODY_ASSET_BUCKET" --asset-prefix "$BODY_ASSET_PREFIX" --app "$APP_SLUG" --stage "$STAGE" --base-domain "$BASE_DOMAIN" --no-execute-changeset; then
     write_lesser_body_artifact "$BODY_TEMPLATE_CERT_PATH" "passed" "$BODY_TAG" "$BODY_TEMPLATE_PATH" "$BODY_STACK_NAME" "cloudformation_deploy_no_execute_changeset" "$BODY_TEMPLATE_CERT_LOG"
     upload_optional_artifact "$BODY_TEMPLATE_CERT_PATH" "${BODY_TEMPLATE_CERT_S3_KEY:-}"
   else
@@ -60,7 +61,7 @@ else
   upload_optional_artifact "$BODY_FAILURE_PATH" "${BODY_FAILURE_S3_KEY:-}"
   fail "lesser-body template certification cannot be disabled"
 fi
-if ! run_lesser_body_helper_with_capture "$BODY_DEPLOY_LOG" env AWS_PROFILE=managed bash "$BODY_RELEASE_DIR/deploy-lesser-body-from-release.sh" --stack-name "$BODY_STACK_NAME" --asset-bucket "$BODY_ASSET_BUCKET" --asset-prefix "$BODY_ASSET_PREFIX" --app "$APP_SLUG" --stage "$STAGE" --base-domain "$BASE_DOMAIN"; then
+if ! run_lesser_body_helper_with_capture "$BODY_DEPLOY_LOG" env AWS_PROFILE=managed LESSER_SOUL_BINDING_INTEGRATION_BEARER_ARN="$SOUL_BINDING_INTEGRATION_KEY_ARN" bash "$BODY_RELEASE_DIR/deploy-lesser-body-from-release.sh" --stack-name "$BODY_STACK_NAME" --asset-bucket "$BODY_ASSET_BUCKET" --asset-prefix "$BODY_ASSET_PREFIX" --app "$APP_SLUG" --stage "$STAGE" --base-domain "$BASE_DOMAIN"; then
   write_lesser_body_artifact "$BODY_FAILURE_PATH" "failed" "$BODY_TAG" "$BODY_TEMPLATE_PATH" "$BODY_STACK_NAME" "cloudformation_deploy" "$BODY_DEPLOY_LOG"
   upload_optional_artifact "$BODY_FAILURE_PATH" "${BODY_FAILURE_S3_KEY:-}"
   fail "lesser-body deploy helper failed for $BODY_TEMPLATE_PATH"
@@ -70,5 +71,5 @@ BODY_LAMBDA_ARN=$(aws ssm get-parameter --profile managed --name "$BODY_PARAM" -
 test -n "$BODY_LAMBDA_ARN" && test "$BODY_LAMBDA_ARN" != "null"
 BODY_RECEIPT_PATH="$STATE_DIR/body-state.json"
 BODY_RELEASE_GIT_SHA=$(jq -r '.git_sha // empty' "$BODY_RELEASE_DIR/lesser-body-release.json")
-jq -n --arg stage "$STAGE" --arg base_domain "$BASE_DOMAIN" --arg mcp_url "https://api.$STAGE_DOMAIN/mcp/{actor}" --arg version "$BODY_TAG" --arg mcp_lambda_arn "$BODY_LAMBDA_ARN" --arg release_git_sha "$BODY_RELEASE_GIT_SHA" --arg template_path "lesser-body-managed-$STAGE.template.json" --arg asset_prefix "$BODY_ASSET_PREFIX" --slurpfile deploy "$BODY_RELEASE_DIR/lesser-body-deploy.json" --slurpfile instance_key "$MANAGED_INSTANCE_KEY_RECEIPT_PATH" '{version:1,stage:$stage,base_domain:$base_domain,mcp_url:$mcp_url,lesser_body_version:$version,mcp_lambda_arn:$mcp_lambda_arn,managed_instance_key:$instance_key[0],managed_deploy_artifacts:{mode:"release",checksums_path:"checksums.txt",release_manifest_path:"lesser-body-release.json",release:{name:"lesser-body",version:$version,git_sha:$release_git_sha,source_checkout_required:false,npm_install_required:false},deploy_artifact:{kind:"lesser_body_managed_deploy",path:"lesser-body.zip",manifest_path:"lesser-body-deploy.json",script_path:"deploy-lesser-body-from-release.sh",template_path:$template_path,asset_prefix:$asset_prefix,auxiliary_assets:($deploy[0].auxiliary_assets // [])}}}' > "$BODY_RECEIPT_PATH"
+jq -n --arg stage "$STAGE" --arg base_domain "$BASE_DOMAIN" --arg mcp_url "https://api.$STAGE_DOMAIN/mcp/{actor}" --arg version "$BODY_TAG" --arg mcp_lambda_arn "$BODY_LAMBDA_ARN" --arg release_git_sha "$BODY_RELEASE_GIT_SHA" --arg template_path "lesser-body-managed-$STAGE.template.json" --arg asset_prefix "$BODY_ASSET_PREFIX" --slurpfile deploy "$BODY_RELEASE_DIR/lesser-body-deploy.json" --slurpfile instance_key "$MANAGED_INSTANCE_KEY_RECEIPT_PATH" --slurpfile soul_binding "$SOUL_BINDING_INTEGRATION_RECEIPT_PATH" '{version:1,stage:$stage,base_domain:$base_domain,mcp_url:$mcp_url,lesser_body_version:$version,mcp_lambda_arn:$mcp_lambda_arn,managed_instance_key:$instance_key[0],soul_binding_integration:$soul_binding[0],managed_deploy_artifacts:{mode:"release",checksums_path:"checksums.txt",release_manifest_path:"lesser-body-release.json",release:{name:"lesser-body",version:$version,git_sha:$release_git_sha,source_checkout_required:false,npm_install_required:false},deploy_artifact:{kind:"lesser_body_managed_deploy",path:"lesser-body.zip",manifest_path:"lesser-body-deploy.json",script_path:"deploy-lesser-body-from-release.sh",template_path:$template_path,asset_prefix:$asset_prefix,auxiliary_assets:($deploy[0].auxiliary_assets // [])}}}' > "$BODY_RECEIPT_PATH"
 aws s3 cp "$BODY_RECEIPT_PATH" "s3://$ARTIFACT_BUCKET/$RECEIPT_S3_KEY"

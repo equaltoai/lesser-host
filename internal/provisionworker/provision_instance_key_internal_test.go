@@ -25,13 +25,23 @@ import (
 
 const provisionTestManagedInstanceKeyID = "38ed91d202121369e6ad8f501c2839590ba5427b51cf16422f446d99f031601b"
 
+const provisionTestSoulBindingKeyID = "5b0a2f9f8a3f0d3c8a3b1e0f2c4d6e8f0a1b2c3d4e5f60718293a4b5c6d7e8f9"
+
+func provisionTestSoulBindingSecretARN(accountID, region, slug, stage string) string {
+	return fmt.Sprintf("arn:aws:secretsmanager:%s:%s:secret:%s/%s/soul-binding-integration", region, accountID, stage, slug)
+}
+
 func provisionReceiptWithManagedInstanceKey(accountID, region, slug, stage, secretARN string) string {
 	return fmt.Sprintf(
-		`{"app":"x","base_domain":"d","account_id":%q,"region":%q,"hosted_zone":{"id":"/hostedzone/Z1","name":"d."},"managed_instance_key":{"version":1,"source":"deploy-runner-managed-profile","secret_arn":%q,"key_id":%q,"instance_slug":%q,"stage":%q,"verified_at":"2026-06-27T00:00:00Z"}}`,
+		`{"app":"x","base_domain":"d","account_id":%q,"region":%q,"hosted_zone":{"id":"/hostedzone/Z1","name":"d."},"managed_instance_key":{"version":1,"source":"deploy-runner-managed-profile","secret_arn":%q,"key_id":%q,"instance_slug":%q,"stage":%q,"verified_at":"2026-06-27T00:00:00Z"},"soul_binding_integration":{"version":1,"source":"deploy-runner-managed-profile","secret_arn":%q,"key_id":%q,"instance_slug":%q,"stage":%q,"verified_at":"2026-06-27T00:00:00Z"}}`,
 		accountID,
 		region,
 		secretARN,
 		provisionTestManagedInstanceKeyID,
+		slug,
+		stage,
+		provisionTestSoulBindingSecretARN(accountID, region, slug, stage),
+		provisionTestSoulBindingKeyID,
 		slug,
 		stage,
 	)
@@ -221,6 +231,9 @@ func TestAdvanceProvisionReceiptIngest_AppliesManagedInstanceKeyProofWithoutTarg
 	require.Equal(t, models.ProvisionJobStatusOK, job.Status)
 	require.Contains(t, job.ReceiptJSON, `"managed_instance_key"`)
 	require.Contains(t, job.ReceiptJSON, secretARN)
+	require.Contains(t, job.ReceiptJSON, `"soul_binding_integration"`)
+	require.Contains(t, job.ReceiptJSON, provisionTestSoulBindingSecretARN("922120356241", "us-east-1", "theory", "live"))
 	require.NotContains(t, strings.ToLower(job.ReceiptJSON), "lhk_")
+	require.NotContains(t, strings.ToLower(job.ReceiptJSON), "lsbi_")
 	require.Empty(t, stsClient.lastArn)
 }

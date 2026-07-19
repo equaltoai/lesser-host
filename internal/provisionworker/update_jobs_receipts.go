@@ -200,13 +200,27 @@ func (s *Server) advanceUpdatePhaseReceiptLoaded(
 		setUpdateJobPhaseFailed(job, spec.phase, "failed to validate managed instance key receipt: "+keyErr.Error())
 		return 0, false, s.failUpdateJob(ctx, job, requestID, now, "receipt_instance_key_invalid", "failed to validate managed instance key receipt: "+keyErr.Error())
 	}
+	if soulErr := s.applyUpdateSoulBindingIntegrationReceiptJSON(job, receiptJSON); soulErr != nil {
+		setUpdateJobPhaseFailed(job, spec.phase, "failed to validate soul binding integration receipt: "+soulErr.Error())
+		return 0, false, s.failUpdateJob(ctx, job, requestID, now, "receipt_soul_binding_invalid", "failed to validate soul binding integration receipt: "+soulErr.Error())
+	}
 	job.Step = updateStepDone
 	job.Status = models.UpdateJobStatusOK
 	job.Note = strings.TrimSpace(spec.successNote)
 	job.ErrorCode = ""
 	job.ErrorMessage = ""
 	setUpdateJobPhaseSucceeded(job, spec.phase)
-	if err := s.persistUpdateJobAndInstance(ctx, job, requestID, now, spec.instanceUpdate(job, now)); err != nil {
+	instanceUpdate := spec.instanceUpdate(job, now)
+	withSoulBinding := func(ub core.UpdateBuilder) error {
+		if instanceUpdate != nil {
+			if err := instanceUpdate(ub); err != nil {
+				return err
+			}
+		}
+		setSoulBindingIntegrationInstanceARN(ub, job.SoulBindingIntegrationSecretARN)
+		return nil
+	}
+	if err := s.persistUpdateJobAndInstance(ctx, job, requestID, now, withSoulBinding); err != nil {
 		return 0, false, err
 	}
 	return 0, true, nil

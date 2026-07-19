@@ -53,7 +53,11 @@ type Instance struct {
 	LesserHostBaseURL              string    `theorydb:"attr:lesserHostBaseUrl" json:"lesser_host_base_url,omitempty"`
 	LesserHostAttestationsURL      string    `theorydb:"attr:lesserHostAttestationsUrl" json:"lesser_host_attestations_url,omitempty"`
 	LesserHostInstanceKeySecretARN string    `theorydb:"attr:lesserHostInstanceKeySecretArn" json:"lesser_host_instance_key_secret_arn,omitempty"`
-	TranslationEnabled             *bool     `theorydb:"attr:translationEnabled" json:"translation_enabled,omitempty"`
+	// SoulBindingIntegrationSecretARN is the shared Ptah-to-Lesser soul-binding integration
+	// secret in the managed instance account. The same ARN is injected into Lesser (receiver)
+	// and lesser-body (caller); only the ARN is stored here, never the bearer value.
+	SoulBindingIntegrationSecretARN string `theorydb:"attr:soulBindingIntegrationSecretArn" json:"soul_binding_integration_secret_arn,omitempty"`
+	TranslationEnabled              *bool  `theorydb:"attr:translationEnabled" json:"translation_enabled,omitempty"`
 
 	// Tips config for hosted Lesser instances (applied via provisioning input).
 	TipEnabled         *bool  `theorydb:"attr:tipEnabled" json:"tip_enabled,omitempty"`
