@@ -110,6 +110,45 @@ func TestHostedGenesisSessionProjectionUsesTerminalFailureOverStaleConversation(
 	}
 }
 
+func TestHostedGenesisSessionProjectionExhaustedDeclarationRetryRequiresRestart(t *testing.T) {
+	t.Parallel()
+
+	assertHostedGenesisDeclarationRetryProjectsRestart(t, true, 0, "exhausted declaration retry")
+}
+
+func TestHostedGenesisSessionProjectionNonRetryableDeclarationRetryRequiresRestart(t *testing.T) {
+	t.Parallel()
+
+	assertHostedGenesisDeclarationRetryProjectsRestart(t, false, 2, "non-retryable declaration retry")
+}
+
+func assertHostedGenesisDeclarationRetryProjectsRestart(t *testing.T, retryable bool, maxAttempts int, caseName string) {
+	t.Helper()
+
+	session := testHostedGenesisSessionProjectionBase()
+	session.Status = string(hostedgenesis.StatusFailed)
+	session.Failure = &hostedgenesis.Failure{
+		Code:      hostedgenesis.FailureCodeDeclarationExtractionFailed,
+		Message:   hostedgenesis.FailureMessage(hostedgenesis.FailureCodeDeclarationExtractionFailed),
+		Retryable: retryable,
+		Recovery: hostedgenesis.Recovery{
+			Action:            hostedgenesis.RecoveryActionRetrySameStep,
+			MaxAttempts:       maxAttempts,
+			RetryAfterSeconds: 30,
+			Reason:            string(hostedgenesis.FailureCodeDeclarationExtractionFailed),
+		},
+	}
+
+	resp := buildHostedGenesisConversationResponseFromSession(session, nil, hostedGenesisProjectionOptions{})
+	if resp.Conversation.Failure == nil ||
+		resp.Conversation.Failure.Retryable ||
+		resp.Conversation.Failure.Recovery.Action != hostedGenesisRecoveryRestartSoulBootstrap ||
+		resp.Conversation.Failure.Recovery.MaxAttempts != 0 ||
+		resp.Conversation.Failure.Recovery.RetryAfterSeconds != 0 {
+		t.Fatalf("expected %s to project restart guidance, got %#v", caseName, resp.Conversation.Failure)
+	}
+}
+
 func TestHostedGenesisProducedDeclarationsFromSessionTrustsCheckpointHash(t *testing.T) {
 	t.Parallel()
 

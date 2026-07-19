@@ -71,7 +71,7 @@ func buildHostedGenesisConversationResponseFromSession(session *models.HostedGen
 		responseProjection.ProducedDeclarations = buildHostedGenesisProducedDeclarationsFromSession(session, conv, requestID)
 	}
 	if projection.Status == hostedgenesis.StatusFailed {
-		responseProjection.Failure = hostedGenesisFailureFromSession(projection.Failure)
+		responseProjection.Failure = hostedGenesisFailureFromSessionForSession(session, projection.Failure)
 	}
 	return hostedGenesisConversationResponse{
 		Version:      hostedGenesisConversationVersion,
@@ -93,8 +93,15 @@ func hostedGenesisInvalidProjectionFailure() *hostedgenesis.Failure {
 }
 
 func hostedGenesisFailureFromSession(failure *hostedgenesis.Failure) *hostedGenesisFailure {
+	return hostedGenesisFailureFromSessionForSession(nil, failure)
+}
+
+func hostedGenesisFailureFromSessionForSession(session *models.HostedGenesisSession, failure *hostedgenesis.Failure) *hostedGenesisFailure {
 	if failure == nil {
 		return hostedGenesisFailureFromReason(hostedGenesisFailureInvalidCompletionState)
+	}
+	if hostedGenesisDeclarationExtractionRetriesExhausted(session) {
+		failure = hostedGenesisExhaustedDeclarationExtractionFailure(failure)
 	}
 	code := failure.Code
 	if hostedgenesis.IsDeclarationValidationCode(failure.Recovery.Reason) {
@@ -112,6 +119,19 @@ func hostedGenesisFailureFromSession(failure *hostedgenesis.Failure) *hostedGene
 			Reason:            reason,
 		},
 	}
+}
+
+func hostedGenesisExhaustedDeclarationExtractionFailure(failure *hostedgenesis.Failure) *hostedgenesis.Failure {
+	if failure == nil {
+		return nil
+	}
+	exhausted := *failure
+	exhausted.Retryable = false
+	exhausted.Recovery.Action = hostedgenesis.RecoveryActionRestartSoulBootstrap
+	exhausted.Recovery.MaxAttempts = 0
+	exhausted.Recovery.RetryAfterSeconds = 0
+	exhausted.Recovery.Reason = hostedGenesisFailureDeclarationExtractionFailed
+	return &exhausted
 }
 
 func buildHostedGenesisProducedDeclarationsFromSession(session *models.HostedGenesisSession, conv *models.SoulAgentMintConversation, requestID string) *hostedGenesisProducedDeclarations {

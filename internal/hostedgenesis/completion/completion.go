@@ -230,6 +230,10 @@ func (w *CompletionWriter) RecordFailure(ctx context.Context, turn CompletionTur
 	if err := assertTurnMatch(session, turn, expectedStatus); err != nil {
 		return nil, err
 	}
+	f = applyPriorRecoveryBudget(f, session.Failure)
+	if err := f.Validate(); err != nil {
+		return nil, err
+	}
 	conversation, conversationErr := w.store.GetSoulAgentMintConversation(ctx, session.AgentID, session.ConversationID)
 	if conversationErr != nil || conversation == nil {
 		return nil, fmt.Errorf("%w: %v", ErrCompletionConversationMissing, conversationErr)
@@ -257,6 +261,32 @@ func (w *CompletionWriter) RecordFailure(ctx context.Context, turn CompletionTur
 		return nil, fmt.Errorf("%w: %v", ErrCompletionConflict, err)
 	}
 	return progressed, nil
+}
+
+func applyPriorRecoveryBudget(next hostedgenesis.Failure, prior *hostedgenesis.Failure) hostedgenesis.Failure {
+	if prior == nil ||
+		next.Code != hostedgenesis.FailureCodeDeclarationExtractionFailed ||
+		prior.Code != hostedgenesis.FailureCodeDeclarationExtractionFailed {
+		return next
+	}
+	switch prior.Recovery.Action {
+	case hostedgenesis.RecoveryActionRestartSoulBootstrap:
+		next.Retryable = false
+		next.Recovery.Action = hostedgenesis.RecoveryActionRestartSoulBootstrap
+		next.Recovery.MaxAttempts = 0
+		next.Recovery.RetryAfterSeconds = 0
+	case hostedgenesis.RecoveryActionRetrySameStep:
+		if prior.Recovery.MaxAttempts < next.Recovery.MaxAttempts {
+			next.Recovery.MaxAttempts = prior.Recovery.MaxAttempts
+		}
+		if next.Recovery.MaxAttempts <= 0 {
+			next.Retryable = false
+			next.Recovery.Action = hostedgenesis.RecoveryActionRestartSoulBootstrap
+			next.Recovery.MaxAttempts = 0
+			next.Recovery.RetryAfterSeconds = 0
+		}
+	}
+	return next
 }
 
 // assertTurnMatch enforces the per-turn idempotency precondition. The loaded
