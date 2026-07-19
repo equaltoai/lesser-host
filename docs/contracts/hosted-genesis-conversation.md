@@ -207,3 +207,23 @@ should not wait for an explicit local `created` projection before persisting `ho
 9. Human-visible evidence is compact. Responses carry ids, status, typed recovery, optional bounded `messages`, and
    declaration summary/evidence; they do not expose raw Host credentials, raw Instance API keys, provider secrets,
    signing material, SSM/AWS details, MicroVM endpoint tokens, target-account details, or raw infrastructure state.
+
+## Project 48 M11 conversation-lifetime MicroVM actor contract
+
+ADR 0010 locks the Hosted Genesis MicroVM actor contract for the Project 48 M11 implementation line. The public
+Lesser-facing route family above remains unchanged, but the execution contract for #942/#943 is now:
+
+- first accepted user turn launches or resumes an AppTheory MicroVM session with `session_id=conversation_id`;
+- Host remains control/gateway/observer and durable `HostedGenesisSession` source of truth;
+- the in-VM runtime owns provider SDK session/trace, turn sequencing, ask/wait/revise/extract/finalize/fail decisions,
+  and safe checkpoint metadata;
+- Host uses only AppTheory MicroVM controller/provider/session operations (`Run`, `Get`, `Invoke`, `Suspend`, `Resume`,
+  `Terminate`, and safe registry/reconstruction) for MicroVM lifecycle; no raw AWS MicroVM SDK path or local framework
+  substitute is allowed;
+- direct VM writes to Host truth are allowed only through status/version/checkpoint conditional guards plus
+  tenant/auth/id envelope checks; retry budgets, billing/debit policy, publication, and final governed commits remain
+  Host-owned;
+- `MaximumDurationSeconds` caps one active in-VM provider/declaration step, while `IdlePolicy` and explicit
+  checkpoint/relaunch/replay semantics cover human wait gaps;
+- until live lab evidence proves process-memory preservation across human-scale suspend/resume, process memory is an
+  optimization only, never the recovery source of truth.
