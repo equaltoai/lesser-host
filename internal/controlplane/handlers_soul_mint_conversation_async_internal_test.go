@@ -12,11 +12,9 @@ import (
 	"github.com/stretchr/testify/mock"
 	apptheory "github.com/theory-cloud/apptheory/runtime"
 	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
-	ttmocks "github.com/theory-cloud/tabletheory/v2/pkg/mocks"
 
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
 	"github.com/equaltoai/lesser-host/internal/store/models"
-	"github.com/equaltoai/lesser-host/internal/testutil"
 )
 
 // TestH1_2_AcceptPathEnqueuesMicroVMDispatchAndReturns202 proves the production
@@ -135,7 +133,7 @@ func TestHostedGenesisInProgressNudgeReturnsWaitOnlyProjection(t *testing.T) {
 	tdb.qBudget.AssertNumberOfCalls(t, "First", 0)
 }
 
-func TestHostedGenesisFinalAffirmationStartsDeclarationExtraction(t *testing.T) {
+func TestHostedGenesisFinalAffirmationQueuesMicroVMActorTurn(t *testing.T) {
 	tdb := newMintConversationTestDB()
 	s := newMintConversationServer(tdb)
 	reg := mintConversationHandleReg()
@@ -157,8 +155,6 @@ func TestHostedGenesisFinalAffirmationStartsDeclarationExtraction(t *testing.T) 
 		CreatedAt:      time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC),
 	})
 	expectSoulInstanceMintConversationDebit(t, tdb, reg.AgentID, false)
-	expectHostedGenesisFinalAffirmationExtractionDebit(t, tdb)
-	expectHostedGenesisExtractionDispatchWrite(t, tdb)
 
 	resp, err := s.handleSoulInstanceMintConversation(newSoulInstanceBootstrapContext(
 		map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
@@ -169,20 +165,25 @@ func TestHostedGenesisFinalAffirmationStartsDeclarationExtraction(t *testing.T) 
 		t.Fatalf("unexpected err: %v", err)
 	}
 	if resp.Status != http.StatusAccepted {
-		t.Fatalf("expected final affirmation to return 202 pending extraction, got %#v", resp)
+		t.Fatalf("expected final affirmation to return 202 accepted actor turn, got %#v", resp)
 	}
 	var out hostedGenesisConversationResponse
 	if err := json.Unmarshal(resp.Body, &out); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if out.Conversation.Status != models.SoulMintConversationStatusDeclarationExtractionPending {
-		t.Fatalf("expected declaration_extraction_pending after affirmation, got %#v", out.Conversation)
+	if out.Conversation.Status != models.SoulMintConversationStatusInProgress {
+		t.Fatalf("expected final affirmation to remain an accepted in_progress actor turn, got %#v", out.Conversation)
 	}
-	if dispatcher.queueCalls != 0 {
-		t.Fatalf("final affirmation must not enqueue another assistant turn, queued %#v", dispatcher.lastQueue)
+	if dispatcher.queueCalls != 1 {
+		t.Fatalf("final affirmation must enqueue the accepted turn to the MicroVM actor, queued %#v", dispatcher.lastQueue)
 	}
-	if dispatcher.calls != 1 {
-		t.Fatalf("final affirmation must dispatch declaration extraction once, got %d", dispatcher.calls)
+	if dispatcher.calls != 0 {
+		t.Fatalf("final affirmation must not synchronously dispatch a Host extraction job, got %d dispatcher calls", dispatcher.calls)
+	}
+	if dispatcher.lastQueue.Step != hostedgenesis.StepMicroVMDispatch ||
+		dispatcher.lastQueue.ConversationID != mintConversationTestConversationID ||
+		dispatcher.lastQueue.TurnID == "" {
+		t.Fatalf("final affirmation queue message must be bound to the accepted actor turn, got %#v", dispatcher.lastQueue)
 	}
 	if len(out.Conversation.Messages) == 0 || out.Conversation.Messages[len(out.Conversation.Messages)-1].Content != "I affirm." {
 		t.Fatalf("final affirmation must remain in the durable transcript, got %#v", out.Conversation.Messages)
@@ -374,35 +375,6 @@ func assertSoulInstanceMintConversationDispatchedResponse(t *testing.T, resp *ap
 		t.Fatalf("response leaked credential material: %s", string(resp.Body))
 	}
 	return out
-}
-
-func expectHostedGenesisFinalAffirmationExtractionDebit(t *testing.T, tdb *mintConversationTestDB) {
-	t.Helper()
-	tb, _ := tdb.db.TransactWriteBuilder.(*ttmocks.MockTransactionBuilder)
-	if tb == nil {
-		tb = new(ttmocks.MockTransactionBuilder)
-		tdb.db.TransactWriteBuilder = tb
-	}
-	tdb.qBudget.On("First", mock.AnythingOfType("*models.InstanceBudgetMonth")).Return(nil).Run(func(args mock.Arguments) {
-		dest := testutil.RequireMockArg[*models.InstanceBudgetMonth](t, args, 0)
-		*dest = models.InstanceBudgetMonth{InstanceSlug: soulInstanceBootstrapTestInstanceSlug, Month: time.Now().UTC().Format("2006-01"), IncludedCredits: 100, UsedCredits: 0}
-	}).Once()
-	tdb.db.On("TransactWrite", mock.Anything, mock.Anything).Return(nil).Once()
-	tb.On("Put", mock.AnythingOfType("*models.UsageLedgerEntry"), mock.Anything).Return(tb).Once().Run(func(args mock.Arguments) {
-		entry := testutil.RequireMockArg[*models.UsageLedgerEntry](t, args, 0)
-		if entry.Module != soulMintConversationExtractModule || entry.RequestedCredits != soulMintConversationExtractBaseCredits {
-			t.Fatalf("unexpected extraction ledger entry: %#v", entry)
-		}
-	})
-	tb.On("UpdateWithBuilder", mock.AnythingOfType("*models.HostedGenesisSession"), mock.Anything, mock.Anything).Return(tb).Once().Run(func(args mock.Arguments) {
-		session := testutil.RequireMockArg[*models.HostedGenesisSession](t, args, 0)
-		if hostedgenesis.NormalizeStatus(session.Status) != hostedgenesis.StatusDeclarationExtractionPending {
-			t.Fatalf("expected final affirmation to transition to declaration_extraction_pending, got %#v", session)
-		}
-	})
-	tb.On("UpdateWithBuilder", mock.AnythingOfType("*models.SoulAgentMintConversation"), mock.Anything, mock.Anything).Return(tb).Once()
-	tb.On("UpdateWithBuilder", mock.AnythingOfType("*models.InstanceBudgetMonth"), mock.Anything, mock.Anything).Return(tb).Once()
-	tb.On("Execute").Return(nil).Once()
 }
 
 func jsonString(s string) string {

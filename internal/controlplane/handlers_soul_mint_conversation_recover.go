@@ -694,6 +694,7 @@ func hostedGenesisDeclarationExtractionRetrySessionFields(session *models.Hosted
 		{name: "DeclarationCheckpoint", value: session.DeclarationCheckpoint},
 		{name: "Failure", value: session.Failure},
 		{name: "TraceIDs", value: session.TraceIDs},
+		{name: "VMCheckpoint", value: session.VMCheckpoint},
 		{name: "RequestID", value: session.RequestID},
 		{name: "UpdatedAt", value: session.UpdatedAt},
 		{name: "CompletedAt", value: session.CompletedAt},

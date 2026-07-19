@@ -190,33 +190,40 @@ func TestRecordAssistantTurnReady_StaleVersionRejected(t *testing.T) {
 	}
 }
 
-func TestRecordDeclarationReady_AppliesFromPending(t *testing.T) {
-	store := &fakeCompletionStore{session: newFakeSession("acme", "conv-1", "turn-1", hostedgenesis.StatusDeclarationExtractionPending, 5)}
-	w := NewCompletionWriter(store, func() time.Time { return time.Unix(2000, 0).UTC() })
+func TestRecordDeclarationReady_AppliesFromActorOwnedStatuses(t *testing.T) {
+	for name, status := range map[string]hostedgenesis.Status{
+		"in-progress actor finalization": hostedgenesis.StatusInProgress,
+		"legacy pending extraction":      hostedgenesis.StatusDeclarationExtractionPending,
+	} {
+		t.Run(name, func(t *testing.T) {
+			store := &fakeCompletionStore{session: newFakeSession("acme", "conv-1", "turn-1", status, 5)}
+			w := NewCompletionWriter(store, func() time.Time { return time.Unix(2000, 0).UTC() })
 
-	cp := hostedgenesis.DeclarationCheckpoint{
-		DeclarationID:   "decl-1",
-		DeclarationHash: "sha256:" + hex64(),
-		CheckpointRef:   "checkpoint://hosted-genesis/conv-1/declaration/turn-1",
-		ProducedAt:      time.Unix(2000, 0).UTC(),
-		RegistrationID:  "reg-1",
-		ConversationID:  "conv-1",
-		AgentID:         "agent-1",
-		MessageCount:    2,
-		RequestID:       "req-1",
-	}
-	got, err := w.RecordDeclarationReady(context.Background(), CompletionTurn{InstanceSlug: "acme", ConversationID: "conv-1", TurnID: "turn-1", RequestID: "req-1"}, cp)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got.Status != string(hostedgenesis.StatusDeclarationReady) {
-		t.Fatalf("expected declaration_ready, got %q", got.Status)
-	}
-	if got.DeclarationCheckpoint == nil || got.DeclarationCheckpoint.DeclarationID != "decl-1" {
-		t.Fatalf("expected declaration checkpoint persisted, got %+v", got.DeclarationCheckpoint)
-	}
-	if store.lastExpectS != hostedgenesis.StatusDeclarationExtractionPending {
-		t.Fatalf("expected conditional on declaration_extraction_pending, got %q", store.lastExpectS)
+			cp := hostedgenesis.DeclarationCheckpoint{
+				DeclarationID:   "decl-1",
+				DeclarationHash: "sha256:" + hex64(),
+				CheckpointRef:   "checkpoint://hosted-genesis/conv-1/declaration/turn-1",
+				ProducedAt:      time.Unix(2000, 0).UTC(),
+				RegistrationID:  "reg-1",
+				ConversationID:  "conv-1",
+				AgentID:         "agent-1",
+				MessageCount:    2,
+				RequestID:       "req-1",
+			}
+			got, err := w.RecordDeclarationReady(context.Background(), CompletionTurn{InstanceSlug: "acme", ConversationID: "conv-1", TurnID: "turn-1", RequestID: "req-1"}, cp)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got.Status != string(hostedgenesis.StatusDeclarationReady) {
+				t.Fatalf("expected declaration_ready, got %q", got.Status)
+			}
+			if got.DeclarationCheckpoint == nil || got.DeclarationCheckpoint.DeclarationID != "decl-1" {
+				t.Fatalf("expected declaration checkpoint persisted, got %+v", got.DeclarationCheckpoint)
+			}
+			if store.lastExpectS != status {
+				t.Fatalf("expected conditional on %s, got %q", status, store.lastExpectS)
+			}
+		})
 	}
 }
 

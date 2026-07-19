@@ -209,15 +209,11 @@ func (r *turnRunner) runPreparedTurnAndPersist(ctx context.Context, turn complet
 	case actorActionAsk, actorActionRevise:
 		return r.runAssistantTurnAndPersist(ctx, turn, in, actor, decision)
 	case actorActionExtractFinalize:
-		// The VM actor owns the extract/finalize decision, but Host billing and
-		// status guards still decide whether extraction was authorized. This slice
-		// only executes extraction after Host truth is already in
-		// declaration_extraction_pending; an in_progress final-affirmation decision
-		// remains a recoverable conflict until the Host debit/checkpoint seam is
-		// inverted in the follow-on gateway work.
-		if hostedgenesis.NormalizeStatus(in.session.Status) != hostedgenesis.StatusDeclarationExtractionPending {
-			return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeInvalidCompletionState, "declaration extraction requires Host debit authorization")
-		}
+		// The VM actor owns the extract/finalize decision. Host has already
+		// accepted the user turn, applied billing/idempotency policy, and left the
+		// latest turn in guarded Host truth; RecordDeclarationReady enforces the
+		// current status/version/turn checkpoint instead of requiring a separate
+		// Host-orchestrated declaration_extraction_pending job.
 		return r.runDeclarationExtractionAndPersist(ctx, turn, in, actor, decision)
 	case actorActionWait:
 		return nil
