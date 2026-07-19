@@ -54,6 +54,14 @@ func (s *Server) completeHostedGenesisSoulMintConversationForRegistration(ctx *a
 	if readyErr := requireHostedGenesisSessionAssistantReady(session); readyErr != nil {
 		return nil, readyErr
 	}
+	// Hosted Genesis actor turns normally reach declaration_ready through the
+	// MicroVM workload. This compatibility path is used only when a caller
+	// supplies explicit declarations; it must not reintroduce Host-side provider
+	// extraction or final-affirmation heuristics for the instance-key flow.
+	if parseMintConversationCompleteDeclarations(ctx) == "" {
+		projectionOpts.RequestID = firstNonEmpty(projectionOpts.RequestID, strings.TrimSpace(ctx.RequestID))
+		return hostedGenesisConversationJSONFromSession(http.StatusAccepted, session, conv, projectionOpts)
+	}
 	declarationsJSON, extractUsage, appErr := s.resolveMintConversationCompletion(ctx, regCtx, conv, conversationID, now)
 	if appErr != nil {
 		return nil, appErr

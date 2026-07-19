@@ -169,10 +169,13 @@ func (w *CompletionWriter) RecordAssistantTurnReadyWithCheckpoint(ctx context.Co
 	return progressed, nil
 }
 
-// RecordDeclarationReady transitions a declaration_extraction_pending (or
-// assistant_turn_ready) session to declaration_ready with a publish-ready
-// DeclarationCheckpoint. The checkpoint must pass its Validate and the session's
-// CanPublish gate (enforced by the store model's BeforeUpdate).
+// RecordDeclarationReady transitions an in_progress, declaration_extraction_pending,
+// or assistant_turn_ready session to declaration_ready with a publish-ready
+// DeclarationCheckpoint. The in_progress path is the M11 MicroVM actor gateway:
+// Host has already accepted/debited the user turn and the actor owns the final
+// extract/finalize decision under Host status/version/checkpoint guards. The
+// checkpoint must pass its Validate and the session's CanPublish gate (enforced
+// by the store model's BeforeUpdate).
 //
 // Idempotent per turn ID against the expected status precondition.
 func (w *CompletionWriter) RecordDeclarationReady(ctx context.Context, turn CompletionTurn, checkpoint hostedgenesis.DeclarationCheckpoint) (*models.HostedGenesisSession, error) {
@@ -198,7 +201,9 @@ func (w *CompletionWriter) RecordDeclarationReadyWithCheckpoint(ctx context.Cont
 		return nil, fmt.Errorf("%w: %v", ErrCompletionSessionMissing, err)
 	}
 	expectedStatus := hostedgenesis.NormalizeStatus(session.Status)
-	if expectedStatus != hostedgenesis.StatusDeclarationExtractionPending && expectedStatus != hostedgenesis.StatusAssistantTurnReady {
+	if expectedStatus != hostedgenesis.StatusInProgress &&
+		expectedStatus != hostedgenesis.StatusDeclarationExtractionPending &&
+		expectedStatus != hostedgenesis.StatusAssistantTurnReady {
 		return nil, fmt.Errorf("%w: session status %q is not declaration-extractable", ErrCompletionConflict, session.Status)
 	}
 	if err := assertTurnMatch(session, turn, expectedStatus); err != nil {

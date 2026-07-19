@@ -112,10 +112,6 @@ func (s *Server) handleSoulMintConversationForRegistrationAsync(ctx *apptheory.C
 		log.Printf("controlplane: hosted genesis accepted promotion update failed agent_hash=%s conversation_hash=%s err=%v", soulMintInstanceReadAuditHash(regCtx.agentIDHex), soulMintInstanceReadAuditHash(session.conversationID), appErr)
 	}
 
-	if hostedGenesisFinalAffirmationCompletesReview(session, message) {
-		return s.startHostedGenesisFinalAffirmationCompletion(ctx, regCtx, session, conv, req)
-	}
-
 	progressedSession, progressedConv, status, progressErr := s.progressHostedGenesisAcceptedTurn(ctx.Context(), regCtx, session, conv, updatedMessages, apiKey, strings.TrimSpace(ctx.RequestID))
 	if progressErr != nil {
 		return nil, progressErr
@@ -183,88 +179,6 @@ func (s *Server) handleHostedGenesisWaitOnlyTurn(ctx *apptheory.Context, regCtx 
 		IdempotencyKey:  req.IdempotencyKey,
 		LesserRequestID: req.LesserRequestID,
 	})
-}
-
-func (s *Server) startHostedGenesisFinalAffirmationCompletion(ctx *apptheory.Context, regCtx mintConversationRegistrationContext, session hostedGenesisTurnSession, conv *models.SoulAgentMintConversation, req soulMintConversationRequest) (*apptheory.Response, error) {
-	if !session.sessionIsNew {
-		session.session.Version = session.expectedVersion + 1
-	}
-	convCtx := soulInstanceBootstrapConversationContext{
-		soulInstanceBootstrapRegistrationContext: soulInstanceBootstrapRegistrationContext{
-			soulInstanceBootstrapContext: soulInstanceBootstrapContext{instanceSlug: strings.TrimSpace(session.session.InstanceSlug)},
-			reg:                          regCtx.reg,
-			inst:                         regCtx.inst,
-			agentIDHex:                   regCtx.agentIDHex,
-		},
-		session:        session.session,
-		conv:           conv,
-		conversationID: session.conversationID,
-	}
-	if err := s.startHostedGenesisDeclarationExtraction(ctx, convCtx); err != nil {
-		return nil, err
-	}
-	return hostedGenesisConversationJSONFromSession(http.StatusAccepted, convCtx.session, convCtx.conv, hostedGenesisProjectionOptions{
-		RegistrationID:  regCtx.reg.ID,
-		RequestID:       strings.TrimSpace(ctx.RequestID),
-		CollapseCreated: true,
-		CorrelationID:   req.CorrelationID,
-		IdempotencyKey:  req.IdempotencyKey,
-		LesserRequestID: req.LesserRequestID,
-	})
-}
-
-func hostedGenesisFinalAffirmationCompletesReview(session hostedGenesisTurnSession, message string) bool {
-	if hostedgenesis.NormalizeStatus(string(session.expectedStatus)) != hostedgenesis.StatusAssistantTurnReady {
-		return false
-	}
-	if !hostedGenesisLastAssistantRequestedFinalAffirmation(session.existingMessages) {
-		return false
-	}
-	return hostedGenesisMessageAffirmsFinalDeclaration(message)
-}
-
-func hostedGenesisLastAssistantRequestedFinalAffirmation(messages []soulMintConversationMessage) bool {
-	for i := len(messages) - 1; i >= 0; i-- {
-		msg := messages[i]
-		if !strings.EqualFold(strings.TrimSpace(msg.Role), hostedGenesisTranscriptRoleAssistant) {
-			continue
-		}
-		content := strings.ToLower(strings.TrimSpace(msg.Content))
-		if content == "" {
-			return false
-		}
-		return strings.Contains(content, "do you affirm") &&
-			strings.Contains(content, "foundation of your minted soul") &&
-			strings.Contains(content, "inscribed")
-	}
-	return false
-}
-
-func hostedGenesisMessageAffirmsFinalDeclaration(message string) bool {
-	normalized := strings.ToLower(strings.TrimSpace(message))
-	if normalized == "" {
-		return false
-	}
-	normalized = strings.Trim(normalized, " \t\r\n.!?")
-	if normalized == "" {
-		return false
-	}
-	if strings.Contains(normalized, "not affirm") ||
-		strings.Contains(normalized, "do not affirm") ||
-		strings.Contains(normalized, "don't affirm") ||
-		strings.Contains(normalized, "change ") ||
-		strings.Contains(normalized, "correct ") ||
-		strings.Contains(normalized, "qualify ") ||
-		strings.Contains(normalized, "strike ") {
-		return false
-	}
-	switch normalized {
-	case "yes", "yes i affirm", "i affirm", "affirmed", "i do", "confirmed", "i confirm", "approved", "i approve", "proceed":
-		return true
-	}
-	return strings.Contains(normalized, "i affirm") ||
-		strings.Contains(normalized, "i confirm") ||
-		strings.Contains(normalized, "i approve")
 }
 
 func hostedGenesisReplayedTurnNeedsProgression(session hostedGenesisTurnSession) bool {
@@ -1114,6 +1028,10 @@ func cloneHostedGenesisSession(session *models.HostedGenesisSession) *models.Hos
 		trace := *session.TraceIDs
 		copy.TraceIDs = &trace
 	}
+	if session.VMCheckpoint != nil {
+		checkpoint := *session.VMCheckpoint
+		copy.VMCheckpoint = &checkpoint
+	}
 	return &copy
 }
 
@@ -1156,6 +1074,7 @@ func addHostedGenesisSessionWrite(tx core.TransactionBuilder, session *models.Ho
 		ub.Set("DeclarationCheckpoint", session.DeclarationCheckpoint)
 		ub.Set("Failure", session.Failure)
 		ub.Set("TraceIDs", session.TraceIDs)
+		ub.Set("VMCheckpoint", session.VMCheckpoint)
 		ub.Set("RequestID", session.RequestID)
 		ub.Set("UpdatedAt", session.UpdatedAt)
 		ub.Set("CompletedAt", session.CompletedAt)
@@ -1165,6 +1084,14 @@ func addHostedGenesisSessionWrite(tx core.TransactionBuilder, session *models.Ho
 	return nil
 }
 
+// startHostedGenesisDeclarationExtraction is retained only as a bounded
+// compatibility/recovery seam for sessions that are already in the legacy
+// declaration_extraction_pending lane or explicit #944/#945 follow-up work. The
+// Project 48 M11 accepted-turn path must not call it to decide final
+// affirmation or to create a follow-on extraction job: current Hosted Genesis
+// turns are delivered to the AppTheory MicroVM actor, and that actor owns the
+// ask/wait/revise/extract/finalize/fail decision under Host status/version
+// guards.
 func (s *Server) startHostedGenesisDeclarationExtraction(ctx *apptheory.Context, convCtx soulInstanceBootstrapConversationContext) error {
 	if convCtx.session == nil {
 		return newAppTheoryError("app.internal", "internal error")

@@ -483,14 +483,12 @@ func runH1D3ReconciliationObservationCase(t *testing.T, status hostedgenesis.Sta
 	}
 }
 
-// TestH1_3_CompleteAssistantReadyWithoutDeclarationsDispatchesExtraction proves
-// the complete path services a declaration_extraction_pending transition by
-// dispatching a follow-on M16 controller run command on the same MicroVM
-// session via the dispatcher seam (not by enqueuing a user-visible queue
-// command). The pending extraction is VM-serviced; the pending status is not a
-// permanent trap. This is the production extraction-dispatch reachability site
-// (kills G7).
-func TestH1_3_CompleteAssistantReadyWithoutDeclarationsDispatchesExtraction(t *testing.T) {
+// TestH1_3_CompleteAssistantReadyWithoutDeclarationsDoesNotDispatchExtraction
+// proves the M11 gateway inversion: `/complete` is a polling/finalize gate, not
+// a Host-side declaration extraction conversation machine. Accepted user turns
+// are delivered to the AppTheory MicroVM actor; the VM owns the
+// extract/finalize decision.
+func TestH1_3_CompleteAssistantReadyWithoutDeclarationsDoesNotDispatchExtraction(t *testing.T) {
 	tdb := newMintConversationTestDB()
 	s := newMintConversationServer(tdb)
 	reg := mintConversationHandleReg()
@@ -513,8 +511,6 @@ func TestH1_3_CompleteAssistantReadyWithoutDeclarationsDispatchesExtraction(t *t
 		CreatedAt:      time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC),
 	})
 	stubMintConversationIdentity(t, tdb, nil, theoryErrors.ErrItemNotFound)
-	expectSoulInstanceMintConversationExtractionDebit(t, tdb)
-	expectHostedGenesisExtractionDispatchWrite(t, tdb)
 
 	resp, err := s.handleSoulInstanceCompleteMintConversation(newSoulInstanceBootstrapContext(
 		map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
@@ -531,13 +527,10 @@ func TestH1_3_CompleteAssistantReadyWithoutDeclarationsDispatchesExtraction(t *t
 	if err := json.Unmarshal(resp.Body, &out); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if out.Conversation.Status != models.SoulMintConversationStatusDeclarationExtractionPending || out.Conversation.ProducedDeclarations != nil {
-		t.Fatalf("expected declaration extraction progress without terminal declarations, got %#v", out)
+	if out.Conversation.Status != models.SoulMintConversationStatusAssistantTurnReady || out.Conversation.ProducedDeclarations != nil {
+		t.Fatalf("expected assistant-ready polling projection without terminal declarations, got %#v", out)
 	}
-	if dispatcher.calls != 1 {
-		t.Fatalf("expected exactly one follow-on M16 extraction run dispatch, got %d", dispatcher.calls)
-	}
-	if dispatcher.lastBinding.ConversationID != mintConversationTestConversationID {
-		t.Fatalf("expected extraction dispatch bound to the pending conversation, got %#v", dispatcher.lastBinding)
+	if dispatcher.calls != 0 || dispatcher.queueCalls != 0 {
+		t.Fatalf("complete without declarations must not dispatch Host extraction, dispatch=%d queue=%d", dispatcher.calls, dispatcher.queueCalls)
 	}
 }

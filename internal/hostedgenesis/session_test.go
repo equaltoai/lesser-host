@@ -20,6 +20,7 @@ func TestStatusTransitionTable(t *testing.T) {
 		{StatusCreated, StatusInProgress},
 		{StatusInProgress, StatusAssistantTurnReady},
 		{StatusInProgress, StatusDeclarationExtractionPending},
+		{StatusInProgress, StatusDeclarationReady},
 		{StatusAssistantTurnReady, StatusInProgress},
 		{StatusAssistantTurnReady, StatusDeclarationExtractionPending},
 		{StatusDeclarationExtractionPending, StatusDeclarationReady},
@@ -40,7 +41,6 @@ func TestStatusTransitionTable(t *testing.T) {
 		to   Status
 	}{
 		{StatusCreated, StatusDeclarationReady},
-		{StatusInProgress, StatusDeclarationReady},
 		{StatusDeclarationExtractionPending, StatusAssistantTurnReady},
 		{StatusDeclarationReady, StatusInProgress},
 		{StatusFailed, StatusInProgress},

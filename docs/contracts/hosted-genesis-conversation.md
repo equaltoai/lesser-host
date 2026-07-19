@@ -61,14 +61,15 @@ by `status=declaration_ready` plus a valid declaration checkpoint (`declaration_
 `checkpoint_ref`, registration/conversation/agent ids, message count, request id, and produced timestamp). Typed
 `failed` recovery actions are server-authored and limited to the locked recovery enum below.
 
-For the production Lesser instance-key path, the final minted-soul affirmation is an ordinary accepted user turn with
-completion semantics. When the previous assistant message asks the final affirmation question and the user affirms,
-Host persists that affirmation and transitions to `declaration_extraction_pending` rather than enqueueing another
-assistant response. The MicroVM declaration extraction then advances the same durable conversation to
-`declaration_ready` with `produced_declarations`; the registration-scoped instance-key status read projects that
-terminal declaration evidence without publishing as a read side effect. Lesser polls Host status until
-`declaration_ready`, then calls the explicit instance-key `/finalize` publish route (`PublishHostedSoul`) to publish the
-hosted/off-chain registration from the same Host state.
+For the production Lesser instance-key path, the final minted-soul affirmation is an ordinary accepted user turn delivered
+to the AppTheory MicroVM conversation actor. Host persists that turn, applies idempotency/debit policy, leaves the durable
+session in `in_progress`, and dispatches the accepted turn through the MicroVM gateway. The VM actor, not Host-side
+keyword heuristics or a Host follow-on extraction job, decides whether to ask, wait, revise, extract/finalize, or fail.
+When the actor finalizes, it advances the same durable conversation to `declaration_ready` with `produced_declarations`
+under Host status/version/checkpoint guards; the registration-scoped instance-key status read projects that terminal
+declaration evidence without publishing as a read side effect. Lesser polls Host status until `declaration_ready`, then
+calls the explicit instance-key `/finalize` publish route (`PublishHostedSoul`) to publish the hosted/off-chain
+registration from the same Host state.
 
 ### Idempotency ledger semantics
 

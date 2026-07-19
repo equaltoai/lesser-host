@@ -216,17 +216,21 @@ func (s *Server) handleSoulInstanceCompleteMintConversation(ctx *apptheory.Conte
 	if publishGuardErr != nil {
 		return nil, soulInstanceBootstrapConversationErrorFromAppError(publishGuardErr)
 	}
-	if hostedgenesis.NormalizeStatus(convCtx.session.Status) != hostedgenesis.StatusAssistantTurnReady &&
-		hostedgenesis.NormalizeStatus(convCtx.session.Status) != hostedgenesis.StatusDeclarationExtractionPending {
+	status := hostedgenesis.NormalizeStatus(convCtx.session.Status)
+	if status != hostedgenesis.StatusAssistantTurnReady &&
+		status != hostedgenesis.StatusDeclarationExtractionPending {
 		return hostedGenesisConversationJSONFromSession(http.StatusAccepted, convCtx.session, convCtx.conv, hostedGenesisProjectionOptions{RegistrationID: convCtx.reg.ID, RequestID: strings.TrimSpace(ctx.RequestID), CollapseCreated: true})
 	}
-	if hostedgenesis.NormalizeStatus(convCtx.session.Status) == hostedgenesis.StatusDeclarationExtractionPending && parseMintConversationCompleteDeclarations(ctx) == "" {
+	if status == hostedgenesis.StatusDeclarationExtractionPending && parseMintConversationCompleteDeclarations(ctx) == "" {
 		return hostedGenesisConversationJSONFromSession(http.StatusAccepted, convCtx.session, convCtx.conv, hostedGenesisProjectionOptions{RegistrationID: convCtx.reg.ID, RequestID: strings.TrimSpace(ctx.RequestID), CollapseCreated: true})
 	}
+	// Project 48 M11: Hosted Genesis completion is no longer a Host-side
+	// declaration-extraction trigger. The VM conversation actor owns the
+	// extract/finalize decision after Host accepts the user's turn and dispatches
+	// it through AppTheory Invoke. This endpoint remains a polling/finalize gate;
+	// explicit declarations are handled only as a bounded compatibility seam for
+	// older clients and are not the ordinary hosted path.
 	if parseMintConversationCompleteDeclarations(ctx) == "" {
-		if err := s.startHostedGenesisDeclarationExtraction(ctx, convCtx); err != nil {
-			return nil, soulInstanceBootstrapConversationErrorFromError(err)
-		}
 		return hostedGenesisConversationJSONFromSession(http.StatusAccepted, convCtx.session, convCtx.conv, hostedGenesisProjectionOptions{RegistrationID: convCtx.reg.ID, RequestID: strings.TrimSpace(ctx.RequestID), CollapseCreated: true})
 	}
 	resp, err := s.completeSoulMintConversationForRegistrationWithProjection(ctx, mintConversationRegistrationContext{

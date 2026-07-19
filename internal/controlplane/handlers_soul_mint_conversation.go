@@ -1191,7 +1191,11 @@ func (s *Server) updateMintConversationStatus(ctx context.Context, agentIDHex st
 	}
 }
 
-// handleSoulCompleteMintConversation marks a conversation as completed and extracts declarations.
+// handleSoulCompleteMintConversation marks a legacy conversation as completed
+// and extracts declarations. The Hosted Genesis instance-key path is projected
+// through handleSoulInstanceCompleteMintConversation; after Project 48 M11 that
+// path is a polling/finalize gate and no longer decides final affirmation or
+// starts Host-side extraction for ordinary actor turns.
 func (s *Server) handleSoulCompleteMintConversation(ctx *apptheory.Context) (*apptheory.Response, error) {
 	regCtx, appErr := s.requireMintConversationRegistrationContext(ctx, false)
 	if appErr != nil {

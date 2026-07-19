@@ -307,8 +307,8 @@ func TestRunTurnAndPersist_TwoUserTurnsVMActorOwnsDecisionsAndCheckpoint(t *test
 	assertVMCheckpoint(t, &firstCheckpoint, actorActionAsk, actorStepAssistantTurn, hostedgenesis.StatusInProgress, hostedgenesis.StatusAssistantTurnReady, "turn-1")
 
 	// Host remains the debit/status/version source of truth: the final owner
-	// affirmation is accepted and authorized by Host as
-	// declaration_extraction_pending before the VM actor may extract/finalize.
+	// affirmation is accepted as an ordinary paid in_progress turn, then the VM
+	// actor decides whether to extract/finalize under the latest turn guards.
 	transcript := models.DecodeSoulMintConversationBlob(turnStore.conv.Messages)
 	var messages []llm.MintConversationMessage
 	if err := json.Unmarshal([]byte(transcript), &messages); err != nil {
@@ -320,25 +320,25 @@ func TestRunTurnAndPersist_TwoUserTurnsVMActorOwnsDecisionsAndCheckpoint(t *test
 		t.Fatalf("marshal second turn transcript: %v", err)
 	}
 	turnStore.conv.Messages = models.EncodeSoulMintConversationBlob(string(encoded))
-	turnStore.conv.Status = models.SoulMintConversationStatusDeclarationExtractionPending
+	turnStore.conv.Status = models.SoulMintConversationStatusInProgress
 	turnStore.conv.LatestTurnID = secondTurnID
-	turnStore.session.Status = string(hostedgenesis.StatusDeclarationExtractionPending)
+	turnStore.session.Status = string(hostedgenesis.StatusInProgress)
 	turnStore.session.LatestTurnID = secondTurnID
 	turnStore.session.MessageCount = len(messages)
 	turnStore.session.Version = compStore.session.Version + 1
 	turnStore.session.TurnLedger = append(turnStore.session.TurnLedger, hostedgenesis.TurnLedgerEntry{TurnID: secondTurnID, MessageCount: len(messages), AcceptedAt: time.Unix(3001, 0).UTC()})
-	compStore.session.Status = string(hostedgenesis.StatusDeclarationExtractionPending)
+	compStore.session.Status = string(hostedgenesis.StatusInProgress)
 	compStore.session.LatestTurnID = secondTurnID
 	compStore.session.MessageCount = len(messages)
 	compStore.session.Version = turnStore.session.Version
 	compStore.session.TurnLedger = append(compStore.session.TurnLedger, hostedgenesis.TurnLedgerEntry{TurnID: secondTurnID, MessageCount: len(messages), AcceptedAt: time.Unix(3001, 0).UTC()})
-	compStore.conversation.Status = models.SoulMintConversationStatusDeclarationExtractionPending
+	compStore.conversation.Status = models.SoulMintConversationStatusInProgress
 
 	secondTurn := completion.CompletionTurn{InstanceSlug: "acme", ConversationID: "conv-1", TurnID: secondTurnID, RequestID: "req-2"}
 	if err := runner.runTurnAndPersist(context.Background(), secondTurn); err != nil {
 		t.Fatalf("second VM actor turn failed: %v", err)
 	}
-	assertVMCheckpoint(t, compStore.session.VMCheckpoint, actorActionExtractFinalize, actorStepDeclarationExtract, hostedgenesis.StatusDeclarationExtractionPending, hostedgenesis.StatusDeclarationReady, secondTurnID)
+	assertVMCheckpoint(t, compStore.session.VMCheckpoint, actorActionExtractFinalize, actorStepDeclarationExtract, hostedgenesis.StatusInProgress, hostedgenesis.StatusDeclarationReady, secondTurnID)
 	if compStore.session.VMCheckpoint.Hash == firstCheckpoint.Hash || compStore.session.VMCheckpoint.Ref == firstCheckpoint.Ref {
 		t.Fatalf("second turn checkpoint must advance safely, first=%#v second=%#v", firstCheckpoint, compStore.session.VMCheckpoint)
 	}
