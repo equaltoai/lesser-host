@@ -22,6 +22,8 @@ export const HOSTED_GENESIS_MICROVM_MAXIMUM_DURATION_SECONDS = 300 as const;
 export const HOSTED_GENESIS_MICROVM_IDLE_MAX_SECONDS = 300 as const;
 export const HOSTED_GENESIS_MICROVM_IDLE_SUSPENDED_SECONDS = 1800 as const;
 export const HOSTED_GENESIS_MICROVM_IDLE_AUTO_RESUME_ENABLED = false as const;
+export const HOSTED_GENESIS_MICROVM_CONFIG_JSON_ENV =
+  "HOSTED_GENESIS_MICROVM_CONFIG_JSON" as const;
 
 // P52 H1 step 2 (F1): the AWS-managed base MicroVM image ARN. This is the
 // foundation the entire MicroVM-only genesis program sits on — H1.1–H1.5 merged
@@ -593,53 +595,55 @@ function grantFunctionMicroVMDispatch(
     }),
   );
 
-  // Inject the env vars controlplane.NewServer's HTTP dispatcher constructor
-  // reads: the governed controller endpoint, the auth-token SSM param name
-  // (the raw token is fetched at runtime, never committed), and the non-secret
-  // image/network-connector refs the control plane sends in the POST /microvms
-  // run body. The lifetime values are the explicit AppTheory ProviderRunInput
-  // MaximumDurationSeconds + ProviderIdlePolicy boundary from ADR 0010; Host
-  // does not create a local scheduler or provider step machine for human gaps.
+  // Inject one compact config env var read by controlplane.NewServer /
+  // ai-worker. It carries the same AppTheory POST /microvms run inputs the
+  // legacy per-variable env carried — governed controller endpoint, auth-token
+  // SSM param name (raw token fetched at runtime), image ref, ingress/egress
+  // refs, MaximumDurationSeconds, and IdlePolicy — but avoids duplicating long
+  // APPTHEORY_MICROVM_* key names on already-large deployment Lambdas. The
+  // compact field names are Host-private CDK/runtime contract, not a public API.
   // addEnvironment is the CDK-supported way to append env vars to a Function
   // constructed elsewhere.
-  fn.addEnvironment("HOSTED_GENESIS_MICROVM_ENABLED", "true");
   fn.addEnvironment(
-    "HOSTED_GENESIS_MICROVM_MAXIMUM_DURATION_SECONDS",
-    String(HOSTED_GENESIS_MICROVM_MAXIMUM_DURATION_SECONDS),
+    HOSTED_GENESIS_MICROVM_CONFIG_JSON_ENV,
+    hostedGenesisMicroVMDispatchConfigJSON(
+      controllerEndpoint,
+      authTokenSSMParamName,
+      imageArn,
+      ingressConnectorArns,
+      egressConnectorArns,
+    ),
   );
-  fn.addEnvironment(
-    "HOSTED_GENESIS_MICROVM_IDLE_MAX_SECONDS",
-    String(HOSTED_GENESIS_MICROVM_IDLE_MAX_SECONDS),
-  );
-  fn.addEnvironment(
-    "HOSTED_GENESIS_MICROVM_IDLE_SUSPENDED_SECONDS",
-    String(HOSTED_GENESIS_MICROVM_IDLE_SUSPENDED_SECONDS),
-  );
-  fn.addEnvironment(
-    "HOSTED_GENESIS_MICROVM_IDLE_AUTO_RESUME_ENABLED",
-    String(HOSTED_GENESIS_MICROVM_IDLE_AUTO_RESUME_ENABLED),
-  );
-  fn.addEnvironment(
-    "APPTHEORY_MICROVM_CONTROLLER_ENDPOINT",
+}
+
+function hostedGenesisMicroVMDispatchConfigJSON(
+  controllerEndpoint: string,
+  authTokenSSMParamName: string,
+  imageArn: string,
+  ingressConnectorArns: string[],
+  egressConnectorArns: string[],
+): string {
+  return cdk.Fn.join("", [
+    '{"v":1,"ep":"',
     controllerEndpoint,
-  );
-  fn.addEnvironment(
-    "HOSTED_GENESIS_MICROVM_AUTH_TOKEN_SSM_PARAM",
+    '","ap":"',
     authTokenSSMParamName,
-  );
-  fn.addEnvironment("APPTHEORY_MICROVM_IMAGE_REF", imageArn);
-  fn.addEnvironment(
-    "APPTHEORY_MICROVM_INGRESS_NETWORK_CONNECTOR_REFS",
+    '","img":"',
+    imageArn,
+    '","in":"',
     ingressConnectorArns.join(","),
-  );
-  fn.addEnvironment(
-    "APPTHEORY_MICROVM_EGRESS_NETWORK_CONNECTOR_REFS",
+    '","eg":"',
     egressConnectorArns.join(","),
-  );
-  fn.addEnvironment(
-    "APPTHEORY_MICROVM_NETWORK_CONNECTOR_REFS",
-    egressConnectorArns.join(","),
-  );
+    '","max":',
+    String(HOSTED_GENESIS_MICROVM_MAXIMUM_DURATION_SECONDS),
+    ',"idle":{"ar":',
+    String(HOSTED_GENESIS_MICROVM_IDLE_AUTO_RESUME_ENABLED),
+    ',"max":',
+    String(HOSTED_GENESIS_MICROVM_IDLE_MAX_SECONDS),
+    ',"sus":',
+    String(HOSTED_GENESIS_MICROVM_IDLE_SUSPENDED_SECONDS),
+    "}}",
+  ]);
 }
 
 // ssmParamArn formats the full ARN for an SSM parameter name (the parameter is
