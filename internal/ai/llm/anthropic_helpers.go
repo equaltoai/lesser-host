@@ -109,19 +109,47 @@ func anthropicToolInputSchemaFromJSONSchema(schema map[string]any) anthropic.Too
 	return out
 }
 
+// anthropicUnsupportedSchemaKeywords maps a JSON-schema node type to constraint
+// keywords Anthropic strict custom tools reject with a 400 (e.g. "For 'array'
+// type, property 'maxItems' is not supported"). Stripping them only relaxes
+// provider-side validation: Host re-enforces these limits locally after the
+// provider responds (normalizeMintConversationDeclarationsDraft, hostedgenesis
+// five-body normalization/validation).
+const anthropicSchemaTypeObject = "object"
+
+var anthropicUnsupportedSchemaKeywords = map[string][]string{
+	"array":   {"minItems", "maxItems", "uniqueItems", "contains", "minContains", "maxContains"},
+	"string":  {"minLength", "maxLength"},
+	"number":  {"minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf"},
+	"integer": {"minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf"},
+}
+
+func anthropicSchemaKeywordUnsupported(nodeType, keyword string) bool {
+	for _, unsupported := range anthropicUnsupportedSchemaKeywords[nodeType] {
+		if keyword == unsupported {
+			return true
+		}
+	}
+	return false
+}
+
 func sanitizeAnthropicToolSchemaMap(schema map[string]any) map[string]any {
 	if len(schema) == 0 {
 		return nil
 	}
 	out := make(map[string]any, len(schema))
-	objType, _ := schema["type"].(string)
+	rawType, _ := schema["type"].(string)
+	nodeType := strings.ToLower(strings.TrimSpace(rawType))
 	for k, v := range schema {
-		if k == "additionalProperties" && strings.EqualFold(strings.TrimSpace(objType), "object") {
+		if k == "additionalProperties" && nodeType == anthropicSchemaTypeObject {
+			continue
+		}
+		if anthropicSchemaKeywordUnsupported(nodeType, k) {
 			continue
 		}
 		out[k] = sanitizeAnthropicToolSchemaValue(v)
 	}
-	if strings.EqualFold(strings.TrimSpace(objType), "object") {
+	if nodeType == anthropicSchemaTypeObject {
 		if _, ok := out["properties"]; !ok {
 			out["properties"] = map[string]any{}
 		}
