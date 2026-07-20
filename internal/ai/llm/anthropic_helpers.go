@@ -109,14 +109,14 @@ func anthropicToolInputSchemaFromJSONSchema(schema map[string]any) anthropic.Too
 	return out
 }
 
+const anthropicSchemaTypeObject = "object"
+
 // anthropicUnsupportedSchemaKeywords maps a JSON-schema node type to constraint
 // keywords Anthropic strict custom tools reject with a 400 (e.g. "For 'array'
 // type, property 'maxItems' is not supported"). Stripping them only relaxes
 // provider-side validation: Host re-enforces these limits locally after the
 // provider responds (normalizeMintConversationDeclarationsDraft, hostedgenesis
 // five-body normalization/validation).
-const anthropicSchemaTypeObject = "object"
-
 var anthropicUnsupportedSchemaKeywords = map[string][]string{
 	"array":   {"minItems", "maxItems", "uniqueItems", "contains", "minContains", "maxContains"},
 	"string":  {"minLength", "maxLength"},
