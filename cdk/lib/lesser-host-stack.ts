@@ -27,7 +27,13 @@ import {
 } from "./provision-runner-buildspec";
 import { CostTelemetryWorker } from "./cost-telemetry-worker-construct";
 import { configureWebDelivery } from "./web-delivery";
-import { configureHostedGenesisMicrovm } from "./hosted-genesis-microvm";
+import {
+  configureHostedGenesisMicrovm,
+  HOSTED_GENESIS_DECLARATION_SCHEMA_VERSION_ENV,
+  HOSTED_GENESIS_DECLARATION_SCHEMA_VERSION_V2,
+  HOSTED_GENESIS_GUIDANCE_VERSION_ENV,
+  HOSTED_GENESIS_GUIDANCE_VERSION_V2,
+} from "./hosted-genesis-microvm";
 import { INBOUND_EMAIL_RULE_SET_NAME } from "./ses-inbound-rule-set-name";
 import { soulEmailInboundDomainFromContext } from "./soul-email-inbound-domain";
 import {
@@ -747,6 +753,14 @@ export class LesserHostStack extends cdk.Stack {
         HOSTED_GENESIS_QUEUE_URL: hostedGenesisQueue.queueUrl,
         ATTESTATION_SIGNING_KEY_ID: attestationSigningKey.keyId,
         ATTESTATION_PUBLIC_KEY_IDS: attestationSigningKey.keyId,
+        // #955: select the five-body v2 declaration contract (#928) for the
+        // ai-worker hosted-genesis fallback lane, which reads
+        // DeclarationContractFromEnv for extraction runs and the mint system
+        // prompt. Must stay aligned with the MicroVM image env in
+        // hosted-genesis-microvm.ts so both lanes validate the same contract.
+        [HOSTED_GENESIS_DECLARATION_SCHEMA_VERSION_ENV]:
+          HOSTED_GENESIS_DECLARATION_SCHEMA_VERSION_V2,
+        [HOSTED_GENESIS_GUIDANCE_VERSION_ENV]: HOSTED_GENESIS_GUIDANCE_VERSION_V2,
       },
       { timeoutSeconds: 120 },
     );

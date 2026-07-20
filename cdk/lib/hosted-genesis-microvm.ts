@@ -25,6 +25,27 @@ export const HOSTED_GENESIS_MICROVM_IDLE_AUTO_RESUME_ENABLED = false as const;
 export const HOSTED_GENESIS_MICROVM_CONFIG_JSON_ENV =
   "HOSTED_GENESIS_MICROVM_CONFIG_JSON" as const;
 
+// #955: the hosted-genesis five-body declaration contract (#928) is opt-in by
+// environment — DeclarationContractFromEnv (internal/hostedgenesis/fivebody.go)
+// collapses to the legacy v1 lane unless these env vars select v2. The env keys
+// and values below mirror the Go constants EnvDeclarationSchemaVersion /
+// EnvGuidanceVersion and DeclarationSchemaVersionV2 / GuidanceVersionV2. The
+// full version strings (not the accepted "v2" aliases) are used deliberately so
+// the deployed template itself is explicit contract evidence, matching the
+// live Ptah guidance bundle (soul-five-body-guidance.v2). The readers are the
+// MicroVM guest workload (cmd/hosted-genesis-microvm-workload/runner.go) and
+// the ai-worker fallback lane (internal/aiworker/hosted_genesis.go); the
+// control plane never reads the contract, so it deliberately does not carry
+// these vars.
+export const HOSTED_GENESIS_DECLARATION_SCHEMA_VERSION_ENV =
+  "HOSTED_GENESIS_DECLARATION_SCHEMA_VERSION" as const;
+export const HOSTED_GENESIS_GUIDANCE_VERSION_ENV =
+  "HOSTED_GENESIS_GUIDANCE_VERSION" as const;
+export const HOSTED_GENESIS_DECLARATION_SCHEMA_VERSION_V2 =
+  "soul-five-body-schema.v2" as const;
+export const HOSTED_GENESIS_GUIDANCE_VERSION_V2 =
+  "soul-five-body-guidance.v2" as const;
+
 // P52 H1 step 2 (F1): the AWS-managed base MicroVM image ARN. This is the
 // foundation the entire MicroVM-only genesis program sits on — H1.1–H1.5 merged
 // without it and the first real deploy failed. The verified ARN is sourced
@@ -310,6 +331,14 @@ export function configureHostedGenesisMicrovm(
         {
           key: "STATE_TABLE_NAME",
           value: props.stateTable.tableName,
+        },
+        {
+          key: HOSTED_GENESIS_DECLARATION_SCHEMA_VERSION_ENV,
+          value: HOSTED_GENESIS_DECLARATION_SCHEMA_VERSION_V2,
+        },
+        {
+          key: HOSTED_GENESIS_GUIDANCE_VERSION_ENV,
+          value: HOSTED_GENESIS_GUIDANCE_VERSION_V2,
         },
       ],
       hooks: {},

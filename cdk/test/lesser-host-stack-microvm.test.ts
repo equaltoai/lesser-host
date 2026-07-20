@@ -19,6 +19,10 @@ import {
   webStackEnv,
 } from "./_lesser-host-test-helpers";
 import {
+  HOSTED_GENESIS_DECLARATION_SCHEMA_VERSION_ENV,
+  HOSTED_GENESIS_DECLARATION_SCHEMA_VERSION_V2,
+  HOSTED_GENESIS_GUIDANCE_VERSION_ENV,
+  HOSTED_GENESIS_GUIDANCE_VERSION_V2,
   HOSTED_GENESIS_MICROVM_BASE_IMAGE_ARN,
   HOSTED_GENESIS_MICROVM_CONFIG_JSON_ENV,
   HOSTED_GENESIS_MICROVM_IDLE_AUTO_RESUME_ENABLED,
@@ -948,6 +952,31 @@ test("P52 H1.5 corrective: host-owned MicroVM execution role propagates to RunMi
     "expected STATE_TABLE_NAME image value to be a CDK reference to the state table, not a literal",
   );
 
+  // #955: the five-body v2 declaration contract (#928) must reach the guest —
+  // the workload runner calls DeclarationContractFromEnv, which collapses to
+  // legacy v1 when these vars are absent. That absence caused live
+  // invalid_produced_declarations / boundaries.required failures on transcripts
+  // that followed the v2 five-body guidance. Exact full version strings, not
+  // the "v2" aliases, so the template is explicit contract evidence.
+  assert.deepEqual(
+    imageEnv.find(
+      (env) => env?.Key === HOSTED_GENESIS_DECLARATION_SCHEMA_VERSION_ENV,
+    ),
+    {
+      Key: HOSTED_GENESIS_DECLARATION_SCHEMA_VERSION_ENV,
+      Value: HOSTED_GENESIS_DECLARATION_SCHEMA_VERSION_V2,
+    },
+    "expected the five-body v2 declaration schema version in the MicroVM image environment",
+  );
+  assert.deepEqual(
+    imageEnv.find((env) => env?.Key === HOSTED_GENESIS_GUIDANCE_VERSION_ENV),
+    {
+      Key: HOSTED_GENESIS_GUIDANCE_VERSION_ENV,
+      Value: HOSTED_GENESIS_GUIDANCE_VERSION_V2,
+    },
+    "expected the five-body v2 guidance version in the MicroVM image environment",
+  );
+
   // AWS_REGION is a RESERVED environment variable key for the Lambda Microvms
   // service (AWS::Lambda::MicrovmImage): the service injects it into the guest
   // env, so the caller cannot set it — setting it causes CREATE_FAILED
@@ -1267,6 +1296,30 @@ test("P52 H1.5: control-plane Lambda receives HTTP dispatch env + SSM auth-token
     assert.ok(
       !(compactedKey in aiWorkerEnv),
       `ai-worker Lambda env should compact ${compactedKey} into ${HOSTED_GENESIS_MICROVM_CONFIG_JSON_ENV}`,
+    );
+  }
+  // #955: the ai-worker hosted-genesis fallback lane also reads
+  // DeclarationContractFromEnv, so it must carry the same five-body v2 contract
+  // the MicroVM image env selects. The control plane never reads the contract
+  // (it only gates on session status), so it deliberately does NOT carry these
+  // vars — Lambda env budget headroom is scarce (#941/#952).
+  assert.equal(
+    aiWorkerEnv[HOSTED_GENESIS_DECLARATION_SCHEMA_VERSION_ENV],
+    HOSTED_GENESIS_DECLARATION_SCHEMA_VERSION_V2,
+    "expected the ai-worker fallback lane to select the five-body v2 declaration schema",
+  );
+  assert.equal(
+    aiWorkerEnv[HOSTED_GENESIS_GUIDANCE_VERSION_ENV],
+    HOSTED_GENESIS_GUIDANCE_VERSION_V2,
+    "expected the ai-worker fallback lane to select the five-body v2 guidance",
+  );
+  for (const contractKey of [
+    HOSTED_GENESIS_DECLARATION_SCHEMA_VERSION_ENV,
+    HOSTED_GENESIS_GUIDANCE_VERSION_ENV,
+  ]) {
+    assert.ok(
+      !(contractKey in controlPlaneEnv),
+      `control-plane Lambda env must not carry ${contractKey} (no control-plane code reads the declaration contract)`,
     );
   }
   for (const [label, env] of [
