@@ -1305,6 +1305,26 @@ func TestHostedGenesisPromptAndUsageHelpers(t *testing.T) {
 	if !strings.Contains(prompt, hostedGenesisWorkerAgentDomain) || !strings.Contains(prompt, "planning") {
 		t.Fatalf("system prompt omitted registration context: %q", prompt)
 	}
+
+	usage := addAIUsageWorker(models.AIUsage{Provider: testProviderOpenAI, InputTokens: 1}, models.AIUsage{Model: "gpt", InputTokens: 2, OutputTokens: 3, DurationMs: 4, ToolCalls: 1})
+	if usage.Provider != testProviderOpenAI || usage.Model != "gpt" || usage.InputTokens != 3 || usage.OutputTokens != 3 || usage.TotalTokens != 5 || usage.DurationMs != 4 || usage.ToolCalls != 1 {
+		t.Fatalf("usage merge mismatch: %#v", usage)
+	}
+}
+
+// TestHostedGenesisSystemPromptMatchesSharedBuilderAndFailsClosed proves the
+// worker prompt is byte-identical to the shared five-body builder and that a
+// non-five-body contract fails closed instead of selecting another prompt.
+func TestHostedGenesisSystemPromptMatchesSharedBuilderAndFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	reg := newHostedGenesisWorkerStore("turn-worker").reg
+	reg.Capabilities = []string{"planning"}
+	contract := hostedgenesis.FiveBodyDeclarationContract()
+	prompt, promptErr := hostedGenesisSystemPrompt(reg, contract)
+	if promptErr != nil {
+		t.Fatalf("system prompt: %v", promptErr)
+	}
 	sharedPrompt, sharedErr := mintprompt.MintConversationSystemPromptForContract(reg, contract)
 	if sharedErr != nil {
 		t.Fatalf("shared prompt: %v", sharedErr)
@@ -1314,11 +1334,6 @@ func TestHostedGenesisPromptAndUsageHelpers(t *testing.T) {
 	}
 	if _, err := hostedGenesisSystemPrompt(reg, hostedgenesis.DeclarationContract{}); !errors.Is(err, hostedgenesis.ErrDeclarationContractUnconfigured) {
 		t.Fatalf("expected non-five-body contract prompt to fail closed, got %v", err)
-	}
-
-	usage := addAIUsageWorker(models.AIUsage{Provider: testProviderOpenAI, InputTokens: 1}, models.AIUsage{Model: "gpt", InputTokens: 2, OutputTokens: 3, DurationMs: 4, ToolCalls: 1})
-	if usage.Provider != testProviderOpenAI || usage.Model != "gpt" || usage.InputTokens != 3 || usage.OutputTokens != 3 || usage.TotalTokens != 5 || usage.DurationMs != 4 || usage.ToolCalls != 1 {
-		t.Fatalf("usage merge mismatch: %#v", usage)
 	}
 }
 

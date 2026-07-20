@@ -802,23 +802,23 @@ func (s *Server) handleSoulMintConversationForRegistration(ctx *apptheory.Contex
 	}
 
 	// Debit credits for this LLM call (fail closed if insufficient credits).
-	if appErr := s.debitMintConversationStreamCredits(ctx.Context(), regCtx.inst, regCtx.agentIDHex, session, strings.TrimSpace(ctx.RequestID), now); appErr != nil {
-		return nil, appErr
+	if debitErr := s.debitMintConversationStreamCredits(ctx.Context(), regCtx.inst, regCtx.agentIDHex, session, strings.TrimSpace(ctx.RequestID), now); debitErr != nil {
+		return nil, debitErr
 	}
 	promotion := s.loadOrFallbackSoulAgentPromotion(ctx.Context(), regCtx.agentIDHex, buildSoulAgentPromotionFromRegistration(regCtx.reg, now))
 	previousPromotion := cloneSoulAgentPromotion(promotion)
 	promotion = updateSoulAgentPromotionForConversation(promotion, session.conversationID, models.SoulMintConversationStatusInProgress, now)
-	if appErr := s.saveSoulAgentPromotion(ctx.Context(), promotion); appErr != nil {
-		return nil, appErr
+	if saveErr := s.saveSoulAgentPromotion(ctx.Context(), promotion); saveErr != nil {
+		return nil, saveErr
 	}
 	if shouldEmitSoulPromotionReviewStartedEvent(previousPromotion, promotion, session.conversationID) {
-		if appErr := s.saveSoulAgentPromotionLifecycleEvent(ctx.Context(), buildSoulAgentPromotionLifecycleEvent(promotion, soulAgentPromotionLifecycleEventInput{
+		if eventErr := s.saveSoulAgentPromotionLifecycleEvent(ctx.Context(), buildSoulAgentPromotionLifecycleEvent(promotion, soulAgentPromotionLifecycleEventInput{
 			EventType:      models.SoulAgentPromotionEventTypeReviewStarted,
 			RequestID:      strings.TrimSpace(ctx.RequestID),
 			ConversationID: session.conversationID,
 			OccurredAt:     now,
-		})); appErr != nil {
-			return nil, appErr
+		})); eventErr != nil {
+			return nil, eventErr
 		}
 	}
 
@@ -871,23 +871,23 @@ func (s *Server) handleSoulAgentMintConversation(ctx *apptheory.Context) (*appth
 	if appErr != nil {
 		return nil, appErr
 	}
-	if appErr := s.debitMintConversationStreamCredits(ctx.Context(), agentCtx.inst, agentCtx.agentIDHex, session, strings.TrimSpace(ctx.RequestID), now); appErr != nil {
-		return nil, appErr
+	if debitErr := s.debitMintConversationStreamCredits(ctx.Context(), agentCtx.inst, agentCtx.agentIDHex, session, strings.TrimSpace(ctx.RequestID), now); debitErr != nil {
+		return nil, debitErr
 	}
 	promotion := s.loadOrFallbackSoulAgentPromotion(ctx.Context(), agentCtx.agentIDHex, buildSoulAgentPromotionFromRegistration(agentCtx.reg, now))
 	previousPromotion := cloneSoulAgentPromotion(promotion)
 	promotion = updateSoulAgentPromotionForConversation(promotion, session.conversationID, models.SoulMintConversationStatusInProgress, now)
-	if appErr := s.saveSoulAgentPromotion(ctx.Context(), promotion); appErr != nil {
-		return nil, appErr
+	if saveErr := s.saveSoulAgentPromotion(ctx.Context(), promotion); saveErr != nil {
+		return nil, saveErr
 	}
 	if shouldEmitSoulPromotionReviewStartedEvent(previousPromotion, promotion, session.conversationID) {
-		if appErr := s.saveSoulAgentPromotionLifecycleEvent(ctx.Context(), buildSoulAgentPromotionLifecycleEvent(promotion, soulAgentPromotionLifecycleEventInput{
+		if eventErr := s.saveSoulAgentPromotionLifecycleEvent(ctx.Context(), buildSoulAgentPromotionLifecycleEvent(promotion, soulAgentPromotionLifecycleEventInput{
 			EventType:      models.SoulAgentPromotionEventTypeReviewStarted,
 			RequestID:      strings.TrimSpace(ctx.RequestID),
 			ConversationID: session.conversationID,
 			OccurredAt:     now,
-		})); appErr != nil {
-			return nil, appErr
+		})); eventErr != nil {
+			return nil, eventErr
 		}
 	}
 
@@ -2343,27 +2343,9 @@ func (s *Server) extractMintConversationDeclarations(ctx context.Context, reg *m
 		})
 	}
 
-	var draft llm.MintConversationDeclarationsDraft
-	var usage models.AIUsage
-	switch {
-	case strings.HasPrefix(strings.ToLower(modelSet), "openai:"):
-		out, u, err := llm.MintConversationDeclarationsOpenAI(ctx, apiKey, modelSet, in)
-		if err != nil {
-			log.Printf("controlplane: mint conversation declaration extraction failed: provider=openai model=%s failure_code=%s", modelSet, hostedGenesisFailureDeclarationExtractionFailed)
-			return soulMintConversationProducedDeclarations{}, models.AIUsage{}, newAppTheoryError("app.internal", "failed to extract declarations")
-		}
-		draft = out
-		usage = u
-	case strings.HasPrefix(strings.ToLower(modelSet), "anthropic:"):
-		out, u, err := llm.MintConversationDeclarationsAnthropic(ctx, apiKey, modelSet, in)
-		if err != nil {
-			log.Printf("controlplane: mint conversation declaration extraction failed: provider=anthropic model=%s failure_code=%s", modelSet, hostedGenesisFailureDeclarationExtractionFailed)
-			return soulMintConversationProducedDeclarations{}, models.AIUsage{}, newAppTheoryError("app.internal", "failed to extract declarations")
-		}
-		draft = out
-		usage = u
-	default:
-		return soulMintConversationProducedDeclarations{}, models.AIUsage{}, newAppTheoryError("app.bad_request", mintConversationUnsupportedModelSetMessage)
+	draft, usage, appErr := runMintConversationDeclarationsModel(ctx, apiKey, modelSet, in)
+	if appErr != nil {
+		return soulMintConversationProducedDeclarations{}, models.AIUsage{}, appErr
 	}
 
 	declaredCapabilities := reg.Capabilities
@@ -2376,6 +2358,29 @@ func (s *Server) extractMintConversationDeclarations(ctx context.Context, reg *m
 		return soulMintConversationProducedDeclarations{}, models.AIUsage{}, appErr
 	}
 	return decl, usage, nil
+}
+
+// runMintConversationDeclarationsModel dispatches extraction to the provider
+// selected by the model-set prefix.
+func runMintConversationDeclarationsModel(ctx context.Context, apiKey string, modelSet string, in llm.MintConversationDeclarationsInput) (llm.MintConversationDeclarationsDraft, models.AIUsage, *apptheory.AppTheoryError) {
+	switch {
+	case strings.HasPrefix(strings.ToLower(modelSet), "openai:"):
+		out, usage, err := llm.MintConversationDeclarationsOpenAI(ctx, apiKey, modelSet, in)
+		if err != nil {
+			log.Printf("controlplane: mint conversation declaration extraction failed: provider=openai model=%s failure_code=%s", modelSet, hostedGenesisFailureDeclarationExtractionFailed)
+			return llm.MintConversationDeclarationsDraft{}, models.AIUsage{}, newAppTheoryError("app.internal", "failed to extract declarations")
+		}
+		return out, usage, nil
+	case strings.HasPrefix(strings.ToLower(modelSet), "anthropic:"):
+		out, usage, err := llm.MintConversationDeclarationsAnthropic(ctx, apiKey, modelSet, in)
+		if err != nil {
+			log.Printf("controlplane: mint conversation declaration extraction failed: provider=anthropic model=%s failure_code=%s", modelSet, hostedGenesisFailureDeclarationExtractionFailed)
+			return llm.MintConversationDeclarationsDraft{}, models.AIUsage{}, newAppTheoryError("app.internal", "failed to extract declarations")
+		}
+		return out, usage, nil
+	default:
+		return llm.MintConversationDeclarationsDraft{}, models.AIUsage{}, newAppTheoryError("app.bad_request", mintConversationUnsupportedModelSetMessage)
+	}
 }
 
 func buildMintConversationProducedDeclarationsWithOptions(draft llm.MintConversationDeclarationsDraft, now time.Time, modelSet string, declaredCapabilities []string, allowEmptyCapabilities bool) (soulMintConversationProducedDeclarations, *apptheory.AppTheoryError) {

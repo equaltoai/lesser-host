@@ -683,39 +683,36 @@ func hostedGenesisFailureFromWorkerReason(reason string) *hostedgenesis.Failure 
 	return hostedGenesisFailureFromWorkerReasonWithDetail(reason, "")
 }
 
+var hostedGenesisWorkerFailureCodes = map[string]hostedgenesis.FailureCode{
+	hostedGenesisFailureLLMUnavailable:              hostedgenesis.FailureCodeLLMUnavailable,
+	hostedGenesisFailureAssistantTurnFailed:         hostedgenesis.FailureCodeAssistantTurnFailed,
+	hostedGenesisFailureMicroVMUnavailable:          hostedgenesis.FailureCodeMicroVMUnavailable,
+	hostedGenesisFailureDeclarationExtractionFailed: hostedgenesis.FailureCodeDeclarationExtractionFailed,
+	hostedGenesisFailureMissingProducedDeclarations: hostedgenesis.FailureCodeMissingProducedDeclarations,
+	hostedGenesisFailureInvalidProducedDeclarations: hostedgenesis.FailureCodeInvalidProducedDeclarations,
+	hostedGenesisFailureTenantBoundaryViolation:     hostedgenesis.FailureCodeTenantBoundaryViolation,
+	hostedGenesisFailureOperatorActionRequired:      hostedgenesis.FailureCodeOperatorActionRequired,
+}
+
+func workerRecoveryForFailureCode(code hostedgenesis.FailureCode) (hostedgenesis.RecoveryAction, bool) {
+	switch code {
+	case hostedgenesis.FailureCodeLLMUnavailable, hostedgenesis.FailureCodeAssistantTurnFailed, hostedgenesis.FailureCodeDeclarationExtractionFailed, hostedgenesis.FailureCodeMicroVMUnavailable:
+		return hostedgenesis.RecoveryActionRetrySameStep, true
+	case hostedgenesis.FailureCodeTenantBoundaryViolation, hostedgenesis.FailureCodeOperatorActionRequired:
+		return hostedgenesis.RecoveryActionOperatorAction, false
+	case hostedgenesis.FailureCodeMissingProducedDeclarations, hostedgenesis.FailureCodeInvalidProducedDeclarations:
+		return hostedgenesis.RecoveryActionRestartSoulBootstrap, false
+	default:
+		return hostedgenesis.RecoveryActionRefreshState, false
+	}
+}
+
 func hostedGenesisFailureFromWorkerReasonWithDetail(reason string, detail string) *hostedgenesis.Failure {
-	code := hostedgenesis.FailureCodeInvalidCompletionState
-	switch strings.TrimSpace(reason) {
-	case hostedGenesisFailureLLMUnavailable:
-		code = hostedgenesis.FailureCodeLLMUnavailable
-	case hostedGenesisFailureAssistantTurnFailed:
-		code = hostedgenesis.FailureCodeAssistantTurnFailed
-	case hostedGenesisFailureMicroVMUnavailable:
-		code = hostedgenesis.FailureCodeMicroVMUnavailable
-	case hostedGenesisFailureDeclarationExtractionFailed:
-		code = hostedgenesis.FailureCodeDeclarationExtractionFailed
-	case hostedGenesisFailureMissingProducedDeclarations:
-		code = hostedgenesis.FailureCodeMissingProducedDeclarations
-	case hostedGenesisFailureInvalidProducedDeclarations:
-		code = hostedgenesis.FailureCodeInvalidProducedDeclarations
-	case hostedGenesisFailureTenantBoundaryViolation:
-		code = hostedgenesis.FailureCodeTenantBoundaryViolation
-	case hostedGenesisFailureOperatorActionRequired:
-		code = hostedgenesis.FailureCodeOperatorActionRequired
+	code, ok := hostedGenesisWorkerFailureCodes[strings.TrimSpace(reason)]
+	if !ok {
+		code = hostedgenesis.FailureCodeInvalidCompletionState
 	}
-	action := hostedgenesis.RecoveryActionRefreshState
-	retryable := false
-	if code == hostedgenesis.FailureCodeLLMUnavailable || code == hostedgenesis.FailureCodeAssistantTurnFailed || code == hostedgenesis.FailureCodeDeclarationExtractionFailed || code == hostedgenesis.FailureCodeMicroVMUnavailable {
-		action = hostedgenesis.RecoveryActionRetrySameStep
-		retryable = true
-	}
-	if code == hostedgenesis.FailureCodeTenantBoundaryViolation || code == hostedgenesis.FailureCodeOperatorActionRequired {
-		action = hostedgenesis.RecoveryActionOperatorAction
-	}
-	if code == hostedgenesis.FailureCodeMissingProducedDeclarations || code == hostedgenesis.FailureCodeInvalidProducedDeclarations {
-		action = hostedgenesis.RecoveryActionRestartSoulBootstrap
-		retryable = false
-	}
+	action, retryable := workerRecoveryForFailureCode(code)
 	recoveryReason := hostedgenesis.SanitizeFailureReason(code, detail)
 	return &hostedgenesis.Failure{
 		Code:      code,
