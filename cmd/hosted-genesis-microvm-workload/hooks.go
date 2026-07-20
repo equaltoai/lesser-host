@@ -139,6 +139,7 @@ func (s *hookServer) routes() http.Handler {
 	mux.HandleFunc(hookPathPrefix+"/validate", s.handleHook(runtimemicrovm.HookValidate))
 	mux.HandleFunc(hookPathPrefix+"/run", s.handleRunHook)
 	mux.HandleFunc(hostedgenesis.MicroVMTurnEndpointPath, s.handleTurnEndpoint)
+	mux.HandleFunc(hostedgenesis.MicroVMProcessMemoryCanaryEndpointPath, s.handleProcessMemoryCanaryEndpoint)
 	mux.HandleFunc(hookPathPrefix+"/ready", s.handleHook(runtimemicrovm.HookReady))
 	mux.HandleFunc(hookPathPrefix+"/suspend", s.handleHook(runtimemicrovm.HookSuspend))
 	mux.HandleFunc(hookPathPrefix+"/resume", s.handleHook(runtimemicrovm.HookResume))

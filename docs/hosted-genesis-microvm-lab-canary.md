@@ -47,7 +47,7 @@ Run the local, non-deploying contract canary:
 ./scripts/hosted-genesis-microvm-canary.sh
 ```
 
-That script runs deterministic Go tests that exercise AppTheory M16 operations (`run`, `get`, `list`, `suspend`, `resume`, `terminate`, `auth-token`, and `shell-auth-token`) through `runtime/microvm.NewRealController`, deterministic fake providers, and the controller routes registered by `microvm.RegisterControllerRoutes`. It also checks marshaled canary evidence and controller token responses for secret-bearing vocabulary such as bearer tokens, AWS credentials, raw Instance API keys, provider secrets, wallet signatures, raw transcripts, and endpoint tokens.
+That script runs deterministic Go tests that exercise AppTheory M16 operations (`run`, `get`, `list`, `suspend`, `resume`, `terminate`, `auth-token`, and `shell-auth-token`) through `runtime/microvm.NewRealController`, deterministic fake providers, and the controller routes registered by `microvm.RegisterControllerRoutes`. It also checks marshaled canary evidence, the lab process-memory nonce endpoint, and controller token responses for secret-bearing vocabulary such as bearer tokens, AWS credentials, raw Instance API keys, provider secrets, wallet signatures, raw transcripts, and endpoint tokens.
 
 ## Operator lab deploy/run follow-up
 
@@ -80,18 +80,55 @@ Required proof shape:
 
 1. Deploy or use an operator-approved lab stack whose Hosted Genesis MicroVM path is already in scope for the run.
 2. Launch a MicroVM test session through AppTheory `POST /microvms` with safe test metadata only.
-3. Invoke a lab-only workload endpoint that stores a randomly generated, non-secret nonce in process memory only and
-   returns a hash/correlation id. The nonce must not be a provider key, bearer token, Instance API key, wallet
-   signature, SSM value, AWS credential, transcript, or customer data.
+3. Invoke the lab-only workload endpoint `POST /microvms/{session_id}/invoke/hosted-genesis/lab/process-memory-canary`.
+   The endpoint stores a randomly generated, non-secret nonce in process memory only and returns only a
+   `sha256:<hex>` nonce hash plus a correlation id. The nonce must not be a provider key, bearer token, Instance API
+   key, wallet signature, SSM value, AWS credential, transcript, or customer data.
 4. Persist an ordinary Host-safe checkpoint marker that does **not** include the nonce plaintext.
 5. Call AppTheory `POST /microvms/{session_id}/suspend`.
 6. Wait a human-scale idle interval agreed for the lab run (at minimum long enough to exceed ordinary retry/poll timing;
    use a longer operator-selected interval when validating production `IdlePolicy` values).
 7. Call AppTheory `POST /microvms/{session_id}/resume`.
-8. Invoke the same workload endpoint and record whether the in-process nonce survived.
+8. Invoke the same workload endpoint with only the expected nonce hash and record whether the in-process nonce survived.
 9. Record the exact AppTheory session id, provider MicroVM id before/after, lifecycle states, idle interval,
-   `IdlePolicy`, `MaximumDurationSeconds`, checkpoint marker, result (`memory_preserved=true|false`), command outputs,
+   `IdlePolicy`, `MaximumDurationSeconds`, checkpoint marker, result (`memory_preserved=true|false`), command summaries,
    and log-safety review in a docs/evidence artifact.
+
+The Host-owned live harness is `scripts/hosted-genesis-microvm-memory-canary.sh`. The workload endpoint fails closed
+unless the MicroVM workload `STAGE` is `lab`. The script contains no AWS commands, no deploy commands, no SSM reads, and
+no raw Lambda MicroVM SDK calls; it consumes the already-produced CDK outputs file plus a local gitignored
+controller-token file and drives only AppTheory controller HTTP routes (`run`, `get`, `invoke`, `suspend`, `resume`,
+`terminate`). Operator live-run shape:
+
+```bash
+# Operator-only setup: choose the explicit profile that owns the approved lab stack
+# (`Lesser` or `TheoryLive`). Redirect the raw token into a chmod-600 local file;
+# do not print, commit, or copy it into evidence.
+umask 077
+AWS_PROFILE=<Lesser-or-TheoryLive> aws ssm get-parameter \
+  --region us-east-1 \
+  --with-decryption \
+  --name /lesser-host/lab/hosted-genesis/microvm/auth-token \
+  --query Parameter.Value \
+  --output text > scripts/.hosted-genesis-microvm-controller-token
+
+bash scripts/hosted-genesis-microvm-memory-canary.sh \
+  --stage lab \
+  --outputs-file cdk/lab-outputs.json \
+  --controller-token-file scripts/.hosted-genesis-microvm-controller-token \
+  --wait-seconds 600 \
+  --evidence-file docs/evidence/hosted-genesis-microvm-memory-canary-YYYYMMDD.json
+
+rm -f scripts/.hosted-genesis-microvm-controller-token
+```
+
+The evidence JSON emitted by the script is safe to review for commit only after the operator confirms CloudWatch / Lambda
+logs contain no MicroVM endpoint tokens, bearer tokens, raw Instance API keys, provider keys, SSM values, wallet
+signatures, AWS credentials, raw transcripts, raw lifecycle payloads, or nonce plaintext. The evidence file must include
+`schema=hosted_genesis_microvm_process_memory_canary.v1`, `issue=941`, the AppTheory `session_id`, provider MicroVM ids
+before/after, lifecycle states, idle interval, `IdlePolicy`, `MaximumDurationSeconds`, checkpoint marker, the nonce hash
+only, `memory_preserved=true|false`, and the script's safety-review booleans. #941 remains open until that actual lab
+evidence is committed or attached by the operator; tooling-only PRs must use `Refs #941`, not `Closes #941`.
 
 If the nonce survives, #942/#943 may use process memory as a fast path after Host status/version/checkpoint
 revalidation. If it does not survive, or if the result is inconclusive, checkpoint/relaunch/replay remains the normal
