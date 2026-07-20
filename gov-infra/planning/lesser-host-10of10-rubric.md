@@ -4,11 +4,12 @@ This rubric defines what “10/10” means and how category grades are computed.
 “green by dilution” by making scoring **versioned, measurable, and repeatable**.
 
 ## Versioning (no moving goalposts)
-- **Rubric version:** `v0.1.8` (2026-07-07)
+- **Rubric version:** `v0.1.9` (2026-07-20)
 - **Comparability rule:** grades are comparable only within the same version.
 - **Change rule:** bump the version + changelog entry for any rubric change (what changed + why).
 
 ### Changelog
+- `v0.1.9`: Add SEC-15 fresh hosted-genesis declaration-contract guard so fresh M11/Ptah hosted-genesis runtime paths (MicroVM workload + aiworker fallback) cannot call the legacy declaration selector/builder or route to legacy declaration production: the permissive `DeclarationContractFromEnv` selector must stay deleted, fresh paths must resolve through the fail-closed `RequireFiveBodyDeclarationContractFromEnv`, and a missing/unknown contract must surface as `operator_action_required` (never the legacy `boundaries.required` lane). Additive tightening; no loosening; no exception; no skip.
 - `v0.1.8`: Add SEC-14 hosted-genesis MicroVM registry-boundary guard so deployed Host code cannot persist AppTheory generic `SessionRegistryRecord`, call `NewTableTheorySessionRegistry`, or bypass the Host-owned `HostedGenesisMicroVMExecution` cache adapter/reconstruction boundary.
 - `v0.1.7`: Replace the SEC-8 Lesser instance-key mint-conversation SSE-route guard with the M4 durable-session invariant: the exact Lesser-used instance-key registration mint-conversation route must be present and pinned to the JSON control-plane origin while legacy operator/UI streaming routes remain pinned to the SSE-capable origin.
 - `v0.1.6`: Tighten SEC-8 CloudFront composition verification so the exact Lesser-used instance-key registration mint-conversation SSE route must be present and pinned to the SSE-capable control-plane origin. Superseded for the Lesser instance-key route by `v0.1.7`.
@@ -73,7 +74,7 @@ Enforcement rule (anti-drift):
 | SEC-3 | 2 | Supply-chain verification green | GitHub Actions must be pinned by full commit SHA (no tag, branch, SemVer, or expression refs in `uses:`); the verifier self-tests normal step, quoted-key, flow-mapping, and reusable-workflow syntax; Node lifecycle hooks scanned with scripts-disabled installs; Go/Python metadata scans (implemented in verifier; see `gov-infra/evidence/SEC-3-output.log`) |
 | SEC-4 | 2 | Domain-specific P0 regression tests (security critical paths) | Run `TestP0_*` regression suite (bootstrap/authz invariants, SSRF defense, instance auth) (implemented in verifier; see `gov-infra/evidence/SEC-4-output.log`). |
 
-Additional security anti-drift gates are enforced by the same verifier entrypoint. SEC-14 specifically locks the hosted-genesis MicroVM registry boundary to Host-owned `HostedGenesisMicroVMExecution` cache persistence plus `HostedGenesisSession` reconstruction, and emits `gov-infra/evidence/SEC-14-output.log`.
+Additional security anti-drift gates are enforced by the same verifier entrypoint. SEC-14 specifically locks the hosted-genesis MicroVM registry boundary to Host-owned `HostedGenesisMicroVMExecution` cache persistence plus `HostedGenesisSession` reconstruction, and emits `gov-infra/evidence/SEC-14-output.log`. SEC-15 locks fresh M11/Ptah hosted-genesis declaration production to the five-body contract: fresh runtime paths must resolve the contract through the fail-closed selector, must not reference the legacy selector/builder vocabulary, and must surface a missing/unknown contract as `operator_action_required`; it emits `gov-infra/evidence/SEC-15-output.log`.
 
 SEC-1 note: Slither runs from a repo-local Python venv under `gov-infra/.tools/` (created/managed by the verifier); do not rely on a system-wide Slither install.
 

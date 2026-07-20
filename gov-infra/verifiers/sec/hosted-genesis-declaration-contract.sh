@@ -1,0 +1,115 @@
+#!/usr/bin/env bash
+# SEC-15: Fresh hosted-genesis declaration contract is five-body-only.
+#
+# Verifies that fresh M11/Ptah hosted-genesis declaration production cannot
+# route to the legacy declaration lane. The fresh runtime surfaces are the
+# MicroVM workload (cmd/hosted-genesis-microvm-workload) and the aiworker
+# fallback (internal/aiworker): both must resolve the declaration contract
+# through the fail-closed selector and must not reference the legacy
+# selector/builder vocabulary. A missing/unknown contract selection must
+# surface as operator_action_required, never as the legacy builder's
+# boundaries.required.
+#
+# Full points:
+#   - the permissive env selector DeclarationContractFromEnv does not exist in
+#     any deployed Go code;
+#   - deployed fresh hosted-genesis runtime code (MicroVM workload + aiworker)
+#     does not reference LegacyDeclarationContract, DeclarationContractFromVersions,
+#     the legacy DeclarationCodeBoundaries emission, or the legacy no-contract
+#     prompt wrapper MintConversationSystemPrompt(;
+#   - both fresh runtime paths call RequireFiveBodyDeclarationContractFromEnv
+#     and route ErrDeclarationContractUnconfigured to the operator_action lane;
+#   - both fresh builders guard on IsFiveBody and fail closed with
+#     ErrDeclarationContractUnconfigured;
+#   - the fail-closed selector + sentinel exist in internal/hostedgenesis;
+#   - CDK still provisions the five-body contract env for the MicroVM image and
+#     the ai-worker Lambda (issue #955 wiring stays load-bearing).
+# Zero points: any invariant fails. No partial credit.
+
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+cd "${REPO_ROOT}"
+
+echo "SEC-15: Fresh hosted-genesis declaration contract is five-body-only"
+
+deployed_go_files() {
+  find cmd internal -type f -name '*.go' ! -name '*_test.go' | sort
+}
+
+fresh_runtime_go_files() {
+  find cmd/hosted-genesis-microvm-workload internal/aiworker -type f -name '*.go' ! -name '*_test.go' | sort
+}
+
+fail() {
+  echo "FAIL: $*" >&2
+  exit 1
+}
+
+require_file() {
+  local path="$1"
+  [[ -f "${path}" ]] || fail "required file missing: ${path}"
+  echo "PASS: required file exists: ${path}"
+}
+
+require_pattern() {
+  local path="$1"
+  local pattern="$2"
+  local message="$3"
+  grep -Eq "${pattern}" "${path}" || fail "${message} (${path})"
+  echo "PASS: ${message}"
+}
+
+# The permissive selector must stay deleted everywhere in deployed code. The
+# leading non-word guard keeps RequireFiveBodyDeclarationContractFromEnv legal.
+selector_matches="$(deployed_go_files | xargs grep -nE '(^|[^A-Za-z0-9_])DeclarationContractFromEnv[(]' 2>/dev/null || true)"
+if [[ -n "${selector_matches}" ]]; then
+  echo "${selector_matches}" >&2
+  fail "deployed Host Go code must not reintroduce the permissive DeclarationContractFromEnv selector"
+fi
+echo "PASS: permissive DeclarationContractFromEnv selector absent from deployed Go code"
+
+fresh_forbidden_patterns=(
+  'LegacyDeclarationContract[(]'
+  'DeclarationContractFromVersions[(]'
+  'DeclarationCodeBoundaries([^A-Za-z]|$)'
+  'mintprompt[.]MintConversationSystemPrompt[(]'
+)
+for pattern in "${fresh_forbidden_patterns[@]}"; do
+  matches="$(fresh_runtime_go_files | xargs grep -nE "${pattern}" 2>/dev/null || true)"
+  if [[ -n "${matches}" ]]; then
+    echo "${matches}" >&2
+    fail "fresh hosted-genesis runtime code must not reference ${pattern}"
+  fi
+  echo "PASS: fresh hosted-genesis runtime code does not reference ${pattern}"
+done
+
+selector_file="internal/hostedgenesis/fivebody.go"
+workload_runner="cmd/hosted-genesis-microvm-workload/runner.go"
+aiworker_file="internal/aiworker/hosted_genesis.go"
+cdk_microvm="cdk/lib/hosted-genesis-microvm.ts"
+cdk_stack="cdk/lib/lesser-host-stack.ts"
+
+require_file "${selector_file}"
+require_file "${workload_runner}"
+require_file "${aiworker_file}"
+require_file "${cdk_microvm}"
+require_file "${cdk_stack}"
+
+require_pattern "${selector_file}" 'func[[:space:]]+RequireFiveBodyDeclarationContractFromEnv' 'fail-closed five-body contract selector is defined'
+require_pattern "${selector_file}" 'ErrDeclarationContractUnconfigured[[:space:]]*=[[:space:]]*errors[.]New' 'unconfigured-contract sentinel error is defined'
+
+require_pattern "${workload_runner}" 'RequireFiveBodyDeclarationContractFromEnv[(]' 'MicroVM workload resolves the contract through the fail-closed selector'
+require_pattern "${workload_runner}" 'errors[.]Is[(][^)]*ErrDeclarationContractUnconfigured[)]' 'MicroVM workload routes the unconfigured contract to a dedicated failure lane'
+require_pattern "${workload_runner}" 'FailureCodeOperatorActionRequired' 'MicroVM workload records operator_action_required for an unconfigured contract'
+require_pattern "${workload_runner}" 'if[[:space:]]+!contract[.]IsFiveBody[(][)]' 'MicroVM workload declaration builder guards on the five-body contract'
+
+require_pattern "${aiworker_file}" 'RequireFiveBodyDeclarationContractFromEnv[(]' 'aiworker fallback resolves the contract through the fail-closed selector'
+require_pattern "${aiworker_file}" 'hostedGenesisFailureOperatorActionRequired[[:space:]]*=[[:space:]]*"operator_action_required"' 'aiworker maps the unconfigured contract to operator_action_required'
+require_pattern "${aiworker_file}" 'if[[:space:]]+!contract[.]IsFiveBody[(][)]' 'aiworker declaration builder guards on the five-body contract'
+require_pattern "${aiworker_file}" 'ErrDeclarationContractUnconfigured' 'aiworker fails closed with the unconfigured-contract sentinel'
+
+require_pattern "${cdk_microvm}" 'HOSTED_GENESIS_DECLARATION_SCHEMA_VERSION' 'CDK provisions the declaration schema env for the MicroVM image'
+require_pattern "${cdk_stack}" 'HOSTED_GENESIS_DECLARATION_SCHEMA_VERSION_ENV' 'CDK provisions the declaration schema env for the ai-worker Lambda'
+
+echo "PASS: fresh hosted-genesis declaration production is five-body-only and fails closed without an explicit contract"

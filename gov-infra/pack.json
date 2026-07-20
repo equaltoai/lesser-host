@@ -1,14 +1,14 @@
 {
   "$schema": "https://gov.pai.dev/schemas/pack.schema.json",
   "schemaVersion": 1,
-  "packVersion": "2026.07.08-framework-microvm.0",
-  "packDigest": "512ffc2e6b8910f796602fcc6bda7e14472bc9bf4806b1d9ac93daf7d80365a6",
+  "packVersion": "2026.07.20-hg-declaration-contract.0",
+  "packDigest": "4fbc44f5909216fb892df4ecac33fb8de4147f921caa6ca8a32eced8798b4cf7",
   "domain": "custom",
   "projectSlug": "lesser-host",
-  "generatedAt": "2026-07-08T20:50:00Z",
+  "generatedAt": "2026-07-20T18:00:54Z",
   "source": {
-    "commitSha": "9c19b5cfeb81749ff57896246002e4417abc9b9d",
-    "branch": "theorymcp/equaltoai/host/hosted-genesis-microvm-api-proof"
+    "commitSha": "6eeaf5f026b5126d50e08c5013424b69cf2a54cf",
+    "branch": "issue/957-hosted-genesis-five-body-fail-closed"
   },
   "artifacts": {
     "planning": [
@@ -41,7 +41,8 @@
       "gov-infra/verifiers/sec/operator-drift-auth-gate.sh",
       "gov-infra/verifiers/mai/wire-all-idempotency.sh",
       "gov-infra/verifiers/sec/cost-telemetry-redaction.sh",
-      "gov-infra/verifiers/sec/hosted-genesis-microvm-registry-boundary.sh"
+      "gov-infra/verifiers/sec/hosted-genesis-microvm-registry-boundary.sh",
+      "gov-infra/verifiers/sec/hosted-genesis-declaration-contract.sh"
     ],
     "evidence": [
       "gov-infra/evidence/gov-rubric-report.json",
@@ -57,7 +58,8 @@
       "gov-infra/evidence/SEC-12-output.log",
       "gov-infra/evidence/MAI-5-output.log",
       "gov-infra/evidence/SEC-13-output.log",
-      "gov-infra/evidence/SEC-14-output.log"
+      "gov-infra/evidence/SEC-14-output.log",
+      "gov-infra/evidence/SEC-15-output.log"
     ]
   }
 }
