@@ -880,10 +880,12 @@ test("P52 H1.5 corrective: host-owned MicroVM execution role propagates to RunMi
     "wildcard resource only allowed for kms:Decrypt via SSM",
   );
 
-  // STATE_TABLE_NAME reaches the in-VM MicroVM image env (the workload resolves
-  // the Host state table via models.MainTableName()). The image's
-  // environmentVariables render as Fn::GetAtt/Ref on the table name, so
-  // stringify before substring check.
+  // STAGE and STATE_TABLE_NAME reach the in-VM MicroVM image env (the workload
+  // gates the lab-only process-memory canary on os.Getenv("STAGE") and resolves
+  // the Host state table via models.MainTableName()). Controller/authorizer
+  // Lambda env and resource tags are different processes/surfaces; these
+  // assertions intentionally inspect the AWS::Lambda::MicrovmImage
+  // EnvironmentVariables that the guest receives.
   const images = findResourceEntries(template, "AWS::Lambda::MicrovmImage");
   assert.equal(images.length, 1, "expected AppTheoryMicrovmImage L1 resource");
   const imageEnv = (images[0][1].Properties?.EnvironmentVariables ??
@@ -895,6 +897,12 @@ test("P52 H1.5 corrective: host-owned MicroVM execution role propagates to RunMi
     executionRoleVar,
     undefined,
     "MicroVM image must use platform-supplied execution-role credentials without a self-assume ARN",
+  );
+  const stageVar = imageEnv.find((env) => env?.Key === "STAGE");
+  assert.deepEqual(
+    stageVar,
+    { Key: "STAGE", Value: "lab" },
+    "expected STAGE=lab in the MicroVM image environment so the guest-side lab canary gate can run in lab",
   );
   const stateTableVar = imageEnv.find((env) => env?.Key === "STATE_TABLE_NAME");
   assert.ok(

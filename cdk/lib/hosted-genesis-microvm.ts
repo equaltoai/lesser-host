@@ -294,6 +294,10 @@ export function configureHostedGenesisMicrovm(
       egressNetworkConnectors: [egressConnector],
       environmentVariables: [
         {
+          key: "STAGE",
+          value: props.stage,
+        },
+        {
           key: "HOSTED_GENESIS_MICROVM_NAMESPACE",
           value: HOSTED_GENESIS_MICROVM_NAMESPACE,
         },

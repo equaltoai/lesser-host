@@ -401,30 +401,53 @@ func TestHookServer_ProcessMemoryCanaryEndpointStoresNonceHashOnlyAndVerifiesSur
 	event.Metadata["canary"] = processMemoryCanaryMetadataValue
 	event.Metadata["checkpoint_marker"] = "checkpoint:host-safe-only"
 
+	init := invokeProcessMemoryCanary(t, srv, event)
+	assertCanaryInitializedWithSafeMetadata(t, init, "checkpoint:host-safe-only")
+
+	event.RequestID = "req-resume"
+	event.State = runtimemicrovm.StateReady
+	event.Metadata["expected_nonce_hash"] = init.NonceHash
+
+	verified := invokeProcessMemoryCanary(t, srv, event)
+	assertCanarySurvivedWithSameHash(t, init, verified)
+}
+
+func invokeProcessMemoryCanary(t *testing.T, srv *hookServer, event runtimemicrovm.LifecycleEvent) processMemoryCanaryResult {
+	t.Helper()
 	body, _ := json.Marshal(event)
 	rec := httptest.NewRecorder()
 	srv.routes().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, hostedgenesis.MicroVMProcessMemoryCanaryEndpointPath, bytes.NewReader(body)))
 	if rec.Code != http.StatusOK {
-		t.Fatalf("expected canary init 200, got %d: %s", rec.Code, rec.Body.String())
+		t.Fatalf("expected canary 200, got %d: %s", rec.Code, rec.Body.String())
 	}
-	var init processMemoryCanaryResult
-	if err := json.NewDecoder(rec.Body).Decode(&init); err != nil {
-		t.Fatalf("decode init result: %v", err)
+	var result processMemoryCanaryResult
+	if err := json.NewDecoder(rec.Body).Decode(&result); err != nil {
+		t.Fatalf("decode canary result: %v", err)
 	}
+	return result
+}
+
+func assertCanaryInitializedWithSafeMetadata(t *testing.T, init processMemoryCanaryResult, wantCheckpointMarker string) {
+	t.Helper()
 	if !init.Initialized || init.MemoryPreserved != nil {
 		t.Fatalf("expected initialized result without survival verdict, got %#v", init)
 	}
 	if !strings.HasPrefix(init.NonceHash, "sha256:") || init.CorrelationID == "" {
 		t.Fatalf("expected hash + correlation only, got %#v", init)
 	}
-	if init.CheckpointMarker != "checkpoint:host-safe-only" {
+	if init.CheckpointMarker != wantCheckpointMarker {
 		t.Fatalf("expected checkpoint marker to round-trip, got %q", init.CheckpointMarker)
 	}
-	initPayload, err := marshalCanaryResult(init)
+	assertCanaryResultHasSafeVocabulary(t, init)
+}
+
+func assertCanaryResultHasSafeVocabulary(t *testing.T, result processMemoryCanaryResult) {
+	t.Helper()
+	payload, err := marshalCanaryResult(result)
 	if err != nil {
-		t.Fatalf("marshal init: %v", err)
+		t.Fatalf("marshal canary result: %v", err)
 	}
-	lower := strings.ToLower(string(initPayload))
+	lower := strings.ToLower(string(payload))
 	for _, forbidden := range []string{
 		"plaintext_nonce",
 		"nonce_plaintext",
@@ -445,20 +468,11 @@ func TestHookServer_ProcessMemoryCanaryEndpointStoresNonceHashOnlyAndVerifiesSur
 			t.Fatalf("canary response leaked forbidden vocabulary %q: %s", forbidden, lower)
 		}
 	}
+}
 
-	event.RequestID = "req-resume"
-	event.State = runtimemicrovm.StateReady
-	event.Metadata["expected_nonce_hash"] = init.NonceHash
-	body, _ = json.Marshal(event)
-	rec = httptest.NewRecorder()
-	srv.routes().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, hostedgenesis.MicroVMProcessMemoryCanaryEndpointPath, bytes.NewReader(body)))
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected canary verify 200, got %d: %s", rec.Code, rec.Body.String())
-	}
-	var verified processMemoryCanaryResult
-	if err := json.NewDecoder(rec.Body).Decode(&verified); err != nil {
-		t.Fatalf("decode verify result: %v", err)
-	}
+func assertCanarySurvivedWithSameHash(t *testing.T, init, verified processMemoryCanaryResult) {
+	t.Helper()
+	assertCanaryResultHasSafeVocabulary(t, verified)
 	if verified.MemoryPreserved == nil || !*verified.MemoryPreserved {
 		t.Fatalf("expected memory_preserved=true from same process, got %#v", verified)
 	}
