@@ -952,12 +952,14 @@ test("P52 H1.5 corrective: host-owned MicroVM execution role propagates to RunMi
     "expected STATE_TABLE_NAME image value to be a CDK reference to the state table, not a literal",
   );
 
-  // #955: the five-body v2 declaration contract (#928) must reach the guest —
-  // the workload runner calls DeclarationContractFromEnv, which collapses to
-  // legacy v1 when these vars are absent. That absence caused live
+  // #955/#957: the five-body v2 declaration contract (#928) must reach the
+  // guest — the workload runner calls RequireFiveBodyDeclarationContractFromEnv
+  // and fails closed (operator_action_required) when these vars are absent;
+  // the legacy lane that once collapsed silently caused live
   // invalid_produced_declarations / boundaries.required failures on transcripts
-  // that followed the v2 five-body guidance. Exact full version strings, not
-  // the "v2" aliases, so the template is explicit contract evidence.
+  // that followed the v2 five-body guidance and is now unreachable. Exact full
+  // version strings, not the "v2" aliases, so the template is explicit
+  // contract evidence.
   assert.deepEqual(
     imageEnv.find(
       (env) => env?.Key === HOSTED_GENESIS_DECLARATION_SCHEMA_VERSION_ENV,
@@ -1298,9 +1300,10 @@ test("P52 H1.5: control-plane Lambda receives HTTP dispatch env + SSM auth-token
       `ai-worker Lambda env should compact ${compactedKey} into ${HOSTED_GENESIS_MICROVM_CONFIG_JSON_ENV}`,
     );
   }
-  // #955: the ai-worker hosted-genesis fallback lane also reads
-  // DeclarationContractFromEnv, so it must carry the same five-body v2 contract
-  // the MicroVM image env selects. The control plane never reads the contract
+  // #955/#957: the ai-worker hosted-genesis fallback lane also resolves
+  // RequireFiveBodyDeclarationContractFromEnv (fail-closed), so it must carry
+  // the same five-body v2 contract the MicroVM image env selects. The control
+  // plane never reads the contract
   // (it only gates on session status), so it deliberately does NOT carry these
   // vars — Lambda env budget headroom is scarce (#941/#952).
   assert.equal(

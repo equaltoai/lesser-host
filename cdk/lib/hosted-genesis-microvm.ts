@@ -25,9 +25,10 @@ export const HOSTED_GENESIS_MICROVM_IDLE_AUTO_RESUME_ENABLED = false as const;
 export const HOSTED_GENESIS_MICROVM_CONFIG_JSON_ENV =
   "HOSTED_GENESIS_MICROVM_CONFIG_JSON" as const;
 
-// #955: the hosted-genesis five-body declaration contract (#928) is opt-in by
-// environment — DeclarationContractFromEnv (internal/hostedgenesis/fivebody.go)
-// collapses to the legacy v1 lane unless these env vars select v2. The env keys
+// #955/#957: the hosted-genesis five-body declaration contract (#928) is
+// selected by environment — RequireFiveBodyDeclarationContractFromEnv
+// (internal/hostedgenesis/fivebody.go) fails closed with
+// operator_action_required unless these env vars select v2. The env keys
 // and values below mirror the Go constants EnvDeclarationSchemaVersion /
 // EnvGuidanceVersion and DeclarationSchemaVersionV2 / GuidanceVersionV2. The
 // full version strings (not the accepted "v2" aliases) are used deliberately so

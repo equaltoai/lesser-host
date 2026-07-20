@@ -270,13 +270,22 @@ func hostedGenesisMicroVMDispatchQueueMessage(regCtx mintConversationRegistratio
 // dispatcher is wired; production never sets that guard. H2.1 deletes this path
 // and the hostedGenesisAssistantRunner field.
 func (s *Server) progressHostedGenesisAcceptedTurnSync(ctx context.Context, regCtx mintConversationRegistrationContext, session hostedGenesisTurnSession, conv *models.SoulAgentMintConversation, acceptedMessages []soulMintConversationMessage, apiKey string, requestID string) (*models.HostedGenesisSession, *models.SoulAgentMintConversation, int, *apptheory.AppTheoryError) {
+	systemPrompt, promptAppErr := buildMintConversationSystemPrompt(regCtx.reg)
+	if promptAppErr != nil {
+		failedSession, failedConv, appErr := s.persistHostedGenesisAcceptedTurnFailure(ctx, session, conv, acceptedMessages, hostedGenesisFailureOperatorActionRequired, requestID, time.Now().UTC())
+		if appErr != nil {
+			return nil, nil, 0, appErr
+		}
+		return failedSession, failedConv, http.StatusInternalServerError, promptAppErr
+	}
+
 	runCtx, cancel := context.WithTimeout(detachedMintConversationContext(ctx), hostedGenesisAcceptedTurnRunTimeout)
 	defer cancel()
 
 	result, err := s.runHostedGenesisAcceptedAssistant(runCtx, hostedGenesisAssistantRunInput{
 		apiKey:       strings.TrimSpace(apiKey),
 		modelSet:     session.modelSet,
-		systemPrompt: buildMintConversationSystemPrompt(regCtx.reg),
+		systemPrompt: systemPrompt,
 		messages:     append([]soulMintConversationMessage(nil), acceptedMessages...),
 	})
 	if err != nil || strings.TrimSpace(result.fullResponse) == "" {

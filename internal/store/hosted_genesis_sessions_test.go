@@ -261,6 +261,8 @@ func validStoreDeclarationCheckpoint() hostedgenesis.DeclarationCheckpoint {
 		AgentID:         "0x2222222222222222222222222222222222222222222222222222222222222222",
 		MessageCount:    2,
 		Model:           "openai:gpt-5.4",
+		SchemaVersion:   hostedgenesis.DeclarationSchemaVersionV2,
+		GuidanceVersion: hostedgenesis.GuidanceVersionV2,
 		RequestID:       "req_123",
 	}
 }

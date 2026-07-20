@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"net/http"
 	"strings"
 	"time"
@@ -135,6 +136,14 @@ func hostedGenesisDeclarationCheckpointForCompletion(regCtx mintConversationRegi
 	if model == "" && conv != nil {
 		model = strings.TrimSpace(conv.Model)
 	}
+	// The checkpoint carries the contract versions declared by the produced
+	// declarations themselves; checkpoint.Validate() fails closed unless they
+	// name the exact five-body contract. There is no version-less lane.
+	var versionEvidence struct {
+		SchemaVersion   string `json:"schemaVersion"`
+		GuidanceVersion string `json:"guidanceVersion"`
+	}
+	_ = json.Unmarshal([]byte(raw), &versionEvidence)
 	checkpoint := &hostedgenesis.DeclarationCheckpoint{
 		DeclarationID:   "decl_" + strings.TrimPrefix(hash, "sha256:")[:16],
 		DeclarationHash: hash,
@@ -145,6 +154,8 @@ func hostedGenesisDeclarationCheckpointForCompletion(regCtx mintConversationRegi
 		AgentID:         strings.ToLower(strings.TrimSpace(regCtx.agentIDHex)),
 		MessageCount:    session.MessageCount,
 		Model:           model,
+		SchemaVersion:   strings.TrimSpace(versionEvidence.SchemaVersion),
+		GuidanceVersion: strings.TrimSpace(versionEvidence.GuidanceVersion),
 		RequestID:       strings.TrimSpace(requestID),
 	}
 	if checkpoint.MessageCount <= 0 && conv != nil {

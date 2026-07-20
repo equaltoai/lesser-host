@@ -283,6 +283,8 @@ func TestRecordDeclarationReady_AppliesFromActorOwnedStatuses(t *testing.T) {
 				ConversationID:  "conv-1",
 				AgentID:         "agent-1",
 				MessageCount:    2,
+				SchemaVersion:   hostedgenesis.DeclarationSchemaVersionV2,
+				GuidanceVersion: hostedgenesis.GuidanceVersionV2,
 				RequestID:       "req-1",
 			}
 			got, err := w.RecordDeclarationReady(context.Background(), CompletionTurn{InstanceSlug: "acme", ConversationID: "conv-1", TurnID: "turn-1", RequestID: "req-1"}, cp)
@@ -317,6 +319,8 @@ func TestRecordDeclarationReady_ReplayRejected(t *testing.T) {
 		ConversationID:  "conv-1",
 		AgentID:         "agent-1",
 		MessageCount:    2,
+		SchemaVersion:   hostedgenesis.DeclarationSchemaVersionV2,
+		GuidanceVersion: hostedgenesis.GuidanceVersionV2,
 		RequestID:       "req-1",
 	}
 	_, err := w.RecordDeclarationReady(context.Background(), CompletionTurn{InstanceSlug: "acme", ConversationID: "conv-1", TurnID: "turn-1", RequestID: "req-1"}, cp)

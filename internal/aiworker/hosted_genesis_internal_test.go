@@ -1045,6 +1045,7 @@ func TestHostedGenesisDeclarationExtractionRejectsInvalidTranscript(t *testing.T
 
 func TestHostedGenesisWorkerCompletesAssistantAndDeclarationTurns(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", hostedGenesisWorkerOpenAIKey)
+	setHostedGenesisFiveBodyContractEnv(t)
 	oldAssistant := runHostedGenesisAssistantModel
 	oldDeclaration := runHostedGenesisDeclarationModel
 	t.Cleanup(func() {
@@ -1055,13 +1056,19 @@ func TestHostedGenesisWorkerCompletesAssistantAndDeclarationTurns(t *testing.T) 
 		if apiKey != hostedGenesisWorkerOpenAIKey || modelSet != hostedGenesisWorkerOpenAIModel || !strings.Contains(systemPrompt, hostedGenesisWorkerAgentDomain) || len(messages) != 1 {
 			t.Fatalf("unexpected assistant model input: key=%q model=%q prompt=%q messages=%#v", apiKey, modelSet, systemPrompt, messages)
 		}
+		if !strings.Contains(systemPrompt, hostedgenesis.DeclarationSchemaVersionV2) {
+			t.Fatalf("assistant prompt must carry the five-body contract: %q", systemPrompt)
+		}
 		return "assistant ready", models.AIUsage{Provider: testProviderOpenAI, Model: "gpt-test", InputTokens: 2, OutputTokens: 3}, nil
 	}
 	runHostedGenesisDeclarationModel = func(_ context.Context, apiKey string, modelSet string, in llm.MintConversationDeclarationsInput) (llm.MintConversationDeclarationsDraft, models.AIUsage, error) {
 		if apiKey != hostedGenesisWorkerOpenAIKey || modelSet != hostedGenesisWorkerOpenAIModel || in.Registration.Domain != hostedGenesisWorkerAgentDomain || len(in.Messages) != 2 {
 			t.Fatalf("unexpected declaration model input: key=%q model=%q in=%#v", apiKey, modelSet, in)
 		}
-		return validHostedGenesisDraft(), models.AIUsage{Provider: testProviderOpenAI, Model: "gpt-test", TotalTokens: 11}, nil
+		if in.SchemaVersion != hostedgenesis.DeclarationSchemaVersionV2 || in.GuidanceVersion != hostedgenesis.GuidanceVersionV2 {
+			t.Fatalf("declaration extraction input must carry the five-body contract: %#v", in)
+		}
+		return validHostedGenesisFiveBodyDraft(), models.AIUsage{Provider: testProviderOpenAI, Model: "gpt-test", TotalTokens: 11}, nil
 	}
 
 	assistantStore := newHostedGenesisWorkerStore("turn-worker")
@@ -1090,6 +1097,7 @@ func TestHostedGenesisWorkerCompletesAssistantAndDeclarationTurns(t *testing.T) 
 
 func TestHostedGenesisWorkerFailsClosedOnEmptyAssistantResponse(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", hostedGenesisWorkerOpenAIKey)
+	setHostedGenesisFiveBodyContractEnv(t)
 	oldAssistant := runHostedGenesisAssistantModel
 	t.Cleanup(func() { runHostedGenesisAssistantModel = oldAssistant })
 	runHostedGenesisAssistantModel = func(context.Context, string, string, string, []llm.MintConversationMessage) (string, models.AIUsage, error) {
@@ -1109,11 +1117,12 @@ func TestHostedGenesisWorkerFailsClosedOnEmptyAssistantResponse(t *testing.T) {
 
 func TestHostedGenesisWorkerFailsClosedOnInvalidDeclarationDraft(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", hostedGenesisWorkerOpenAIKey)
+	setHostedGenesisFiveBodyContractEnv(t)
 	oldDeclaration := runHostedGenesisDeclarationModel
 	t.Cleanup(func() { runHostedGenesisDeclarationModel = oldDeclaration })
 	runHostedGenesisDeclarationModel = func(context.Context, string, string, llm.MintConversationDeclarationsInput) (llm.MintConversationDeclarationsDraft, models.AIUsage, error) {
-		draft := validHostedGenesisDraft()
-		draft.SelfDescription.Purpose = "short"
+		draft := validHostedGenesisFiveBodyDraft()
+		draft.FiveBodies.Identity.Summary = "  "
 		return draft, models.AIUsage{}, nil
 	}
 
@@ -1128,11 +1137,67 @@ func TestHostedGenesisWorkerFailsClosedOnInvalidDeclarationDraft(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected invalid declaration draft error: %v", err)
 	}
-	assertHostedGenesisWorkerFailureWithReason(t, st, hostedGenesisFailureInvalidProducedDeclarations, string(hostedgenesis.DeclarationCodeSelfDescription))
+	assertHostedGenesisWorkerFailureWithReason(t, st, hostedGenesisFailureInvalidProducedDeclarations, string(hostedgenesis.DeclarationCodeFiveBodyIdentity))
+}
+
+// TestHostedGenesisWorkerFailsClosedWithoutDeclarationContract proves the
+// aiworker fallback path never selects the legacy declaration lane: with a
+// provider key configured but no five-body contract selection, both the
+// assistant and declaration prepare steps persist operator_action_required
+// before any model call, and the legacy boundaries.required code is
+// unreachable.
+func TestHostedGenesisWorkerFailsClosedWithoutDeclarationContract(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", hostedGenesisWorkerOpenAIKey)
+	t.Setenv(hostedgenesis.EnvDeclarationSchemaVersion, "")
+	t.Setenv(hostedgenesis.EnvGuidanceVersion, "")
+	oldAssistant := runHostedGenesisAssistantModel
+	oldDeclaration := runHostedGenesisDeclarationModel
+	t.Cleanup(func() {
+		runHostedGenesisAssistantModel = oldAssistant
+		runHostedGenesisDeclarationModel = oldDeclaration
+	})
+	runHostedGenesisAssistantModel = func(context.Context, string, string, string, []llm.MintConversationMessage) (string, models.AIUsage, error) {
+		t.Fatal("assistant model must not run without a declaration contract")
+		return "", models.AIUsage{}, nil
+	}
+	runHostedGenesisDeclarationModel = func(context.Context, string, string, llm.MintConversationDeclarationsInput) (llm.MintConversationDeclarationsDraft, models.AIUsage, error) {
+		t.Fatal("declaration model must not run without a declaration contract")
+		return llm.MintConversationDeclarationsDraft{}, models.AIUsage{}, nil
+	}
+
+	assistantStore := newHostedGenesisWorkerStore("turn-worker")
+	assistantStore.conv.Model = hostedGenesisWorkerOpenAIModel
+	assistantStore.session.Model = hostedGenesisWorkerOpenAIModel
+	srv := NewServer(config.Config{}, assistantStore, artifacts.New(""), fakeComprehend{}, fakeRekognition{})
+	if err := srv.processHostedGenesisAssistantTurn(context.Background(), "worker-req", hostedGenesisWorkerQueueMessage(hostedgenesis.StepAssistantTurn, "turn-worker")); err != nil {
+		t.Fatalf("unexpected assistant fail-closed error: %v", err)
+	}
+	assertHostedGenesisWorkerFailure(t, assistantStore, hostedGenesisFailureOperatorActionRequired)
+
+	declarationStore := newHostedGenesisWorkerStore("turn-worker")
+	declarationStore.conv.Model = hostedGenesisWorkerOpenAIModel
+	declarationStore.conv.Status = models.SoulMintConversationStatusDeclarationExtractionPending
+	declarationStore.session.Status = string(hostedgenesis.StatusDeclarationExtractionPending)
+	declarationStore.session.Model = hostedGenesisWorkerOpenAIModel
+	declarationStore.conv.Messages = models.EncodeSoulMintConversationBlob(`[{"role":"user","content":"describe"},{"role":"assistant","content":"assistant ready"}]`)
+	srv = NewServer(config.Config{}, declarationStore, artifacts.New(""), fakeComprehend{}, fakeRekognition{})
+	if err := srv.processHostedGenesisDeclarationExtraction(context.Background(), "worker-req", hostedGenesisWorkerQueueMessage(hostedgenesis.StepDeclarationExtraction, "turn-worker")); err != nil {
+		t.Fatalf("unexpected declaration fail-closed error: %v", err)
+	}
+	assertHostedGenesisWorkerFailure(t, declarationStore, hostedGenesisFailureOperatorActionRequired)
+	declarationStore.mu.Lock()
+	defer declarationStore.mu.Unlock()
+	if declarationStore.session.Failure.Recovery.Action != hostedgenesis.RecoveryActionOperatorAction {
+		t.Fatalf("expected operator_action recovery, got %#v", declarationStore.session.Failure.Recovery)
+	}
+	if declarationStore.conv.StatusReason == string(hostedgenesis.DeclarationCodeBoundaries) {
+		t.Fatalf("legacy boundaries.required must be unreachable for fresh hosted genesis, got %#v", declarationStore.conv)
+	}
 }
 
 func TestHostedGenesisWorkerReturnsDeclarationModelError(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", hostedGenesisWorkerOpenAIKey)
+	setHostedGenesisFiveBodyContractEnv(t)
 	oldDeclaration := runHostedGenesisDeclarationModel
 	t.Cleanup(func() { runHostedGenesisDeclarationModel = oldDeclaration })
 	runHostedGenesisDeclarationModel = func(context.Context, string, string, llm.MintConversationDeclarationsInput) (llm.MintConversationDeclarationsDraft, models.AIUsage, error) {
@@ -1232,12 +1297,13 @@ func TestHostedGenesisPromptAndUsageHelpers(t *testing.T) {
 
 	reg := newHostedGenesisWorkerStore("turn-worker").reg
 	reg.Capabilities = []string{"planning"}
-	prompt := hostedGenesisSystemPrompt(reg)
+	contract := hostedgenesis.FiveBodyDeclarationContract()
+	prompt, promptErr := hostedGenesisSystemPrompt(reg, contract)
+	if promptErr != nil {
+		t.Fatalf("system prompt: %v", promptErr)
+	}
 	if !strings.Contains(prompt, hostedGenesisWorkerAgentDomain) || !strings.Contains(prompt, "planning") {
 		t.Fatalf("system prompt omitted registration context: %q", prompt)
-	}
-	if prompt != mintprompt.MintConversationSystemPrompt(reg) || strings.Contains(prompt, "minted on-chain") || !strings.Contains(prompt, mintprompt.CanonicalFinalAffirmationQuestion) {
-		t.Fatalf("direct worker prompt drifted from shared hosted genesis prompt: %q", prompt)
 	}
 
 	usage := addAIUsageWorker(models.AIUsage{Provider: testProviderOpenAI, InputTokens: 1}, models.AIUsage{Model: "gpt", InputTokens: 2, OutputTokens: 3, DurationMs: 4, ToolCalls: 1})
@@ -1246,47 +1312,58 @@ func TestHostedGenesisPromptAndUsageHelpers(t *testing.T) {
 	}
 }
 
-func TestHostedGenesisDeclarationsDraftBuilder(t *testing.T) {
+// TestHostedGenesisSystemPromptMatchesSharedBuilderAndFailsClosed proves the
+// worker prompt is byte-identical to the shared five-body builder and that a
+// non-five-body contract fails closed instead of selecting another prompt.
+func TestHostedGenesisSystemPromptMatchesSharedBuilderAndFailsClosed(t *testing.T) {
 	t.Parallel()
 
-	decl, err := buildHostedGenesisDeclarationsDraft(validHostedGenesisDraft(), time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC), "anthropic:claude-sonnet-4-6")
-	if err != nil {
-		t.Fatalf("unexpected declarations draft error: %v", err)
+	reg := newHostedGenesisWorkerStore("turn-worker").reg
+	reg.Capabilities = []string{"planning"}
+	contract := hostedgenesis.FiveBodyDeclarationContract()
+	prompt, promptErr := hostedGenesisSystemPrompt(reg, contract)
+	if promptErr != nil {
+		t.Fatalf("system prompt: %v", promptErr)
 	}
-	if decl.SelfDescription.AuthoredBy != hostedGenesisSelfDescriptionAuthoredByAgent ||
-		decl.SelfDescription.MintingModel != "anthropic:claude-sonnet-4-6" ||
-		len(decl.Capabilities) != 1 ||
-		len(decl.Boundaries) != 1 ||
-		decl.Transparency == nil {
-		t.Fatalf("unexpected produced declarations: %#v", decl)
+	sharedPrompt, sharedErr := mintprompt.MintConversationSystemPromptForContract(reg, contract)
+	if sharedErr != nil {
+		t.Fatalf("shared prompt: %v", sharedErr)
 	}
-	badDraft := validHostedGenesisDraft()
-	badDraft.SelfDescription.Purpose = "short"
-	if _, err := buildHostedGenesisDeclarationsDraft(badDraft, time.Now(), "openai:gpt-5"); err == nil {
-		t.Fatalf("expected invalid self-description error")
+	if prompt != sharedPrompt || strings.Contains(prompt, "minted on-chain") || !strings.Contains(prompt, mintprompt.CanonicalFinalAffirmationQuestion) {
+		t.Fatalf("direct worker prompt drifted from shared hosted genesis prompt: %q", prompt)
+	}
+	if _, err := hostedGenesisSystemPrompt(reg, hostedgenesis.DeclarationContract{}); !errors.Is(err, hostedgenesis.ErrDeclarationContractUnconfigured) {
+		t.Fatalf("expected non-five-body contract prompt to fail closed, got %v", err)
 	}
 }
 
-func TestHostedGenesisDeclarationsDraftBuilderLegacyMarshalsWithoutV2EvidenceKeys(t *testing.T) {
+// TestHostedGenesisDeclarationsDraftBuilderRejectsNonFiveBodyContract proves
+// the aiworker builder has exactly one lane: a contract that does not name the
+// five-body lane fails closed with the unconfigured-contract error, and the
+// retired boundaries.required code is unreachable from this builder.
+func TestHostedGenesisDeclarationsDraftBuilderRejectsNonFiveBodyContract(t *testing.T) {
 	t.Parallel()
 
-	decl, err := buildHostedGenesisDeclarationsDraftForContract(validHostedGenesisDraft(), time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC), "anthropic:claude-sonnet-4-6", hostedgenesis.LegacyDeclarationContract())
-	if err != nil {
-		t.Fatalf("unexpected declarations draft error: %v", err)
+	for _, contract := range []hostedgenesis.DeclarationContract{
+		{},
+		{SchemaVersion: "soul-mint-conversation-declaration.v1", GuidanceVersion: "soul-mint-conversation-guidance.v1"},
+	} {
+		_, err := buildHostedGenesisDeclarationsDraftForContract(validHostedGenesisFiveBodyDraft(), time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC), "anthropic:claude-sonnet-4-6", contract)
+		if !errors.Is(err, hostedgenesis.ErrDeclarationContractUnconfigured) {
+			t.Fatalf("expected unconfigured contract error for %#v, got %v", contract, err)
+		}
+		if err.Error() == string(hostedgenesis.DeclarationCodeBoundaries) {
+			t.Fatalf("retired boundaries.required must be unreachable, got %v", err)
+		}
 	}
-	body, err := json.Marshal(decl)
-	if err != nil {
-		t.Fatalf("marshal produced declarations: %v", err)
-	}
-	assertHostedGenesisJSONKeysAbsent(t, body, "schemaVersion", "guidanceVersion", "fiveBodies", "adversarialReview")
 }
 
 func TestHostedGenesisDeclarationsDraftBuilderAllowsEmptyCapabilities(t *testing.T) {
 	t.Parallel()
 
-	draft := validHostedGenesisDraft()
+	draft := validHostedGenesisFiveBodyDraft()
 	draft.Capabilities = nil
-	decl, err := buildHostedGenesisDeclarationsDraft(draft, time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC), "anthropic:claude-sonnet-4-6", []string{"simulacrum.hosted-first-default"})
+	decl, err := buildHostedGenesisDeclarationsDraftForContract(draft, time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC), "anthropic:claude-sonnet-4-6", hostedgenesis.FiveBodyDeclarationContract(), []string{"simulacrum.hosted-first-default"})
 	if err != nil {
 		t.Fatalf("unexpected empty-capabilities error: %v", err)
 	}
@@ -1298,9 +1375,9 @@ func TestHostedGenesisDeclarationsDraftBuilderAllowsEmptyCapabilities(t *testing
 func TestHostedGenesisDeclarationsDraftBuilderDropsPlaceholder(t *testing.T) {
 	t.Parallel()
 
-	draft := validHostedGenesisDraft()
+	draft := validHostedGenesisFiveBodyDraft()
 	draft.Capabilities = []soul.CapabilityV2{{Capability: "simulacrum.hosted-first-default", Scope: "placeholder", ClaimLevel: "self-declared"}}
-	decl, err := buildHostedGenesisDeclarationsDraft(draft, time.Now(), "openai:gpt-5")
+	decl, err := buildHostedGenesisDeclarationsDraftForContract(draft, time.Now(), "openai:gpt-5", hostedgenesis.FiveBodyDeclarationContract())
 	if err != nil {
 		t.Fatalf("unexpected placeholder-only capabilities error: %v", err)
 	}
@@ -1309,48 +1386,36 @@ func TestHostedGenesisDeclarationsDraftBuilderDropsPlaceholder(t *testing.T) {
 	}
 }
 
-func TestHostedGenesisDeclarationsDraftBuilderRequiresBoundary(t *testing.T) {
-	t.Parallel()
-
-	noBoundaryDraft := validHostedGenesisDraft()
-	noBoundaryDraft.Boundaries = nil
-	if _, err := buildHostedGenesisDeclarationsDraft(noBoundaryDraft, time.Now(), "openai:gpt-5"); err == nil || err.Error() != string(hostedgenesis.DeclarationCodeBoundaries) {
-		t.Fatalf("expected required boundary error, got %v", err)
-	}
+// setHostedGenesisFiveBodyContractEnv selects the five-body declaration
+// contract the way the deployed ai-worker env does. Fresh hosted-genesis
+// production has no legacy lane, so path tests must opt in explicitly.
+func setHostedGenesisFiveBodyContractEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv(hostedgenesis.EnvDeclarationSchemaVersion, hostedgenesis.DeclarationSchemaVersionV2)
+	t.Setenv(hostedgenesis.EnvGuidanceVersion, hostedgenesis.GuidanceVersionV2)
 }
 
-func validHostedGenesisDraft() llm.MintConversationDeclarationsDraft {
-	return llm.MintConversationDeclarationsDraft{
-		SelfDescription: soul.SelfDescriptionV2{
-			Purpose: "Help users plan hosted soul genesis with explicit safety limits.",
-		},
-		Capabilities: []soul.CapabilityV2{
-			{Capability: "hosted_genesis_planning", Scope: "Draft safe registration declarations."},
-		},
-		Boundaries: []llm.MintConversationBoundaryDraft{
-			{Category: "refusal", Statement: "I will not reveal credentials.", Rationale: "protects operators"},
-		},
-	}
-}
-
-func TestHostedGenesisFiveBodyPromptAndInputAreFlagGated(t *testing.T) {
+func TestHostedGenesisFiveBodyPromptAndInputRequireContract(t *testing.T) {
 	t.Setenv(hostedgenesis.EnvDeclarationSchemaVersion, "")
+	t.Setenv(hostedgenesis.EnvGuidanceVersion, "")
 	reg := newHostedGenesisWorkerStore("turn-worker").reg
-	legacyPrompt := hostedGenesisSystemPrompt(reg)
-	if strings.Contains(legacyPrompt, hostedgenesis.DeclarationSchemaVersionV2) || strings.Contains(legacyPrompt, "Phase 1 — identity") {
-		t.Fatalf("v1 prompt must remain unchanged while flag disabled: %q", legacyPrompt)
-	}
-	legacyInput := hostedGenesisDeclarationInput(reg, []hostedGenesisMessage{{Role: "user", Content: "hello"}}, hostedgenesis.DeclarationContractFromEnv())
-	if legacyInput.SchemaVersion != "" || legacyInput.GuidanceVersion != "" {
-		t.Fatalf("v1 extraction input must not carry v2 version evidence: %#v", legacyInput)
+	if _, err := hostedgenesis.RequireFiveBodyDeclarationContractFromEnv(); !errors.Is(err, hostedgenesis.ErrDeclarationContractUnconfigured) {
+		t.Fatalf("expected unconfigured contract error without env selection, got %v", err)
 	}
 
-	t.Setenv(hostedgenesis.EnvDeclarationSchemaVersion, "v2")
-	v2Prompt := hostedGenesisSystemPrompt(reg)
+	setHostedGenesisFiveBodyContractEnv(t)
+	contract, err := hostedgenesis.RequireFiveBodyDeclarationContractFromEnv()
+	if err != nil {
+		t.Fatalf("expected five-body contract from env, got %v", err)
+	}
+	v2Prompt, v2PromptErr := hostedGenesisSystemPrompt(reg, contract)
+	if v2PromptErr != nil {
+		t.Fatalf("v2 prompt: %v", v2PromptErr)
+	}
 	if !strings.Contains(v2Prompt, hostedgenesis.DeclarationSchemaVersionV2) || !strings.Contains(v2Prompt, "Phase 5 — soul") {
 		t.Fatalf("v2 prompt missing contract evidence: %q", v2Prompt)
 	}
-	v2Input := hostedGenesisDeclarationInput(reg, []hostedGenesisMessage{{Role: "user", Content: "hello"}}, hostedgenesis.DeclarationContractFromEnv())
+	v2Input := hostedGenesisDeclarationInput(reg, []hostedGenesisMessage{{Role: "user", Content: "hello"}}, contract)
 	if v2Input.SchemaVersion != hostedgenesis.DeclarationSchemaVersionV2 || v2Input.GuidanceVersion != hostedgenesis.GuidanceVersionV2 {
 		t.Fatalf("v2 extraction input missing versions: %#v", v2Input)
 	}
@@ -1439,19 +1504,6 @@ func validHostedGenesisFiveBodyDraft() llm.MintConversationDeclarationsDraft {
 		},
 		Capabilities: []soul.CapabilityV2{{Capability: "operator_support", Scope: "Help operators reason about hosted genesis state.", ClaimLevel: "self-declared"}},
 		Transparency: map[string]any{"modelProviderUncertainty": "unit test", "operationalNotes": "deterministic", "selfDeclaredNotice": "self-declared"},
-	}
-}
-
-func assertHostedGenesisJSONKeysAbsent(t *testing.T, body []byte, keys ...string) {
-	t.Helper()
-	var parsed map[string]any
-	if err := json.Unmarshal(body, &parsed); err != nil {
-		t.Fatalf("parse produced declarations: %v\n%s", err, string(body))
-	}
-	for _, key := range keys {
-		if _, ok := parsed[key]; ok {
-			t.Fatalf("expected produced declarations to omit %q, got %s", key, string(body))
-		}
 	}
 }
 
@@ -1670,7 +1722,7 @@ func assertHostedGenesisDeclarationReady(t *testing.T, st *fakeHostedGenesisStor
 		t.Fatalf("expected declaration-ready session checkpoint, got %#v", st.session)
 	}
 	decoded := models.DecodeSoulMintConversationBlob(st.conv.ProducedDeclarations)
-	if !strings.Contains(decoded, "hosted_genesis_planning") || strings.Contains(st.conv.ProducedDeclarations, "hosted_genesis_planning") {
+	if !strings.Contains(decoded, `"fiveBodies"`) || !strings.Contains(decoded, "operator_support") || strings.Contains(st.conv.ProducedDeclarations, "operator_support") {
 		t.Fatalf("declaration encoding mismatch raw=%q decoded=%q", st.conv.ProducedDeclarations, decoded)
 	}
 	if st.conv.Usage.TotalTokens != 11 || st.conv.RequestID != "req-host" {

@@ -180,6 +180,8 @@ func validDeclarationCheckpoint() DeclarationCheckpoint {
 		AgentID:         "0x2222222222222222222222222222222222222222222222222222222222222222",
 		MessageCount:    2,
 		Model:           "openai:gpt-5.4",
+		SchemaVersion:   DeclarationSchemaVersionV2,
+		GuidanceVersion: GuidanceVersionV2,
 		RequestID:       "req_123",
 	}
 }

@@ -385,6 +385,8 @@ func stubMintConversationDomainAccess(t *testing.T, tdb *mintConversationTestDB,
 
 func testMintConversationDecl() soulMintConversationProducedDeclarations {
 	return soulMintConversationProducedDeclarations{
+		SchemaVersion:   hostedgenesis.DeclarationSchemaVersionV2,
+		GuidanceVersion: hostedgenesis.GuidanceVersionV2,
 		SelfDescription: soul.SelfDescriptionV2{
 			Purpose:      "Help users plan travel with explicit limitations.",
 			AuthoredBy:   "agent",
@@ -497,16 +499,16 @@ func TestMintConversationHelperCoverage(t *testing.T) {
 func testMintConversationProducedDeclarationsBranches(t *testing.T, now time.Time) {
 	t.Helper()
 
-	if _, appErr := buildMintConversationProducedDeclarations(llm.MintConversationDeclarationsDraft{
+	if _, appErr := buildMintConversationProducedDeclarationsWithOptions(llm.MintConversationDeclarationsDraft{
 		SelfDescription: soul.SelfDescriptionV2{Purpose: "short", AuthoredBy: "agent"},
-	}, now, "openai:gpt-5.4"); appErr == nil || appErr.Message != string(hostedgenesis.DeclarationCodeSelfDescription) {
+	}, now, "openai:gpt-5.4", nil, false); appErr == nil || appErr.Message != string(hostedgenesis.DeclarationCodeSelfDescription) {
 		t.Fatalf("expected selfDescription error, got %#v", appErr)
 	}
-	decl, appErr := buildMintConversationProducedDeclarations(llm.MintConversationDeclarationsDraft{
+	decl, appErr := buildMintConversationProducedDeclarationsWithOptions(llm.MintConversationDeclarationsDraft{
 		SelfDescription: soul.SelfDescriptionV2{Purpose: "A sufficiently long purpose string.", AuthoredBy: "agent"},
 		Capabilities:    []soul.CapabilityV2{{Capability: "", Scope: "skip"}},
 		Boundaries:      []llm.MintConversationBoundaryDraft{{Category: "refusal", Statement: "I will not impersonate humans."}},
-	}, now, "openai:gpt-5.4", []string{"travel_planning"})
+	}, now, "openai:gpt-5.4", []string{"travel_planning"}, false)
 	if appErr != nil {
 		t.Fatalf("expected declared capabilities to fill empty extracted capabilities, got %#v", appErr)
 	}
@@ -514,29 +516,29 @@ func testMintConversationProducedDeclarationsBranches(t *testing.T, now time.Tim
 		t.Fatalf("expected declared capability with retained valid boundary, got %#v", decl)
 	}
 
-	_, appErr = buildMintConversationProducedDeclarations(llm.MintConversationDeclarationsDraft{
+	_, appErr = buildMintConversationProducedDeclarationsWithOptions(llm.MintConversationDeclarationsDraft{
 		SelfDescription: soul.SelfDescriptionV2{Purpose: "A sufficiently long purpose string.", AuthoredBy: "agent"},
 		Capabilities:    []soul.CapabilityV2{{Capability: "", Scope: "skip"}},
 		Boundaries:      []llm.MintConversationBoundaryDraft{{Category: "refusal", Statement: "I will not impersonate humans."}},
-	}, now, "openai:gpt-5.4")
+	}, now, "openai:gpt-5.4", nil, false)
 	if appErr == nil || appErr.Message != string(hostedgenesis.DeclarationCodeCapabilities) {
 		t.Fatalf("expected required capabilities error, got %#v", appErr)
 	}
 
-	_, appErr = buildMintConversationProducedDeclarations(llm.MintConversationDeclarationsDraft{
+	_, appErr = buildMintConversationProducedDeclarationsWithOptions(llm.MintConversationDeclarationsDraft{
 		SelfDescription: soul.SelfDescriptionV2{Purpose: "A sufficiently long purpose string.", AuthoredBy: "agent"},
 		Capabilities:    []soul.CapabilityV2{{Capability: "travel_planning", Scope: "Draft itineraries."}},
 		Boundaries:      []llm.MintConversationBoundaryDraft{{Category: "", Statement: "skip"}},
-	}, now, "openai:gpt-5.4")
+	}, now, "openai:gpt-5.4", nil, false)
 	if appErr == nil || appErr.Message != string(hostedgenesis.DeclarationCodeBoundariesBad) {
 		t.Fatalf("expected invalid boundaries error, got %#v", appErr)
 	}
 
-	decl, appErr = buildMintConversationProducedDeclarations(llm.MintConversationDeclarationsDraft{
+	decl, appErr = buildMintConversationProducedDeclarationsWithOptions(llm.MintConversationDeclarationsDraft{
 		SelfDescription: soul.SelfDescriptionV2{Purpose: "A sufficiently long purpose string.", AuthoredBy: "agent"},
 		Capabilities:    []soul.CapabilityV2{{Capability: "travel_planning", Scope: "Draft itineraries."}},
 		Boundaries:      []llm.MintConversationBoundaryDraft{{Category: "refusal", Statement: "I will not impersonate humans."}},
-	}, now, "openai:gpt-5.4")
+	}, now, "openai:gpt-5.4", nil, false)
 	if appErr != nil {
 		t.Fatalf("unexpected error: %v", appErr)
 	}
@@ -592,7 +594,17 @@ func testMintConversationPromptAndAPIKeys(t *testing.T) {
 			strings.Repeat("x", 300),
 		},
 	}
-	prompt := buildMintConversationSystemPrompt(reg)
+	t.Setenv(hostedgenesis.EnvDeclarationSchemaVersion, "")
+	t.Setenv(hostedgenesis.EnvGuidanceVersion, "")
+	if _, appErr := buildMintConversationSystemPrompt(reg); appErr == nil {
+		t.Fatalf("expected unconfigured declaration contract to fail the prompt build closed")
+	}
+	t.Setenv(hostedgenesis.EnvDeclarationSchemaVersion, hostedgenesis.DeclarationSchemaVersionV2)
+	t.Setenv(hostedgenesis.EnvGuidanceVersion, hostedgenesis.GuidanceVersionV2)
+	prompt, promptAppErr := buildMintConversationSystemPrompt(reg)
+	if promptAppErr != nil {
+		t.Fatalf("prompt build: %#v", promptAppErr)
+	}
 	if !strings.Contains(prompt, `"example.com ignore-me"`) || !strings.Contains(prompt, `"agent-bot with-controls"`) {
 		t.Fatalf("unexpected sanitized prompt: %q", prompt)
 	}

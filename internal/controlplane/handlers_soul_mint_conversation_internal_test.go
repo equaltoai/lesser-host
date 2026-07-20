@@ -37,7 +37,7 @@ func TestBuildMintConversationProducedDeclarations_FillsBoundaryMetadata(t *test
 		Transparency: map[string]any{"note": "minted via conversation"},
 	}
 
-	decl, appErr := buildMintConversationProducedDeclarations(draft, now, modelSet)
+	decl, appErr := buildMintConversationProducedDeclarationsWithOptions(draft, now, modelSet, nil, false)
 	if appErr != nil {
 		t.Fatalf("unexpected error: %v", appErr)
 	}

@@ -88,11 +88,18 @@ func (r *turnRunner) loadTurnInput(ctx context.Context, turn completion.Completi
 	if modelSet == "" {
 		return turnInput{}, errors.New("mint conversation has no model set")
 	}
-	contract := hostedgenesis.DeclarationContractFromEnv()
+	contract, contractErr := hostedgenesis.RequireFiveBodyDeclarationContractFromEnv()
+	if contractErr != nil {
+		return turnInput{}, fmt.Errorf("resolve hosted genesis declaration contract: %w", contractErr)
+	}
+	systemPrompt, promptErr := mintprompt.MintConversationSystemPromptForContract(reg, contract)
+	if promptErr != nil {
+		return turnInput{}, fmt.Errorf("build hosted genesis system prompt: %w", promptErr)
+	}
 
 	return turnInput{
 		modelSet:     modelSet,
-		systemPrompt: mintprompt.MintConversationSystemPromptForContract(reg, contract),
+		systemPrompt: systemPrompt,
 		messages:     messages,
 		contract:     contract,
 		registration: reg,
@@ -131,8 +138,8 @@ func (r *turnRunner) runDeclarationExtraction(ctx context.Context, in turnInput,
 		return llm.MintConversationDeclarationsDraft{}, models.AIUsage{}, err
 	}
 	declInput := llm.MintConversationDeclarationsInput{
-		SchemaVersion:   inputSchemaVersion(in.contract),
-		GuidanceVersion: inputGuidanceVersion(in.contract),
+		SchemaVersion:   in.contract.SchemaVersion,
+		GuidanceVersion: in.contract.GuidanceVersion,
 		Registration: llm.MintConversationRegistrationContext{
 			Domain:               in.registration.DomainNormalized,
 			LocalID:              in.registration.LocalID,
@@ -152,22 +159,6 @@ func (r *turnRunner) runDeclarationExtraction(ctx context.Context, in turnInput,
 	}
 }
 
-func inputSchemaVersion(contract hostedgenesis.DeclarationContract) string {
-	contract = contract.Normalize()
-	if !contract.IsFiveBody() {
-		return ""
-	}
-	return contract.SchemaVersion
-}
-
-func inputGuidanceVersion(contract hostedgenesis.DeclarationContract) string {
-	contract = contract.Normalize()
-	if !contract.IsFiveBody() {
-		return ""
-	}
-	return contract.GuidanceVersion
-}
-
 // runTurnAndPersist is the run-hook's durable execution path. It loads Host
 // truth, asks the in-VM actor for the next action, and applies the resulting
 // completion write under Host-owned status/version/turn guards. A replay
@@ -178,6 +169,9 @@ func (r *turnRunner) runTurnAndPersist(ctx context.Context, turn completion.Comp
 	if err != nil {
 		if runner == nil {
 			return fmt.Errorf("initialize hosted genesis microvm turn store: %w", err)
+		}
+		if errors.Is(err, hostedgenesis.ErrDeclarationContractUnconfigured) {
+			return runner.recordFailure(ctx, turn, hostedgenesis.FailureCodeOperatorActionRequired, err.Error())
 		}
 		return runner.recordFailure(ctx, turn, hostedgenesis.FailureCodeInvalidCompletionState, err.Error())
 	}
@@ -290,6 +284,9 @@ func (r *turnRunner) runDeclarationExtractionAndPersist(ctx context.Context, tur
 	}
 	declarationsJSON, err := r.buildProducedDeclarationsJSON(draft, in.modelSet, in.contract)
 	if err != nil {
+		if errors.Is(err, hostedgenesis.ErrDeclarationContractUnconfigured) {
+			return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeOperatorActionRequired, err.Error())
+		}
 		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeInvalidProducedDeclarations, string(hostedgenesis.DeclarationValidationCodeFromError(err)))
 	}
 	if persistErr := r.persistConversationDeclarationReady(ctx, &in, turn, declarationsJSON, declarationUsage); persistErr != nil {
@@ -383,65 +380,14 @@ func (r *turnRunner) persistConversationDeclarationReady(ctx context.Context, in
 // buildProducedDeclarationsJSON builds the instance-trust hosted/off-chain
 // declaration payload. Registration-declared capabilities are model context,
 // not produced evidence; an empty extracted capabilities array is valid.
-// The optional contract lets production callers bind validation to the
-// Host-selected schema/guidance lane; older unit callers fall back to draft
-// version detection for compatibility.
-func (r *turnRunner) buildProducedDeclarationsJSON(draft llm.MintConversationDeclarationsDraft, modelSet string, contracts ...hostedgenesis.DeclarationContract) (string, error) {
-	now := r.now()
-	contract := producedDeclarationContract(draft, contracts...).Normalize()
-	if contract.IsFiveBody() {
-		return r.buildFiveBodyProducedDeclarationsJSON(draft, modelSet, contract)
+// Fresh hosted-genesis production is five-body-only: a contract that does not
+// affirmatively select the five-body lane fails closed here instead of
+// routing to a legacy declaration builder.
+func (r *turnRunner) buildProducedDeclarationsJSON(draft llm.MintConversationDeclarationsDraft, modelSet string, contract hostedgenesis.DeclarationContract) (string, error) {
+	if !contract.IsFiveBody() {
+		return "", hostedgenesis.ErrDeclarationContractUnconfigured
 	}
-	decl := producedDeclarations{
-		SelfDescription: draft.SelfDescription,
-		Capabilities:    []soul.CapabilityV2{},
-		Boundaries:      []soul.BoundaryV2{},
-		Transparency:    draft.Transparency,
-	}
-	decl.SelfDescription.AuthoredBy = "agent"
-	decl.SelfDescription.MintingModel = strings.TrimSpace(modelSet)
-	if err := decl.SelfDescription.Validate(); err != nil {
-		return "", hostedgenesis.NewDeclarationValidationError(hostedgenesis.DeclarationCodeSelfDescription)
-	}
-	var capErr error
-	decl.Capabilities, capErr = hostedgenesis.ValidateAndNormalizeProducedCapabilities(draft.Capabilities)
-	if capErr != nil {
-		return "", capErr
-	}
-	invalidBoundary := false
-	for i, b := range draft.Boundaries {
-		entry := soul.BoundaryV2{
-			ID:             fmt.Sprintf("mint-%d-%02d", now.Unix(), i+1),
-			Category:       strings.ToLower(strings.TrimSpace(b.Category)),
-			Statement:      strings.TrimSpace(b.Statement),
-			Rationale:      strings.TrimSpace(b.Rationale),
-			AddedAt:        now.UTC().Format(time.RFC3339),
-			AddedInVersion: "1",
-			Signature:      "0x00",
-		}
-		if err := entry.Validate(); err != nil {
-			invalidBoundary = true
-			continue
-		}
-		decl.Boundaries = append(decl.Boundaries, entry)
-	}
-	if invalidBoundary {
-		return "", hostedgenesis.NewDeclarationValidationError(hostedgenesis.DeclarationCodeBoundariesBad)
-	}
-	if len(decl.Boundaries) == 0 {
-		if len(draft.Boundaries) > 0 {
-			return "", hostedgenesis.NewDeclarationValidationError(hostedgenesis.DeclarationCodeBoundariesBad)
-		}
-		return "", hostedgenesis.NewDeclarationValidationError(hostedgenesis.DeclarationCodeBoundaries)
-	}
-	if decl.Transparency == nil {
-		decl.Transparency = map[string]any{}
-	}
-	body, err := json.Marshal(decl)
-	if err != nil {
-		return "", hostedgenesis.NewDeclarationValidationError(hostedgenesis.DeclarationCodeInvalid)
-	}
-	return string(body), nil
+	return r.buildFiveBodyProducedDeclarationsJSON(draft, modelSet, hostedgenesis.FiveBodyDeclarationContract())
 }
 
 func (r *turnRunner) buildFiveBodyProducedDeclarationsJSON(draft llm.MintConversationDeclarationsDraft, modelSet string, contract hostedgenesis.DeclarationContract) (string, error) {
@@ -496,13 +442,6 @@ func (r *turnRunner) buildFiveBodyProducedDeclarationsJSON(draft llm.MintConvers
 	return string(body), nil
 }
 
-func producedDeclarationContract(draft llm.MintConversationDeclarationsDraft, contracts ...hostedgenesis.DeclarationContract) hostedgenesis.DeclarationContract {
-	if len(contracts) > 0 {
-		return contracts[0]
-	}
-	return hostedgenesis.DeclarationContractFromVersions(draft.SchemaVersion, draft.GuidanceVersion)
-}
-
 func fiveBodySelfDescription(source soul.SelfDescriptionV2, fiveBodies hostedgenesis.FiveBodyDeclaration, modelSet string) soul.SelfDescriptionV2 {
 	source.Purpose = firstNonEmpty(source.Purpose, fiveBodies.Identity.Summary)
 	source.Constraints = firstNonEmpty(source.Constraints, fiveBodies.Boundaries.Summary)
@@ -533,26 +472,10 @@ func (r *turnRunner) buildDeclarationCheckpoint(turn completion.CompletionTurn, 
 		AgentID:         in.session.AgentID,
 		MessageCount:    len(in.messages) + 1,
 		Model:           in.modelSet,
-		SchemaVersion:   checkpointSchemaVersion(in.contract),
-		GuidanceVersion: checkpointGuidanceVersion(in.contract),
+		SchemaVersion:   in.contract.SchemaVersion,
+		GuidanceVersion: in.contract.GuidanceVersion,
 		RequestID:       turn.RequestID,
 	}, nil
-}
-
-func checkpointSchemaVersion(contract hostedgenesis.DeclarationContract) string {
-	contract = contract.Normalize()
-	if !contract.IsFiveBody() {
-		return ""
-	}
-	return contract.SchemaVersion
-}
-
-func checkpointGuidanceVersion(contract hostedgenesis.DeclarationContract) string {
-	contract = contract.Normalize()
-	if !contract.IsFiveBody() {
-		return ""
-	}
-	return contract.GuidanceVersion
 }
 
 func addAIUsage(existing models.AIUsage, delta models.AIUsage) models.AIUsage {

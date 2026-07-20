@@ -359,6 +359,8 @@ func testHostedGenesisDeclarationReadySession(raw string, requestID string) *mod
 		AgentID:         session.AgentID,
 		MessageCount:    session.MessageCount,
 		Model:           "anthropic:claude-sonnet-4-6",
+		SchemaVersion:   hostedgenesis.DeclarationSchemaVersionV2,
+		GuidanceVersion: hostedgenesis.GuidanceVersionV2,
 		RequestID:       requestID,
 	}
 	return session

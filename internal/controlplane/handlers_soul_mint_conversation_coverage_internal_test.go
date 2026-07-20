@@ -143,6 +143,8 @@ func setHostedGenesisLegacyDeclarationCheckpointForTest(session *models.HostedGe
 		AgentID:         conv.AgentID,
 		MessageCount:    messageCount,
 		Model:           conv.Model,
+		SchemaVersion:   produced.Declarations.SchemaVersion,
+		GuidanceVersion: produced.Declarations.GuidanceVersion,
 		RequestID:       requestID,
 	}
 	return session.DeclarationCheckpoint.Validate() == nil
