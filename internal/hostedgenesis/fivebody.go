@@ -1,6 +1,7 @@
 package hostedgenesis
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -10,10 +11,10 @@ import (
 )
 
 const (
-	// EnvDeclarationSchemaVersion gates the hosted genesis declaration extractor.
-	// Empty means the legacy v1 declaration lane. Operators can opt in to v2
-	// without changing AppTheory/MicroVM execution by setting this to "v2" or
-	// DeclarationSchemaVersionV2.
+	// EnvDeclarationSchemaVersion selects the hosted genesis declaration
+	// contract for fresh production. Fresh hosted-genesis has no legacy lane:
+	// the deployment must set this to "v2" or DeclarationSchemaVersionV2, and a
+	// missing/unknown value fails closed instead of selecting a builder.
 	EnvDeclarationSchemaVersion = "HOSTED_GENESIS_DECLARATION_SCHEMA_VERSION"
 	// EnvGuidanceVersion optionally pins the interview guidance version. Empty
 	// follows the selected schema version.
@@ -57,16 +58,29 @@ func FiveBodyDeclarationContract() DeclarationContract {
 	return DeclarationContract{SchemaVersion: DeclarationSchemaVersionV2, GuidanceVersion: GuidanceVersionV2}
 }
 
-// DeclarationContractFromEnv returns the active declaration contract from the
-// process environment. Unsupported values intentionally collapse to v1 so a bad
-// opt-in cannot silently relax validation or partially enable v2.
-func DeclarationContractFromEnv() DeclarationContract {
+// ErrDeclarationContractUnconfigured fails fresh hosted-genesis declaration
+// production closed when the process environment does not explicitly select the
+// five-body contract. It is an operator configuration error, not a declaration
+// validation code: callers must surface it as operator_action_required and must
+// never fall back to the legacy declaration builder.
+var ErrDeclarationContractUnconfigured = errors.New("hosted genesis declaration contract is not configured for five-body")
+
+// RequireFiveBodyDeclarationContractFromEnv returns the five-body declaration
+// contract selected by the process environment. Fresh hosted-genesis production
+// has no legacy lane: at least one variable must affirmatively select v2, and a
+// missing, legacy, conflicting, or unrecognized value returns
+// ErrDeclarationContractUnconfigured instead of a contract.
+func RequireFiveBodyDeclarationContractFromEnv() (DeclarationContract, error) {
 	schema := strings.ToLower(strings.TrimSpace(os.Getenv(EnvDeclarationSchemaVersion)))
 	guidance := strings.ToLower(strings.TrimSpace(os.Getenv(EnvGuidanceVersion)))
-	if schema == "v2" || schema == strings.ToLower(DeclarationSchemaVersionV2) || guidance == "v2" || guidance == strings.ToLower(GuidanceVersionV2) {
-		return FiveBodyDeclarationContract()
+	schemaSelects := schema == "v2" || schema == strings.ToLower(DeclarationSchemaVersionV2)
+	guidanceSelects := guidance == "v2" || guidance == strings.ToLower(GuidanceVersionV2)
+	schemaValid := schema == "" || schemaSelects
+	guidanceValid := guidance == "" || guidanceSelects
+	if (schemaSelects || guidanceSelects) && schemaValid && guidanceValid {
+		return FiveBodyDeclarationContract(), nil
 	}
-	return LegacyDeclarationContract()
+	return DeclarationContract{}, ErrDeclarationContractUnconfigured
 }
 
 // DeclarationContractFromVersions normalizes a caller-provided schema/guidance

@@ -250,6 +250,7 @@ func TestHookServer_ReadyHookEmptyBody200(t *testing.T) {
 // running and executes the assistant turn for an in_progress session,
 // persisting assistant_turn_ready to session truth.
 func TestHookServer_RunHookExecutesTurn(t *testing.T) {
+	setFiveBodyContractEnv(t)
 	assistantChunk := "data: " + mustMarshal(map[string]any{
 		"id": "chatcmpl_test", "object": "chat.completion.chunk", "created": 1, "model": "gpt-test",
 		"choices": []any{map[string]any{"index": 0, "delta": map[string]any{"role": "assistant", "content": "I am acme."}, "finish_reason": nil}},
@@ -306,6 +307,7 @@ func TestHookServer_RunHookExecutesTurn(t *testing.T) {
 // without using the AWS-reserved lifecycle URL as the externally proxied
 // application endpoint.
 func TestHookServer_TurnEndpointExecutesTurn(t *testing.T) {
+	setFiveBodyContractEnv(t)
 	assistantChunk := "data: " + mustMarshal(map[string]any{
 		"id": "chatcmpl_test", "object": "chat.completion.chunk", "created": 1, "model": "gpt-test",
 		"choices": []any{map[string]any{"index": 0, "delta": map[string]any{"role": "assistant", "content": "I am acme."}, "finish_reason": nil}},

@@ -1,22 +1,53 @@
 package hostedgenesis
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
 )
 
-func TestDeclarationContractFromEnvDefaultsToLegacyAndOptInV2(t *testing.T) {
-	t.Setenv(EnvDeclarationSchemaVersion, "")
-	t.Setenv(EnvGuidanceVersion, "")
-	if got := DeclarationContractFromEnv(); got != LegacyDeclarationContract() || got.IsFiveBody() {
-		t.Fatalf("expected legacy default, got %#v", got)
+func TestRequireFiveBodyDeclarationContractFromEnvFailsClosedWithoutExplicitV2(t *testing.T) {
+	failClosed := []struct {
+		name     string
+		schema   string
+		guidance string
+	}{
+		{name: "unset", schema: "", guidance: ""},
+		{name: "unknown schema", schema: "v3", guidance: ""},
+		{name: "legacy schema", schema: DeclarationSchemaVersionV1, guidance: ""},
+		{name: "legacy guidance", schema: "", guidance: GuidanceVersionV1},
+		{name: "conflicting pair", schema: "v1", guidance: "v2"},
+	}
+	for _, tt := range failClosed {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv(EnvDeclarationSchemaVersion, tt.schema)
+			t.Setenv(EnvGuidanceVersion, tt.guidance)
+			got, err := RequireFiveBodyDeclarationContractFromEnv()
+			if !errors.Is(err, ErrDeclarationContractUnconfigured) || got != (DeclarationContract{}) {
+				t.Fatalf("expected fail-closed unconfigured contract, got contract=%#v err=%v", got, err)
+			}
+		})
 	}
 
-	t.Setenv(EnvDeclarationSchemaVersion, "v2")
-	got := DeclarationContractFromEnv()
-	if !got.IsFiveBody() || got.SchemaVersion != DeclarationSchemaVersionV2 || got.GuidanceVersion != GuidanceVersionV2 {
-		t.Fatalf("expected v2 opt-in, got %#v", got)
+	selectsV2 := []struct {
+		name     string
+		schema   string
+		guidance string
+	}{
+		{name: "short schema", schema: "v2", guidance: ""},
+		{name: "full pair", schema: DeclarationSchemaVersionV2, guidance: GuidanceVersionV2},
+		{name: "guidance only", schema: "", guidance: GuidanceVersionV2},
+	}
+	for _, tt := range selectsV2 {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv(EnvDeclarationSchemaVersion, tt.schema)
+			t.Setenv(EnvGuidanceVersion, tt.guidance)
+			got, err := RequireFiveBodyDeclarationContractFromEnv()
+			if err != nil || !got.IsFiveBody() || got.SchemaVersion != DeclarationSchemaVersionV2 || got.GuidanceVersion != GuidanceVersionV2 {
+				t.Fatalf("expected five-body contract, got contract=%#v err=%v", got, err)
+			}
+		})
 	}
 }
 

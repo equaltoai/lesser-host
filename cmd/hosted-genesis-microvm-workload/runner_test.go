@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -118,6 +119,15 @@ type errString struct{ s string }
 
 func (e *errString) Error() string { return e.s }
 
+// setFiveBodyContractEnv selects the five-body declaration contract the way the
+// deployed MicroVM image env does. Fresh hosted-genesis production has no
+// legacy lane, so every turn-driving test must opt in explicitly.
+func setFiveBodyContractEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv(hostedgenesis.EnvDeclarationSchemaVersion, hostedgenesis.DeclarationSchemaVersionV2)
+	t.Setenv(hostedgenesis.EnvGuidanceVersion, hostedgenesis.GuidanceVersionV2)
+}
+
 func baseTurnInput() (*fakeTurnStore, *fakeCompletionStore, completion.CompletionTurn) {
 	messages := `[{"role":"user","content":"hello"}]`
 	turn := completion.CompletionTurn{InstanceSlug: "acme", ConversationID: "conv-1", TurnID: "turn-1", RequestID: "req-1"}
@@ -186,6 +196,7 @@ func withOpenAIBaseURL(t *testing.T, url, apiKey string) {
 // Declaration extraction is a separate complete-driven dispatch once the user
 // accepts the assistant transcript.
 func TestRunTurnAndPersist_InProgressRecordsAssistantTurnReady(t *testing.T) {
+	setFiveBodyContractEnv(t)
 	srv := openaiStreamServer(t, "I am acme.")
 	t.Cleanup(srv.Close)
 	withOpenAIBaseURL(t, srv.URL, "sk-test")
@@ -216,6 +227,7 @@ func TestRunTurnAndPersist_InProgressRecordsAssistantTurnReady(t *testing.T) {
 }
 
 func TestRunTurnAndPersist_DeclarationExtractionPendingRecordsDeclarationReady(t *testing.T) {
+	setFiveBodyContractEnv(t)
 	declBody := mustMarshal(map[string]any{
 		"id": "chatcmpl_test", "object": "chat.completion", "created": 1, "model": "gpt-test",
 		"choices": []any{map[string]any{"index": 0, "message": map[string]any{"role": "assistant", "content": mustMarshal(validDeclarationDraft())}}},
@@ -270,6 +282,7 @@ func TestRunTurnAndPersist_DeclarationExtractionPendingRecordsDeclarationReady(t
 }
 
 func TestRunTurnAndPersist_TwoUserTurnsVMActorOwnsDecisionsAndCheckpoint(t *testing.T) {
+	setFiveBodyContractEnv(t)
 	const secondTurnID = "turn-2"
 
 	declBody := mustMarshal(map[string]any{
@@ -348,8 +361,9 @@ func TestRunTurnAndPersist_TwoUserTurnsVMActorOwnsDecisionsAndCheckpoint(t *test
 }
 
 func TestRunTurnAndPersist_DeclarationExtractionDoesNotSynthesizeDeclaredCapabilities(t *testing.T) {
+	setFiveBodyContractEnv(t)
 	draft := validDeclarationDraft()
-	draft["capabilities"] = []any{}
+	draft.Capabilities = nil
 	declBody := mustMarshal(map[string]any{
 		"id": "chatcmpl_test", "object": "chat.completion", "created": 1, "model": "gpt-test",
 		"choices": []any{map[string]any{"index": 0, "message": map[string]any{"role": "assistant", "content": mustMarshal(draft)}}},
@@ -388,6 +402,7 @@ func TestRunTurnAndPersist_DeclarationExtractionDoesNotSynthesizeDeclaredCapabil
 }
 
 func TestRunTurnAndPersist_DeclarationExtractionFailureFailsConversationProjection(t *testing.T) {
+	setFiveBodyContractEnv(t)
 	respBytes, err := json.Marshal(map[string]any{
 		"id":      "chatcmpl_test",
 		"object":  "chat.completion",
@@ -465,6 +480,7 @@ func TestRunTurnAndPersist_MissingSessionRecordsFailure(t *testing.T) {
 // TestRunTurnAndPersist_EmptyAssistantRecordsFailure proves an empty assistant
 // response surfaces as assistant_turn_failed, not a silent success.
 func TestRunTurnAndPersist_EmptyAssistantRecordsFailure(t *testing.T) {
+	setFiveBodyContractEnv(t)
 	srv := openaiStreamServer(t, "   ") // empty content after trim
 	t.Cleanup(srv.Close)
 	withOpenAIBaseURL(t, srv.URL, "sk-test")
@@ -491,6 +507,7 @@ func TestRunTurnAndPersist_EmptyAssistantRecordsFailure(t *testing.T) {
 // same turn against a session that has already advanced to assistant_turn_ready
 // does not silently re-apply — the assistant_turn_ready write conflicts.
 func TestRunTurnAndPersist_ReplayRejected(t *testing.T) {
+	setFiveBodyContractEnv(t)
 	srv := openaiStreamServer(t, "I am acme.")
 	t.Cleanup(srv.Close)
 	withOpenAIBaseURL(t, srv.URL, "sk-test")
@@ -529,27 +546,68 @@ func TestLoadTurnInputFiveBodyFlagPinsPromptAndExtractionInput(t *testing.T) {
 	if !in.contract.IsFiveBody() || !strings.Contains(in.systemPrompt, hostedgenesis.DeclarationSchemaVersionV2) || !strings.Contains(in.systemPrompt, "Phase 1 — identity") {
 		t.Fatalf("expected v2 contract prompt, contract=%#v prompt=%q", in.contract, in.systemPrompt)
 	}
-	declInput := llm.MintConversationDeclarationsInput{
-		SchemaVersion:   inputSchemaVersion(in.contract),
-		GuidanceVersion: inputGuidanceVersion(in.contract),
-	}
-	if declInput.SchemaVersion != hostedgenesis.DeclarationSchemaVersionV2 || declInput.GuidanceVersion != hostedgenesis.GuidanceVersionV2 {
-		t.Fatalf("expected v2 extraction versions, got %#v", declInput)
+	if in.contract.SchemaVersion != hostedgenesis.DeclarationSchemaVersionV2 || in.contract.GuidanceVersion != hostedgenesis.GuidanceVersionV2 {
+		t.Fatalf("expected v2 extraction versions, got %#v", in.contract)
 	}
 }
 
-func TestBuildProducedDeclarationsJSONLegacyOmitsV2EvidenceKeys(t *testing.T) {
+// TestLoadTurnInputFailsClosedWithoutContract proves a fresh hosted-genesis
+// turn cannot select the legacy declaration lane: a missing/unknown contract
+// env is a load-time error, before any provider or extraction work.
+func TestLoadTurnInputFailsClosedWithoutContract(t *testing.T) {
+	t.Setenv(hostedgenesis.EnvDeclarationSchemaVersion, "")
+	t.Setenv(hostedgenesis.EnvGuidanceVersion, "")
+	turnStore, _, turn := baseTurnInput()
+	runner := &turnRunner{store: turnStore, nowFunc: func() time.Time { return time.Unix(3000, 0).UTC() }}
+	_, err := runner.loadTurnInput(context.Background(), turn)
+	if !errors.Is(err, hostedgenesis.ErrDeclarationContractUnconfigured) {
+		t.Fatalf("expected unconfigured contract load error, got %v", err)
+	}
+}
+
+// TestRunTurnAndPersist_UnconfiguredContractRecordsOperatorAction proves the
+// full turn path records operator_action_required — never the legacy builder's
+// invalid_produced_declarations/boundaries.required lane — when the contract
+// env does not explicitly select five-body.
+func TestRunTurnAndPersist_UnconfiguredContractRecordsOperatorAction(t *testing.T) {
+	t.Setenv(hostedgenesis.EnvDeclarationSchemaVersion, "")
+	t.Setenv(hostedgenesis.EnvGuidanceVersion, "")
+	turnStore, compStore, turn := baseTurnInput()
+	writer := completion.NewCompletionWriter(compStore, nil)
+	runner := &turnRunner{store: turnStore, writer: writer}
+
+	if err := runner.runTurnAndPersist(context.Background(), turn); err != nil {
+		t.Fatalf("runTurnAndPersist should record failure and return nil, got %v", err)
+	}
+	if got := hostedgenesis.NormalizeStatus(compStore.session.Status); got != hostedgenesis.StatusFailed {
+		t.Fatalf("expected failed, got %q", got)
+	}
+	failure := compStore.session.Failure
+	if failure == nil || failure.Code != hostedgenesis.FailureCodeOperatorActionRequired || failure.Retryable {
+		t.Fatalf("expected terminal operator_action_required failure, got %+v", failure)
+	}
+	if failure.Recovery.Action != hostedgenesis.RecoveryActionOperatorAction || failure.Recovery.Reason != string(hostedgenesis.FailureCodeOperatorActionRequired) {
+		t.Fatalf("expected operator_action recovery with sanitized reason, got %+v", failure.Recovery)
+	}
+	if failure.Recovery.Reason == string(hostedgenesis.DeclarationCodeBoundaries) {
+		t.Fatalf("legacy boundaries.required must be unreachable for fresh hosted genesis, got %+v", failure.Recovery)
+	}
+}
+
+// TestBuildProducedDeclarationsJSONRejectsLegacyContract proves the workload
+// builder has no legacy lane: a non-five-body contract fails closed with the
+// unconfigured-contract error instead of producing legacy declarations.
+func TestBuildProducedDeclarationsJSONRejectsLegacyContract(t *testing.T) {
 	runner := &turnRunner{nowFunc: func() time.Time { return time.Unix(3000, 0).UTC() }}
 	body, err := runner.buildProducedDeclarationsJSON(validLegacyDeclarationDraft(), "openai:gpt-test", hostedgenesis.LegacyDeclarationContract())
-	if err != nil {
-		t.Fatalf("buildProducedDeclarationsJSON: %v", err)
+	if !errors.Is(err, hostedgenesis.ErrDeclarationContractUnconfigured) || body != "" {
+		t.Fatalf("expected unconfigured contract error for legacy contract, got body=%q err=%v", body, err)
 	}
-	assertJSONKeysAbsent(t, []byte(body), "schemaVersion", "guidanceVersion", "fiveBodies", "adversarialReview")
 }
 
 func TestBuildProducedDeclarationsJSONFiveBodyPinsVersionsAndReview(t *testing.T) {
 	runner := &turnRunner{nowFunc: func() time.Time { return time.Unix(3000, 0).UTC() }}
-	body, err := runner.buildProducedDeclarationsJSON(validFiveBodyDeclarationDraft(), "openai:gpt-test")
+	body, err := runner.buildProducedDeclarationsJSON(validFiveBodyDeclarationDraft(), "openai:gpt-test", hostedgenesis.FiveBodyDeclarationContract())
 	if err != nil {
 		t.Fatalf("buildProducedDeclarationsJSON: %v", err)
 	}
@@ -581,7 +639,7 @@ func TestBuildProducedDeclarationsJSONFiveBodyRejectsRefusalFloor(t *testing.T) 
 	runner := &turnRunner{nowFunc: func() time.Time { return time.Unix(3000, 0).UTC() }}
 	draft := validFiveBodyDeclarationDraft()
 	draft.FiveBodies.Soul.Refusals = draft.FiveBodies.Soul.Refusals[:2]
-	_, err := runner.buildProducedDeclarationsJSON(draft, "openai:gpt-test")
+	_, err := runner.buildProducedDeclarationsJSON(draft, "openai:gpt-test", hostedgenesis.FiveBodyDeclarationContract())
 	if got := hostedgenesis.DeclarationValidationCodeFromError(err); got != hostedgenesis.DeclarationCodeSoulRefusals {
 		t.Fatalf("expected refusal floor error, got err=%v code=%q", err, got)
 	}
@@ -638,19 +696,6 @@ func validFiveBodyDeclarationDraft() llm.MintConversationDeclarationsDraft {
 	}
 }
 
-func assertJSONKeysAbsent(t *testing.T, body []byte, keys ...string) {
-	t.Helper()
-	var parsed map[string]any
-	if err := json.Unmarshal(body, &parsed); err != nil {
-		t.Fatalf("parse produced declarations: %v\n%s", err, string(body))
-	}
-	for _, key := range keys {
-		if _, ok := parsed[key]; ok {
-			t.Fatalf("expected produced declarations to omit %q, got %s", key, string(body))
-		}
-	}
-}
-
 func validatePublishedFiveBodySchema(t *testing.T, body []byte) {
 	t.Helper()
 	var parsed any
@@ -701,22 +746,9 @@ func assertVMCheckpoint(t *testing.T, checkpoint *hostedgenesis.VMCheckpointMeta
 	}
 }
 
-func validDeclarationDraft() map[string]any {
-	return map[string]any{
-		"selfDescription": map[string]any{
-			"purpose":      "I help with tasks.",
-			"constraints":  "test only",
-			"commitments":  "be concise",
-			"limitations":  "unit test",
-			"authoredBy":   "agent",
-			"mintingModel": "openai:gpt-test",
-		},
-		"capabilities": []any{map[string]any{
-			"capability": "reasoning", "scope": "general", "claimLevel": "self-declared", "lastValidated": "", "validationRef": "", "degradesTo": "",
-		}},
-		"boundaries": []any{map[string]any{
-			"category": "scope_limit", "statement": "I will not harm.", "rationale": "safety",
-		}},
-		"transparency": map[string]any{"modelProviderUncertainty": "test", "operationalNotes": "test"},
-	}
+// validDeclarationDraft is the model-response fixture for extraction-path
+// tests. Fresh hosted-genesis extraction is five-body-only, so the fixture is
+// the five-body draft shape the llm clients parse back from the provider.
+func validDeclarationDraft() llm.MintConversationDeclarationsDraft {
+	return validFiveBodyDeclarationDraft()
 }

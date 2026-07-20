@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -35,6 +36,7 @@ const (
 	hostedGenesisFailureMissingProducedDeclarations = "missing_produced_declarations"
 	hostedGenesisFailureInvalidProducedDeclarations = "invalid_produced_declarations"
 	hostedGenesisFailureTenantBoundaryViolation     = "tenant_boundary_violation"
+	hostedGenesisFailureOperatorActionRequired      = "operator_action_required"
 )
 
 const hostedGenesisSelfDescriptionAuthoredByAgent = "agent"
@@ -128,6 +130,7 @@ type hostedGenesisAssistantRun struct {
 	llmMessages []llm.MintConversationMessage
 	modelSet    string
 	apiKey      string
+	contract    hostedgenesis.DeclarationContract
 }
 
 func hostedGenesisAssistantJobReady(reg *models.SoulAgentRegistration, conv *models.SoulAgentMintConversation, session *models.HostedGenesisSession, msg hostedgenesis.QueueMessage) bool {
@@ -149,18 +152,24 @@ func (s *Server) prepareHostedGenesisAssistantRun(ctx context.Context, st hosted
 		persistErr := s.markHostedGenesisConversationFailed(ctx, st, conv, session, hostedGenesisFailureLLMUnavailable, workerRequestID)
 		return hostedGenesisAssistantRun{}, false, persistErr
 	}
+	contract, contractErr := hostedgenesis.RequireFiveBodyDeclarationContractFromEnv()
+	if contractErr != nil {
+		persistErr := s.markHostedGenesisConversationFailed(ctx, st, conv, session, hostedGenesisFailureOperatorActionRequired, workerRequestID)
+		return hostedGenesisAssistantRun{}, false, persistErr
+	}
 	return hostedGenesisAssistantRun{
 		messages:    messages,
 		llmMessages: hostedGenesisLLMMessages(messages),
 		modelSet:    modelSet,
 		apiKey:      apiKey,
+		contract:    contract,
 	}, true, nil
 }
 
 func (s *Server) runAndPersistHostedGenesisAssistant(ctx context.Context, st hostedGenesisStore, reg *models.SoulAgentRegistration, conv *models.SoulAgentMintConversation, session *models.HostedGenesisSession, msg hostedgenesis.QueueMessage, workerRequestID string, run hostedGenesisAssistantRun) error {
 	runCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), hostedGenesisRunTimeout)
 	defer cancel()
-	fullResponse, usage, err := runHostedGenesisAssistantModel(runCtx, run.apiKey, run.modelSet, hostedGenesisSystemPrompt(reg), run.llmMessages)
+	fullResponse, usage, err := runHostedGenesisAssistantModel(runCtx, run.apiKey, run.modelSet, hostedGenesisSystemPrompt(reg, run.contract), run.llmMessages)
 	if err != nil || strings.TrimSpace(fullResponse) == "" {
 		log.Printf("aiworker: hosted genesis assistant turn failed agent_hash=%s conversation_hash=%s provider=%s failure_code=%s", hostedGenesisAuditHash(conv.AgentID), hostedGenesisAuditHash(conv.ConversationID), hostedGenesisProvider(run.modelSet), hostedGenesisFailureAssistantTurnFailed)
 		if persistErr := s.markHostedGenesisConversationFailed(ctx, st, conv, session, hostedGenesisFailureAssistantTurnFailed, workerRequestID); persistErr != nil {
@@ -242,7 +251,11 @@ func (s *Server) prepareHostedGenesisDeclarationRun(ctx context.Context, st host
 		persistErr := s.markHostedGenesisConversationFailed(ctx, st, conv, session, hostedGenesisFailureLLMUnavailable, workerRequestID)
 		return hostedGenesisDeclarationRun{}, false, persistErr
 	}
-	contract := hostedgenesis.DeclarationContractFromEnv()
+	contract, contractErr := hostedgenesis.RequireFiveBodyDeclarationContractFromEnv()
+	if contractErr != nil {
+		persistErr := s.markHostedGenesisConversationFailed(ctx, st, conv, session, hostedGenesisFailureOperatorActionRequired, workerRequestID)
+		return hostedGenesisDeclarationRun{}, false, persistErr
+	}
 	return hostedGenesisDeclarationRun{
 		input:    hostedGenesisDeclarationInput(reg, messages, contract),
 		modelSet: modelSet,
@@ -254,8 +267,8 @@ func (s *Server) prepareHostedGenesisDeclarationRun(ctx context.Context, st host
 func hostedGenesisDeclarationInput(reg *models.SoulAgentRegistration, messages []hostedGenesisMessage, contract hostedgenesis.DeclarationContract) llm.MintConversationDeclarationsInput {
 	contract = contract.Normalize()
 	in := llm.MintConversationDeclarationsInput{
-		SchemaVersion:   inputSchemaVersion(contract),
-		GuidanceVersion: inputGuidanceVersion(contract),
+		SchemaVersion:   contract.SchemaVersion,
+		GuidanceVersion: contract.GuidanceVersion,
 		Registration: llm.MintConversationRegistrationContext{
 			Domain:               strings.TrimSpace(reg.DomainNormalized),
 			LocalID:              strings.TrimSpace(reg.LocalID),
@@ -265,22 +278,6 @@ func hostedGenesisDeclarationInput(reg *models.SoulAgentRegistration, messages [
 		Messages: hostedGenesisLLMMessages(messages),
 	}
 	return in
-}
-
-func inputSchemaVersion(contract hostedgenesis.DeclarationContract) string {
-	contract = contract.Normalize()
-	if !contract.IsFiveBody() {
-		return ""
-	}
-	return contract.SchemaVersion
-}
-
-func inputGuidanceVersion(contract hostedgenesis.DeclarationContract) string {
-	contract = contract.Normalize()
-	if !contract.IsFiveBody() {
-		return ""
-	}
-	return contract.GuidanceVersion
 }
 
 func hostedGenesisLLMMessages(messages []hostedGenesisMessage) []llm.MintConversationMessage {
@@ -302,6 +299,10 @@ func (s *Server) runAndPersistHostedGenesisDeclaration(ctx context.Context, st h
 	}
 	decl, err := buildHostedGenesisDeclarationsDraftForContract(draft, time.Now().UTC(), run.modelSet, run.contract, run.input.Registration.DeclaredCapabilities)
 	if err != nil {
+		if errors.Is(err, hostedgenesis.ErrDeclarationContractUnconfigured) {
+			log.Printf("aiworker: hosted genesis declaration contract unconfigured agent_hash=%s conversation_hash=%s failure_code=%s", hostedGenesisAuditHash(conv.AgentID), hostedGenesisAuditHash(conv.ConversationID), hostedGenesisFailureOperatorActionRequired)
+			return s.markHostedGenesisConversationFailed(ctx, st, conv, session, hostedGenesisFailureOperatorActionRequired, workerRequestID)
+		}
 		detail := string(hostedgenesis.DeclarationValidationCodeFromError(err))
 		log.Printf("aiworker: hosted genesis produced declarations rejected agent_hash=%s conversation_hash=%s failure_code=%s reason_code=%s", hostedGenesisAuditHash(conv.AgentID), hostedGenesisAuditHash(conv.ConversationID), hostedGenesisFailureInvalidProducedDeclarations, detail)
 		return s.markHostedGenesisConversationFailedWithDetail(ctx, st, conv, session, hostedGenesisFailureInvalidProducedDeclarations, detail, workerRequestID)
@@ -669,26 +670,10 @@ func hostedGenesisDeclarationCheckpointFromWorker(session *models.HostedGenesisS
 		AgentID:         strings.ToLower(strings.TrimSpace(conv.AgentID)),
 		MessageCount:    messageCount,
 		Model:           strings.TrimSpace(modelSet),
-		SchemaVersion:   checkpointSchemaVersion(contract),
-		GuidanceVersion: checkpointGuidanceVersion(contract),
+		SchemaVersion:   contract.SchemaVersion,
+		GuidanceVersion: contract.GuidanceVersion,
 		RequestID:       strings.TrimSpace(requestID),
 	}
-}
-
-func checkpointSchemaVersion(contract hostedgenesis.DeclarationContract) string {
-	contract = contract.Normalize()
-	if !contract.IsFiveBody() {
-		return ""
-	}
-	return contract.SchemaVersion
-}
-
-func checkpointGuidanceVersion(contract hostedgenesis.DeclarationContract) string {
-	contract = contract.Normalize()
-	if !contract.IsFiveBody() {
-		return ""
-	}
-	return contract.GuidanceVersion
 }
 
 func hostedGenesisFailureFromWorkerReason(reason string) *hostedgenesis.Failure {
@@ -712,6 +697,8 @@ func hostedGenesisFailureFromWorkerReasonWithDetail(reason string, detail string
 		code = hostedgenesis.FailureCodeInvalidProducedDeclarations
 	case hostedGenesisFailureTenantBoundaryViolation:
 		code = hostedgenesis.FailureCodeTenantBoundaryViolation
+	case hostedGenesisFailureOperatorActionRequired:
+		code = hostedgenesis.FailureCodeOperatorActionRequired
 	}
 	action := hostedgenesis.RecoveryActionRefreshState
 	retryable := false
@@ -719,7 +706,7 @@ func hostedGenesisFailureFromWorkerReasonWithDetail(reason string, detail string
 		action = hostedgenesis.RecoveryActionRetrySameStep
 		retryable = true
 	}
-	if code == hostedgenesis.FailureCodeTenantBoundaryViolation {
+	if code == hostedgenesis.FailureCodeTenantBoundaryViolation || code == hostedgenesis.FailureCodeOperatorActionRequired {
 		action = hostedgenesis.RecoveryActionOperatorAction
 	}
 	if code == hostedgenesis.FailureCodeMissingProducedDeclarations || code == hostedgenesis.FailureCodeInvalidProducedDeclarations {
@@ -806,65 +793,19 @@ func hostedGenesisAPIKey(ctx context.Context, modelSet string) (string, error) {
 	}
 }
 
-func hostedGenesisSystemPrompt(reg *models.SoulAgentRegistration) string {
-	return mintprompt.MintConversationSystemPromptForContract(reg, hostedgenesis.DeclarationContractFromEnv())
+func hostedGenesisSystemPrompt(reg *models.SoulAgentRegistration, contract hostedgenesis.DeclarationContract) string {
+	return mintprompt.MintConversationSystemPromptForContract(reg, contract)
 }
 
-func buildHostedGenesisDeclarationsDraft(draft llm.MintConversationDeclarationsDraft, now time.Time, modelSet string, _ ...[]string) (hostedGenesisProducedDeclarations, error) {
-	return buildHostedGenesisDeclarationsDraftForContract(draft, now, modelSet, hostedgenesis.LegacyDeclarationContract())
-}
-
+// buildHostedGenesisDeclarationsDraftForContract builds fresh hosted-genesis
+// produced declarations. Fresh production is five-body-only: a contract that
+// does not affirmatively select the five-body lane fails closed instead of
+// routing to a legacy declaration builder.
 func buildHostedGenesisDeclarationsDraftForContract(draft llm.MintConversationDeclarationsDraft, now time.Time, modelSet string, contract hostedgenesis.DeclarationContract, _ ...[]string) (hostedGenesisProducedDeclarations, error) {
-	contract = contract.Normalize()
-	if contract.IsFiveBody() {
-		return buildHostedGenesisFiveBodyDeclarationsDraft(draft, now, modelSet, contract)
+	if !contract.IsFiveBody() {
+		return hostedGenesisProducedDeclarations{}, hostedgenesis.ErrDeclarationContractUnconfigured
 	}
-	decl := hostedGenesisProducedDeclarations{
-		SelfDescription: draft.SelfDescription,
-		Capabilities:    []soul.CapabilityV2{},
-		Boundaries:      []soul.BoundaryV2{},
-		Transparency:    draft.Transparency,
-	}
-	decl.SelfDescription.AuthoredBy = hostedGenesisSelfDescriptionAuthoredByAgent
-	decl.SelfDescription.MintingModel = strings.TrimSpace(modelSet)
-	if err := decl.SelfDescription.Validate(); err != nil {
-		return hostedGenesisProducedDeclarations{}, hostedgenesis.NewDeclarationValidationError(hostedgenesis.DeclarationCodeSelfDescription)
-	}
-	var capErr error
-	decl.Capabilities, capErr = hostedgenesis.ValidateAndNormalizeProducedCapabilities(draft.Capabilities)
-	if capErr != nil {
-		return hostedGenesisProducedDeclarations{}, capErr
-	}
-	invalidBoundary := false
-	for i, b := range draft.Boundaries {
-		entry := soul.BoundaryV2{
-			ID:             fmt.Sprintf("mint-%d-%02d", now.Unix(), i+1),
-			Category:       strings.ToLower(strings.TrimSpace(b.Category)),
-			Statement:      strings.TrimSpace(b.Statement),
-			Rationale:      strings.TrimSpace(b.Rationale),
-			AddedAt:        now.UTC().Format(time.RFC3339),
-			AddedInVersion: "1",
-			Signature:      "0x00",
-		}
-		if err := entry.Validate(); err != nil {
-			invalidBoundary = true
-			continue
-		}
-		decl.Boundaries = append(decl.Boundaries, entry)
-	}
-	if invalidBoundary {
-		return hostedGenesisProducedDeclarations{}, hostedgenesis.NewDeclarationValidationError(hostedgenesis.DeclarationCodeBoundariesBad)
-	}
-	if len(decl.Boundaries) == 0 {
-		if len(draft.Boundaries) > 0 {
-			return hostedGenesisProducedDeclarations{}, hostedgenesis.NewDeclarationValidationError(hostedgenesis.DeclarationCodeBoundariesBad)
-		}
-		return hostedGenesisProducedDeclarations{}, hostedgenesis.NewDeclarationValidationError(hostedgenesis.DeclarationCodeBoundaries)
-	}
-	if decl.Transparency == nil {
-		decl.Transparency = map[string]any{}
-	}
-	return decl, nil
+	return buildHostedGenesisFiveBodyDeclarationsDraft(draft, now, modelSet, contract.Normalize())
 }
 
 func buildHostedGenesisFiveBodyDeclarationsDraft(draft llm.MintConversationDeclarationsDraft, now time.Time, modelSet string, contract hostedgenesis.DeclarationContract) (hostedGenesisProducedDeclarations, error) {
