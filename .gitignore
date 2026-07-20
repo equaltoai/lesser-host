@@ -47,6 +47,10 @@ gov-infra/evidence/gov-rubric-report.json
 # not system config; system config comes from the CDK outputs file.
 scripts/.lab-e2e-instance-key
 
+# Project 48 M11 lab process-memory canary: controller bearer token supplied
+# locally by the operator for the AppTheory controller HTTP route. NEVER commit.
+scripts/.hosted-genesis-microvm-controller-token
+
 
 # Deployment manifests and operational logs (environment-specific)
 docs/deployments/*
