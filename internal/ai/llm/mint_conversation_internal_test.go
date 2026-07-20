@@ -316,6 +316,19 @@ func TestMintConversationDeclarationsProviderParityUsesStrictAnthropicTool(t *te
 			t.Fatalf("Anthropic strict tool request missing %s: %s", want, anthropicRequest)
 		}
 	}
+	assertProviderParityArrayConstraintHandling(t, openAIRequest, anthropicRequest)
+}
+
+func assertProviderParityArrayConstraintHandling(t *testing.T, openAIRequest, anthropicRequest string) {
+	t.Helper()
+	if !strings.Contains(openAIRequest, `"maxItems"`) {
+		t.Fatalf("OpenAI strict schema request should keep maxItems: %s", openAIRequest)
+	}
+	for _, banned := range []string{`"maxItems"`, `"minItems"`} {
+		if strings.Contains(anthropicRequest, banned) {
+			t.Fatalf("Anthropic strict tool request must strip %s (Anthropic rejects it for custom tools): %s", banned, anthropicRequest)
+		}
+	}
 }
 
 func TestMintConversationDeclarationsAnthropicRejectsTruncatedStopReason(t *testing.T) {
@@ -530,6 +543,98 @@ func TestAnthropicToolInputSchemaSanitizesPermissiveAdditionalProperties(t *test
 
 	selfDescription := requireSchemaMap(t, props, "selfDescription")
 	assertSchemaBool(t, selfDescription, "additionalProperties", false)
+}
+
+func TestAnthropicToolInputSchemaStripsUnsupportedConstraints(t *testing.T) {
+	t.Parallel()
+
+	contract := hostedgenesis.FiveBodyDeclarationContract()
+	for name, schema := range map[string]map[string]any{
+		"v1": mintConversationDeclarationsJSONSchemaV1(),
+		"v2": mintConversationDeclarationsJSONSchemaV2(contract),
+	} {
+		source, err := json.Marshal(schema)
+		if err != nil {
+			t.Fatalf("%s: marshal source schema: %v", name, err)
+		}
+		if !strings.Contains(string(source), `"maxItems"`) {
+			t.Fatalf("%s: expected source schema to keep maxItems for the OpenAI strict path, got %s", name, source)
+		}
+
+		raw, err := json.Marshal(anthropicToolInputSchemaFromJSONSchema(schema))
+		if err != nil {
+			t.Fatalf("%s: marshal anthropic schema: %v", name, err)
+		}
+		for _, keyword := range []string{`"maxItems"`, `"minItems"`, `"maxLength"`, `"minLength"`} {
+			if strings.Contains(string(raw), keyword) {
+				t.Fatalf("%s: expected anthropic schema to strip %s (Anthropic strict custom tools reject it), got %s", name, keyword, raw)
+			}
+		}
+		if !strings.Contains(string(raw), `"additionalProperties":false`) {
+			t.Fatalf("%s: expected anthropic schema to keep additionalProperties=false, got %s", name, raw)
+		}
+
+		after, err := json.Marshal(schema)
+		if err != nil {
+			t.Fatalf("%s: re-marshal source schema: %v", name, err)
+		}
+		if string(after) != string(source) {
+			t.Fatalf("%s: sanitizing must not mutate the shared provider schema:\nbefore=%s\nafter=%s", name, source, after)
+		}
+	}
+}
+
+func TestSanitizeAnthropicToolSchemaMapKeepsConstraintLikePropertyNames(t *testing.T) {
+	t.Parallel()
+
+	schema := map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"maxItems":  map[string]any{"type": "integer", "minimum": 0, "maximum": 10},
+			"maxLength": map[string]any{"type": "string", "minLength": 1, "maxLength": 4},
+			"tags": map[string]any{
+				"type":     "array",
+				"minItems": 1,
+				"maxItems": 3,
+				"items":    map[string]any{"type": "string", "maxLength": 12},
+			},
+		},
+		"required": []string{"maxItems", "maxLength", "tags"},
+	}
+
+	out := sanitizeAnthropicToolSchemaMap(schema)
+	props := requireSchemaMap(t, out, "properties")
+
+	maxItemsProp := requireSchemaMap(t, props, "maxItems")
+	for _, stripped := range []string{"minimum", "maximum"} {
+		if _, exists := maxItemsProp[stripped]; exists {
+			t.Fatalf("expected integer constraint %q stripped, got %#v", stripped, maxItemsProp)
+		}
+	}
+
+	maxLengthProp := requireSchemaMap(t, props, "maxLength")
+	for _, stripped := range []string{"minLength", "maxLength"} {
+		if _, exists := maxLengthProp[stripped]; exists {
+			t.Fatalf("expected string constraint %q stripped, got %#v", stripped, maxLengthProp)
+		}
+	}
+
+	tags := requireSchemaMap(t, props, "tags")
+	for _, stripped := range []string{"minItems", "maxItems"} {
+		if _, exists := tags[stripped]; exists {
+			t.Fatalf("expected array constraint %q stripped, got %#v", stripped, tags)
+		}
+	}
+	items := requireSchemaMap(t, tags, "items")
+	if _, exists := items["maxLength"]; exists {
+		t.Fatalf("expected nested string constraint stripped, got %#v", items)
+	}
+
+	required, ok := out["required"].([]string)
+	if !ok || len(required) != 3 {
+		t.Fatalf("expected constraint-like property names preserved in required, got %#v", out["required"])
+	}
 }
 
 func TestExtractJSONObjectFromText(t *testing.T) {
