@@ -1088,8 +1088,9 @@ func addHostedGenesisSessionWrite(tx core.TransactionBuilder, session *models.Ho
 // compatibility/recovery seam for sessions that are already in the legacy
 // declaration_extraction_pending lane or explicit #944/#945 follow-up work. The
 // Project 48 M11 accepted-turn path must not call it to decide final
-// affirmation or to create a follow-on extraction job: current Hosted Genesis
-// turns are delivered to the AppTheory MicroVM actor, and that actor owns the
+// affirmation, create a follow-on extraction job, or debit a second extraction
+// charge: current Hosted Genesis turns are delivered to the AppTheory MicroVM
+// actor through the ordinary paid accepted turn, and that actor owns the
 // ask/wait/revise/extract/finalize/fail decision under Host status/version
 // guards.
 func (s *Server) startHostedGenesisDeclarationExtraction(ctx *apptheory.Context, convCtx soulInstanceBootstrapConversationContext) error {

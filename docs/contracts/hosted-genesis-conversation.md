@@ -84,6 +84,19 @@ execution details. They do not determine user-visible progress, retry, finalize 
 delivery or MicroVM cache is missing or stale, status remains the compact `HostedGenesisSession` projection and
 retry/finalize decisions continue to fail closed from that Host row.
 
+### M11 billing policy for actor-path declaration extraction
+
+Project 48 M11 keeps billing at the Host accepted-turn boundary. The Lesser instance-key path's final affirmation is
+charged as the ordinary paid accepted user turn described above. If the AppTheory MicroVM actor then decides that this
+accepted turn should extract/finalize declarations, that in-VM extraction rides the same accepted-turn ledger entry and
+does **not** create a second Host extraction debit, second idempotency row, or Host-owned extraction step machine.
+
+The retained `declaration_extraction_pending` compatibility/recovery seam is only for historical or explicitly routed
+legacy lanes that had already entered the pre-M11 extraction state. Active M11 actor-path traffic must remain:
+persist/debit/idempotency on accepted turn → MicroVM actor decides ask/wait/revise/extract/finalize/fail → Host guarded
+finalization/publish. Host may record safe provider usage/telemetry metadata, but it must not bill another credit debit
+for the actor's declaration extraction work unless a future ADR explicitly changes this policy.
+
 ### Hosted instance-trust declarations and restart recovery
 
 For the instance-key hosted/off-chain authority model, an agent may complete a valid genesis conversation without

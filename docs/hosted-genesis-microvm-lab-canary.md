@@ -67,8 +67,9 @@ This PR does **not** deploy, run a cloud canary, mutate SSM/Secrets, sign transa
 
 The existing non-deploying canary and `scripts/hosted-genesis-microvm-e2e-gate.sh` prove AppTheory M16 route coverage,
 happy-path Hosted Genesis execution, kill-VM recovery behavior, metadata-only reads, and `MaximumDurationSeconds`
-wiring. They do **not** prove whether AWS Lambda MicroVM suspend/resume preserves process memory across a human-scale
-idle interval.
+wiring plus the CDK-deployed AppTheory `IdlePolicy` shape (`MaxIdleDurationSeconds=300`,
+`SuspendedDurationSeconds=1800`, `AutoResumeEnabled=false`). They do **not** prove whether AWS Lambda MicroVM
+suspend/resume preserves process memory across a human-scale idle interval.
 
 #941 acceptance requires a separate lab evidence record before the issue can be closed. If a live lab run is delegated,
 the operator-approved run must use only an explicit allowed AWS profile (`Lesser` or `TheoryLive`) and the normal Host

@@ -18,6 +18,10 @@ import type { Construct } from "constructs";
 export const HOSTED_GENESIS_MICROVM_NAMESPACE = "hosted-genesis" as const;
 export const HOSTED_GENESIS_MICROVM_SOURCE_OF_TRUTH =
   "host-dynamodb-hosted-genesis-session" as const;
+export const HOSTED_GENESIS_MICROVM_MAXIMUM_DURATION_SECONDS = 300 as const;
+export const HOSTED_GENESIS_MICROVM_IDLE_MAX_SECONDS = 300 as const;
+export const HOSTED_GENESIS_MICROVM_IDLE_SUSPENDED_SECONDS = 1800 as const;
+export const HOSTED_GENESIS_MICROVM_IDLE_AUTO_RESUME_ENABLED = false as const;
 
 // P52 H1 step 2 (F1): the AWS-managed base MicroVM image ARN. This is the
 // foundation the entire MicroVM-only genesis program sits on — H1.1–H1.5 merged
@@ -392,6 +396,18 @@ export function configureHostedGenesisMicrovm(
           HOSTED_GENESIS_MICROVM_SOURCE_OF_TRUTH:
             HOSTED_GENESIS_MICROVM_SOURCE_OF_TRUTH,
           HOSTED_GENESIS_MICROVM_AUTH_TOKEN_SHA256: authTokenSha256,
+          HOSTED_GENESIS_MICROVM_MAXIMUM_DURATION_SECONDS: String(
+            HOSTED_GENESIS_MICROVM_MAXIMUM_DURATION_SECONDS,
+          ),
+          HOSTED_GENESIS_MICROVM_IDLE_MAX_SECONDS: String(
+            HOSTED_GENESIS_MICROVM_IDLE_MAX_SECONDS,
+          ),
+          HOSTED_GENESIS_MICROVM_IDLE_SUSPENDED_SECONDS: String(
+            HOSTED_GENESIS_MICROVM_IDLE_SUSPENDED_SECONDS,
+          ),
+          HOSTED_GENESIS_MICROVM_IDLE_AUTO_RESUME_ENABLED: String(
+            HOSTED_GENESIS_MICROVM_IDLE_AUTO_RESUME_ENABLED,
+          ),
           STATE_TABLE_NAME: props.stateTable.tableName,
         },
       },
@@ -577,9 +593,28 @@ function grantFunctionMicroVMDispatch(
   // reads: the governed controller endpoint, the auth-token SSM param name
   // (the raw token is fetched at runtime, never committed), and the non-secret
   // image/network-connector refs the control plane sends in the POST /microvms
-  // run body. addEnvironment is the CDK-supported way to append env vars to a
-  // Function constructed elsewhere.
+  // run body. The lifetime values are the explicit AppTheory ProviderRunInput
+  // MaximumDurationSeconds + ProviderIdlePolicy boundary from ADR 0010; Host
+  // does not create a local scheduler or provider step machine for human gaps.
+  // addEnvironment is the CDK-supported way to append env vars to a Function
+  // constructed elsewhere.
   fn.addEnvironment("HOSTED_GENESIS_MICROVM_ENABLED", "true");
+  fn.addEnvironment(
+    "HOSTED_GENESIS_MICROVM_MAXIMUM_DURATION_SECONDS",
+    String(HOSTED_GENESIS_MICROVM_MAXIMUM_DURATION_SECONDS),
+  );
+  fn.addEnvironment(
+    "HOSTED_GENESIS_MICROVM_IDLE_MAX_SECONDS",
+    String(HOSTED_GENESIS_MICROVM_IDLE_MAX_SECONDS),
+  );
+  fn.addEnvironment(
+    "HOSTED_GENESIS_MICROVM_IDLE_SUSPENDED_SECONDS",
+    String(HOSTED_GENESIS_MICROVM_IDLE_SUSPENDED_SECONDS),
+  );
+  fn.addEnvironment(
+    "HOSTED_GENESIS_MICROVM_IDLE_AUTO_RESUME_ENABLED",
+    String(HOSTED_GENESIS_MICROVM_IDLE_AUTO_RESUME_ENABLED),
+  );
   fn.addEnvironment(
     "APPTHEORY_MICROVM_CONTROLLER_ENDPOINT",
     controllerEndpoint,

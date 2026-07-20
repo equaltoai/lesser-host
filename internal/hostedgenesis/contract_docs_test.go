@@ -18,6 +18,42 @@ func TestFiveBodyContractDocsPinSchemaGuidanceVersions(t *testing.T) {
 	assertFiveBodyContractMarkdown(t)
 }
 
+func TestHostedGenesisConversationContractCodifiesM11ActorPathBilling(t *testing.T) {
+	contractBody, readErr := os.ReadFile(filepath.Join("..", "..", "docs", "contracts", "hosted-genesis-conversation.md"))
+	if readErr != nil {
+		t.Fatalf("read hosted-genesis conversation contract: %v", readErr)
+	}
+	contract := string(contractBody)
+	for _, want := range []string{
+		"M11 billing policy for actor-path declaration extraction",
+		"does **not** create a second Host extraction debit",
+		"Active M11 actor-path traffic",
+		"finalization/publish",
+	} {
+		if !strings.Contains(contract, want) {
+			t.Fatalf("hosted-genesis conversation contract missing M11 billing policy phrase %q", want)
+		}
+	}
+
+	asyncBody, readErr := os.ReadFile(filepath.Join("..", "controlplane", "handlers_soul_mint_conversation_async.go"))
+	if readErr != nil {
+		t.Fatalf("read async mint conversation source: %v", readErr)
+	}
+	asyncSrc := string(asyncBody)
+	progressBody, ok := between(asyncSrc, "func (s *Server) progressHostedGenesisAcceptedTurn", "func (s *Server) progressHostedGenesisAcceptedTurnSync")
+	if !ok {
+		t.Fatalf("could not locate progressHostedGenesisAcceptedTurn body")
+	}
+	if strings.Contains(progressBody, "startHostedGenesisDeclarationExtraction") ||
+		strings.Contains(progressBody, "soulMintConversationExtractModule") {
+		t.Fatalf("active M11 accepted-turn path must not call Host-owned extraction/debit machinery")
+	}
+	if !strings.Contains(asyncSrc, "startHostedGenesisDeclarationExtraction") ||
+		!strings.Contains(asyncSrc, "compatibility/recovery seam") {
+		t.Fatalf("legacy extraction seam must remain explicit and documented as compatibility/recovery only")
+	}
+}
+
 func assertFiveBodyContractSchemaCore(t *testing.T, schema map[string]any) {
 	t.Helper()
 	props := requireJSONMap(t, schema, "properties")
@@ -150,6 +186,19 @@ func requiredHas(required []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func between(body string, start string, end string) (string, bool) {
+	startIdx := strings.Index(body, start)
+	if startIdx < 0 {
+		return "", false
+	}
+	tail := body[startIdx:]
+	endIdx := strings.Index(tail[len(start):], end)
+	if endIdx < 0 {
+		return "", false
+	}
+	return tail[:len(start)+endIdx], true
 }
 
 func compileContractSchema(t *testing.T, name string) *jsonschema.Schema {

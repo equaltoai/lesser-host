@@ -93,6 +93,61 @@ func TestLoad_Defaults(t *testing.T) {
 	}
 }
 
+func TestLoad_HostedGenesisMicroVMDefaultLifetimePolicy(t *testing.T) {
+	cfg := Load()
+
+	if got := cfg.HostedGenesisMicroVM.MaximumDurationSeconds; got != HostedGenesisMicroVMDefaultMaximumDurationSeconds {
+		t.Fatalf("expected hosted genesis microvm default max duration %d, got %d", HostedGenesisMicroVMDefaultMaximumDurationSeconds, got)
+	}
+	if !cfg.HostedGenesisMicroVM.IdlePolicy.Complete() {
+		t.Fatalf("expected default hosted genesis microvm idle policy to be complete: %#v", cfg.HostedGenesisMicroVM.IdlePolicy)
+	}
+	if cfg.HostedGenesisMicroVM.IdlePolicy.AutoResumeEnabled {
+		t.Fatalf("expected default hosted genesis microvm idle auto-resume disabled until lab proof explicitly validates it")
+	}
+	if got := cfg.HostedGenesisMicroVM.IdlePolicy.MaxIdleDurationSeconds; got != HostedGenesisMicroVMDefaultIdleMaxSeconds {
+		t.Fatalf("expected default hosted genesis microvm idle max %d, got %d", HostedGenesisMicroVMDefaultIdleMaxSeconds, got)
+	}
+	if got := cfg.HostedGenesisMicroVM.IdlePolicy.SuspendedDurationSeconds; got != HostedGenesisMicroVMDefaultIdleSuspendedSeconds {
+		t.Fatalf("expected default hosted genesis microvm suspended duration %d, got %d", HostedGenesisMicroVMDefaultIdleSuspendedSeconds, got)
+	}
+}
+
+func TestLoad_HostedGenesisMicroVMLifetimePolicy(t *testing.T) {
+	t.Setenv("HOSTED_GENESIS_MICROVM_ENABLED", "true")
+	t.Setenv("APPTHEORY_MICROVM_CONTROLLER_ENDPOINT", " https://controller.example/microvms ")
+	t.Setenv("HOSTED_GENESIS_MICROVM_AUTH_TOKEN_SSM_PARAM", " /lesser-host/lab/hosted-genesis/microvm/auth-token ")
+	t.Setenv("APPTHEORY_MICROVM_IMAGE_REF", " image-ref ")
+	t.Setenv("APPTHEORY_MICROVM_EGRESS_NETWORK_CONNECTOR_REFS", " egress-1, egress-2 ")
+	t.Setenv("APPTHEORY_MICROVM_INGRESS_NETWORK_CONNECTOR_REFS", " ingress-1 ")
+	t.Setenv("HOSTED_GENESIS_MICROVM_MAXIMUM_DURATION_SECONDS", "450")
+	t.Setenv("HOSTED_GENESIS_MICROVM_IDLE_MAX_SECONDS", "240")
+	t.Setenv("HOSTED_GENESIS_MICROVM_IDLE_SUSPENDED_SECONDS", "1200")
+	t.Setenv("HOSTED_GENESIS_MICROVM_IDLE_AUTO_RESUME_ENABLED", "true")
+
+	cfg := Load()
+
+	if !cfg.HostedGenesisMicroVM.Complete() {
+		t.Fatalf("expected complete hosted genesis microvm config: %#v", cfg.HostedGenesisMicroVM)
+	}
+	if cfg.HostedGenesisMicroVM.ControllerEndpoint != "https://controller.example/microvms" {
+		t.Fatalf("unexpected controller endpoint: %q", cfg.HostedGenesisMicroVM.ControllerEndpoint)
+	}
+	if cfg.HostedGenesisMicroVM.NetworkConnectorRef != "egress-1" {
+		t.Fatalf("expected first egress connector as network connector ref, got %q", cfg.HostedGenesisMicroVM.NetworkConnectorRef)
+	}
+	if cfg.HostedGenesisMicroVM.MaximumDurationSeconds != 450 {
+		t.Fatalf("expected maximum duration 450, got %d", cfg.HostedGenesisMicroVM.MaximumDurationSeconds)
+	}
+	if !cfg.HostedGenesisMicroVM.IdlePolicy.AutoResumeEnabled {
+		t.Fatalf("expected explicit idle auto resume opt-in")
+	}
+	if cfg.HostedGenesisMicroVM.IdlePolicy.MaxIdleDurationSeconds != 240 ||
+		cfg.HostedGenesisMicroVM.IdlePolicy.SuspendedDurationSeconds != 1200 {
+		t.Fatalf("unexpected idle policy: %#v", cfg.HostedGenesisMicroVM.IdlePolicy)
+	}
+}
+
 func TestLoad_ENSGatewayDefaultStageConfig(t *testing.T) {
 	t.Setenv("STAGE", "")
 	t.Setenv("ENS_GATEWAY_CHAIN_ID", "")

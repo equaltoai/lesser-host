@@ -87,17 +87,18 @@ type MicroVMDispatcher interface {
 // (runtime/microvm/controller_routes.go controllerRoutePayload). The route
 // handler fixes the command to "run", derives tenant_id from x-tenant-id /
 // query, and namespace from x-namespace-id; only the session + image/network
-// fields + the duration cap are caller-supplied in the body. AuthContext is
-// populated by the controller authorizer, not the body.
+// fields + AppTheory lifetime controls are caller-supplied in the body.
+// AuthContext is populated by the controller authorizer, not the body.
 type microvmRunRequestPayload struct {
-	SessionID                   string                     `json:"session_id,omitempty"`
-	ImageRef                    string                     `json:"image_ref"`
-	ImageVersion                string                     `json:"image_version,omitempty"`
-	NetworkConnectorRef         string                     `json:"network_connector_ref"`
-	IngressNetworkConnectorRefs []string                   `json:"ingress_network_connector_refs,omitempty"`
-	EgressNetworkConnectorRefs  []string                   `json:"egress_network_connector_refs,omitempty"`
-	SessionSpec                 runtimemicrovm.SessionSpec `json:"session_spec,omitempty"`
-	MaximumDurationSeconds      int32                      `json:"maximum_duration_seconds,omitempty"`
+	SessionID                   string                             `json:"session_id,omitempty"`
+	ImageRef                    string                             `json:"image_ref"`
+	ImageVersion                string                             `json:"image_version,omitempty"`
+	NetworkConnectorRef         string                             `json:"network_connector_ref"`
+	IngressNetworkConnectorRefs []string                           `json:"ingress_network_connector_refs,omitempty"`
+	EgressNetworkConnectorRefs  []string                           `json:"egress_network_connector_refs,omitempty"`
+	SessionSpec                 runtimemicrovm.SessionSpec         `json:"session_spec,omitempty"`
+	IdlePolicy                  *runtimemicrovm.ProviderIdlePolicy `json:"idle_policy,omitempty"`
+	MaximumDurationSeconds      int32                              `json:"maximum_duration_seconds,omitempty"`
 }
 
 // HTTPControllerDispatcher adapts the governed AppTheoryMicrovmController HTTP
@@ -122,6 +123,7 @@ type HTTPControllerDispatcher struct {
 	ingressConnRefs []string
 	egressConnRefs  []string
 	maxDuration     int32
+	idlePolicy      *runtimemicrovm.ProviderIdlePolicy
 	httpClient      *http.Client
 }
 
@@ -130,7 +132,9 @@ type HTTPControllerDispatcher struct {
 // is the authorizer bearer token presented in the Authorization header (a
 // credential — never committed or logged); the image/network refs are the
 // non-secret refs sent in the POST /microvms run body. MaxDurationSeconds caps
-// each run session; zero lets the controller/provider default apply.
+// each active run session; zero lets the controller/provider default apply.
+// IdlePolicy is passed through AppTheory's v1.17.0 ProviderIdlePolicy contract
+// for human-gap ready/suspended lifetime instead of a Host-owned step machine.
 type HTTPControllerDispatcherConfig struct {
 	Endpoint             string
 	AuthToken            string //nolint:gosec // G117: name describes the authorizer bearer token; in-process config struct, never JSON-serialized over an untrusted wire.
@@ -139,6 +143,7 @@ type HTTPControllerDispatcherConfig struct {
 	IngressConnectorRefs []string
 	EgressConnectorRefs  []string
 	MaxDurationSeconds   int32
+	IdlePolicy           *runtimemicrovm.ProviderIdlePolicy
 	HTTPClient           *http.Client
 }
 
@@ -158,6 +163,13 @@ func NewHTTPControllerDispatcher(cfg HTTPControllerDispatcherConfig) (*HTTPContr
 	if cfg.HTTPClient == nil {
 		return nil, ErrMicroVMDispatchUnavailable
 	}
+	if cfg.MaxDurationSeconds < 0 {
+		return nil, ErrMicroVMDispatchUnavailable
+	}
+	idlePolicy, err := cloneAndValidateProviderIdlePolicy(cfg.IdlePolicy)
+	if err != nil {
+		return nil, err
+	}
 	return &HTTPControllerDispatcher{
 		endpoint:        strings.TrimRight(endpoint, "/"),
 		authToken:       authToken,
@@ -166,8 +178,31 @@ func NewHTTPControllerDispatcher(cfg HTTPControllerDispatcherConfig) (*HTTPContr
 		ingressConnRefs: normalizeStringSlice(cfg.IngressConnectorRefs),
 		egressConnRefs:  normalizeStringSlice(cfg.EgressConnectorRefs),
 		maxDuration:     cfg.MaxDurationSeconds,
+		idlePolicy:      idlePolicy,
 		httpClient:      cfg.HTTPClient,
 	}, nil
+}
+
+func cloneAndValidateProviderIdlePolicy(policy *runtimemicrovm.ProviderIdlePolicy) (*runtimemicrovm.ProviderIdlePolicy, error) {
+	cloned := cloneProviderIdlePolicy(policy)
+	if cloned == nil {
+		return nil, nil
+	}
+	if cloned.MaxIdleDurationSeconds <= 0 || cloned.SuspendedDurationSeconds <= 0 {
+		return nil, ErrMicroVMDispatchUnavailable
+	}
+	return cloned, nil
+}
+
+func cloneProviderIdlePolicy(policy *runtimemicrovm.ProviderIdlePolicy) *runtimemicrovm.ProviderIdlePolicy {
+	if policy == nil {
+		return nil
+	}
+	return &runtimemicrovm.ProviderIdlePolicy{
+		AutoResumeEnabled:        policy.AutoResumeEnabled,
+		MaxIdleDurationSeconds:   policy.MaxIdleDurationSeconds,
+		SuspendedDurationSeconds: policy.SuspendedDurationSeconds,
+	}
 }
 
 // StartMicroVMRun POSTs /microvms to the governed controller API for the
@@ -197,6 +232,7 @@ func (d *HTTPControllerDispatcher) StartMicroVMRun(ctx context.Context, requestI
 			Metadata: binding.Metadata(),
 		},
 		MaximumDurationSeconds: d.maxDuration,
+		IdlePolicy:             cloneProviderIdlePolicy(d.idlePolicy),
 	}
 	resp, err := d.doControllerRequest(ctx, http.MethodPost, d.endpoint, requestID, binding, payload)
 	if err != nil {
@@ -345,6 +381,7 @@ func (d *HTTPControllerDispatcher) DispatchMicroVMRun(ctx context.Context, reque
 			Metadata: binding.Metadata(),
 		},
 		MaximumDurationSeconds: d.maxDuration,
+		IdlePolicy:             cloneProviderIdlePolicy(d.idlePolicy),
 	}
 	resp, err := d.doControllerRequest(ctx, http.MethodPost, d.endpoint, requestID, binding, payload)
 	if err != nil {

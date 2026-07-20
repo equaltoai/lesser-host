@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	runtimemicrovm "github.com/theory-cloud/apptheory/runtime/microvm"
+
 	"github.com/equaltoai/lesser-host/internal/config"
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
 )
@@ -116,15 +118,28 @@ func newHostedGenesisMicroVMDispatcher(ctx context.Context, cfg config.Config, s
 		IngressConnectorRefs: append([]string(nil), microvmCfg.IngressConnectorRefs...),
 		EgressConnectorRefs:  append([]string(nil), microvmCfg.EgressConnectorRefs...),
 		MaxDurationSeconds:   microvmCfg.MaximumDurationSeconds,
+		IdlePolicy:           microVMIdlePolicyFromConfig(microvmCfg.IdlePolicy),
 		HTTPClient:           httpClient,
 	})
 	if err != nil {
 		log.Printf("controlplane: hosted genesis microvm dispatcher unavailable (http dispatcher construction failed) err=%v", err)
 		return nil
 	}
-	log.Printf("controlplane: hosted genesis microvm dispatcher wired stage=%s endpoint=%s image_ref=%s max_duration_seconds=%d",
-		strings.TrimSpace(cfg.Stage), microvmCfg.ControllerEndpoint, microvmCfg.ImageRef, microvmCfg.MaximumDurationSeconds)
+	log.Printf("controlplane: hosted genesis microvm dispatcher wired stage=%s endpoint=%s image_ref=%s max_duration_seconds=%d idle_max_seconds=%d idle_suspended_seconds=%d idle_auto_resume=%t",
+		strings.TrimSpace(cfg.Stage), microvmCfg.ControllerEndpoint, microvmCfg.ImageRef, microvmCfg.MaximumDurationSeconds,
+		microvmCfg.IdlePolicy.MaxIdleDurationSeconds, microvmCfg.IdlePolicy.SuspendedDurationSeconds, microvmCfg.IdlePolicy.AutoResumeEnabled)
 	return dispatcher
+}
+
+func microVMIdlePolicyFromConfig(policy config.HostedGenesisMicroVMIdlePolicyConfig) *runtimemicrovm.ProviderIdlePolicy {
+	if !policy.Complete() {
+		return nil
+	}
+	return &runtimemicrovm.ProviderIdlePolicy{
+		AutoResumeEnabled:        policy.AutoResumeEnabled,
+		MaxIdleDurationSeconds:   policy.MaxIdleDurationSeconds,
+		SuspendedDurationSeconds: policy.SuspendedDurationSeconds,
+	}
 }
 
 // resolveMicroVMAuthToken fetches the authorizer bearer token from SSM. The

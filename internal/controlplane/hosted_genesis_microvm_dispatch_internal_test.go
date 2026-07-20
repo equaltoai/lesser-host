@@ -19,8 +19,8 @@ import (
 
 // microVMWiringTestConfig returns a complete HTTP-transport MicroVM config for
 // NewServer wiring tests. The ControllerEndpoint + AuthTokenSSMParam +
-// ImageRef/NetworkConnectorRef satisfy Complete(); tests inject an httptest
-// stub controller URL + a stub SSM getter so no AWS or SSM is called.
+// ImageRef/NetworkConnectorRef/IdlePolicy satisfy Complete(); tests inject an
+// httptest stub controller URL + a stub SSM getter so no AWS or SSM is called.
 func microVMWiringTestConfig() config.Config {
 	return config.Config{
 		Stage: "lab",
@@ -33,6 +33,10 @@ func microVMWiringTestConfig() config.Config {
 			IngressConnectorRefs:   []string{"arn:aws:lambda::network-connector/all-ingress:test"},
 			EgressConnectorRefs:    []string{"arn:aws:lambda::network-connector/egress:test"},
 			MaximumDurationSeconds: 300,
+			IdlePolicy: config.HostedGenesisMicroVMIdlePolicyConfig{
+				MaxIdleDurationSeconds:   300,
+				SuspendedDurationSeconds: 1800,
+			},
 		},
 	}
 }
@@ -82,6 +86,11 @@ func (s *stubControllerServer) handleRun(w http.ResponseWriter, r *http.Request)
 	var payload struct {
 		SessionID              string `json:"session_id"`
 		MaximumDurationSeconds int32  `json:"maximum_duration_seconds"`
+		IdlePolicy             struct {
+			AutoResumeEnabled        bool  `json:"auto_resume_enabled"`
+			MaxIdleDurationSeconds   int32 `json:"max_idle_duration_seconds"`
+			SuspendedDurationSeconds int32 `json:"suspended_duration_seconds"`
+		} `json:"idle_policy"`
 	}
 	_ = readJSONBody(r, &payload)
 	sessionID := strings.TrimSpace(payload.SessionID)

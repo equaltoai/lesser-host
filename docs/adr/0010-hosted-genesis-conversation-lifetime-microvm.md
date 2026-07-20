@@ -145,6 +145,18 @@ The configured idle values are deployment policy, not business truth. They must 
 long enough to cover the operator-approved lab human-gap canary. If provider limits force shorter durations than real
 human conversations, the actor contract still holds through checkpoint/relaunch/replay.
 
+M11 deployment policy chooses the following Host defaults for the CDK-deployed AppTheory controller and Host dispatchers:
+
+- `MaximumDurationSeconds=300`: one active provider/declaration step has five minutes to complete bounded work;
+- `IdlePolicy.MaxIdleDurationSeconds=300`: a ready conversation actor may be suspended after five minutes of ready idle;
+- `IdlePolicy.SuspendedDurationSeconds=1800`: suspended execution/cache state is allowed for up to thirty minutes,
+  intentionally below Host's one-hour AppTheory registry reconstruction TTL;
+- `IdlePolicy.AutoResumeEnabled=false`: Host keeps resume explicit through AppTheory `Get` / `Resume` / `Invoke` until
+  #941's live lab proof validates provider auto-resume semantics.
+
+Longer human gaps therefore recover from safe checkpoints and `HostedGenesisSession` truth instead of preserving process
+memory by policy.
+
 ### Checkpoint / relaunch / replay expectations
 
 Host and the in-VM runtime must assume process memory is an optimization, not a recovery source. Before any human wait,
