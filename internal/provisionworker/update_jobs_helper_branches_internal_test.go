@@ -64,7 +64,7 @@ func managedUpdateRunnerJob(step string) *models.UpdateJob {
 		Region:                         "us-east-1",
 		BaseDomain:                     "slug.example.com",
 		LesserVersion:                  "v1.2.6",
-		LesserBodyVersion:              "v0.2.3",
+		LesserBodyVersion:              "v1.0.8",
 		LesserHostBaseURL:              "https://lab.example.com",
 		LesserHostAttestationsURL:      "https://lab.example.com",
 		LesserHostInstanceKeySecretARN: "arn:aws:secretsmanager:us-east-1:123456789012:secret:key",
@@ -376,7 +376,7 @@ func TestAdvanceUpdateBodyDeployStart_Branches(t *testing.T) {
 				Stage:                             "lab",
 			},
 			store:             st,
-			releaseHTTPClient: newHappyManagedLesserBodyReleaseClient(t, managedStageDev, "v0.2.3"),
+			releaseHTTPClient: newHappyManagedLesserBodyReleaseClient(t, managedStageDev, "v1.0.8"),
 			cb:                cb,
 		}
 		job := managedUpdateRunnerJob(updateStepBodyDeployStart)
@@ -573,7 +573,7 @@ func assertUpdateRunnerStartRetriesThenFails(
 		cb:                &fakeCodebuild{startErr: errors.New("boom")},
 	}
 	if step == updateStepBodyDeployStart {
-		srv.releaseHTTPClient = newHappyManagedLesserBodyReleaseClient(t, managedStageDev, "v0.2.3")
+		srv.releaseHTTPClient = newHappyManagedLesserBodyReleaseClient(t, managedStageDev, "v1.0.8")
 	}
 	job := managedUpdateRunnerJob(step)
 

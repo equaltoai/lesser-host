@@ -133,6 +133,7 @@ func TestStartDeployRunner_AppendsTipAndAIEnv(t *testing.T) {
 	require.Equal(t, "false", env["AI_PII_DETECTION_ENABLED"])
 	require.Equal(t, "false", env["AI_CONTENT_DETECTION_ENABLED"])
 	require.Equal(t, "false", env["BODY_ENABLED"])
+	require.Equal(t, "false", env["INSTANCE_PLANE_ENABLED"])
 }
 
 func TestStartDeployRunner_OmitsTipChainAndContractWhenDisabled(t *testing.T) {
@@ -204,6 +205,7 @@ func TestStartDeployRunner_OmitsTipChainAndContractWhenDisabled(t *testing.T) {
 	env := envOverrideMap(cb.lastStart.EnvironmentVariablesOverride)
 	require.Equal(t, "false", env["TIP_ENABLED"])
 	require.Equal(t, "false", env["BODY_ENABLED"])
+	require.Equal(t, "false", env["INSTANCE_PLANE_ENABLED"])
 	_, hasChain := env["TIP_CHAIN_ID"]
 	_, hasContract := env["TIP_CONTRACT_ADDRESS"]
 	require.False(t, hasChain, "expected TIP_CHAIN_ID omitted when TIP_ENABLED=false")
@@ -241,6 +243,7 @@ func TestStartDeployRunnerWithMode_MCPEnablesBodyContext(t *testing.T) {
 			ManagedProvisionRunnerProjectName: "proj",
 			ManagedLesserGitHubOwner:          "o",
 			ManagedLesserGitHubRepo:           "r",
+			ManagedLesserBodyDefaultVersion:   "v1.0.8",
 			ArtifactBucketName:                "bucket",
 			ManagedInstanceRoleName:           "role",
 		},
@@ -266,6 +269,7 @@ func TestStartDeployRunnerWithMode_MCPEnablesBodyContext(t *testing.T) {
 	env := envOverrideMap(cb.lastStart.EnvironmentVariablesOverride)
 	require.Equal(t, deployRunnerModeLesserMCP, env["RUN_MODE"])
 	require.Equal(t, "true", env["BODY_ENABLED"])
+	require.Equal(t, "true", env["INSTANCE_PLANE_ENABLED"])
 }
 
 func TestStartUpdateDeployRunner_AppendsTipAndAIEnv(t *testing.T) {
@@ -343,6 +347,7 @@ func TestStartUpdateDeployRunner_AppendsTipAndAIEnv(t *testing.T) {
 	require.Equal(t, "true", env["AI_PII_DETECTION_ENABLED"])
 	require.Equal(t, "false", env["AI_CONTENT_DETECTION_ENABLED"])
 	require.Equal(t, "false", env["BODY_ENABLED"])
+	require.Equal(t, "false", env["INSTANCE_PLANE_ENABLED"])
 }
 
 func TestStartUpdateDeployRunner_OmitsTipChainAndContractWhenDisabled(t *testing.T) {
@@ -406,6 +411,7 @@ func TestStartUpdateDeployRunner_OmitsTipChainAndContractWhenDisabled(t *testing
 	env := envOverrideMap(cb.lastStart.EnvironmentVariablesOverride)
 	require.Equal(t, "false", env["TIP_ENABLED"])
 	require.Equal(t, "false", env["BODY_ENABLED"])
+	require.Equal(t, "false", env["INSTANCE_PLANE_ENABLED"])
 	_, hasChain := env["TIP_CHAIN_ID"]
 	_, hasContract := env["TIP_CONTRACT_ADDRESS"]
 	require.False(t, hasChain, "expected TIP_CHAIN_ID omitted when TIP_ENABLED=false")
@@ -454,7 +460,7 @@ func TestStartUpdateDeployRunner_PreservesBodyContextWhenAlreadyWired(t *testing
 		HostedRegion:      "us-east-1",
 		HostedBaseDomain:  "demo.example.com",
 		BodyEnabled:       &bodyEnabled,
-		LesserBodyVersion: "v0.2.3",
+		LesserBodyVersion: "v1.0.8",
 		McpWiredAt:        time.Unix(100, 0).UTC(),
 	}
 
@@ -464,4 +470,60 @@ func TestStartUpdateDeployRunner_PreservesBodyContextWhenAlreadyWired(t *testing
 	env := envOverrideMap(cb.lastStart.EnvironmentVariablesOverride)
 	require.Equal(t, deployRunnerModeLesser, env["RUN_MODE"])
 	require.Equal(t, "true", env["BODY_ENABLED"])
+	require.Equal(t, "false", env["INSTANCE_PLANE_ENABLED"])
+}
+
+func TestStartUpdateDeployRunnerWithMode_MCPEnablesBodyAndInstancePlane(t *testing.T) {
+	t.Parallel()
+
+	cb := &capturingCodebuild{
+		startOut: &codebuild.StartBuildOutput{Build: &cbtypes.Build{Id: aws.String("run1")}},
+	}
+	s := &Server{
+		cfg: config.Config{
+			Stage:                             "lab",
+			ManagedProvisionRunnerProjectName: "proj",
+			ManagedLesserGitHubOwner:          "o",
+			ManagedLesserGitHubRepo:           "r",
+			ArtifactBucketName:                "bucket",
+			ManagedInstanceRoleName:           "role",
+		},
+		cb: cb,
+	}
+	job := &models.UpdateJob{
+		ID:                             "u1",
+		InstanceSlug:                   "demo",
+		AccountID:                      "123456789012",
+		AccountRoleName:                "role",
+		Region:                         "us-east-1",
+		BaseDomain:                     "demo.example.com",
+		LesserVersion:                  "v1.5.28",
+		LesserBodyVersion:              "v1.0.8",
+		LesserHostBaseURL:              "https://lab.lesser.host",
+		LesserHostAttestationsURL:      "https://lab.lesser.host",
+		LesserHostInstanceKeySecretARN: "arn:aws:secretsmanager:us-east-1:123456789012:secret:test",
+	}
+	inst := &models.Instance{
+		Slug:             "demo",
+		Owner:            "wallet-abc",
+		HostedAccountID:  "123456789012",
+		HostedRegion:     "us-east-1",
+		HostedBaseDomain: "demo.example.com",
+	}
+
+	_, err := s.startUpdateDeployRunnerWithMode(context.Background(), job, inst, deployRunnerModeLesserMCP, "mcp-receipt.json")
+	require.NoError(t, err)
+	require.NotNil(t, cb.lastStart)
+
+	env := envOverrideMap(cb.lastStart.EnvironmentVariablesOverride)
+	require.Equal(t, deployRunnerModeLesserMCP, env["RUN_MODE"])
+	require.Equal(t, "true", env["BODY_ENABLED"])
+	require.Equal(t, "true", env["INSTANCE_PLANE_ENABLED"])
+
+	job.LesserBodyVersion = "v1.0.7"
+	cb.lastStart = nil
+	_, err = s.startUpdateDeployRunnerWithMode(context.Background(), job, inst, deployRunnerModeLesserMCP, "mcp-receipt.json")
+	require.ErrorContains(t, err, "instance-plane SSM contract")
+	require.ErrorContains(t, err, "instance_mcp_lambda_arn")
+	require.Nil(t, cb.lastStart, "pre-instance-plane lesser-body must fail before CodeBuild starts")
 }

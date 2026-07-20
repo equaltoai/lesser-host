@@ -9,7 +9,7 @@ import (
 
 const (
 	managedLesserBodyCompatibilityContractSchemaVersion = 1
-	minimumSupportedManagedLesserBodyReleaseVersion     = "v0.2.3"
+	minimumSupportedManagedLesserBodyReleaseVersion     = "v1.0.8"
 )
 
 type ManagedLesserBodyCompatibilityContract struct {
@@ -141,7 +141,10 @@ func ValidateManagedLesserBodyReleaseVersionSupported(version string) error {
 		return err
 	}
 	if compareManagedReleaseSemver(current, minimum) < 0 {
-		return fmt.Errorf("managed lesser-body releases before %s are not supported by this lesser-host build", minimumSupportedManagedLesserBodyReleaseVersion)
+		return fmt.Errorf(
+			"managed lesser-body releases before %s are not supported by this lesser-host build: the standard three-phase flow requires the instance-plane SSM contract, including instance_mcp_lambda_arn",
+			minimumSupportedManagedLesserBodyReleaseVersion,
+		)
 	}
 	return nil
 }

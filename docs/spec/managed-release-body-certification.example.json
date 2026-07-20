@@ -7,7 +7,7 @@
   },
   "requested_release": {
     "lesser_version": "v1.2.6",
-    "lesser_body_version": "v0.2.3",
+    "lesser_body_version": "v1.0.8",
     "run_lesser": true,
     "run_lesser_body": true,
     "run_mcp": true
@@ -16,7 +16,7 @@
     {
       "id": "lesser_body_version_selected",
       "status": "pass",
-      "detail": "requested lesser-body release v0.2.3 will be validated for managed certification"
+      "detail": "requested lesser-body release v1.0.8 will be validated for managed certification"
     },
     {
       "id": "lesser_body_compatibility_contract_valid",
@@ -58,7 +58,7 @@
     "run_url": "https://console.aws.amazon.com/codebuild/home?#/builds/job-body-1-body/view/new",
     "body_run_url": "https://console.aws.amazon.com/codebuild/home?#/builds/job-body-1-body/view/new",
     "receipt_key": "managed/updates/simulacrum/job-body-1/body-state.json",
-    "requested_version": "v0.2.3",
+    "requested_version": "v1.0.8",
     "template_path": "lesser-body-managed-dev.template.json",
     "template_certification_key": "managed/updates/simulacrum/job-body-1/body-template-certification.json",
     "template_verification_mode": "cloudformation_deploy_no_execute_changeset"

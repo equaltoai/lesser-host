@@ -341,7 +341,7 @@ func TestProvisionStateMachine_SuccessPathAcrossSteps(t *testing.T) {
 			ManagedProvisionRunnerProjectName: "proj",
 			ManagedLesserGitHubOwner:          "o",
 			ManagedLesserGitHubRepo:           "r",
-			ManagedLesserBodyDefaultVersion:   "v0.2.3",
+			ManagedLesserBodyDefaultVersion:   "v1.0.8",
 			ManagedLesserBodyGitHubOwner:      "equaltoai",
 			ManagedLesserBodyGitHubRepo:       "lesser-body",
 			ArtifactBucketName:                "bucket",
@@ -354,7 +354,7 @@ func TestProvisionStateMachine_SuccessPathAcrossSteps(t *testing.T) {
 		sts:               stsClient,
 		cb:                cb,
 		s3:                s3Client,
-		releaseHTTPClient: newHappyManagedLesserBodyReleaseClient(t, managedStageDev, "v0.2.3"),
+		releaseHTTPClient: newHappyManagedLesserBodyReleaseClient(t, managedStageDev, "v1.0.8"),
 		smFactory: func(context.Context, string, string, string, string, string) (secretsManagerAPI, error) {
 			return sm, nil
 		},
@@ -470,6 +470,19 @@ func TestProvisionStateMachine_SuccessPathAcrossSteps(t *testing.T) {
 	require.Equal(t, provisionStepDone, job.Step)
 	require.Equal(t, models.ProvisionJobStatusOK, job.Status)
 	require.Equal(t, now, job.McpWiredAt)
+	require.Len(t, cb.startInputs, 3)
+	lesserEnv := envOverrideMap(cb.startInputs[0].EnvironmentVariablesOverride)
+	bodyEnv := envOverrideMap(cb.startInputs[1].EnvironmentVariablesOverride)
+	mcpEnv := envOverrideMap(cb.startInputs[2].EnvironmentVariablesOverride)
+	require.Equal(t, deployRunnerModeLesser, lesserEnv["RUN_MODE"])
+	require.Equal(t, envBoolFalse, lesserEnv["BODY_ENABLED"])
+	require.Equal(t, envBoolFalse, lesserEnv["INSTANCE_PLANE_ENABLED"])
+	require.Equal(t, deployRunnerModeLesserBody, bodyEnv["RUN_MODE"])
+	require.Equal(t, "v1.0.8", bodyEnv["LESSER_BODY_VERSION"])
+	require.NotContains(t, bodyEnv, "INSTANCE_PLANE_ENABLED")
+	require.Equal(t, deployRunnerModeLesserMCP, mcpEnv["RUN_MODE"])
+	require.Equal(t, envBoolTrue, mcpEnv["BODY_ENABLED"])
+	require.Equal(t, envBoolTrue, mcpEnv["INSTANCE_PLANE_ENABLED"])
 
 	// upsertParentNSDelegation handles trim + dedupe.
 	require.NoError(t, s.upsertParentNSDelegation(context.Background(), "ZPARENT", "demo.example.com", []string{" ns-1 ", "", "ns-1"}))
@@ -570,7 +583,7 @@ func TestProvisionStateMachine_SoulEnabled_SuccessPathAcrossSteps(t *testing.T) 
 			ManagedProvisionRunnerProjectName: "proj",
 			ManagedLesserGitHubOwner:          "o",
 			ManagedLesserGitHubRepo:           "r",
-			ManagedLesserBodyDefaultVersion:   "v0.2.3",
+			ManagedLesserBodyDefaultVersion:   "v1.0.8",
 			ManagedLesserBodyGitHubOwner:      "equaltoai",
 			ManagedLesserBodyGitHubRepo:       "lesser-body",
 			ArtifactBucketName:                "bucket",
@@ -583,7 +596,7 @@ func TestProvisionStateMachine_SoulEnabled_SuccessPathAcrossSteps(t *testing.T) 
 		sts:               stsClient,
 		cb:                cb,
 		s3:                s3Client,
-		releaseHTTPClient: newHappyManagedLesserBodyReleaseClient(t, managedStageDev, "v0.2.3"),
+		releaseHTTPClient: newHappyManagedLesserBodyReleaseClient(t, managedStageDev, "v1.0.8"),
 		smFactory: func(context.Context, string, string, string, string, string) (secretsManagerAPI, error) {
 			return sm, nil
 		},

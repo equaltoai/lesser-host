@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import test from 'node:test';
 
 import { renderProvisionRunnerBuildCommands } from '../lib/provision-runner-buildspec';
@@ -61,6 +63,24 @@ test('RUN_MODE=lesser-mcp uses the CLI binary with --release-dir', () => {
 	assert.doesNotMatch(buildCommands, /npx cdk deploy/);
 	assert.doesNotMatch(buildCommands, /deploy_lesser_assembly_stack/);
 	assert.doesNotMatch(buildCommands, /aws cloudformation deploy/);
+});
+
+test('Lesser phases serialize the explicit instance-plane flag into provisioning input', () => {
+	assert.equal(
+		buildCommands.match(/--arg instance_plane_enabled "\$\{INSTANCE_PLANE_ENABLED:-\}"/g)?.length,
+		2,
+	);
+	assert.equal(
+		buildCommands.match(/\.instance_plane_enabled = bool\(\$instance_plane_enabled\)/g)?.length,
+		2,
+	);
+});
+
+test('managed lesser-body default is the verified instance-plane baseline', () => {
+	const cdkConfig = JSON.parse(readFileSync(join(__dirname, '..', '..', 'cdk.json'), 'utf8')) as {
+		context?: { managedLesserBodyDefaultVersion?: string };
+	};
+	assert.equal(cdkConfig.context?.managedLesserBodyDefaultVersion, 'v1.0.8');
 });
 
 test('runner manages instance-key secret through managed profile receipt proof', () => {
