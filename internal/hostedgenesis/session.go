@@ -158,15 +158,17 @@ func (c DeclarationCheckpoint) Validate() error {
 	return nil
 }
 
+// declarationCheckpointVersionsValid requires the checkpoint to carry the
+// exact canonical five-body contract versions. Missing or unknown versions
+// fail closed: a checkpoint without an explicit five-body contract cannot
+// authorize declaration_ready.
 func declarationCheckpointVersionsValid(schemaVersion string, guidanceVersion string) bool {
-	schemaVersion = strings.TrimSpace(schemaVersion)
-	guidanceVersion = strings.TrimSpace(guidanceVersion)
-	if schemaVersion == "" && guidanceVersion == "" {
-		return true
+	contract, err := ParseFiveBodyDeclarationContract(schemaVersion, guidanceVersion)
+	if err != nil {
+		return false
 	}
-	contract := DeclarationContractFromVersions(schemaVersion, guidanceVersion).Normalize()
-	return strings.EqualFold(schemaVersion, contract.SchemaVersion) &&
-		strings.EqualFold(guidanceVersion, contract.GuidanceVersion)
+	return strings.EqualFold(strings.TrimSpace(schemaVersion), contract.SchemaVersion) &&
+		strings.EqualFold(strings.TrimSpace(guidanceVersion), contract.GuidanceVersion)
 }
 
 func isSHA256Digest(value string) bool {

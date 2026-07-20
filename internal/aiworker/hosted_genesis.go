@@ -167,9 +167,13 @@ func (s *Server) prepareHostedGenesisAssistantRun(ctx context.Context, st hosted
 }
 
 func (s *Server) runAndPersistHostedGenesisAssistant(ctx context.Context, st hostedGenesisStore, reg *models.SoulAgentRegistration, conv *models.SoulAgentMintConversation, session *models.HostedGenesisSession, msg hostedgenesis.QueueMessage, workerRequestID string, run hostedGenesisAssistantRun) error {
+	systemPrompt, promptErr := hostedGenesisSystemPrompt(reg, run.contract)
+	if promptErr != nil {
+		return s.markHostedGenesisConversationFailed(ctx, st, conv, session, hostedGenesisFailureOperatorActionRequired, workerRequestID)
+	}
 	runCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), hostedGenesisRunTimeout)
 	defer cancel()
-	fullResponse, usage, err := runHostedGenesisAssistantModel(runCtx, run.apiKey, run.modelSet, hostedGenesisSystemPrompt(reg, run.contract), run.llmMessages)
+	fullResponse, usage, err := runHostedGenesisAssistantModel(runCtx, run.apiKey, run.modelSet, systemPrompt, run.llmMessages)
 	if err != nil || strings.TrimSpace(fullResponse) == "" {
 		log.Printf("aiworker: hosted genesis assistant turn failed agent_hash=%s conversation_hash=%s provider=%s failure_code=%s", hostedGenesisAuditHash(conv.AgentID), hostedGenesisAuditHash(conv.ConversationID), hostedGenesisProvider(run.modelSet), hostedGenesisFailureAssistantTurnFailed)
 		if persistErr := s.markHostedGenesisConversationFailed(ctx, st, conv, session, hostedGenesisFailureAssistantTurnFailed, workerRequestID); persistErr != nil {
@@ -265,7 +269,6 @@ func (s *Server) prepareHostedGenesisDeclarationRun(ctx context.Context, st host
 }
 
 func hostedGenesisDeclarationInput(reg *models.SoulAgentRegistration, messages []hostedGenesisMessage, contract hostedgenesis.DeclarationContract) llm.MintConversationDeclarationsInput {
-	contract = contract.Normalize()
 	in := llm.MintConversationDeclarationsInput{
 		SchemaVersion:   contract.SchemaVersion,
 		GuidanceVersion: contract.GuidanceVersion,
@@ -793,7 +796,7 @@ func hostedGenesisAPIKey(ctx context.Context, modelSet string) (string, error) {
 	}
 }
 
-func hostedGenesisSystemPrompt(reg *models.SoulAgentRegistration, contract hostedgenesis.DeclarationContract) string {
+func hostedGenesisSystemPrompt(reg *models.SoulAgentRegistration, contract hostedgenesis.DeclarationContract) (string, error) {
 	return mintprompt.MintConversationSystemPromptForContract(reg, contract)
 }
 
@@ -805,7 +808,7 @@ func buildHostedGenesisDeclarationsDraftForContract(draft llm.MintConversationDe
 	if !contract.IsFiveBody() {
 		return hostedGenesisProducedDeclarations{}, hostedgenesis.ErrDeclarationContractUnconfigured
 	}
-	return buildHostedGenesisFiveBodyDeclarationsDraft(draft, now, modelSet, contract.Normalize())
+	return buildHostedGenesisFiveBodyDeclarationsDraft(draft, now, modelSet, hostedgenesis.FiveBodyDeclarationContract())
 }
 
 func buildHostedGenesisFiveBodyDeclarationsDraft(draft llm.MintConversationDeclarationsDraft, now time.Time, modelSet string, contract hostedgenesis.DeclarationContract) (hostedGenesisProducedDeclarations, error) {

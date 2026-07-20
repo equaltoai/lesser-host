@@ -11,22 +11,22 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestPlanLegacySessionMigrationDeclarationReady(t *testing.T) {
+// TestPlanLegacySessionMigrationTerminalFailsClosed proves no legacy terminal
+// conversation can migrate into declaration_ready: pre-five-body declarations
+// carry no five-body contract versions, so the plan maps them to a
+// deterministic restart_soul_bootstrap recovery instead of seeding a
+// publishable checkpoint.
+func TestPlanLegacySessionMigrationTerminalFailsClosed(t *testing.T) {
 	t.Parallel()
 
 	input := loadLegacyMigrationFixture(t, "legacy-completed-valid.json")
 	plan, err := PlanLegacySessionMigration(input)
 	require.NoError(t, err)
-	require.Equal(t, StatusDeclarationReady, plan.Seed.Status)
-	require.Nil(t, plan.Seed.Failure)
-	require.NotNil(t, plan.Seed.DeclarationCheckpoint)
-	require.NoError(t, CanPublish(PublishGateInput{
-		Status:                plan.Seed.Status,
-		RegistrationID:        plan.Seed.RegistrationID,
-		ConversationID:        plan.Seed.ConversationID,
-		AgentID:               plan.Seed.AgentID,
-		DeclarationCheckpoint: plan.Seed.DeclarationCheckpoint,
-	}))
+	require.Equal(t, StatusFailed, plan.Seed.Status)
+	require.Equal(t, RecoveryActionRestartSoulBootstrap, plan.RecoveryAction)
+	require.NotNil(t, plan.Seed.Failure)
+	require.Equal(t, FailureCodeInvalidProducedDeclarations, plan.Seed.Failure.Code)
+	require.Nil(t, plan.Seed.DeclarationCheckpoint)
 	require.Equal(t, "conv_legacy_ready", plan.Seed.ConversationID)
 }
 

@@ -1298,12 +1298,22 @@ func TestHostedGenesisPromptAndUsageHelpers(t *testing.T) {
 	reg := newHostedGenesisWorkerStore("turn-worker").reg
 	reg.Capabilities = []string{"planning"}
 	contract := hostedgenesis.FiveBodyDeclarationContract()
-	prompt := hostedGenesisSystemPrompt(reg, contract)
+	prompt, promptErr := hostedGenesisSystemPrompt(reg, contract)
+	if promptErr != nil {
+		t.Fatalf("system prompt: %v", promptErr)
+	}
 	if !strings.Contains(prompt, hostedGenesisWorkerAgentDomain) || !strings.Contains(prompt, "planning") {
 		t.Fatalf("system prompt omitted registration context: %q", prompt)
 	}
-	if prompt != mintprompt.MintConversationSystemPromptForContract(reg, contract) || strings.Contains(prompt, "minted on-chain") || !strings.Contains(prompt, mintprompt.CanonicalFinalAffirmationQuestion) {
+	sharedPrompt, sharedErr := mintprompt.MintConversationSystemPromptForContract(reg, contract)
+	if sharedErr != nil {
+		t.Fatalf("shared prompt: %v", sharedErr)
+	}
+	if prompt != sharedPrompt || strings.Contains(prompt, "minted on-chain") || !strings.Contains(prompt, mintprompt.CanonicalFinalAffirmationQuestion) {
 		t.Fatalf("direct worker prompt drifted from shared hosted genesis prompt: %q", prompt)
+	}
+	if _, err := hostedGenesisSystemPrompt(reg, hostedgenesis.DeclarationContract{}); !errors.Is(err, hostedgenesis.ErrDeclarationContractUnconfigured) {
+		t.Fatalf("expected non-five-body contract prompt to fail closed, got %v", err)
 	}
 
 	usage := addAIUsageWorker(models.AIUsage{Provider: testProviderOpenAI, InputTokens: 1}, models.AIUsage{Model: "gpt", InputTokens: 2, OutputTokens: 3, DurationMs: 4, ToolCalls: 1})
@@ -1312,19 +1322,24 @@ func TestHostedGenesisPromptAndUsageHelpers(t *testing.T) {
 	}
 }
 
-// TestHostedGenesisDeclarationsDraftBuilderRejectsLegacyContract proves the
-// aiworker builder has no legacy lane: a non-five-body contract fails closed
-// with the unconfigured-contract error, and the legacy boundaries.required
-// code is unreachable from this builder.
-func TestHostedGenesisDeclarationsDraftBuilderRejectsLegacyContract(t *testing.T) {
+// TestHostedGenesisDeclarationsDraftBuilderRejectsNonFiveBodyContract proves
+// the aiworker builder has exactly one lane: a contract that does not name the
+// five-body lane fails closed with the unconfigured-contract error, and the
+// retired boundaries.required code is unreachable from this builder.
+func TestHostedGenesisDeclarationsDraftBuilderRejectsNonFiveBodyContract(t *testing.T) {
 	t.Parallel()
 
-	_, err := buildHostedGenesisDeclarationsDraftForContract(validHostedGenesisFiveBodyDraft(), time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC), "anthropic:claude-sonnet-4-6", hostedgenesis.LegacyDeclarationContract())
-	if !errors.Is(err, hostedgenesis.ErrDeclarationContractUnconfigured) {
-		t.Fatalf("expected unconfigured contract error for legacy contract, got %v", err)
-	}
-	if err.Error() == string(hostedgenesis.DeclarationCodeBoundaries) {
-		t.Fatalf("legacy boundaries.required must be unreachable, got %v", err)
+	for _, contract := range []hostedgenesis.DeclarationContract{
+		{},
+		{SchemaVersion: "soul-mint-conversation-declaration.v1", GuidanceVersion: "soul-mint-conversation-guidance.v1"},
+	} {
+		_, err := buildHostedGenesisDeclarationsDraftForContract(validHostedGenesisFiveBodyDraft(), time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC), "anthropic:claude-sonnet-4-6", contract)
+		if !errors.Is(err, hostedgenesis.ErrDeclarationContractUnconfigured) {
+			t.Fatalf("expected unconfigured contract error for %#v, got %v", contract, err)
+		}
+		if err.Error() == string(hostedgenesis.DeclarationCodeBoundaries) {
+			t.Fatalf("retired boundaries.required must be unreachable, got %v", err)
+		}
 	}
 }
 
@@ -1378,7 +1393,10 @@ func TestHostedGenesisFiveBodyPromptAndInputRequireContract(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected five-body contract from env, got %v", err)
 	}
-	v2Prompt := hostedGenesisSystemPrompt(reg, contract)
+	v2Prompt, v2PromptErr := hostedGenesisSystemPrompt(reg, contract)
+	if v2PromptErr != nil {
+		t.Fatalf("v2 prompt: %v", v2PromptErr)
+	}
 	if !strings.Contains(v2Prompt, hostedgenesis.DeclarationSchemaVersionV2) || !strings.Contains(v2Prompt, "Phase 5 — soul") {
 		t.Fatalf("v2 prompt missing contract evidence: %q", v2Prompt)
 	}

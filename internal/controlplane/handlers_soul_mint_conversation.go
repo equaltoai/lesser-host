@@ -88,6 +88,8 @@ type soulMintConversationErrorEvent struct {
 }
 
 type soulMintConversationProducedDeclarations struct {
+	SchemaVersion   string                 `json:"schemaVersion,omitempty"`
+	GuidanceVersion string                 `json:"guidanceVersion,omitempty"`
 	SelfDescription soul.SelfDescriptionV2 `json:"selfDescription"`
 	Capabilities    []soul.CapabilityV2    `json:"capabilities"`
 	Boundaries      []soul.BoundaryV2      `json:"boundaries"`
@@ -822,7 +824,10 @@ func (s *Server) handleSoulMintConversationForRegistration(ctx *apptheory.Contex
 
 	// Build provider messages from conversation history + new user message.
 	existingMessages := append(session.existingMessages, soulMintConversationMessage{Role: "user", Content: message})
-	systemPrompt := buildMintConversationSystemPrompt(regCtx.reg)
+	systemPrompt, appErr := buildMintConversationSystemPrompt(regCtx.reg)
+	if appErr != nil {
+		return nil, appErr
+	}
 
 	// Create SSE event channel and start streaming.
 	eventCh := make(chan apptheory.SSEEvent, 16)
@@ -887,7 +892,10 @@ func (s *Server) handleSoulAgentMintConversation(ctx *apptheory.Context) (*appth
 	}
 
 	existingMessages := append(session.existingMessages, soulMintConversationMessage{Role: "user", Content: message})
-	systemPrompt := buildMintConversationSystemPrompt(agentCtx.reg)
+	systemPrompt, appErr := buildMintConversationSystemPrompt(agentCtx.reg)
+	if appErr != nil {
+		return nil, appErr
+	}
 	eventCh := make(chan apptheory.SSEEvent, 16)
 
 	s.startMintConversationStream(ctx.Context(), eventCh, streamMintConversationParams{
@@ -2243,9 +2251,19 @@ func (s *Server) persistMintConversationBoundaries(ctx context.Context, identity
 // buildMintConversationSystemPrompt delegates to the shared
 // hostedgenesis/mintprompt builder so the control-plane synchronous path and the
 // in-VM MicroVM workload prompt the provider identically for a given
-// registration (drift-free).
-func buildMintConversationSystemPrompt(reg *models.SoulAgentRegistration) string {
-	return mintprompt.MintConversationSystemPrompt(reg)
+// registration (drift-free). The declaration contract resolves through the
+// fail-closed five-body selector: an unconfigured contract is an operator
+// configuration error, never a legacy prompt.
+func buildMintConversationSystemPrompt(reg *models.SoulAgentRegistration) (string, *apptheory.AppTheoryError) {
+	contract, contractErr := hostedgenesis.RequireFiveBodyDeclarationContractFromEnv()
+	if contractErr != nil {
+		return "", newAppTheoryError("app.internal", "hosted genesis declaration contract is not configured; operator action required")
+	}
+	prompt, promptErr := mintprompt.MintConversationSystemPromptForContract(reg, contract)
+	if promptErr != nil {
+		return "", newAppTheoryError("app.internal", "hosted genesis declaration contract is not configured; operator action required")
+	}
+	return prompt, nil
 }
 
 func (s *Server) apiKeyForMintConversationModel(ctx context.Context, modelSet string) (string, *apptheory.AppTheoryError) {
@@ -2300,7 +2318,16 @@ func (s *Server) extractMintConversationDeclarations(ctx context.Context, reg *m
 		return soulMintConversationProducedDeclarations{}, models.AIUsage{}, appErr
 	}
 
+	// The extraction contract resolves through the fail-closed five-body
+	// selector; there is no version-less legacy extraction lane.
+	contract, contractErr := hostedgenesis.RequireFiveBodyDeclarationContractFromEnv()
+	if contractErr != nil {
+		return soulMintConversationProducedDeclarations{}, models.AIUsage{}, newAppTheoryError("app.internal", "hosted genesis declaration contract is not configured; operator action required")
+	}
+
 	in := llm.MintConversationDeclarationsInput{
+		SchemaVersion:   contract.SchemaVersion,
+		GuidanceVersion: contract.GuidanceVersion,
 		Registration: llm.MintConversationRegistrationContext{
 			Domain:               strings.TrimSpace(reg.DomainNormalized),
 			LocalID:              strings.TrimSpace(reg.LocalID),
@@ -2349,14 +2376,6 @@ func (s *Server) extractMintConversationDeclarations(ctx context.Context, reg *m
 		return soulMintConversationProducedDeclarations{}, models.AIUsage{}, appErr
 	}
 	return decl, usage, nil
-}
-
-func buildMintConversationProducedDeclarations(draft llm.MintConversationDeclarationsDraft, now time.Time, modelSet string, declaredCapabilities ...[]string) (soulMintConversationProducedDeclarations, *apptheory.AppTheoryError) {
-	declared := []string(nil)
-	if len(declaredCapabilities) > 0 {
-		declared = declaredCapabilities[0]
-	}
-	return buildMintConversationProducedDeclarationsWithOptions(draft, now, modelSet, declared, false)
 }
 
 func buildMintConversationProducedDeclarationsWithOptions(draft llm.MintConversationDeclarationsDraft, now time.Time, modelSet string, declaredCapabilities []string, allowEmptyCapabilities bool) (soulMintConversationProducedDeclarations, *apptheory.AppTheoryError) {

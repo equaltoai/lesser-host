@@ -7,6 +7,14 @@ import (
 	"time"
 )
 
+// Historical pre-five-body version strings. These exist only as adversarial
+// test fixtures proving the fail-closed parser rejects them; deployed code has
+// no constant, builder, or selector for this retired vocabulary.
+const (
+	historicalDeclarationSchemaVersionV1 = "soul-mint-conversation-declaration.v1"
+	historicalGuidanceVersionV1          = "soul-mint-conversation-guidance.v1"
+)
+
 func TestRequireFiveBodyDeclarationContractFromEnvFailsClosedWithoutExplicitV2(t *testing.T) {
 	failClosed := []struct {
 		name     string
@@ -15,8 +23,8 @@ func TestRequireFiveBodyDeclarationContractFromEnvFailsClosedWithoutExplicitV2(t
 	}{
 		{name: "unset", schema: "", guidance: ""},
 		{name: "unknown schema", schema: "v3", guidance: ""},
-		{name: "legacy schema", schema: DeclarationSchemaVersionV1, guidance: ""},
-		{name: "legacy guidance", schema: "", guidance: GuidanceVersionV1},
+		{name: "historical schema", schema: historicalDeclarationSchemaVersionV1, guidance: ""},
+		{name: "historical guidance", schema: "", guidance: historicalGuidanceVersionV1},
 		{name: "conflicting pair", schema: "v1", guidance: "v2"},
 	}
 	for _, tt := range failClosed {
@@ -84,11 +92,37 @@ func TestValidateDeclarationContractVersionsRequiresExactV2Evidence(t *testing.T
 	if got := DeclarationValidationCodeFromError(ValidateDeclarationContractVersions("", contract.GuidanceVersion, contract)); got != DeclarationCodeInvalid {
 		t.Fatalf("expected missing schema version to fail closed, got %q", got)
 	}
-	if got := DeclarationValidationCodeFromError(ValidateDeclarationContractVersions(contract.SchemaVersion, GuidanceVersionV1, contract)); got != DeclarationCodeInvalid {
+	if got := DeclarationValidationCodeFromError(ValidateDeclarationContractVersions(contract.SchemaVersion, historicalGuidanceVersionV1, contract)); got != DeclarationCodeInvalid {
 		t.Fatalf("expected mismatched guidance version to fail closed, got %q", got)
 	}
-	if err := ValidateDeclarationContractVersions("", "", LegacyDeclarationContract()); err != nil {
-		t.Fatalf("legacy lane must remain no-version compatible: %v", err)
+	if err := ValidateDeclarationContractVersions("", "", DeclarationContract{}); !errors.Is(err, ErrDeclarationContractUnconfigured) {
+		t.Fatalf("expected non-five-body contract to fail closed as unconfigured, got %v", err)
+	}
+}
+
+func TestParseFiveBodyDeclarationContractFailsClosed(t *testing.T) {
+	failClosed := []struct {
+		name     string
+		schema   string
+		guidance string
+	}{
+		{name: "empty pair", schema: "", guidance: ""},
+		{name: "historical schema", schema: historicalDeclarationSchemaVersionV1, guidance: ""},
+		{name: "historical guidance", schema: "", guidance: historicalGuidanceVersionV1},
+		{name: "unknown", schema: "v3", guidance: ""},
+		{name: "conflicting pair", schema: "v1", guidance: "v2"},
+	}
+	for _, tt := range failClosed {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ParseFiveBodyDeclarationContract(tt.schema, tt.guidance)
+			if !errors.Is(err, ErrDeclarationContractUnconfigured) || got != (DeclarationContract{}) {
+				t.Fatalf("expected fail-closed unconfigured contract, got contract=%#v err=%v", got, err)
+			}
+		})
+	}
+	got, err := ParseFiveBodyDeclarationContract(DeclarationSchemaVersionV2, GuidanceVersionV2)
+	if err != nil || got != FiveBodyDeclarationContract() {
+		t.Fatalf("expected five-body contract, got contract=%#v err=%v", got, err)
 	}
 }
 
@@ -118,7 +152,7 @@ func TestFiveBodyBoundariesAndAdversarialReviewShape(t *testing.T) {
 	}
 }
 
-func TestDeclarationCheckpointAllowsLegacyAndPinsV2Versions(t *testing.T) {
+func TestDeclarationCheckpointRequiresExactFiveBodyVersions(t *testing.T) {
 	checkpoint := DeclarationCheckpoint{
 		DeclarationID:   "decl_1234567890abcdef",
 		DeclarationHash: "sha256:" + strings.Repeat("a", 64),
@@ -130,17 +164,21 @@ func TestDeclarationCheckpointAllowsLegacyAndPinsV2Versions(t *testing.T) {
 		MessageCount:    2,
 		RequestID:       "req-1",
 	}
-	if err := checkpoint.Validate(); err != nil {
-		t.Fatalf("legacy checkpoint should remain valid: %v", err)
+	if err := checkpoint.Validate(); err == nil {
+		t.Fatalf("checkpoint without an explicit five-body contract must fail closed")
 	}
 	checkpoint.SchemaVersion = DeclarationSchemaVersionV2
 	checkpoint.GuidanceVersion = GuidanceVersionV2
 	if err := checkpoint.Validate(); err != nil {
 		t.Fatalf("v2 checkpoint should be valid: %v", err)
 	}
-	checkpoint.GuidanceVersion = GuidanceVersionV1
+	checkpoint.GuidanceVersion = historicalGuidanceVersionV1
 	if err := checkpoint.Validate(); err == nil {
 		t.Fatalf("mismatched schema/guidance versions must fail closed")
+	}
+	checkpoint.GuidanceVersion = ""
+	if err := checkpoint.Validate(); err == nil {
+		t.Fatalf("shorthand or partial versions must fail closed")
 	}
 }
 

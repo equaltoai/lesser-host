@@ -92,10 +92,14 @@ func (r *turnRunner) loadTurnInput(ctx context.Context, turn completion.Completi
 	if contractErr != nil {
 		return turnInput{}, fmt.Errorf("resolve hosted genesis declaration contract: %w", contractErr)
 	}
+	systemPrompt, promptErr := mintprompt.MintConversationSystemPromptForContract(reg, contract)
+	if promptErr != nil {
+		return turnInput{}, fmt.Errorf("build hosted genesis system prompt: %w", promptErr)
+	}
 
 	return turnInput{
 		modelSet:     modelSet,
-		systemPrompt: mintprompt.MintConversationSystemPromptForContract(reg, contract),
+		systemPrompt: systemPrompt,
 		messages:     messages,
 		contract:     contract,
 		registration: reg,
@@ -383,7 +387,7 @@ func (r *turnRunner) buildProducedDeclarationsJSON(draft llm.MintConversationDec
 	if !contract.IsFiveBody() {
 		return "", hostedgenesis.ErrDeclarationContractUnconfigured
 	}
-	return r.buildFiveBodyProducedDeclarationsJSON(draft, modelSet, contract.Normalize())
+	return r.buildFiveBodyProducedDeclarationsJSON(draft, modelSet, hostedgenesis.FiveBodyDeclarationContract())
 }
 
 func (r *turnRunner) buildFiveBodyProducedDeclarationsJSON(draft llm.MintConversationDeclarationsDraft, modelSet string, contract hostedgenesis.DeclarationContract) (string, error) {

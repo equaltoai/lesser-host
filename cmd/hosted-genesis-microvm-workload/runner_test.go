@@ -594,14 +594,20 @@ func TestRunTurnAndPersist_UnconfiguredContractRecordsOperatorAction(t *testing.
 	}
 }
 
-// TestBuildProducedDeclarationsJSONRejectsLegacyContract proves the workload
-// builder has no legacy lane: a non-five-body contract fails closed with the
-// unconfigured-contract error instead of producing legacy declarations.
-func TestBuildProducedDeclarationsJSONRejectsLegacyContract(t *testing.T) {
+// TestBuildProducedDeclarationsJSONRejectsNonFiveBodyContract proves the
+// workload builder has exactly one lane: a contract that does not name the
+// five-body lane fails closed with the unconfigured-contract error instead of
+// producing declarations.
+func TestBuildProducedDeclarationsJSONRejectsNonFiveBodyContract(t *testing.T) {
 	runner := &turnRunner{nowFunc: func() time.Time { return time.Unix(3000, 0).UTC() }}
-	body, err := runner.buildProducedDeclarationsJSON(validLegacyDeclarationDraft(), "openai:gpt-test", hostedgenesis.LegacyDeclarationContract())
-	if !errors.Is(err, hostedgenesis.ErrDeclarationContractUnconfigured) || body != "" {
-		t.Fatalf("expected unconfigured contract error for legacy contract, got body=%q err=%v", body, err)
+	for _, contract := range []hostedgenesis.DeclarationContract{
+		{},
+		{SchemaVersion: "soul-mint-conversation-declaration.v1", GuidanceVersion: "soul-mint-conversation-guidance.v1"},
+	} {
+		body, err := runner.buildProducedDeclarationsJSON(historicalV1ShapedDeclarationDraft(), "openai:gpt-test", contract)
+		if !errors.Is(err, hostedgenesis.ErrDeclarationContractUnconfigured) || body != "" {
+			t.Fatalf("expected unconfigured contract error for %#v, got body=%q err=%v", contract, body, err)
+		}
 	}
 }
 
@@ -655,7 +661,7 @@ func TestBuildProducedDeclarationsJSONFiveBodyRequiresRunContractEvidence(t *tes
 	}
 }
 
-func validLegacyDeclarationDraft() llm.MintConversationDeclarationsDraft {
+func historicalV1ShapedDeclarationDraft() llm.MintConversationDeclarationsDraft {
 	return llm.MintConversationDeclarationsDraft{
 		SelfDescription: soul.SelfDescriptionV2{
 			Purpose:     "I help operators reason about hosted genesis state.",

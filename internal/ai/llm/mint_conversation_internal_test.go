@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -94,27 +95,35 @@ func TestMintConversationDeclarationsDraftParsingAndNormalization(t *testing.T) 
 	}
 }
 
-func TestMintConversationDeclarationsPromptAndSchema(t *testing.T) {
+func TestMintConversationDeclarationsConfigFailsClosedWithoutFiveBody(t *testing.T) {
 	t.Parallel()
 
-	prompt := mintConversationDeclarationsSystemPromptV1()
-	if !strings.Contains(prompt, "single JSON object") {
-		t.Fatalf("unexpected prompt: %q", prompt)
-	}
-	if !strings.Contains(prompt, "2-4 boundaries") {
-		t.Fatalf("expected prompt to mention boundary target, got %q", prompt)
-	}
-	if !strings.Contains(prompt, "untrusted data") || !strings.Contains(prompt, `claimLevel "self-declared"`) {
-		t.Fatalf("expected prompt hygiene and locked claim-level vocabulary, got %q", prompt)
+	// Historical pre-five-body version strings are adversarial fixtures only;
+	// deployed code has no constant or builder for them.
+	for name, input := range map[string]MintConversationDeclarationsInput{
+		"empty":      {},
+		"historical": {SchemaVersion: "soul-mint-conversation-declaration.v1", GuidanceVersion: "soul-mint-conversation-guidance.v1"},
+		"unknown":    {SchemaVersion: "v3"},
+	} {
+		if _, err := mintConversationDeclarationsConfig(input); !errors.Is(err, hostedgenesis.ErrDeclarationContractUnconfigured) {
+			t.Fatalf("%s: expected fail-closed unconfigured contract, got %v", name, err)
+		}
+		if _, _, err := MintConversationDeclarationsOpenAI(t.Context(), "k", "openai:gpt-4.1-mini", input); !errors.Is(err, hostedgenesis.ErrDeclarationContractUnconfigured) {
+			t.Fatalf("%s: expected OpenAI extraction to fail closed before any provider call, got %v", name, err)
+		}
+		if _, _, err := MintConversationDeclarationsAnthropic(t.Context(), "k", "anthropic:"+mintConversationTestAnthropicModel, input); !errors.Is(err, hostedgenesis.ErrDeclarationContractUnconfigured) {
+			t.Fatalf("%s: expected Anthropic extraction to fail closed before any provider call, got %v", name, err)
+		}
 	}
 
-	schema := mintConversationDeclarationsJSONSchemaV1()
-	assertMintConversationDeclarationsSchema(t, schema)
-
-	if _, _, err := MintConversationDeclarationsOpenAI(t.Context(), "k", "unsupported:model", MintConversationDeclarationsInput{}); err == nil {
+	fiveBody := MintConversationDeclarationsInput{
+		SchemaVersion:   hostedgenesis.DeclarationSchemaVersionV2,
+		GuidanceVersion: hostedgenesis.GuidanceVersionV2,
+	}
+	if _, _, err := MintConversationDeclarationsOpenAI(t.Context(), "k", "unsupported:model", fiveBody); err == nil {
 		t.Fatalf("expected unsupported OpenAI declarations model error")
 	}
-	if _, _, err := MintConversationDeclarationsAnthropic(t.Context(), "k", "unsupported:model", MintConversationDeclarationsInput{}); err == nil {
+	if _, _, err := MintConversationDeclarationsAnthropic(t.Context(), "k", "unsupported:model", fiveBody); err == nil {
 		t.Fatalf("expected unsupported Anthropic declarations model error")
 	}
 }
@@ -124,7 +133,10 @@ func TestMintConversationDeclarationsFiveBodyPromptAndSchema(t *testing.T) {
 
 	contract := hostedgenesis.FiveBodyDeclarationContract()
 	input := MintConversationDeclarationsInput{SchemaVersion: contract.SchemaVersion, GuidanceVersion: contract.GuidanceVersion}
-	cfg := mintConversationDeclarationsConfig(input)
+	cfg, cfgErr := mintConversationDeclarationsConfig(input)
+	if cfgErr != nil {
+		t.Fatalf("five-body config: %v", cfgErr)
+	}
 	if cfg.schemaName != "soul_five_body_declarations" || !strings.Contains(cfg.systemPrompt, contract.SchemaVersion) || !strings.Contains(cfg.systemPrompt, contract.GuidanceVersion) {
 		t.Fatalf("unexpected v2 config: %#v prompt=%q", cfg, cfg.systemPrompt)
 	}
@@ -189,42 +201,6 @@ func TestMintConversationDeclarationsFiveBodyNormalization(t *testing.T) {
 	}
 }
 
-func assertMintConversationDeclarationsSchema(t *testing.T, schema map[string]any) {
-	t.Helper()
-
-	props, hasProps := schema["properties"].(map[string]any)
-	if !hasProps {
-		t.Fatalf("expected top-level properties")
-	}
-	if _, exists := props["selfDescription"]; !exists {
-		t.Fatalf("expected selfDescription schema")
-	}
-	if _, exists := props["capabilities"]; !exists {
-		t.Fatalf("expected capabilities schema")
-	}
-	if _, exists := props["boundaries"]; !exists {
-		t.Fatalf("expected boundaries schema")
-	}
-	if _, exists := props["transparency"]; !exists {
-		t.Fatalf("expected transparency schema")
-	}
-	boundaries, ok := props["boundaries"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected boundaries schema map")
-	}
-	if got, typeOK := boundaries["maxItems"].(int); !typeOK || got != maxMintConversationBoundaryDrafts {
-		t.Fatalf("expected boundaries maxItems=%d, got %#v", maxMintConversationBoundaryDrafts, boundaries["maxItems"])
-	}
-	capabilities, ok := props["capabilities"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected capabilities schema map")
-	}
-	if got, typeOK := capabilities["minItems"].(int); !typeOK || got != 0 {
-		t.Fatalf("expected capabilities minItems=0, got %#v", capabilities["minItems"])
-	}
-	assertOpenAIStrictObjectSchema(t, schema)
-}
-
 func TestMintConversationDeclarationsProviderParityUsesStrictAnthropicTool(t *testing.T) {
 	fixture := mintConversationDeclarationDraftFixture()
 	openAIContent, err := json.Marshal(fixture)
@@ -251,6 +227,8 @@ func TestMintConversationDeclarationsProviderParityUsesStrictAnthropicTool(t *te
 	anthropicResp := anthropicDeclarationToolResponse(t, fixture, "tool_use")
 
 	input := MintConversationDeclarationsInput{
+		SchemaVersion:   hostedgenesis.DeclarationSchemaVersionV2,
+		GuidanceVersion: hostedgenesis.GuidanceVersionV2,
 		Registration: MintConversationRegistrationContext{
 			Domain:               "agent.example",
 			LocalID:              "agent",
@@ -259,7 +237,7 @@ func TestMintConversationDeclarationsProviderParityUsesStrictAnthropicTool(t *te
 		},
 		Messages: []MintConversationMessage{
 			{Role: "user", Content: "I help plan hosted genesis declarations."},
-			{Role: "assistant", Content: "Draft: self-description, one capability, one boundary."},
+			{Role: "assistant", Content: "Draft: five bodies, one capability, three refusals."},
 		},
 	}
 
@@ -306,12 +284,12 @@ func TestMintConversationDeclarationsProviderParityUsesStrictAnthropicTool(t *te
 	if usage.Provider != testProviderAnthropic || usage.Model != mintConversationTestAnthropicModel || usage.ToolCalls != 1 {
 		t.Fatalf("unexpected anthropic usage: %#v", usage)
 	}
-	for _, want := range []string{`"json_schema"`, `"strict":true`, `"selfDescription"`, `"capabilities"`, `"boundaries"`, `"transparency"`} {
+	for _, want := range []string{`"json_schema"`, `"strict":true`, `"fiveBodies"`, `"capabilities"`, `"transparency"`, `"refusals"`} {
 		if !strings.Contains(openAIRequest, want) {
 			t.Fatalf("OpenAI strict schema request missing %s: %s", want, openAIRequest)
 		}
 	}
-	for _, want := range []string{`"tool_choice"`, `"soul_mint_conversation_declarations"`, `"strict":true`, `"max_tokens":8192`, `"selfDescription"`, `"capabilities"`, `"boundaries"`, `"transparency"`} {
+	for _, want := range []string{`"tool_choice"`, `"soul_five_body_declarations"`, `"strict":true`, `"max_tokens":8192`, `"fiveBodies"`, `"capabilities"`, `"transparency"`, `"refusals"`} {
 		if !strings.Contains(anthropicRequest, want) {
 			t.Fatalf("Anthropic strict tool request missing %s: %s", want, anthropicRequest)
 		}
@@ -356,7 +334,10 @@ func TestMintConversationDeclarationsAnthropicRejectsTruncatedStopReason(t *test
 		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(bytes.NewReader(respBytes)), Request: r}, nil
 	})}
 
-	_, _, err = MintConversationDeclarationsAnthropic(t.Context(), "sk-ant-test", "anthropic:"+mintConversationTestAnthropicModel, MintConversationDeclarationsInput{})
+	_, _, err = MintConversationDeclarationsAnthropic(t.Context(), "sk-ant-test", "anthropic:"+mintConversationTestAnthropicModel, MintConversationDeclarationsInput{
+		SchemaVersion:   hostedgenesis.DeclarationSchemaVersionV2,
+		GuidanceVersion: hostedgenesis.GuidanceVersionV2,
+	})
 	if err == nil || !strings.Contains(err.Error(), "response truncated") || strings.Contains(err.Error(), "invalid json output") || strings.Contains(err.Error(), "capabilities") {
 		t.Fatalf("expected stable truncation failure before JSON/declaration validation, got %v", err)
 	}
@@ -373,7 +354,7 @@ func anthropicDeclarationToolResponse(t *testing.T, fixture map[string]any, stop
 		"content": []any{map[string]any{
 			"type":  "tool_use",
 			"id":    "toolu_1",
-			"name":  "soul_mint_conversation_declarations",
+			"name":  "soul_five_body_declarations",
 			"input": fixture,
 		}},
 		"usage": map[string]any{"input_tokens": 11, "cache_creation_input_tokens": 2, "cache_read_input_tokens": 3, "output_tokens": 7},
@@ -385,14 +366,26 @@ func anthropicDeclarationToolResponse(t *testing.T, fixture map[string]any, stop
 }
 
 func mintConversationDeclarationDraftFixture() map[string]any {
+	section := func(summary string) map[string]any {
+		return map[string]any{"summary": summary, "notes": []any{}}
+	}
 	return map[string]any{
-		"selfDescription": map[string]any{
-			"purpose":      "Help operators prepare hosted genesis declarations.",
-			"constraints":  "Operate only inside Host genesis setup.",
-			"commitments":  "Stay scoped and explain uncertainty.",
-			"limitations":  "Cannot publish or sign without the human gate.",
-			"authoredBy":   mintConversationTestAuthoredByAgent,
-			"mintingModel": "host-populated",
+		"schemaVersion":   hostedgenesis.DeclarationSchemaVersionV2,
+		"guidanceVersion": hostedgenesis.GuidanceVersionV2,
+		"fiveBodies": map[string]any{
+			"identity":   section("I help operators prepare hosted genesis declarations."),
+			"philosophy": section("Stay scoped, explain uncertainty, prefer bounded authority."),
+			"discipline": section("Follow the named cadence and collect evidence before acting."),
+			"boundaries": section("I will not publish, sign, or deploy on behalf of the operator."),
+			"soul": map[string]any{
+				"summary": "Preserve the human publish gate even under schedule pressure.",
+				"notes":   []any{},
+				"refusals": []any{
+					map[string]any{"bypass": "Publish without the human gate", "invariant": "hosted genesis requires explicit human publication", "closestSafePath": "return declaration_ready and wait for finalize authorization"},
+					map[string]any{"bypass": "Skip checksum verification for a release", "invariant": "consumer release verification must fail closed", "closestSafePath": "run certification against the exact published artifact"},
+					map[string]any{"bypass": "Log a raw instance API key for debugging", "invariant": "raw credentials never enter Host logs", "closestSafePath": "compare the sha256 key hash and log a redacted correlation id"},
+				},
+			},
 		},
 		"capabilities": []any{map[string]any{
 			"capability":    "hosted_genesis_planning",
@@ -402,28 +395,28 @@ func mintConversationDeclarationDraftFixture() map[string]any {
 			"validationRef": "",
 			"degradesTo":    "",
 		}},
-		"boundaries": []any{map[string]any{
-			"category":  "scope_limit",
-			"statement": "I will not publish, sign, or deploy on behalf of the operator.",
-			"rationale": "Hosted genesis keeps a human publish gate.",
-		}},
 		"transparency": map[string]any{
 			"modelProviderUncertainty": "Provider chosen by Host model set.",
 			"operationalNotes":         "Generated from a bounded transcript fixture.",
+			"selfDeclaredNotice":       "All declarations are self-declared.",
 		},
 	}
 }
 
 func assertMintConversationDeclarationDraftsEquivalent(t *testing.T, openOut MintConversationDeclarationsDraft, anthropicOut MintConversationDeclarationsDraft) {
 	t.Helper()
-	if openOut.SelfDescription.Purpose != anthropicOut.SelfDescription.Purpose || openOut.SelfDescription.AuthoredBy != mintConversationTestAuthoredByAgent || anthropicOut.SelfDescription.AuthoredBy != mintConversationTestAuthoredByAgent {
-		t.Fatalf("self-description mismatch: openai=%#v anthropic=%#v", openOut.SelfDescription, anthropicOut.SelfDescription)
+	if openOut.SchemaVersion != hostedgenesis.DeclarationSchemaVersionV2 || anthropicOut.SchemaVersion != hostedgenesis.DeclarationSchemaVersionV2 ||
+		openOut.GuidanceVersion != hostedgenesis.GuidanceVersionV2 || anthropicOut.GuidanceVersion != hostedgenesis.GuidanceVersionV2 {
+		t.Fatalf("contract version mismatch: openai=%#v anthropic=%#v", openOut, anthropicOut)
+	}
+	if openOut.FiveBodies.Identity.Summary != anthropicOut.FiveBodies.Identity.Summary || openOut.FiveBodies.Soul.Summary != anthropicOut.FiveBodies.Soul.Summary {
+		t.Fatalf("five-body mismatch: openai=%#v anthropic=%#v", openOut.FiveBodies, anthropicOut.FiveBodies)
+	}
+	if len(openOut.FiveBodies.Soul.Refusals) != 3 || len(anthropicOut.FiveBodies.Soul.Refusals) != 3 {
+		t.Fatalf("refusal floor mismatch: openai=%#v anthropic=%#v", openOut.FiveBodies.Soul.Refusals, anthropicOut.FiveBodies.Soul.Refusals)
 	}
 	if len(openOut.Capabilities) != 1 || len(anthropicOut.Capabilities) != 1 || openOut.Capabilities[0].Capability != anthropicOut.Capabilities[0].Capability || anthropicOut.Capabilities[0].ClaimLevel != mintConversationClaimLevelSelfDeclared {
 		t.Fatalf("capability mismatch: openai=%#v anthropic=%#v", openOut.Capabilities, anthropicOut.Capabilities)
-	}
-	if len(openOut.Boundaries) != 1 || len(anthropicOut.Boundaries) != 1 || openOut.Boundaries[0].Category != anthropicOut.Boundaries[0].Category {
-		t.Fatalf("boundary mismatch: openai=%#v anthropic=%#v", openOut.Boundaries, anthropicOut.Boundaries)
 	}
 	if openOut.Transparency["operationalNotes"] != anthropicOut.Transparency["operationalNotes"] {
 		t.Fatalf("transparency mismatch: openai=%#v anthropic=%#v", openOut.Transparency, anthropicOut.Transparency)
@@ -480,7 +473,9 @@ func TestMintConversationDeclarationsOpenAI_OmitsTemperatureForGPT5(t *testing.T
 	t.Cleanup(func() { openAIHTTPClient = nil })
 
 	_, _, err = MintConversationDeclarationsOpenAI(t.Context(), "sk-test", "openai:gpt-5-mini-2025-08-07", MintConversationDeclarationsInput{
-		Registration: MintConversationRegistrationContext{AgentID: "agent_123"},
+		SchemaVersion:   hostedgenesis.DeclarationSchemaVersionV2,
+		GuidanceVersion: hostedgenesis.GuidanceVersionV2,
+		Registration:    MintConversationRegistrationContext{AgentID: "agent_123"},
 		Messages: []MintConversationMessage{
 			{Role: "user", Content: "confirm"},
 			{Role: "assistant", Content: "confirmed"},
@@ -511,7 +506,7 @@ func TestOpenAIModelSupportsTemperature(t *testing.T) {
 func TestAnthropicToolInputSchemaSanitizesPermissiveAdditionalProperties(t *testing.T) {
 	t.Parallel()
 
-	schema := mintConversationDeclarationsJSONSchemaV1()
+	schema := mintConversationDeclarationsJSONSchemaV2(hostedgenesis.FiveBodyDeclarationContract())
 	param := anthropicToolInputSchemaFromJSONSchema(schema)
 
 	raw, err := json.Marshal(param)
@@ -541,8 +536,8 @@ func TestAnthropicToolInputSchemaSanitizesPermissiveAdditionalProperties(t *test
 		t.Fatalf("strict mint declarations capability schema must not expose free-form constraints")
 	}
 
-	selfDescription := requireSchemaMap(t, props, "selfDescription")
-	assertSchemaBool(t, selfDescription, "additionalProperties", false)
+	fiveBodies := requireSchemaMap(t, props, "fiveBodies")
+	assertSchemaBool(t, fiveBodies, "additionalProperties", false)
 }
 
 func TestAnthropicToolInputSchemaStripsUnsupportedConstraints(t *testing.T) {
@@ -550,7 +545,6 @@ func TestAnthropicToolInputSchemaStripsUnsupportedConstraints(t *testing.T) {
 
 	contract := hostedgenesis.FiveBodyDeclarationContract()
 	for name, schema := range map[string]map[string]any{
-		"v1": mintConversationDeclarationsJSONSchemaV1(),
 		"v2": mintConversationDeclarationsJSONSchemaV2(contract),
 	} {
 		source, err := json.Marshal(schema)
