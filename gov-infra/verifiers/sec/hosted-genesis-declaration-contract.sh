@@ -1,27 +1,30 @@
 #!/usr/bin/env bash
-# SEC-15: Fresh hosted-genesis declaration contract is five-body-only.
+# SEC-15: Hosted-genesis declaration contract is five-body-only.
 #
-# Verifies that fresh M11/Ptah hosted-genesis declaration production cannot
-# route to the legacy declaration lane. The fresh runtime surfaces are the
-# MicroVM workload (cmd/hosted-genesis-microvm-workload) and the aiworker
-# fallback (internal/aiworker): both must resolve the declaration contract
-# through the fail-closed selector and must not reference the legacy
-# selector/builder vocabulary. A missing/unknown contract selection must
-# surface as operator_action_required, never as the legacy builder's
-# boundaries.required.
+# Verifies that hosted-genesis declaration production cannot route to a legacy
+# declaration lane anywhere in deployed Host Go code. The generic legacy
+# selector/wrapper vocabulary (LegacyDeclarationContract,
+# DeclarationContractFromVersions, the no-contract prompt wrapper
+# MintConversationSystemPrompt) must not exist or be referenced in any deployed
+# Go file — not only the fresh runtime paths. Contract selection resolves
+# through the fail-closed selectors, and a missing/unknown contract surfaces as
+# operator_action_required, never as the legacy builder's boundaries.required.
 #
 # Full points:
 #   - the permissive env selector DeclarationContractFromEnv does not exist in
 #     any deployed Go code;
+#   - no deployed Go code defines or references LegacyDeclarationContract,
+#     DeclarationContractFromVersions, or the no-contract prompt wrapper
+#     MintConversationSystemPrompt( (the contract-scoped
+#     MintConversationSystemPromptForContract remains legal);
 #   - deployed fresh hosted-genesis runtime code (MicroVM workload + aiworker)
-#     does not reference LegacyDeclarationContract, DeclarationContractFromVersions,
-#     the legacy DeclarationCodeBoundaries emission, or the legacy no-contract
-#     prompt wrapper MintConversationSystemPrompt(;
+#     does not reference the legacy DeclarationCodeBoundaries emission;
 #   - both fresh runtime paths call RequireFiveBodyDeclarationContractFromEnv
 #     and route ErrDeclarationContractUnconfigured to the operator_action lane;
 #   - both fresh builders guard on IsFiveBody and fail closed with
 #     ErrDeclarationContractUnconfigured;
-#   - the fail-closed selector + sentinel exist in internal/hostedgenesis;
+#   - the fail-closed selectors (env + version parser) + sentinel exist in
+#     internal/hostedgenesis;
 #   - CDK still provisions the five-body contract env for the MicroVM image and
 #     the ai-worker Lambda (issue #955 wiring stays load-bearing).
 # Zero points: any invariant fails. No partial credit.
@@ -31,7 +34,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 cd "${REPO_ROOT}"
 
-echo "SEC-15: Fresh hosted-genesis declaration contract is five-body-only"
+echo "SEC-15: Hosted-genesis declaration contract is five-body-only"
 
 deployed_go_files() {
   find cmd internal -type f -name '*.go' ! -name '*_test.go' | sort
@@ -69,11 +72,27 @@ if [[ -n "${selector_matches}" ]]; then
 fi
 echo "PASS: permissive DeclarationContractFromEnv selector absent from deployed Go code"
 
+# The generic legacy selector/wrapper vocabulary must stay deleted from ALL
+# deployed Host Go code, definitions included. The trailing '(' keeps the
+# contract-scoped MintConversationSystemPromptForContract legal; the leading
+# non-word guard keeps differently-named helpers (buildMintConversation...)
+# legal while still catching qualified references and definitions.
+deployed_forbidden_patterns=(
+  '(^|[^A-Za-z0-9_])LegacyDeclarationContract[(]'
+  '(^|[^A-Za-z0-9_])DeclarationContractFromVersions[(]'
+  '(^|[^A-Za-z0-9_])MintConversationSystemPrompt[(]'
+)
+for pattern in "${deployed_forbidden_patterns[@]}"; do
+  matches="$(deployed_go_files | xargs grep -nE "${pattern}" 2>/dev/null || true)"
+  if [[ -n "${matches}" ]]; then
+    echo "${matches}" >&2
+    fail "deployed Host Go code must not reference ${pattern}"
+  fi
+  echo "PASS: deployed Host Go code does not reference ${pattern}"
+done
+
 fresh_forbidden_patterns=(
-  'LegacyDeclarationContract[(]'
-  'DeclarationContractFromVersions[(]'
   'DeclarationCodeBoundaries([^A-Za-z]|$)'
-  'mintprompt[.]MintConversationSystemPrompt[(]'
 )
 for pattern in "${fresh_forbidden_patterns[@]}"; do
   matches="$(fresh_runtime_go_files | xargs grep -nE "${pattern}" 2>/dev/null || true)"
@@ -97,6 +116,7 @@ require_file "${cdk_microvm}"
 require_file "${cdk_stack}"
 
 require_pattern "${selector_file}" 'func[[:space:]]+RequireFiveBodyDeclarationContractFromEnv' 'fail-closed five-body contract selector is defined'
+require_pattern "${selector_file}" 'func[[:space:]]+ParseFiveBodyDeclarationContract' 'fail-closed five-body version parser is defined'
 require_pattern "${selector_file}" 'ErrDeclarationContractUnconfigured[[:space:]]*=[[:space:]]*errors[.]New' 'unconfigured-contract sentinel error is defined'
 
 require_pattern "${workload_runner}" 'RequireFiveBodyDeclarationContractFromEnv[(]' 'MicroVM workload resolves the contract through the fail-closed selector'
