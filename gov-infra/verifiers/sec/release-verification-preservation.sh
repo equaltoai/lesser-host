@@ -112,6 +112,18 @@ is_reviewed_release_verification_governance_event() {
       echo "  reviewed semantic diff sha256: ${fingerprint}"
       return 0
       ;;
+    # Project 17 M15 (lesser-host#960 / #964 / PR #965): reviewed
+    # release-verification hardening that raises the exact managed Body
+    # compatibility floor to v1.0.8 and updates fail-closed fixtures for the
+    # three-phase deployment contract. Checksum, manifest, template, and
+    # auxiliary-asset verification remain mandatory. Any additional
+    # locked-file drift changes the full semantic-diff fingerprint and fails
+    # SEC-10.
+    fd940a48f56dbcf6c99b92dd9ad493b447ddc2fe00ca85fc1b80dec70245e2df)
+      echo "  reviewed governance event: Project 17 M15 exact managed three-phase release-verification hardening (#960/#964, PR #965)"
+      echo "  reviewed semantic diff sha256: ${fingerprint}"
+      return 0
+      ;;
   esac
 
   echo "Unreviewed SEC-10 semantic diff sha256: ${fingerprint}" >&2
