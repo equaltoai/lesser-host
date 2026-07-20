@@ -167,15 +167,20 @@ func h1_5KillVMRecoveryArc(t *testing.T, dispatcher hostedgenesis.MicroVMDispatc
 	}
 }
 
-// TestH1_5_E2E_MaximumDurationSecondsWired proves the H1.5 timeout-budget
-// wiring: the dispatcher-sized MaximumDurationSeconds (config, decision 7) is
-// set on the dispatched POST /microvms run body so the MicroVM session is
-// bounded for the longest LLM turn plus in-VM extraction. The stub controller
-// records the value it received on the run body.
+// TestH1_5_E2E_MaximumDurationSecondsWired proves the H1.5/M11 timeout-budget
+// wiring: the dispatcher-sized MaximumDurationSeconds and AppTheory
+// ProviderIdlePolicy are set on the dispatched POST /microvms run body so the
+// active provider step and human-gap behavior stay in the AppTheory substrate
+// instead of a Host-owned step machine. The stub controller records the values
+// it received on the run body.
 func TestH1_5_E2E_MaximumDurationSecondsWired(t *testing.T) {
 	cfg := microVMWiringTestConfig()
 	const wantMaxDuration = int32(300)
+	const wantIdleMax = int32(300)
+	const wantIdleSuspended = int32(1800)
 	cfg.HostedGenesisMicroVM.MaximumDurationSeconds = wantMaxDuration
+	cfg.HostedGenesisMicroVM.IdlePolicy.MaxIdleDurationSeconds = wantIdleMax
+	cfg.HostedGenesisMicroVM.IdlePolicy.SuspendedDurationSeconds = wantIdleSuspended
 
 	stub := newMaxDurationCapturingControllerServer(t, "stub-bearer")
 	controllerSrv := httptest.NewServer(stub.handler())
@@ -202,14 +207,25 @@ func TestH1_5_E2E_MaximumDurationSecondsWired(t *testing.T) {
 	if got := stub.capturedMaxDuration(); got != wantMaxDuration {
 		t.Fatalf("expected MaximumDurationSeconds=%d on the run request, got %d", wantMaxDuration, got)
 	}
+	idle := stub.capturedIdlePolicy()
+	if idle == nil {
+		t.Fatalf("expected AppTheory IdlePolicy on the run request")
+	}
+	if idle.AutoResumeEnabled {
+		t.Fatalf("expected Host default auto-resume disabled until lab proof, got %#v", idle)
+	}
+	if idle.MaxIdleDurationSeconds != wantIdleMax || idle.SuspendedDurationSeconds != wantIdleSuspended {
+		t.Fatalf("unexpected idle policy on run request: %#v", idle)
+	}
 }
 
 // maxDurationCapturingControllerServer wraps the stub controller and captures
-// the maximum_duration_seconds passed in the POST /microvms run body so the E2E
-// harness can assert the timeout-budget wiring without calling AWS.
+// the lifetime policy passed in the POST /microvms run body so the E2E harness
+// can assert timeout-budget wiring without calling AWS.
 type maxDurationCapturingControllerServer struct {
 	inner    *stubControllerServer
 	captured *int32
+	idle     *runtimemicrovm.ProviderIdlePolicy
 }
 
 func newMaxDurationCapturingControllerServer(t *testing.T, token string) *maxDurationCapturingControllerServer {
@@ -228,10 +244,12 @@ func (s *maxDurationCapturingControllerServer) handler() http.Handler {
 			_ = r.Body.Close()
 			if err == nil {
 				var payload struct {
-					MaximumDurationSeconds int32 `json:"maximum_duration_seconds"`
+					MaximumDurationSeconds int32                              `json:"maximum_duration_seconds"`
+					IdlePolicy             *runtimemicrovm.ProviderIdlePolicy `json:"idle_policy"`
 				}
 				_ = json.Unmarshal(body, &payload)
 				*s.captured = payload.MaximumDurationSeconds
+				s.idle = payload.IdlePolicy
 			}
 			r.Body = io.NopCloser(bytes.NewReader(body))
 		}
@@ -241,6 +259,10 @@ func (s *maxDurationCapturingControllerServer) handler() http.Handler {
 
 func (s *maxDurationCapturingControllerServer) capturedMaxDuration() int32 { return *s.captured }
 
+func (s *maxDurationCapturingControllerServer) capturedIdlePolicy() *runtimemicrovm.ProviderIdlePolicy {
+	return s.idle
+}
+
 // TestH1_5_E2E_HarnessConfigCompleteGuard is a lightweight guard that the
 // harness's wiring-test config satisfies config.HostedGenesisMicroVMConfig.Complete
 // (the gate NewServer uses to decide between wiring the real dispatcher and
@@ -249,7 +271,7 @@ func (s *maxDurationCapturingControllerServer) capturedMaxDuration() int32 { ret
 func TestH1_5_E2E_HarnessConfigCompleteGuard(t *testing.T) {
 	cfg := microVMWiringTestConfig()
 	if !cfg.HostedGenesisMicroVM.Complete() {
-		t.Fatalf("E2E harness config must be Complete (enabled + endpoint + auth token + image + egress), got %#v", cfg.HostedGenesisMicroVM)
+		t.Fatalf("E2E harness config must be Complete (enabled + endpoint + auth token + image + egress + idle policy), got %#v", cfg.HostedGenesisMicroVM)
 	}
 	if !strings.HasPrefix(cfg.HostedGenesisMicroVM.ImageRef, "arn:") {
 		t.Fatalf("E2E harness config image ref drifted: %q", cfg.HostedGenesisMicroVM.ImageRef)

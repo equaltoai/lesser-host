@@ -42,6 +42,18 @@ func envInt64Bounded(key string, fallback int64, minValue int64, maxValue int64)
 	return n
 }
 
+func envInt32Bounded(key string, fallback int32, minValue int32, maxValue int32) int32 {
+	raw := envString(key)
+	if raw == "" {
+		return fallback
+	}
+	n, err := strconv.ParseInt(raw, 10, 32)
+	if err != nil || n < int64(minValue) || n > int64(maxValue) {
+		return fallback
+	}
+	return int32(n) //nolint:gosec // G115: ParseInt bitSize=32 plus explicit bounds above constrain the narrowing.
+}
+
 func envInt64Positive(key string, fallback int64) int64 {
 	raw := envString(key)
 	if raw == "" {

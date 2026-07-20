@@ -164,6 +164,40 @@ type Config struct {
 	HostedGenesisMicroVM HostedGenesisMicroVMConfig
 }
 
+const (
+	// HostedGenesisMicroVMDefaultMaximumDurationSeconds caps one active
+	// AppTheory MicroVM run for the longest provider turn plus in-VM
+	// declaration extraction. Human wait time is handled by the explicit
+	// ProviderIdlePolicy below, not by stretching the active-run ceiling.
+	HostedGenesisMicroVMDefaultMaximumDurationSeconds int32 = 300
+	// HostedGenesisMicroVMDefaultIdleMaxSeconds is the ready-idle interval
+	// before the provider may suspend the conversation actor. It is long enough
+	// for normal poll/retry jitter and short enough to force the lab human-gap
+	// canary through the AppTheory suspend/resume/relaunch contract.
+	HostedGenesisMicroVMDefaultIdleMaxSeconds int32 = 300
+	// HostedGenesisMicroVMDefaultIdleSuspendedSeconds is deliberately shorter
+	// than Host's one-hour AppTheory registry cache TTL so a suspended provider
+	// session is not treated as durable business truth after Host's
+	// HostedGenesisSession/reconstruction boundary would have to revalidate it.
+	HostedGenesisMicroVMDefaultIdleSuspendedSeconds int32 = 1800
+)
+
+// HostedGenesisMicroVMIdlePolicyConfig is Host's env-friendly representation of
+// AppTheory runtime/microvm.ProviderIdlePolicy. The dispatcher converts it at
+// the controller boundary so config never carries raw provider SDK state.
+type HostedGenesisMicroVMIdlePolicyConfig struct {
+	AutoResumeEnabled        bool
+	MaxIdleDurationSeconds   int32
+	SuspendedDurationSeconds int32
+}
+
+// Complete reports whether the idle policy can be passed to AppTheory's
+// ProviderIdlePolicy. AppTheory v1.17.0 rejects partial idle policies; Host
+// treats a missing policy as incomplete deployed MicroVM config.
+func (p HostedGenesisMicroVMIdlePolicyConfig) Complete() bool {
+	return p.MaxIdleDurationSeconds > 0 && p.SuspendedDurationSeconds > 0
+}
+
 // HostedGenesisMicroVMConfig groups the AppTheory M16 MicroVM controller HTTP
 // transport inputs controlplane.NewServer uses to construct the production
 // dispatcher. ControllerEndpoint is the governed AppTheoryMicrovmController
@@ -173,7 +207,9 @@ type Config struct {
 // IngressConnectorRefs / EgressConnectorRefs are non-secret refs the control
 // plane sends in the POST /microvms run body (the HTTP route handler does not
 // fill them from env the way the in-process runtime did). MaximumDurationSeconds
-// caps each dispatched run session duration.
+// caps each dispatched run session duration. IdlePolicy is the explicit
+// AppTheory human-gap policy for ready/suspended lifetime; Host does not
+// emulate it with a local scheduler or step machine.
 type HostedGenesisMicroVMConfig struct {
 	Enabled                bool
 	ControllerEndpoint     string
@@ -183,6 +219,7 @@ type HostedGenesisMicroVMConfig struct {
 	IngressConnectorRefs   []string
 	EgressConnectorRefs    []string
 	MaximumDurationSeconds int32
+	IdlePolicy             HostedGenesisMicroVMIdlePolicyConfig
 }
 
 // Complete reports whether the MicroVM dispatch config has the minimum required
@@ -192,7 +229,7 @@ type HostedGenesisMicroVMConfig struct {
 // parameter named here; Complete only requires the parameter name. A missing or
 // empty token at fetch time fails the dispatcher construction loudly.
 func (c HostedGenesisMicroVMConfig) Complete() bool {
-	return c.Enabled && c.ControllerEndpoint != "" && c.AuthTokenSSMParam != "" && c.ImageRef != "" && c.NetworkConnectorRef != ""
+	return c.Enabled && c.ControllerEndpoint != "" && c.AuthTokenSSMParam != "" && c.ImageRef != "" && c.NetworkConnectorRef != "" && c.IdlePolicy.Complete()
 }
 
 // Load reads environment variables and returns a Config with defaults applied.
@@ -280,14 +317,22 @@ func Load() Config {
 		}
 	}
 	// MaximumDurationSeconds is sized for the longest LLM turn plus in-VM
-	// declaration extraction (decision 7): default 300s, bounded to the M16
-	// provider's int32 range [0,3600]. A non-positive config disables the cap
-	// and lets the provider/default apply (still fail-closed; never a sync
-	// fallback). The bound keeps the int64->int32 narrowing safe (gosec G115).
-	microvmMaxDurationRaw := envInt64Bounded("HOSTED_GENESIS_MICROVM_MAXIMUM_DURATION_SECONDS", 300, 0, 3600)
-	microvmMaxDuration := int32(0)
-	if microvmMaxDurationRaw > 0 && microvmMaxDurationRaw <= 3600 {
-		microvmMaxDuration = int32(microvmMaxDurationRaw)
+	// declaration extraction (ADR 0010 decision 7): default 300s, bounded to
+	// the M16 provider's int32 range [0,3600]. A non-positive config disables
+	// the cap and lets the provider/default apply (still fail-closed; never a
+	// sync fallback). The bound keeps the int64->int32 narrowing safe (gosec
+	// G115).
+	microvmMaxDuration := envInt32Bounded("HOSTED_GENESIS_MICROVM_MAXIMUM_DURATION_SECONDS", HostedGenesisMicroVMDefaultMaximumDurationSeconds, 0, 3600)
+	// IdlePolicy is the AppTheory-provider human-gap boundary. Defaults are
+	// explicit even when the operator does not override env, so deployed
+	// control-plane and worker dispatches do not silently omit idle behavior.
+	// The suspended duration is bounded below Host's current one-hour
+	// MicroVMRegistryReconstructionTTL; longer human gaps must recover through
+	// Host checkpoints and AppTheory relaunch/replay, not unbounded VM lifetime.
+	microvmIdlePolicy := HostedGenesisMicroVMIdlePolicyConfig{
+		AutoResumeEnabled:        envBoolOn("HOSTED_GENESIS_MICROVM_IDLE_AUTO_RESUME_ENABLED"),
+		MaxIdleDurationSeconds:   envInt32Bounded("HOSTED_GENESIS_MICROVM_IDLE_MAX_SECONDS", HostedGenesisMicroVMDefaultIdleMaxSeconds, 1, 3600),
+		SuspendedDurationSeconds: envInt32Bounded("HOSTED_GENESIS_MICROVM_IDLE_SUSPENDED_SECONDS", HostedGenesisMicroVMDefaultIdleSuspendedSeconds, 1, 3600),
 	}
 	microvmCfg := HostedGenesisMicroVMConfig{
 		Enabled:                envBoolOn("HOSTED_GENESIS_MICROVM_ENABLED"),
@@ -298,6 +343,7 @@ func Load() Config {
 		IngressConnectorRefs:   parseCSV(envString("APPTHEORY_MICROVM_INGRESS_NETWORK_CONNECTOR_REFS")),
 		EgressConnectorRefs:    microvmEgressRefs,
 		MaximumDurationSeconds: microvmMaxDuration,
+		IdlePolicy:             microvmIdlePolicy,
 	}
 
 	portalHost := envStringDefault("WEBAUTHN_RP_ID", "lesser.host")

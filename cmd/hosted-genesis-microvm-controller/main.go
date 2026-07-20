@@ -9,6 +9,7 @@ import (
 	"errors"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	apptheory "github.com/theory-cloud/apptheory/runtime"
 	runtimemicrovm "github.com/theory-cloud/apptheory/runtime/microvm"
 
+	"github.com/equaltoai/lesser-host/internal/config"
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
 	"github.com/equaltoai/lesser-host/internal/observability"
 	"github.com/equaltoai/lesser-host/internal/store"
@@ -155,6 +157,14 @@ func newRuntimeController(ctx context.Context, getenv getenvFunc) (*hostedgenesi
 		ControllerID:             hostedgenesis.MicroVMControllerID,
 		SessionTTL:               hostedgenesis.MicroVMRegistryReconstructionTTL,
 		ReconstructionStaleAfter: 5 * time.Minute,
+		MaximumDurationSeconds: microVMInt32Env(
+			getenv,
+			"HOSTED_GENESIS_MICROVM_MAXIMUM_DURATION_SECONDS",
+			config.HostedGenesisMicroVMDefaultMaximumDurationSeconds,
+			0,
+			3600,
+		),
+		IdlePolicy: microVMIdlePolicyFromEnv(getenv),
 	}
 	return hostedgenesis.NewMicroVMControllerRuntime(cfg)
 }
@@ -248,6 +258,44 @@ func csv(value string) []string {
 		}
 	}
 	return out
+}
+
+func microVMIdlePolicyFromEnv(getenv getenvFunc) *runtimemicrovm.ProviderIdlePolicy {
+	if getenv == nil {
+		getenv = os.Getenv
+	}
+	return &runtimemicrovm.ProviderIdlePolicy{
+		AutoResumeEnabled:        microVMBoolEnv(getenv, "HOSTED_GENESIS_MICROVM_IDLE_AUTO_RESUME_ENABLED"),
+		MaxIdleDurationSeconds:   microVMInt32Env(getenv, "HOSTED_GENESIS_MICROVM_IDLE_MAX_SECONDS", config.HostedGenesisMicroVMDefaultIdleMaxSeconds, 1, 3600),
+		SuspendedDurationSeconds: microVMInt32Env(getenv, "HOSTED_GENESIS_MICROVM_IDLE_SUSPENDED_SECONDS", config.HostedGenesisMicroVMDefaultIdleSuspendedSeconds, 1, 3600),
+	}
+}
+
+func microVMInt32Env(getenv getenvFunc, key string, fallback int32, minValue int32, maxValue int32) int32 {
+	if getenv == nil {
+		getenv = os.Getenv
+	}
+	raw := strings.TrimSpace(getenv(key))
+	if raw == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseInt(raw, 10, 32)
+	if err != nil || parsed < int64(minValue) || parsed > int64(maxValue) {
+		return fallback
+	}
+	return int32(parsed)
+}
+
+func microVMBoolEnv(getenv getenvFunc, key string) bool {
+	if getenv == nil {
+		getenv = os.Getenv
+	}
+	switch strings.ToLower(strings.TrimSpace(getenv(key))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 func safeFailure(command runtimemicrovm.Command, requestID string, code string, message string) runtimemicrovm.ControllerResponse {

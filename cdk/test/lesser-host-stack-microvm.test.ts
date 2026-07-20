@@ -17,7 +17,13 @@ import {
   webLookupContext,
   webStackEnv,
 } from "./_lesser-host-test-helpers";
-import { HOSTED_GENESIS_MICROVM_BASE_IMAGE_ARN } from "../lib/hosted-genesis-microvm";
+import {
+  HOSTED_GENESIS_MICROVM_BASE_IMAGE_ARN,
+  HOSTED_GENESIS_MICROVM_IDLE_AUTO_RESUME_ENABLED,
+  HOSTED_GENESIS_MICROVM_IDLE_MAX_SECONDS,
+  HOSTED_GENESIS_MICROVM_IDLE_SUSPENDED_SECONDS,
+  HOSTED_GENESIS_MICROVM_MAXIMUM_DURATION_SECONDS,
+} from "../lib/hosted-genesis-microvm";
 
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
@@ -417,6 +423,26 @@ test("hosted genesis AppTheory MicroVM deployed-stage wiring uses AppTheory cons
   assert.equal(
     controllerEnv.APPTHEORY_MICROVM_CONTROLLER_OPERATIONS,
     "run,get,list,suspend,resume,terminate,invoke,auth-token,shell-auth-token",
+  );
+  assert.equal(
+    controllerEnv.HOSTED_GENESIS_MICROVM_MAXIMUM_DURATION_SECONDS,
+    String(HOSTED_GENESIS_MICROVM_MAXIMUM_DURATION_SECONDS),
+    "expected controller runtime to carry the AppTheory run maximum duration",
+  );
+  assert.equal(
+    controllerEnv.HOSTED_GENESIS_MICROVM_IDLE_MAX_SECONDS,
+    String(HOSTED_GENESIS_MICROVM_IDLE_MAX_SECONDS),
+    "expected controller runtime to carry the AppTheory idle max duration",
+  );
+  assert.equal(
+    controllerEnv.HOSTED_GENESIS_MICROVM_IDLE_SUSPENDED_SECONDS,
+    String(HOSTED_GENESIS_MICROVM_IDLE_SUSPENDED_SECONDS),
+    "expected controller runtime to carry the AppTheory suspended duration",
+  );
+  assert.equal(
+    controllerEnv.HOSTED_GENESIS_MICROVM_IDLE_AUTO_RESUME_ENABLED,
+    String(HOSTED_GENESIS_MICROVM_IDLE_AUTO_RESUME_ENABLED),
+    "expected controller runtime to keep provider auto-resume explicit",
   );
   assert.ok(
     String(controllerEnv.APPTHEORY_MICROVM_CONTROLLER_ROUTES ?? "").includes(
@@ -892,6 +918,23 @@ test("P52 H1.5 corrective: host-owned MicroVM execution role propagates to RunMi
     undefined,
     "AWS_REGION must NOT be set in MicroVM image environmentVariables (reserved by the Lambda Microvms service)",
   );
+  const imageEnvKeys = new Set(imageEnv.map((env) => String(env?.Key ?? "")));
+  for (const forbiddenKey of [
+    "OPENAI_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "CLAUDE_API_KEY",
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+    "HOSTED_GENESIS_MICROVM_AUTH_TOKEN",
+    "APPTHEORY_MICROVM_AUTHORIZER_TOKEN",
+    "MICROVM_ENDPOINT_TOKEN",
+  ]) {
+    assert.ok(
+      !imageEnvKeys.has(forbiddenKey),
+      `MicroVM image env must not carry raw provider/cloud/bearer/MicroVM endpoint secrets (${forbiddenKey})`,
+    );
+  }
 
   // No raw secret values anywhere in the synthesized template. P52 corrective
   // #873: the auth bearer token is CDK-owned (custom resource), so neither the
@@ -1107,6 +1150,26 @@ test("P52 H1.5: control-plane Lambda receives HTTP dispatch env + SSM auth-token
     "true",
     "expected HOSTED_GENESIS_MICROVM_ENABLED on control-plane Lambda",
   );
+  assert.equal(
+    controlPlaneEnv.HOSTED_GENESIS_MICROVM_MAXIMUM_DURATION_SECONDS,
+    String(HOSTED_GENESIS_MICROVM_MAXIMUM_DURATION_SECONDS),
+    "expected control-plane dispatch to thread the AppTheory maximum duration onto POST /microvms",
+  );
+  assert.equal(
+    controlPlaneEnv.HOSTED_GENESIS_MICROVM_IDLE_MAX_SECONDS,
+    String(HOSTED_GENESIS_MICROVM_IDLE_MAX_SECONDS),
+    "expected control-plane dispatch to thread the AppTheory idle max policy onto POST /microvms",
+  );
+  assert.equal(
+    controlPlaneEnv.HOSTED_GENESIS_MICROVM_IDLE_SUSPENDED_SECONDS,
+    String(HOSTED_GENESIS_MICROVM_IDLE_SUSPENDED_SECONDS),
+    "expected control-plane dispatch to thread the AppTheory suspended policy onto POST /microvms",
+  );
+  assert.equal(
+    controlPlaneEnv.HOSTED_GENESIS_MICROVM_IDLE_AUTO_RESUME_ENABLED,
+    String(HOSTED_GENESIS_MICROVM_IDLE_AUTO_RESUME_ENABLED),
+    "expected control-plane dispatch auto-resume policy to be explicit",
+  );
   assert.ok(
     controlPlaneEnv.APPTHEORY_MICROVM_CONTROLLER_ENDPOINT,
     "expected APPTHEORY_MICROVM_CONTROLLER_ENDPOINT on control-plane Lambda",
@@ -1151,6 +1214,49 @@ test("P52 H1.5: control-plane Lambda receives HTTP dispatch env + SSM auth-token
     controlPlaneEnv.APPTHEORY_MICROVM_EGRESS_NETWORK_CONNECTOR_REFS,
     "expected egress connector refs on control-plane Lambda",
   );
+  const aiWorkerFn = findLambdaEntryByFunctionName(template, "ai-worker");
+  assert.ok(aiWorkerFn, "expected ai-worker Lambda to synthesize");
+  const aiWorkerEnv = lambdaEnvironment(aiWorkerFn[1].Properties ?? {});
+  for (const key of [
+    "HOSTED_GENESIS_MICROVM_ENABLED",
+    "HOSTED_GENESIS_MICROVM_MAXIMUM_DURATION_SECONDS",
+    "HOSTED_GENESIS_MICROVM_IDLE_MAX_SECONDS",
+    "HOSTED_GENESIS_MICROVM_IDLE_SUSPENDED_SECONDS",
+    "HOSTED_GENESIS_MICROVM_IDLE_AUTO_RESUME_ENABLED",
+    "APPTHEORY_MICROVM_CONTROLLER_ENDPOINT",
+    "HOSTED_GENESIS_MICROVM_AUTH_TOKEN_SSM_PARAM",
+    "APPTHEORY_MICROVM_IMAGE_REF",
+    "APPTHEORY_MICROVM_INGRESS_NETWORK_CONNECTOR_REFS",
+    "APPTHEORY_MICROVM_EGRESS_NETWORK_CONNECTOR_REFS",
+  ]) {
+    assert.deepEqual(
+      aiWorkerEnv[key],
+      controlPlaneEnv[key],
+      `ai-worker MicroVM dispatch env ${key} must match control-plane dispatch env`,
+    );
+  }
+  for (const [label, env] of [
+    ["control-plane", controlPlaneEnv],
+    ["ai-worker", aiWorkerEnv],
+    ["controller", controllerEnv],
+  ] as const) {
+    for (const forbiddenKey of [
+      "OPENAI_API_KEY",
+      "ANTHROPIC_API_KEY",
+      "CLAUDE_API_KEY",
+      "AWS_ACCESS_KEY_ID",
+      "AWS_SECRET_ACCESS_KEY",
+      "AWS_SESSION_TOKEN",
+      "HOSTED_GENESIS_MICROVM_AUTH_TOKEN",
+      "APPTHEORY_MICROVM_AUTHORIZER_TOKEN",
+      "MICROVM_ENDPOINT_TOKEN",
+    ]) {
+      assert.ok(
+        !(forbiddenKey in env),
+        `${label} Lambda env must not carry raw provider/cloud/bearer/MicroVM endpoint secrets (${forbiddenKey})`,
+      );
+    }
+  }
   // The control plane must NOT receive session-registry table env: it does
   // not touch the registry directly (the controller Lambda owns it).
   assert.ok(

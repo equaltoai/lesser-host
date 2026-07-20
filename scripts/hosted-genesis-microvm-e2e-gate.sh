@@ -17,8 +17,8 @@
 #      httptest.Server-backed stub controller serving the governed
 #      AppTheoryMicrovmController HTTP routes (POST /microvms to run, GET
 #      /microvms/{session_id} to reconcile). Proves the happy path, kill-VM
-#      recovery, and the MaximumDurationSeconds timeout-budget wiring. This is
-#      the proof that runs in CI; it does NOT call AWS. It needs NO
+#      recovery, and the MaximumDurationSeconds + IdlePolicy timeout-budget
+#      wiring. This is the proof that runs in CI; it does NOT call AWS. It needs NO
 #      configuration — in-memory HTTP stubs only.
 #   2. LAB DEPLOY GATE (runs only with --stage lab): drives the deployed lab
 #      control-plane endpoints. ALL configuration is SYSTEM-SOURCED — no
@@ -47,6 +47,10 @@
 #     in-VM extraction (HOSTED_GENESIS_MICROVM_MAXIMUM_DURATION_SECONDS, default
 #     300s) — set on the CDK control-plane Lambda env and threaded onto the
 #     dispatched run request (verified by the stub gate).
+#   - the AppTheory ProviderIdlePolicy is explicit (default max idle 300s,
+#     suspended duration 1800s, auto-resume false) and is threaded onto the same
+#     dispatched run request; longer human gaps recover through checkpoint /
+#     relaunch / replay, not a Host-owned conversation step machine.
 #   - controller Lambda stays at 30s (lifecycle only); the assistant turn runs
 #     inside the MicroVM, not the controller Lambda.
 #

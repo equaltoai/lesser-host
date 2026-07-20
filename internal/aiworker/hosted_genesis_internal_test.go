@@ -474,6 +474,10 @@ func TestNewHostedGenesisWorkerMicroVMDispatcherConfigPaths(t *testing.T) {
 		IngressConnectorRefs:   []string{"ingress:test"},
 		EgressConnectorRefs:    []string{"egress:test"},
 		MaximumDurationSeconds: 60,
+		IdlePolicy: config.HostedGenesisMicroVMIdlePolicyConfig{
+			MaxIdleDurationSeconds:   300,
+			SuspendedDurationSeconds: 1800,
+		},
 	}
 	if got := newHostedGenesisWorkerMicroVMDispatcher(context.Background(), cfg, nil, hostedGenesisWorkerMicroVMDispatcherOptions{}); got != nil {
 		t.Fatalf("missing token getter must fail closed, got %#v", got)
