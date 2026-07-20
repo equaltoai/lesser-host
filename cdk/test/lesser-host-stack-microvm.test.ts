@@ -12,6 +12,7 @@ import {
   lambdaEnvironment,
   roleServicePrincipals,
   synthesizeTemplate,
+  type SynthesizedTemplate,
   synthTemplateForStage,
   synthTemplateWithContext,
   webLookupContext,
@@ -19,6 +20,7 @@ import {
 } from "./_lesser-host-test-helpers";
 import {
   HOSTED_GENESIS_MICROVM_BASE_IMAGE_ARN,
+  HOSTED_GENESIS_MICROVM_CONFIG_JSON_ENV,
   HOSTED_GENESIS_MICROVM_IDLE_AUTO_RESUME_ENABLED,
   HOSTED_GENESIS_MICROVM_IDLE_MAX_SECONDS,
   HOSTED_GENESIS_MICROVM_IDLE_SUSPENDED_SECONDS,
@@ -29,6 +31,38 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import test from "node:test";
+
+const lambdaEnvTemplateBudgetBytes = 3800;
+
+function lambdaEnvBudgetBytes(env: Record<string, unknown>): number {
+  // Deterministic synthesized-template budget method for #941:
+  // UTF-8 bytes of JSON.stringify(Environment.Variables). This intentionally
+  // includes CloudFormation intrinsic-key overhead instead of trying to predict
+  // live AWS token resolution, so it is a conservative local guard with
+  // headroom below Lambda's 4096-byte deployed env limit.
+  return Buffer.byteLength(JSON.stringify(env), "utf8");
+}
+
+function assertEnvWithinBudget(template: SynthesizedTemplate, logicalId: string): void {
+  const resource = template.Resources?.[logicalId];
+  assert.ok(resource, `expected ${logicalId} to synthesize`);
+  const env = lambdaEnvironment(resource.Properties ?? {});
+  const actual = lambdaEnvBudgetBytes(env);
+  assert.ok(
+    actual <= lambdaEnvTemplateBudgetBytes,
+    `${logicalId} synthesized env budget ${actual} bytes exceeds ${lambdaEnvTemplateBudgetBytes} bytes`,
+  );
+}
+
+function compactMicroVMConfigText(env: Record<string, unknown>): string {
+  const value = env[HOSTED_GENESIS_MICROVM_CONFIG_JSON_ENV];
+  assert.ok(value, `expected ${HOSTED_GENESIS_MICROVM_CONFIG_JSON_ENV}`);
+  return JSON.stringify(value);
+}
+
+function cfnTextIncludesRuntimeFragment(text: string, fragment: string): boolean {
+  return text.includes(fragment) || text.includes(JSON.stringify(fragment).slice(1, -1));
+}
 
 test("hosted genesis AppTheory MicroVM deployed stages require NO credential-pair context (CDK-owned token)", () => {
   // P52 corrective #873: the authorizer bearer token is CDK-owned (a custom
@@ -1090,20 +1124,23 @@ test("P52 #873: CDK-owned auth-token custom resource generates the bearer token 
     );
   }
 
-  // The control plane still gets the deterministic param name + SSM read grant
-  // (it loads the raw token at runtime). This grant path is unchanged from the
-  // HTTP-transport rework; the param name is now deterministic (CDK-owned)
-  // rather than context-supplied, but the grant shape is identical.
+  // The control plane still gets the deterministic param name inside the
+  // compact dispatch config + the SSM read grant (it loads the raw token at
+  // runtime). This grant path is unchanged from the HTTP-transport rework; the
+  // param name is now deterministic (CDK-owned) rather than context-supplied,
+  // but the grant shape is identical.
   const controlPlaneFn = findLambdaEntryByFunctionName(
     template,
     "control-plane-api",
   );
   assert.ok(controlPlaneFn, "expected control-plane Lambda to synthesize");
   const controlPlaneEnv = lambdaEnvironment(controlPlaneFn[1].Properties ?? {});
-  assert.equal(
-    controlPlaneEnv.HOSTED_GENESIS_MICROVM_AUTH_TOKEN_SSM_PARAM,
-    "/lesser-host/lab/hosted-genesis/microvm/auth-token",
-    "expected the deterministic auth-token SSM param name on the control-plane Lambda",
+  assert.ok(
+    cfnTextIncludesRuntimeFragment(
+      compactMicroVMConfigText(controlPlaneEnv),
+      "/lesser-host/lab/hosted-genesis/microvm/auth-token",
+    ),
+    "expected the deterministic auth-token SSM param name in the compact control-plane Lambda config",
   );
 
   // grep-proof: no raw token, no literal sha256 of a known test token, no
@@ -1149,83 +1186,68 @@ test("P52 H1.5: control-plane Lambda receives HTTP dispatch env + SSM auth-token
   assert.ok(controllerFn, "expected AppTheory-created controller Lambda");
   const controllerEnv = lambdaEnvironment(controllerFn[1].Properties ?? {});
   // controlplane.NewServer reads these env vars to construct the
-  // HTTPControllerDispatcher (HostedGenesisMicroVM config block). The
-  // controller endpoint + auth-token SSM param name + image/egress refs are
-  // the HTTP-transport inputs; the raw auth token is fetched from SSM at
-  // runtime, never committed.
-  assert.equal(
-    controlPlaneEnv.HOSTED_GENESIS_MICROVM_ENABLED,
-    "true",
-    "expected HOSTED_GENESIS_MICROVM_ENABLED on control-plane Lambda",
-  );
-  assert.equal(
-    controlPlaneEnv.HOSTED_GENESIS_MICROVM_MAXIMUM_DURATION_SECONDS,
-    String(HOSTED_GENESIS_MICROVM_MAXIMUM_DURATION_SECONDS),
-    "expected control-plane dispatch to thread the AppTheory maximum duration onto POST /microvms",
-  );
-  assert.equal(
-    controlPlaneEnv.HOSTED_GENESIS_MICROVM_IDLE_MAX_SECONDS,
-    String(HOSTED_GENESIS_MICROVM_IDLE_MAX_SECONDS),
-    "expected control-plane dispatch to thread the AppTheory idle max policy onto POST /microvms",
-  );
-  assert.equal(
-    controlPlaneEnv.HOSTED_GENESIS_MICROVM_IDLE_SUSPENDED_SECONDS,
-    String(HOSTED_GENESIS_MICROVM_IDLE_SUSPENDED_SECONDS),
-    "expected control-plane dispatch to thread the AppTheory suspended policy onto POST /microvms",
-  );
-  assert.equal(
-    controlPlaneEnv.HOSTED_GENESIS_MICROVM_IDLE_AUTO_RESUME_ENABLED,
-    String(HOSTED_GENESIS_MICROVM_IDLE_AUTO_RESUME_ENABLED),
-    "expected control-plane dispatch auto-resume policy to be explicit",
+  // HTTPControllerDispatcher (HostedGenesisMicroVM config block). #941 keeps
+  // these AppTheory run inputs in one compact env value so ControlPlaneApi
+  // stays under Lambda's 4KB environment limit: controller endpoint,
+  // auth-token SSM param name, image ref, ingress/egress refs,
+  // MaximumDurationSeconds, and IdlePolicy. The raw auth token is fetched from
+  // SSM at runtime, never committed.
+  const compactConfig = compactMicroVMConfigText(controlPlaneEnv);
+  assert.ok(
+    cfnTextIncludesRuntimeFragment(compactConfig, '"v"') &&
+      cfnTextIncludesRuntimeFragment(compactConfig, '"ep"'),
+    "expected compact hosted-genesis MicroVM config schema marker + endpoint field",
   );
   assert.ok(
-    controlPlaneEnv.APPTHEORY_MICROVM_CONTROLLER_ENDPOINT,
-    "expected APPTHEORY_MICROVM_CONTROLLER_ENDPOINT on control-plane Lambda",
-  );
-  assert.equal(
-    controlPlaneEnv.HOSTED_GENESIS_MICROVM_AUTH_TOKEN_SSM_PARAM,
-    "/lesser-host/lab/hosted-genesis/microvm/auth-token",
-    "expected auth-token SSM param name env on control-plane Lambda",
+    cfnTextIncludesRuntimeFragment(compactConfig, "/lesser-host/lab/hosted-genesis/microvm/auth-token"),
+    "expected compact config to carry the auth-token SSM param name",
   );
   assert.ok(
-    controlPlaneEnv.APPTHEORY_MICROVM_IMAGE_REF,
-    "expected APPTHEORY_MICROVM_IMAGE_REF on control-plane Lambda",
+    cfnTextIncludesRuntimeFragment(compactConfig, '"HostedGenesisMicrovmImage"') &&
+      cfnTextIncludesRuntimeFragment(compactConfig, '"ImageArn"'),
+    "expected compact config to carry the AppTheory MicroVM image ref",
   );
   assert.ok(
-    controlPlaneEnv.APPTHEORY_MICROVM_INGRESS_NETWORK_CONNECTOR_REFS,
-    "expected ingress connector refs on control-plane Lambda",
-  );
-  assert.ok(
-    JSON.stringify(
-      controlPlaneEnv.APPTHEORY_MICROVM_INGRESS_NETWORK_CONNECTOR_REFS,
-    ).includes("aws-network-connector:HTTP_INGRESS"),
+    cfnTextIncludesRuntimeFragment(compactConfig, "aws-network-connector:HTTP_INGRESS"),
     "expected control-plane dispatch to use HTTP_INGRESS for endpoint auth-token compatibility",
   );
   assert.ok(
-    JSON.stringify(
-      controlPlaneEnv.APPTHEORY_MICROVM_INGRESS_NETWORK_CONNECTOR_REFS,
-    ).includes("aws-network-connector:SHELL_INGRESS"),
+    cfnTextIncludesRuntimeFragment(compactConfig, "aws-network-connector:SHELL_INGRESS"),
     "expected control-plane dispatch ingress refs to match the controller deployment-pinned shell ingress ref",
   );
-  assert.deepEqual(
-    controlPlaneEnv.APPTHEORY_MICROVM_INGRESS_NETWORK_CONNECTOR_REFS,
-    controllerEnv.APPTHEORY_MICROVM_INGRESS_NETWORK_CONNECTOR_REFS,
-    "control-plane dispatch ingress refs must match controller deployment-pinned ingress refs",
-  );
   assert.ok(
-    !JSON.stringify(
-      controlPlaneEnv.APPTHEORY_MICROVM_INGRESS_NETWORK_CONNECTOR_REFS,
-    ).includes("aws-network-connector:ALL_INGRESS"),
+    !cfnTextIncludesRuntimeFragment(compactConfig, "aws-network-connector:ALL_INGRESS"),
     "control-plane dispatch must not use ALL_INGRESS with shell ingress enabled",
   );
   assert.ok(
-    controlPlaneEnv.APPTHEORY_MICROVM_EGRESS_NETWORK_CONNECTOR_REFS,
+    cfnTextIncludesRuntimeFragment(compactConfig, "aws-network-connector:INTERNET_EGRESS"),
     "expected egress connector refs on control-plane Lambda",
+  );
+  assert.ok(
+    cfnTextIncludesRuntimeFragment(compactConfig, `"max":${HOSTED_GENESIS_MICROVM_MAXIMUM_DURATION_SECONDS}`),
+    "expected compact config to thread the AppTheory maximum duration onto POST /microvms",
+  );
+  assert.ok(
+    cfnTextIncludesRuntimeFragment(compactConfig, `"ar":${HOSTED_GENESIS_MICROVM_IDLE_AUTO_RESUME_ENABLED}`) &&
+      cfnTextIncludesRuntimeFragment(compactConfig, `"max":${HOSTED_GENESIS_MICROVM_IDLE_MAX_SECONDS}`) &&
+      cfnTextIncludesRuntimeFragment(compactConfig, `"sus":${HOSTED_GENESIS_MICROVM_IDLE_SUSPENDED_SECONDS}`),
+    "expected compact config to carry the AppTheory idle policy",
+  );
+  assert.ok(
+    JSON.stringify(controllerEnv.APPTHEORY_MICROVM_INGRESS_NETWORK_CONNECTOR_REFS).includes(
+      "aws-network-connector:HTTP_INGRESS",
+    ),
+    "expected compact config ingress assertion to be checked against AppTheory controller deployment env",
   );
   const aiWorkerFn = findLambdaEntryByFunctionName(template, "ai-worker");
   assert.ok(aiWorkerFn, "expected ai-worker Lambda to synthesize");
   const aiWorkerEnv = lambdaEnvironment(aiWorkerFn[1].Properties ?? {});
-  for (const key of [
+  assert.deepEqual(
+    aiWorkerEnv[HOSTED_GENESIS_MICROVM_CONFIG_JSON_ENV],
+    controlPlaneEnv[HOSTED_GENESIS_MICROVM_CONFIG_JSON_ENV],
+    `ai-worker compact MicroVM dispatch env ${HOSTED_GENESIS_MICROVM_CONFIG_JSON_ENV} must match control-plane dispatch env`,
+  );
+  for (const compactedKey of [
     "HOSTED_GENESIS_MICROVM_ENABLED",
     "HOSTED_GENESIS_MICROVM_MAXIMUM_DURATION_SECONDS",
     "HOSTED_GENESIS_MICROVM_IDLE_MAX_SECONDS",
@@ -1236,11 +1258,15 @@ test("P52 H1.5: control-plane Lambda receives HTTP dispatch env + SSM auth-token
     "APPTHEORY_MICROVM_IMAGE_REF",
     "APPTHEORY_MICROVM_INGRESS_NETWORK_CONNECTOR_REFS",
     "APPTHEORY_MICROVM_EGRESS_NETWORK_CONNECTOR_REFS",
+    "APPTHEORY_MICROVM_NETWORK_CONNECTOR_REFS",
   ]) {
-    assert.deepEqual(
-      aiWorkerEnv[key],
-      controlPlaneEnv[key],
-      `ai-worker MicroVM dispatch env ${key} must match control-plane dispatch env`,
+    assert.ok(
+      !(compactedKey in controlPlaneEnv),
+      `control-plane Lambda env should compact ${compactedKey} into ${HOSTED_GENESIS_MICROVM_CONFIG_JSON_ENV}`,
+    );
+    assert.ok(
+      !(compactedKey in aiWorkerEnv),
+      `ai-worker Lambda env should compact ${compactedKey} into ${HOSTED_GENESIS_MICROVM_CONFIG_JSON_ENV}`,
     );
   }
   for (const [label, env] of [
@@ -1345,4 +1371,17 @@ test("P52 H1.5: control-plane Lambda receives HTTP dispatch env + SSM auth-token
     !controlPlanePolicyJson.includes("hosted-genesis-microvm-sessions"),
     "control-plane Lambda must not hold session-registry DynamoDB grants (controller owns the registry)",
   );
+});
+
+test("#941: synthesized lab Lambda env for MicroVM dispatch stays under deploy-safe budget", () => {
+  const template = synthTemplateWithContext(
+    hostedGenesisMicrovmRequiredContext,
+  );
+  for (const logicalId of [
+    "ControlPlaneApi8D3F9AC2",
+    "AiWorker1553A229",
+    "HostedGenesisMicrovmControllerControllerFunctionB458B1F3",
+  ]) {
+    assertEnvWithinBudget(template, logicalId);
+  }
 });

@@ -1,6 +1,40 @@
 package config
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
+
+const (
+	testMicroVMControllerEndpoint = "https://controller.example/microvms"
+	testMicroVMAuthTokenParam     = "/lesser-host/lab/hosted-genesis/microvm/auth-token"
+	testMicroVMImageRef           = "image-ref"
+	testMicroVMIngressOne         = "ingress-1"
+	testMicroVMIngressTwo         = "ingress-2"
+	testMicroVMEgressOne          = "egress-1"
+	testMicroVMEgressTwo          = "egress-2"
+)
+
+func assertEqual[T comparable](t *testing.T, label string, got T, want T) {
+	t.Helper()
+	if got != want {
+		t.Fatalf("%s: expected %#v, got %#v", label, want, got)
+	}
+}
+
+func assertTrue(t *testing.T, label string, got bool) {
+	t.Helper()
+	if !got {
+		t.Fatalf("%s: expected true", label)
+	}
+}
+
+func assertStringSliceEqual(t *testing.T, label string, got []string, want []string) {
+	t.Helper()
+	if !slices.Equal(got, want) {
+		t.Fatalf("%s: expected %#v, got %#v", label, want, got)
+	}
+}
 
 func TestEnvHelpers(t *testing.T) {
 	t.Setenv("X", "  hi ")
@@ -115,11 +149,11 @@ func TestLoad_HostedGenesisMicroVMDefaultLifetimePolicy(t *testing.T) {
 
 func TestLoad_HostedGenesisMicroVMLifetimePolicy(t *testing.T) {
 	t.Setenv("HOSTED_GENESIS_MICROVM_ENABLED", "true")
-	t.Setenv("APPTHEORY_MICROVM_CONTROLLER_ENDPOINT", " https://controller.example/microvms ")
-	t.Setenv("HOSTED_GENESIS_MICROVM_AUTH_TOKEN_SSM_PARAM", " /lesser-host/lab/hosted-genesis/microvm/auth-token ")
-	t.Setenv("APPTHEORY_MICROVM_IMAGE_REF", " image-ref ")
-	t.Setenv("APPTHEORY_MICROVM_EGRESS_NETWORK_CONNECTOR_REFS", " egress-1, egress-2 ")
-	t.Setenv("APPTHEORY_MICROVM_INGRESS_NETWORK_CONNECTOR_REFS", " ingress-1 ")
+	t.Setenv("APPTHEORY_MICROVM_CONTROLLER_ENDPOINT", " "+testMicroVMControllerEndpoint+" ")
+	t.Setenv("HOSTED_GENESIS_MICROVM_AUTH_TOKEN_SSM_PARAM", " "+testMicroVMAuthTokenParam+" ")
+	t.Setenv("APPTHEORY_MICROVM_IMAGE_REF", " "+testMicroVMImageRef+" ")
+	t.Setenv("APPTHEORY_MICROVM_EGRESS_NETWORK_CONNECTOR_REFS", " "+testMicroVMEgressOne+", "+testMicroVMEgressTwo+" ")
+	t.Setenv("APPTHEORY_MICROVM_INGRESS_NETWORK_CONNECTOR_REFS", " "+testMicroVMIngressOne+" ")
 	t.Setenv("HOSTED_GENESIS_MICROVM_MAXIMUM_DURATION_SECONDS", "450")
 	t.Setenv("HOSTED_GENESIS_MICROVM_IDLE_MAX_SECONDS", "240")
 	t.Setenv("HOSTED_GENESIS_MICROVM_IDLE_SUSPENDED_SECONDS", "1200")
@@ -130,10 +164,10 @@ func TestLoad_HostedGenesisMicroVMLifetimePolicy(t *testing.T) {
 	if !cfg.HostedGenesisMicroVM.Complete() {
 		t.Fatalf("expected complete hosted genesis microvm config: %#v", cfg.HostedGenesisMicroVM)
 	}
-	if cfg.HostedGenesisMicroVM.ControllerEndpoint != "https://controller.example/microvms" {
+	if cfg.HostedGenesisMicroVM.ControllerEndpoint != testMicroVMControllerEndpoint {
 		t.Fatalf("unexpected controller endpoint: %q", cfg.HostedGenesisMicroVM.ControllerEndpoint)
 	}
-	if cfg.HostedGenesisMicroVM.NetworkConnectorRef != "egress-1" {
+	if cfg.HostedGenesisMicroVM.NetworkConnectorRef != testMicroVMEgressOne {
 		t.Fatalf("expected first egress connector as network connector ref, got %q", cfg.HostedGenesisMicroVM.NetworkConnectorRef)
 	}
 	if cfg.HostedGenesisMicroVM.MaximumDurationSeconds != 450 {
@@ -145,6 +179,67 @@ func TestLoad_HostedGenesisMicroVMLifetimePolicy(t *testing.T) {
 	if cfg.HostedGenesisMicroVM.IdlePolicy.MaxIdleDurationSeconds != 240 ||
 		cfg.HostedGenesisMicroVM.IdlePolicy.SuspendedDurationSeconds != 1200 {
 		t.Fatalf("unexpected idle policy: %#v", cfg.HostedGenesisMicroVM.IdlePolicy)
+	}
+}
+
+func TestLoad_HostedGenesisMicroVMCompactConfig(t *testing.T) {
+	t.Setenv(HostedGenesisMicroVMConfigJSONEnv, `{
+		"v": 1,
+		"ep": " `+testMicroVMControllerEndpoint+` ",
+		"ap": " `+testMicroVMAuthTokenParam+` ",
+		"img": " `+testMicroVMImageRef+` ",
+		"in": " `+testMicroVMIngressOne+`, `+testMicroVMIngressTwo+` ",
+		"eg": " `+testMicroVMEgressOne+`, `+testMicroVMEgressTwo+` ",
+		"max": 450,
+		"idle": {"ar": true, "max": 240, "sus": 1200}
+	}`)
+	// Legacy per-variable env must not be required when the compact CDK-owned
+	// config is present; the compact value is the deployment env-budget path.
+	t.Setenv("HOSTED_GENESIS_MICROVM_ENABLED", "")
+	t.Setenv("APPTHEORY_MICROVM_CONTROLLER_ENDPOINT", "")
+	t.Setenv("HOSTED_GENESIS_MICROVM_AUTH_TOKEN_SSM_PARAM", "")
+	t.Setenv("APPTHEORY_MICROVM_IMAGE_REF", "")
+	t.Setenv("APPTHEORY_MICROVM_EGRESS_NETWORK_CONNECTOR_REFS", "")
+	t.Setenv("APPTHEORY_MICROVM_INGRESS_NETWORK_CONNECTOR_REFS", "")
+
+	cfg := Load()
+
+	assertTrue(t, "compact hosted genesis microvm config complete", cfg.HostedGenesisMicroVM.Complete())
+	assertEqual(t, "compact controller endpoint", cfg.HostedGenesisMicroVM.ControllerEndpoint, testMicroVMControllerEndpoint)
+	assertEqual(t, "compact auth-token param", cfg.HostedGenesisMicroVM.AuthTokenSSMParam, testMicroVMAuthTokenParam)
+	assertEqual(t, "compact image ref", cfg.HostedGenesisMicroVM.ImageRef, testMicroVMImageRef)
+	assertEqual(t, "compact network connector ref", cfg.HostedGenesisMicroVM.NetworkConnectorRef, testMicroVMEgressOne)
+	assertStringSliceEqual(t, "compact ingress refs", cfg.HostedGenesisMicroVM.IngressConnectorRefs, []string{testMicroVMIngressOne, testMicroVMIngressTwo})
+	assertStringSliceEqual(t, "compact egress refs", cfg.HostedGenesisMicroVM.EgressConnectorRefs, []string{testMicroVMEgressOne, testMicroVMEgressTwo})
+	assertEqual(t, "compact maximum duration", cfg.HostedGenesisMicroVM.MaximumDurationSeconds, int32(450))
+	assertEqual(t, "compact idle auto resume", cfg.HostedGenesisMicroVM.IdlePolicy.AutoResumeEnabled, true)
+	assertEqual(t, "compact idle max", cfg.HostedGenesisMicroVM.IdlePolicy.MaxIdleDurationSeconds, int32(240))
+	assertEqual(t, "compact idle suspended", cfg.HostedGenesisMicroVM.IdlePolicy.SuspendedDurationSeconds, int32(1200))
+}
+
+func TestLoad_HostedGenesisMicroVMCompactConfigFailsClosed(t *testing.T) {
+	t.Setenv(HostedGenesisMicroVMConfigJSONEnv, `{"v": 99, "ep": "https://controller.example/microvms"}`)
+	t.Setenv("HOSTED_GENESIS_MICROVM_ENABLED", "true")
+	t.Setenv("APPTHEORY_MICROVM_CONTROLLER_ENDPOINT", "https://legacy.example/microvms")
+	t.Setenv("HOSTED_GENESIS_MICROVM_AUTH_TOKEN_SSM_PARAM", "/legacy/token")
+	t.Setenv("APPTHEORY_MICROVM_IMAGE_REF", "legacy-image")
+	t.Setenv("APPTHEORY_MICROVM_EGRESS_NETWORK_CONNECTOR_REFS", "legacy-egress")
+
+	cfg := Load()
+
+	if !cfg.HostedGenesisMicroVM.Enabled {
+		t.Fatalf("present invalid compact config should leave MicroVM enabled so startup fails closed loudly")
+	}
+	if cfg.HostedGenesisMicroVM.Complete() {
+		t.Fatalf("invalid compact config must not fall back to legacy env: %#v", cfg.HostedGenesisMicroVM)
+	}
+	if cfg.HostedGenesisMicroVM.ControllerEndpoint != "" ||
+		cfg.HostedGenesisMicroVM.AuthTokenSSMParam != "" ||
+		cfg.HostedGenesisMicroVM.ImageRef != "" {
+		t.Fatalf("invalid compact config leaked legacy values: %#v", cfg.HostedGenesisMicroVM)
+	}
+	if !cfg.HostedGenesisMicroVM.IdlePolicy.Complete() {
+		t.Fatalf("invalid compact config should retain safe default idle policy for diagnostics: %#v", cfg.HostedGenesisMicroVM.IdlePolicy)
 	}
 }
 

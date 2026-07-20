@@ -13,6 +13,7 @@ import (
 
 	runtimemicrovm "github.com/theory-cloud/apptheory/runtime/microvm"
 
+	"github.com/equaltoai/lesser-host/internal/config"
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
 )
 
@@ -219,19 +220,89 @@ func TestH1_5_E2E_MaximumDurationSecondsWired(t *testing.T) {
 	}
 }
 
+func TestH1_5_E2E_CompactMicroVMEnvWiresAppTheoryRunRequest(t *testing.T) {
+	stub := newMaxDurationCapturingControllerServer(t, "stub-bearer")
+	controllerSrv := httptest.NewServer(stub.handler())
+	t.Cleanup(controllerSrv.Close)
+
+	t.Setenv(config.HostedGenesisMicroVMConfigJSONEnv, `{
+		"v": 1,
+		"ep": "`+controllerSrv.URL+`/microvms",
+		"ap": "/lesser-host/lab/hosted-genesis/microvm/auth-token",
+		"img": "arn:aws:lambda::microvm-image/hosted-genesis:compact",
+		"in": "arn:aws:lambda::network-connector/http-ingress:compact,arn:aws:lambda::network-connector/shell-ingress:compact",
+		"eg": "arn:aws:lambda::network-connector/internet-egress:compact",
+		"max": 450,
+		"idle": {"ar": true, "max": 240, "sus": 1200}
+	}`)
+	cfg := config.Load()
+
+	dispatcher := newHostedGenesisMicroVMDispatcher(context.Background(), cfg, stubSSMGetter{
+		param: cfg.HostedGenesisMicroVM.AuthTokenSSMParam,
+		token: stub.inner.token,
+	}.GetParameter, hostedGenesisMicroVMDispatcherOptions{})
+	if dispatcher == nil {
+		t.Fatalf("expected dispatcher from compact env config, got nil")
+	}
+	binding := hostedgenesis.MicroVMSessionBinding{
+		InstanceSlug:   "acme",
+		RegistrationID: "reg_compact",
+		AgentID:        "agent_compact",
+		ConversationID: "conv_compact_001",
+		TurnID:         "turn_1",
+	}
+	if _, err := dispatcher.DispatchMicroVMRun(context.Background(), "req_compact", binding); err != nil {
+		t.Fatalf("compact config dispatch failed: %v", err)
+	}
+
+	payload := stub.payload
+	if payload.ImageRef != "arn:aws:lambda::microvm-image/hosted-genesis:compact" {
+		t.Fatalf("compact config image ref did not reach AppTheory run request: %#v", payload)
+	}
+	if payload.NetworkConnectorRef != "arn:aws:lambda::network-connector/internet-egress:compact" {
+		t.Fatalf("compact config network connector did not reach AppTheory run request: %#v", payload)
+	}
+	if len(payload.IngressNetworkConnectorRefs) != 2 ||
+		payload.IngressNetworkConnectorRefs[0] != "arn:aws:lambda::network-connector/http-ingress:compact" ||
+		payload.IngressNetworkConnectorRefs[1] != "arn:aws:lambda::network-connector/shell-ingress:compact" {
+		t.Fatalf("compact config ingress refs did not reach AppTheory run request: %#v", payload)
+	}
+	if len(payload.EgressNetworkConnectorRefs) != 1 ||
+		payload.EgressNetworkConnectorRefs[0] != "arn:aws:lambda::network-connector/internet-egress:compact" {
+		t.Fatalf("compact config egress refs did not reach AppTheory run request: %#v", payload)
+	}
+	if payload.MaximumDurationSeconds != 450 {
+		t.Fatalf("compact config maximum duration did not reach AppTheory run request: %#v", payload)
+	}
+	if payload.IdlePolicy == nil ||
+		!payload.IdlePolicy.AutoResumeEnabled ||
+		payload.IdlePolicy.MaxIdleDurationSeconds != 240 ||
+		payload.IdlePolicy.SuspendedDurationSeconds != 1200 {
+		t.Fatalf("compact config idle policy did not reach AppTheory run request: %#v", payload.IdlePolicy)
+	}
+}
+
 // maxDurationCapturingControllerServer wraps the stub controller and captures
 // the lifetime policy passed in the POST /microvms run body so the E2E harness
 // can assert timeout-budget wiring without calling AWS.
 type maxDurationCapturingControllerServer struct {
-	inner    *stubControllerServer
-	captured *int32
-	idle     *runtimemicrovm.ProviderIdlePolicy
+	inner   *stubControllerServer
+	payload capturedMicroVMRunPayload
 }
 
 func newMaxDurationCapturingControllerServer(t *testing.T, token string) *maxDurationCapturingControllerServer {
 	t.Helper()
 	inner := newStubControllerServer(token)
-	return &maxDurationCapturingControllerServer{inner: inner, captured: new(int32)}
+	return &maxDurationCapturingControllerServer{inner: inner}
+}
+
+type capturedMicroVMRunPayload struct {
+	ImageRef                    string                             `json:"image_ref"`
+	NetworkConnectorRef         string                             `json:"network_connector_ref"`
+	IngressNetworkConnectorRefs []string                           `json:"ingress_network_connector_refs"`
+	EgressNetworkConnectorRefs  []string                           `json:"egress_network_connector_refs"`
+	MaximumDurationSeconds      int32                              `json:"maximum_duration_seconds"`
+	IdlePolicy                  *runtimemicrovm.ProviderIdlePolicy `json:"idle_policy"`
 }
 
 func (s *maxDurationCapturingControllerServer) handler() http.Handler {
@@ -243,13 +314,7 @@ func (s *maxDurationCapturingControllerServer) handler() http.Handler {
 			body, err := io.ReadAll(r.Body)
 			_ = r.Body.Close()
 			if err == nil {
-				var payload struct {
-					MaximumDurationSeconds int32                              `json:"maximum_duration_seconds"`
-					IdlePolicy             *runtimemicrovm.ProviderIdlePolicy `json:"idle_policy"`
-				}
-				_ = json.Unmarshal(body, &payload)
-				*s.captured = payload.MaximumDurationSeconds
-				s.idle = payload.IdlePolicy
+				_ = json.Unmarshal(body, &s.payload)
 			}
 			r.Body = io.NopCloser(bytes.NewReader(body))
 		}
@@ -257,10 +322,12 @@ func (s *maxDurationCapturingControllerServer) handler() http.Handler {
 	})
 }
 
-func (s *maxDurationCapturingControllerServer) capturedMaxDuration() int32 { return *s.captured }
+func (s *maxDurationCapturingControllerServer) capturedMaxDuration() int32 {
+	return s.payload.MaximumDurationSeconds
+}
 
 func (s *maxDurationCapturingControllerServer) capturedIdlePolicy() *runtimemicrovm.ProviderIdlePolicy {
-	return s.idle
+	return s.payload.IdlePolicy
 }
 
 // TestH1_5_E2E_HarnessConfigCompleteGuard is a lightweight guard that the
