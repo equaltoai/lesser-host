@@ -187,6 +187,11 @@ func (s *Server) handleSoulInstanceGetRegistrationMintConversation(ctx *apptheor
 	if appErr := rejectOversizeSoulMintInstanceConversation(convCtx.conv); appErr != nil {
 		return nil, appErr
 	}
+	observedSession, observedConversation, observeErr := s.observeHostedGenesisMicroVMOnRead(ctx, convCtx.session, convCtx.conv)
+	if observeErr != nil {
+		return nil, observeErr
+	}
+	convCtx.session, convCtx.conv = observedSession, observedConversation
 	if appErr := s.repairSoulInstanceHostedGenesisPublishedPendingOnRead(ctx, convCtx); appErr != nil {
 		return nil, appErr
 	}

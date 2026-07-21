@@ -16,6 +16,146 @@ import (
 	"github.com/equaltoai/lesser-host/internal/testutil"
 )
 
+// TestRegistrationWaitOnlyReadObservesTerminalMicroVMAndConvergesGuardedHostTruth
+// covers the Ptah registration route directly. Ordinary registration polling
+// must issue exactly one AppTheory controller GET reconciliation, never run or
+// queue work, and atomically converge both Host projections when the provider
+// session is terminal or maximum-duration-expired.
+func TestRegistrationWaitOnlyReadObservesTerminalMicroVMAndConvergesGuardedHostTruth(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		state   runtimemicrovm.LifecycleState
+		expired bool
+	}{
+		{name: "terminated", state: runtimemicrovm.StateTerminated},
+		{name: "failed", state: runtimemicrovm.StateFailed},
+		{name: "maximum duration expired", state: runtimemicrovm.StateStopped, expired: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runRegistrationWaitOnlyReadObservationCase(t, tc.state, tc.expired)
+		})
+	}
+}
+
+func runRegistrationWaitOnlyReadObservationCase(t *testing.T, state runtimemicrovm.LifecycleState, expired bool) {
+	t.Helper()
+	tdb := newMintConversationTestDB()
+	s := newMintConversationServer(tdb)
+	dispatcher := stubHostedGenesisMicroVMDispatcher(t, s)
+	dispatcher.observedState = state
+	dispatcher.expired = expired
+	reg := mintConversationHandleReg()
+
+	expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, soulInstanceBootstrapTestInstanceSlug)
+	stubMintConversationRegistration(t, tdb, reg)
+	stubSoulInstanceBootstrapDomainAndInstance(t, tdb, reg.DomainNormalized, soulInstanceBootstrapTestInstanceSlug)
+	staleSession, staleConversation, failedSession, failedConversation := registrationWaitObservationFixtures(t, reg)
+
+	// Registration handler rows, CompletionWriter guarded preflight rows, then
+	// post-transaction reload rows.
+	stubSoulInstanceRecoveryConversation(t, tdb, staleConversation)
+	stubSoulInstanceRecoverySession(t, tdb, staleSession)
+	stubSoulInstanceRecoverySession(t, tdb, staleSession)
+	stubSoulInstanceRecoveryConversation(t, tdb, staleConversation)
+	stubSoulInstanceRecoverySession(t, tdb, failedSession)
+	stubSoulInstanceRecoveryConversation(t, tdb, failedConversation)
+	expectWaitObservationFailureTransaction(t, tdb, staleSession.Version, staleSession.LatestTurnID)
+
+	resp, err := s.handleSoulInstanceGetRegistrationMintConversation(newSoulInstanceBootstrapContext(
+		map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
+		nil,
+		map[string]string{"id": reg.ID, "conversationId": mintConversationTestConversationID},
+	))
+	if err != nil {
+		t.Fatalf("registration wait-only read: %v", err)
+	}
+	if resp.Status != http.StatusOK {
+		t.Fatalf("expected 200 registration projection, got %#v", resp)
+	}
+	if dispatcher.reconcileCalls != 1 || dispatcher.calls != 0 || dispatcher.queueCalls != 0 {
+		t.Fatalf("registration poll must GET exactly once and never invoke/run/queue/nudge: reconcile=%d dispatch=%d queue=%d", dispatcher.reconcileCalls, dispatcher.calls, dispatcher.queueCalls)
+	}
+	var out hostedGenesisConversationResponse
+	if err := json.Unmarshal(resp.Body, &out); err != nil {
+		t.Fatalf("decode registration response: %v", err)
+	}
+	if out.Conversation.Status != models.SoulMintConversationStatusFailed || out.Conversation.Failure == nil || out.Conversation.Failure.Code != hostedGenesisFailureMicroVMUnavailable || !out.Conversation.Failure.Retryable {
+		t.Fatalf("registration route did not converge retryable typed Host truth: %#v", out.Conversation)
+	}
+	tdb.db.AssertExpectations(t)
+	tx, ok := tdb.db.TransactWriteBuilder.(*ttmocks.MockTransactionBuilder)
+	if !ok || !tx.AssertExpectations(t) {
+		t.Fatal("registration-route guarded observation transaction expectations were not satisfied")
+	}
+}
+
+func TestRegistrationWaitOnlyReadLeavesLiveMicroVMStateUnchanged(t *testing.T) {
+	tdb := newMintConversationTestDB()
+	s := newMintConversationServer(tdb)
+	dispatcher := stubHostedGenesisMicroVMDispatcher(t, s)
+	dispatcher.observedState = runtimemicrovm.StateRunning
+	reg := mintConversationHandleReg()
+
+	expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, soulInstanceBootstrapTestInstanceSlug)
+	stubMintConversationRegistration(t, tdb, reg)
+	stubSoulInstanceBootstrapDomainAndInstance(t, tdb, reg.DomainNormalized, soulInstanceBootstrapTestInstanceSlug)
+	staleSession, staleConversation, _, _ := registrationWaitObservationFixtures(t, reg)
+	stubSoulInstanceRecoveryConversation(t, tdb, staleConversation)
+	stubSoulInstanceRecoverySession(t, tdb, staleSession)
+
+	resp, err := s.handleSoulInstanceGetRegistrationMintConversation(newSoulInstanceBootstrapContext(
+		map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
+		nil,
+		map[string]string{"id": reg.ID, "conversationId": mintConversationTestConversationID},
+	))
+	if err != nil {
+		t.Fatalf("live registration wait-only read: %v", err)
+	}
+	if dispatcher.reconcileCalls != 1 || dispatcher.calls != 0 || dispatcher.queueCalls != 0 {
+		t.Fatalf("live registration poll must GET exactly once and never invoke/run/queue/nudge: reconcile=%d dispatch=%d queue=%d", dispatcher.reconcileCalls, dispatcher.calls, dispatcher.queueCalls)
+	}
+	var out hostedGenesisConversationResponse
+	if err := json.Unmarshal(resp.Body, &out); err != nil {
+		t.Fatalf("decode live registration response: %v", err)
+	}
+	if out.Conversation.Status != models.SoulMintConversationStatusInProgress || out.Conversation.Failure != nil {
+		t.Fatalf("live provider observation must leave Host truth unchanged: %#v", out.Conversation)
+	}
+	tdb.db.AssertNotCalled(t, "TransactWrite", mock.Anything, mock.Anything)
+}
+
+func registrationWaitObservationFixtures(t *testing.T, reg models.SoulAgentRegistration) (models.HostedGenesisSession, models.SoulAgentMintConversation, models.HostedGenesisSession, models.SoulAgentMintConversation) {
+	t.Helper()
+	staleSession := hostedGenesisH1D3RecoverySessionFixture(t, reg, hostedgenesis.StatusInProgress)
+	staleConversation := models.SoulAgentMintConversation{
+		AgentID:        reg.AgentID,
+		ConversationID: mintConversationTestConversationID,
+		Model:          "anthropic:claude-sonnet-4-6",
+		Messages:       encodeMintConversationBlob(`[{"role":"user","content":"private pending turn"}]`),
+		Status:         models.SoulMintConversationStatusInProgress,
+		LatestTurnID:   "turn-stuck",
+		CreatedAt:      time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC),
+	}
+	failedSession := staleSession
+	failedSession.Status = string(hostedgenesis.StatusFailed)
+	failedSession.Version++
+	failedSession.Failure = &hostedgenesis.Failure{
+		Code:      hostedgenesis.FailureCodeMicroVMUnavailable,
+		Message:   hostedgenesis.FailureMessage(hostedgenesis.FailureCodeMicroVMUnavailable),
+		Retryable: true,
+		Recovery: hostedgenesis.Recovery{
+			Action:            hostedgenesis.RecoveryActionRetrySameStep,
+			MaxAttempts:       3,
+			RetryAfterSeconds: 5,
+			Reason:            string(hostedgenesis.FailureCodeMicroVMUnavailable),
+		},
+	}
+	failedConversation := staleConversation
+	failedConversation.Status = models.SoulMintConversationStatusFailed
+	failedConversation.StatusReason = string(hostedgenesis.FailureCodeMicroVMUnavailable)
+	return staleSession, staleConversation, failedSession, failedConversation
+}
+
 // TestWaitOnlyReadObservesTerminalMicroVMAndConvergesGuardedHostTruth proves
 // ordinary client polling remains wait-only: it issues AppTheory's canonical
 // controller GET reconciliation, never dispatches/nudges a turn, and atomically
