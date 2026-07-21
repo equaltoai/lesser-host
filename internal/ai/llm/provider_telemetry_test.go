@@ -114,6 +114,11 @@ func TestDeclarationExtractionTelemetryHasPhaseBoundariesAndNoRawPayload(t *test
 		SchemaVersion: contract.SchemaVersion, GuidanceVersion: contract.GuidanceVersion,
 		Messages: []MintConversationMessage{{Role: "user", Content: privateValue}},
 	}
+	payload, err := json.Marshal(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payloadHash := fmt.Sprintf("%x", sha256.Sum256(payload))
 	var events []ProviderTelemetryEvent
 	if _, _, err := MintConversationDeclarationsOpenAIWithTelemetry(t.Context(), "private-key", "openai:gpt-test", input, func(event ProviderTelemetryEvent) { events = append(events, event) }); err != nil {
 		t.Fatalf("declaration extraction: %v", err)
@@ -126,6 +131,7 @@ func TestDeclarationExtractionTelemetryHasPhaseBoundariesAndNoRawPayload(t *test
 	if events[0].SchemaName != providerTelemetryDeclarationSchemaName {
 		t.Fatalf("OpenAI request telemetry must identify the strict schema: %#v", events[0])
 	}
+	assertProviderRequestPayloadMetadata(t, events[0], len(payload), payloadHash)
 	assertProviderTelemetryEventsRedacted(t, events, privateValue, "private-key")
 
 	oldAnthropicBase := os.Getenv("ANTHROPIC_BASE_URL")
@@ -147,7 +153,15 @@ func TestDeclarationExtractionTelemetryHasPhaseBoundariesAndNoRawPayload(t *test
 	if events[0].ToolName != providerTelemetryDeclarationSchemaName {
 		t.Fatalf("Anthropic request telemetry must identify the strict tool: %#v", events[0])
 	}
+	assertProviderRequestPayloadMetadata(t, events[0], len(payload), payloadHash)
 	assertProviderTelemetryEventsRedacted(t, events, privateValue, "private-key")
+}
+
+func assertProviderRequestPayloadMetadata(t *testing.T, event ProviderTelemetryEvent, bytes int, hash string) {
+	t.Helper()
+	if event.PayloadBytes != bytes || event.PayloadSHA256 != hash {
+		t.Fatalf("unexpected content-free request payload metadata: got %#v want bytes=%d hash=%s", event, bytes, hash)
+	}
 }
 
 func assertDeterministicProviderTelemetry(t *testing.T, events []ProviderTelemetryEvent, output string) {

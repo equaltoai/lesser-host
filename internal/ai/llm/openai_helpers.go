@@ -149,7 +149,8 @@ func openAIJSONSchemaBatch[Prompt any, Parsed any, Out any](
 		recorder.emit(ProviderTelemetryEvent{EventType: "provider_call_failed", LastEvent: true, FailureClass: ProviderFailureClass(err)})
 		return zero, models.AIUsage{}, err
 	}
-	recorder.emit(ProviderTelemetryEvent{EventType: "request_start", SchemaName: cfg.SchemaName})
+	payloadBytes, payloadHash := providerPayloadMetadata(payload)
+	recorder.emit(ProviderTelemetryEvent{EventType: "request_start", PayloadBytes: payloadBytes, PayloadSHA256: payloadHash, SchemaName: cfg.SchemaName})
 
 	schemaParam := openai.ResponseFormatJSONSchemaJSONSchemaParam{
 		Name:        cfg.SchemaName,
@@ -160,7 +161,7 @@ func openAIJSONSchemaBatch[Prompt any, Parsed any, Out any](
 
 	chat, start, err := openAIJSONSchemaChatCompletion(ctx, apiKey, model, cfg.SystemPrompt, payload, schemaParam, cfg.Temperature)
 	if err != nil {
-		recorder.emit(ProviderTelemetryEvent{EventType: "provider_call_failed", LastEvent: true, FailureClass: ProviderFailureClass(err), SchemaName: cfg.SchemaName})
+		recorder.emit(ProviderTelemetryEvent{EventType: "provider_call_failed", LastEvent: true, FailureClass: ProviderFailureClass(err), PayloadBytes: payloadBytes, PayloadSHA256: payloadHash, SchemaName: cfg.SchemaName})
 		return zero, models.AIUsage{}, err
 	}
 	usage := openAIUsageFromChat(chat, start)

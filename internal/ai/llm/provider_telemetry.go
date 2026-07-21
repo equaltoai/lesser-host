@@ -30,6 +30,8 @@ type ProviderTelemetryEvent struct {
 	OutputBytes   int    `json:"output_bytes,omitempty"`
 	OutputRunes   int    `json:"output_runes,omitempty"`
 	OutputSHA256  string `json:"output_sha256,omitempty"`
+	PayloadBytes  int    `json:"payload_bytes,omitempty"`
+	PayloadSHA256 string `json:"payload_sha256,omitempty"`
 	InputTokens   int64  `json:"input_tokens,omitempty"`
 	OutputTokens  int64  `json:"output_tokens,omitempty"`
 	TotalTokens   int64  `json:"total_tokens,omitempty"`

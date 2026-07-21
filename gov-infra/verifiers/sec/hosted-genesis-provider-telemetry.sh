@@ -101,16 +101,16 @@ reject_pattern "${workload_runner}" 'func[[:space:]]*[(]string[)][[:space:]]*[{]
 
 # The seam exposes bounded metadata only. The workload logger may enrich it with
 # tenant/correlation identities but may never add raw provider material.
-for field in Sequence FirstSDKEvent ElapsedMS IdleMS OutputBytes OutputSHA256 InputTokens OutputTokens StopReason OutputCount; do
+for field in Sequence FirstSDKEvent ElapsedMS IdleMS OutputBytes OutputSHA256 PayloadBytes PayloadSHA256 InputTokens OutputTokens StopReason OutputCount; do
   require_pattern "${llm_telemetry}" "${field}[[:space:]]" "provider event records ${field} metadata"
 done
 require_pattern "${llm_telemetry}" 'func[[:space:]]+[(]r [+*]providerTelemetryRecorder[)][[:space:]]+emitSDK' 'SDK events use the first-event/sequence recorder'
-require_pattern "${llm_telemetry}" 'sha256[.]Sum256' 'output identities use SHA256 metadata'
+require_pattern "${llm_telemetry}" 'sha256[.]Sum256' 'output and declaration-request payload identities use SHA256 metadata'
 require_pattern "${workload_telemetry}" 'provider_call_heartbeat' 'periodic provider heartbeat is structured'
 require_pattern "${workload_telemetry}" 'last_sdk_event_at' 'heartbeat records last SDK-event time'
 require_pattern "${workload_telemetry}" 'output_sha256' 'heartbeat records output identity without output content'
-reject_pattern "${llm_telemetry}" 'PayloadBytes|PayloadSHA256|payload_bytes|payload_sha256' 'provider events cannot fingerprint prompt/request payloads'
-reject_pattern "${workload_telemetry}" 'payload_bytes|payload_sha256' 'workload logs cannot fingerprint prompt/request payloads'
+require_pattern "${workload_telemetry}" 'payload_bytes' 'declaration request heartbeat records payload size without content'
+require_pattern "${workload_telemetry}" 'payload_sha256' 'declaration request heartbeat records payload identity without content'
 
 telemetry_sources=("${llm_telemetry}" "${workload_telemetry}" "${openai_helpers}" "${anthropic_helpers}")
 for path in "${telemetry_sources[@]}"; do
@@ -151,6 +151,7 @@ echo "PASS: session and conversation convergence both guard the exact turn"
 # and terminal/failed/max-duration lifecycle reconciliation.
 require_pattern "${llm_tests}" 'TestProviderStreamTelemetryOpenAIAndAnthropicIsPerEventAndRedacted' 'both SDK streams have deterministic redaction telemetry coverage'
 require_pattern "${llm_tests}" 'TestDeclarationExtractionTelemetryHasPhaseBoundariesAndNoRawPayload' 'declaration telemetry has deterministic redaction coverage'
+require_pattern "${llm_tests}" 'assertProviderRequestPayloadMetadata' 'declaration request size/hash metadata is deterministic'
 require_pattern "${workload_tests}" 'TestHungProviderHeartbeatsThenPersistsTypedFailureBeforeMicroVMEnvelope' 'hung provider calls heartbeat then durably fail'
 require_pattern "${workload_tests}" 'assistant_stream timeout' 'durable provider failure test requires a content-free typed message'
 require_pattern "${workload_tests}" 'TestDeclarationParseFailureTelemetryIsCorrelatedRedactedAndDurable' 'declaration failure telemetry stays correlated and durable'

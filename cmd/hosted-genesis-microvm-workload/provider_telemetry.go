@@ -186,6 +186,8 @@ func (t *providerCallTelemetry) log(message string, event llm.ProviderTelemetryE
 		slog.Int("output_bytes", event.OutputBytes),
 		slog.Int("output_runes", event.OutputRunes),
 		slog.String("output_sha256", strings.TrimSpace(event.OutputSHA256)),
+		slog.Int("payload_bytes", event.PayloadBytes),
+		slog.String("payload_sha256", strings.TrimSpace(event.PayloadSHA256)),
 		slog.Int64("input_tokens", event.InputTokens),
 		slog.Int64("output_tokens", event.OutputTokens),
 		slog.Int64("total_tokens", event.TotalTokens),

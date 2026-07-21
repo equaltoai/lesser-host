@@ -321,7 +321,8 @@ func anthropicToolBatch[Prompt any, Parsed any, Out any](
 		recorder.emit(ProviderTelemetryEvent{EventType: "provider_call_failed", LastEvent: true, FailureClass: ProviderFailureClass(err)})
 		return zero, models.AIUsage{}, err
 	}
-	recorder.emit(ProviderTelemetryEvent{EventType: "request_start", ToolName: cfg.ToolName})
+	payloadBytes, payloadHash := providerPayloadMetadata(payload)
+	recorder.emit(ProviderTelemetryEvent{EventType: "request_start", PayloadBytes: payloadBytes, PayloadSHA256: payloadHash, ToolName: cfg.ToolName})
 
 	toolName := strings.TrimSpace(cfg.ToolName)
 	if toolName == "" {
@@ -355,7 +356,7 @@ func anthropicToolBatch[Prompt any, Parsed any, Out any](
 		Temperature: anthropic.Float(cfg.Temperature),
 	})
 	if err != nil {
-		recorder.emit(ProviderTelemetryEvent{EventType: "provider_call_failed", LastEvent: true, FailureClass: ProviderFailureClass(err), ToolName: toolName})
+		recorder.emit(ProviderTelemetryEvent{EventType: "provider_call_failed", LastEvent: true, FailureClass: ProviderFailureClass(err), PayloadBytes: payloadBytes, PayloadSHA256: payloadHash, ToolName: toolName})
 		return zero, models.AIUsage{}, err
 	}
 	usage := anthropicUsageFromMessage(message, start)
