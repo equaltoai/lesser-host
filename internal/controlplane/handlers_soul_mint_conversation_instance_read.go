@@ -418,6 +418,13 @@ func (s *Server) handleSoulInstanceGetMintConversation(ctx *apptheory.Context) (
 	if convErr == nil && conv != nil {
 		decodeMintConversationFields(conv)
 	}
+	promotion, promotionErr := s.loadSoulAgentPromotionForPublishedConvergence(ctx.Context(), reqCtx.agentIDHex)
+	if promotionErr != nil {
+		return nil, soulMintInstanceReadErrorFromAppError(promotionErr)
+	}
+	if _, convergeErr := s.convergeHostedGenesisPublished(ctx.Context(), session, conv, reqCtx.identity, promotion); convergeErr != nil {
+		return nil, soulMintInstanceReadErrorFromAppError(convergeErr)
+	}
 
 	if appErr := rejectOversizeSoulMintInstanceConversation(conv); appErr != nil {
 		s.logSoulMintInstanceReadAccess(ctx, reqCtx.key, reqCtx.agentIDHex, conversationID, soulMintInstanceReadRouteSingle, "error", appErr.StatusCode, 0, start)

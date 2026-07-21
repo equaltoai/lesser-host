@@ -250,7 +250,8 @@ func updateSoulAgentPromotionForConversation(promotion *models.SoulAgentPromotio
 	stage := models.SoulAgentPromotionStageReviewing
 	reviewStatus := models.SoulAgentPromotionReviewStatusConversationInProgress
 	readinessStatus := models.SoulAgentPromotionReadinessReadyForConversation
-	if strings.EqualFold(strings.TrimSpace(conversationStatus), models.SoulMintConversationStatusCompleted) {
+	if strings.EqualFold(strings.TrimSpace(conversationStatus), models.SoulMintConversationStatusCompleted) ||
+		strings.EqualFold(strings.TrimSpace(conversationStatus), models.SoulMintConversationStatusPublished) {
 		stage = models.SoulAgentPromotionStageReadyToFinalize
 		reviewStatus = models.SoulAgentPromotionReviewStatusDraftReady
 		readinessStatus = models.SoulAgentPromotionReadinessReadyForFinalize
@@ -319,10 +320,11 @@ func (s *Server) buildSoulAgentPromotionView(promotion *models.SoulAgentPromotio
 		MintOperationCreated:         strings.TrimSpace(promotion.MintOperationID) != "",
 		MintExecuted:                 strings.EqualFold(strings.TrimSpace(promotion.MintOperationStatus), models.SoulOperationStatusExecuted),
 		ConversationStarted:          strings.TrimSpace(promotion.LatestConversationID) != "",
-		ConversationCompleted:        strings.EqualFold(strings.TrimSpace(promotion.LatestConversationStatus), models.SoulMintConversationStatusCompleted),
-		ReviewDraftReady:             strings.TrimSpace(promotion.LatestReviewSHA256) != "",
-		ReadyForFinalize:             strings.EqualFold(strings.TrimSpace(promotion.ReadinessStatus), models.SoulAgentPromotionReadinessReadyForFinalize) || promotion.PublishedVersion > 0,
-		Graduated:                    promotion.PublishedVersion > 0 || strings.EqualFold(strings.TrimSpace(promotion.Stage), models.SoulAgentPromotionStageGraduated),
+		ConversationCompleted: strings.EqualFold(strings.TrimSpace(promotion.LatestConversationStatus), models.SoulMintConversationStatusCompleted) ||
+			strings.EqualFold(strings.TrimSpace(promotion.LatestConversationStatus), models.SoulMintConversationStatusPublished),
+		ReviewDraftReady: strings.TrimSpace(promotion.LatestReviewSHA256) != "",
+		ReadyForFinalize: strings.EqualFold(strings.TrimSpace(promotion.ReadinessStatus), models.SoulAgentPromotionReadinessReadyForFinalize) || promotion.PublishedVersion > 0,
+		Graduated:        promotion.PublishedVersion > 0 || strings.EqualFold(strings.TrimSpace(promotion.Stage), models.SoulAgentPromotionStageGraduated),
 	}
 	anchorState := soulAgentPromotionAnchorState(promotion)
 	onchainStatus := soulAgentPromotionOnchainBindingStatus(promotion)

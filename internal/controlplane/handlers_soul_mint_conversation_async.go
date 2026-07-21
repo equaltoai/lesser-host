@@ -786,7 +786,7 @@ func hostedGenesisStatusRequiresWait(status hostedgenesis.Status) bool {
 
 func hostedGenesisStatusAcceptsIdempotentReplay(status hostedgenesis.Status) bool {
 	switch status {
-	case hostedgenesis.StatusDeclarationExtractionPending, hostedgenesis.StatusDeclarationReady:
+	case hostedgenesis.StatusDeclarationExtractionPending, hostedgenesis.StatusDeclarationReady, hostedgenesis.StatusPublished:
 		return true
 	default:
 		return false

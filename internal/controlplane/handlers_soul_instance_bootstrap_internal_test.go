@@ -2302,7 +2302,11 @@ func assertSoulInstanceHostedInstanceTrustFinalizePreflight(t *testing.T, out so
 
 func assertSoulInstanceHostedInstanceTrustFinalizeResponse(t *testing.T, out soulMintConversationFinalizeResponse) {
 	t.Helper()
-	if out.Agent.AuthorityModel != models.SoulAuthorityModelInstanceTrust ||
+	if out.Status != string(hostedgenesis.StatusPublished) ||
+		out.RegistrationID != "reg-hosted" ||
+		out.ConversationID != mintConversationTestConversationID ||
+		out.PublishedAt == "" ||
+		out.Agent.AuthorityModel != models.SoulAuthorityModelInstanceTrust ||
 		out.Agent.AnchorState != models.SoulAnchorStateHostedOffchain ||
 		out.Agent.Wallet != "" ||
 		out.Agent.PrincipalAddress != "" ||
@@ -2310,6 +2314,7 @@ func assertSoulInstanceHostedInstanceTrustFinalizeResponse(t *testing.T, out sou
 		out.Publication.AuthorityModel != models.SoulAuthorityModelInstanceTrust ||
 		out.Publication.AnchorState != models.SoulAnchorStateHostedOffchain ||
 		out.Promotion == nil ||
+		out.Promotion.LatestConversationStatus != models.SoulMintConversationStatusPublished ||
 		out.Promotion.AuthorityModel != models.SoulAuthorityModelInstanceTrust {
 		t.Fatalf("unexpected hosted finalize response: %#v", out)
 	}
@@ -2376,10 +2381,21 @@ func expectSoulInstanceFinalizePublishWrites(t *testing.T, tdb *mintConversation
 	qVersion.On("First", mock.AnythingOfType("*models.SoulAgentVersion")).Return(theoryErrors.ErrItemNotFound).Once()
 	tb := new(ttmocks.MockTransactionBuilder)
 	tdb.db.TransactWriteBuilder = tb
-	tdb.db.On("TransactWrite", mock.Anything, mock.Anything).Return(nil).Once()
+	tdb.db.On("TransactWrite", mock.Anything, mock.Anything).Return(nil).Times(3)
+	tb.On("UpdateWithBuilder", mock.MatchedBy(func(session *models.HostedGenesisSession) bool {
+		return session != nil &&
+			hostedgenesis.NormalizeStatus(session.Status) == hostedgenesis.StatusDeclarationReady &&
+			session.Publication != nil && session.Publication.PublishedAt.IsZero()
+	}), mock.Anything, mock.Anything).Return(tb).Once()
+	tb.On("UpdateWithBuilder", mock.MatchedBy(func(session *models.HostedGenesisSession) bool {
+		return session != nil &&
+			hostedgenesis.NormalizeStatus(session.Status) == hostedgenesis.StatusPublished &&
+			session.Publication != nil && !session.Publication.PublishedAt.IsZero()
+	}), mock.Anything, mock.Anything).Return(tb).Once()
+	tb.On("UpdateWithBuilder", mock.AnythingOfType("*models.SoulAgentMintConversation"), mock.Anything, mock.Anything).Return(tb).Once()
 	tb.On("ConditionCheck", mock.AnythingOfType("*models.SoulAgentIdentity"), mock.Anything).Return(tb).Once()
 	tb.On("Create", mock.AnythingOfType("*models.SoulAgentVersion"), mock.Anything).Return(tb).Once()
-	tb.On("Execute").Return(nil).Once()
+	tb.On("Execute").Return(nil).Times(3)
 	tdb.qIdentity.On("Update", mock.Anything, mock.Anything).Return(nil).Maybe()
 }
 

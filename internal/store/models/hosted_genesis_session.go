@@ -53,6 +53,7 @@ type HostedGenesisSession struct {
 	MicroVMLifecycleRef    *hostedgenesis.MicroVMLifecycleRef `theorydb:"attr:microVmLifecycleRef" json:"-"`
 
 	DeclarationCheckpoint *hostedgenesis.DeclarationCheckpoint `theorydb:"attr:declarationCheckpoint" json:"declaration_checkpoint,omitempty"`
+	Publication           *hostedgenesis.PublicationCheckpoint `theorydb:"attr:publication" json:"publication,omitempty"`
 	Failure               *hostedgenesis.Failure               `theorydb:"attr:failure" json:"failure,omitempty"`
 	TraceIDs              *hostedgenesis.TraceIDs              `theorydb:"attr:traceIds" json:"trace_ids,omitempty"`
 	VMCheckpoint          *hostedgenesis.VMCheckpointMetadata  `theorydb:"attr:vmCheckpoint" json:"vm_checkpoint,omitempty"`
@@ -150,7 +151,18 @@ func (s *HostedGenesisSession) validateAndUpdateKeys() error {
 	if !hostedgenesis.IsAllowedStatus(hostedgenesis.Status(s.Status)) {
 		return fmt.Errorf("status is invalid")
 	}
-	if s.Status == string(hostedgenesis.StatusDeclarationReady) {
+	if err := s.validateDurableStatusContract(); err != nil {
+		return err
+	}
+	if err := s.validateTurnLedger(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *HostedGenesisSession) validateDurableStatusContract() error {
+	switch hostedgenesis.Status(s.Status) {
+	case hostedgenesis.StatusDeclarationReady:
 		if err := hostedgenesis.CanPublish(hostedgenesis.PublishGateInput{
 			Status:                hostedgenesis.Status(s.Status),
 			RegistrationID:        s.RegistrationID,
@@ -160,19 +172,43 @@ func (s *HostedGenesisSession) validateAndUpdateKeys() error {
 		}); err != nil {
 			return err
 		}
-	}
-	if s.Status == string(hostedgenesis.StatusFailed) {
+		if s.Publication != nil {
+			if err := s.Publication.ValidatePrepared(s.RegistrationID, s.ConversationID, s.AgentID); err != nil {
+				return err
+			}
+		}
+		return nil
+	case hostedgenesis.StatusPublished:
+		if s.Failure != nil {
+			return hostedgenesis.ErrInvalidPublicationCheckpoint
+		}
+		if err := hostedgenesis.CanPublish(hostedgenesis.PublishGateInput{
+			Status:                hostedgenesis.StatusDeclarationReady,
+			RegistrationID:        s.RegistrationID,
+			ConversationID:        s.ConversationID,
+			AgentID:               s.AgentID,
+			DeclarationCheckpoint: s.DeclarationCheckpoint,
+		}); err != nil {
+			return err
+		}
+		if s.Publication == nil {
+			return hostedgenesis.ErrInvalidPublicationCheckpoint
+		}
+		if err := s.Publication.ValidatePublished(s.RegistrationID, s.ConversationID, s.AgentID); err != nil {
+			return err
+		}
+		return nil
+	case hostedgenesis.StatusFailed:
 		if s.Failure == nil {
 			return hostedgenesis.ErrInvalidFailureRecovery
 		}
 		if err := s.Failure.Validate(); err != nil {
 			return err
 		}
+		return nil
+	default:
+		return nil
 	}
-	if err := s.validateTurnLedger(); err != nil {
-		return err
-	}
-	return nil
 }
 
 func (s *HostedGenesisSession) validateTurnLedger() error {
@@ -207,6 +243,7 @@ func (s *HostedGenesisSession) ToProjectionInput() hostedgenesis.ProjectionInput
 		MessageCount:          s.MessageCount,
 		DeclarationCheckpoint: s.DeclarationCheckpoint,
 		Failure:               s.Failure,
+		Publication:           s.Publication,
 		RequestID:             s.RequestID,
 		TraceIDs:              s.TraceIDs,
 		CreatedAt:             s.CreatedAt,
@@ -293,6 +330,7 @@ func HostedGenesisSessionUpdateFields() []string {
 		"MicroVMExecutionID",
 		"MicroVMLifecycleRef",
 		"DeclarationCheckpoint",
+		"Publication",
 		"Failure",
 		"TraceIDs",
 		"VMCheckpoint",

@@ -16,6 +16,7 @@ const (
 	SoulMintConversationStatusAssistantTurnReady           = "assistant_turn_ready"
 	SoulMintConversationStatusDeclarationExtractionPending = "declaration_extraction_pending"
 	SoulMintConversationStatusDeclarationReady             = "declaration_ready"
+	SoulMintConversationStatusPublished                    = "published"
 	SoulMintConversationStatusFailed                       = "failed"
 
 	// SoulMintConversationStatusCompleted is the legacy terminal status stored by
@@ -137,6 +138,7 @@ func SoulMintConversationAllowedStatuses() []string {
 		SoulMintConversationStatusAssistantTurnReady,
 		SoulMintConversationStatusDeclarationExtractionPending,
 		SoulMintConversationStatusDeclarationReady,
+		SoulMintConversationStatusPublished,
 		SoulMintConversationStatusFailed,
 		SoulMintConversationStatusCompleted,
 	}

@@ -166,6 +166,38 @@ func TestStore_FailHostedGenesisSessionAndConversationUsesOneGuardedTransaction(
 	tx.AssertExpectations(t)
 }
 
+func TestStore_PublishHostedGenesisSessionAndConversationUsesOneGuardedTransaction(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := ttmocks.NewMockExtendedDBStrict()
+	tx := new(ttmocks.MockTransactionBuilder)
+	db.TransactWriteBuilder = tx
+	db.On("TransactWrite", ctx, mock.Anything).Return(nil).Once()
+	tx.UpdateBuilder = &captureHostedGenesisUpdateBuilder{}
+	tx.On("UpdateWithBuilder", mock.MatchedBy(func(item any) bool {
+		session, ok := item.(*models.HostedGenesisSession)
+		return ok && session.PK == validStoreHostedGenesisSessionPK && session.Status == string(hostedgenesis.StatusPublished)
+	}), mock.Anything, mock.MatchedBy(func(conditions []core.TransactCondition) bool {
+		return hasConditionKind(conditions, core.TransactConditionKindPrimaryKeyExists) &&
+			hasVersionCondition(conditions, 7) &&
+			hasStatusCondition(conditions, hostedgenesis.StatusDeclarationReady)
+	})).Return(tx).Once()
+	tx.On("UpdateWithBuilder", mock.MatchedBy(func(item any) bool {
+		conversation, ok := item.(*models.SoulAgentMintConversation)
+		return ok && conversation.Status == models.SoulMintConversationStatusPublished
+	}), mock.Anything, mock.MatchedBy(func(conditions []core.TransactCondition) bool {
+		return hasConditionKind(conditions, core.TransactConditionKindPrimaryKeyExists) &&
+			hasStatusCondition(conditions, hostedgenesis.StatusDeclarationReady)
+	})).Return(tx).Once()
+
+	session, conversation := validStoreHostedGenesisPublication()
+	require.NoError(t, New(db).PublishHostedGenesisSessionAndConversation(ctx, session, 7, hostedgenesis.StatusDeclarationReady, conversation))
+
+	db.AssertExpectations(t)
+	tx.AssertExpectations(t)
+}
+
 func TestStore_FailHostedGenesisSessionAndConversationPropagatesTransactionFailure(t *testing.T) {
 	t.Parallel()
 
@@ -213,6 +245,34 @@ func validStoreHostedGenesisFailure() (*models.HostedGenesisSession, *models.Sou
 		Model:          "deterministic",
 		Status:         models.SoulMintConversationStatusFailed,
 		StatusReason:   "microvm_unavailable",
+		RequestID:      session.RequestID,
+		CreatedAt:      session.CreatedAt,
+		UpdatedAt:      now,
+		CompletedAt:    now,
+	}
+	return session, conversation
+}
+
+func validStoreHostedGenesisPublication() (*models.HostedGenesisSession, *models.SoulAgentMintConversation) {
+	now := time.Date(2026, 6, 24, 12, 5, 0, 0, time.UTC)
+	session := validStoreHostedGenesisSession()
+	checkpoint := validStoreDeclarationCheckpoint()
+	session.Status = string(hostedgenesis.StatusPublished)
+	session.DeclarationCheckpoint = &checkpoint
+	session.Publication = &hostedgenesis.PublicationCheckpoint{
+		RegistrationID:       session.RegistrationID,
+		ConversationID:       session.ConversationID,
+		AgentID:              session.AgentID,
+		Version:              1,
+		RegistrationSHA256:   strings.Repeat("b", 64),
+		RegistrationIssuedAt: checkpoint.ProducedAt,
+		PublishedAt:          now,
+	}
+	conversation := &models.SoulAgentMintConversation{
+		AgentID:        session.AgentID,
+		ConversationID: session.ConversationID,
+		Model:          "deterministic",
+		Status:         models.SoulMintConversationStatusPublished,
 		RequestID:      session.RequestID,
 		CreatedAt:      session.CreatedAt,
 		UpdatedAt:      now,
