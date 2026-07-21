@@ -57,6 +57,12 @@ const (
 
 // MintConversationDeclarationsOpenAI extracts declarations using OpenAI JSON schema output.
 func MintConversationDeclarationsOpenAI(ctx context.Context, apiKey string, modelSet string, in MintConversationDeclarationsInput) (MintConversationDeclarationsDraft, models.AIUsage, error) {
+	return MintConversationDeclarationsOpenAIWithTelemetry(ctx, apiKey, modelSet, in, nil)
+}
+
+// MintConversationDeclarationsOpenAIWithTelemetry performs declaration
+// extraction while emitting content-free provider phase metadata.
+func MintConversationDeclarationsOpenAIWithTelemetry(ctx context.Context, apiKey string, modelSet string, in MintConversationDeclarationsInput, telemetry ProviderTelemetrySink) (MintConversationDeclarationsDraft, models.AIUsage, error) {
 	cfg, err := mintConversationDeclarationsConfig(in)
 	if err != nil {
 		return MintConversationDeclarationsDraft{}, models.AIUsage{}, err
@@ -72,6 +78,7 @@ func MintConversationDeclarationsOpenAI(ctx context.Context, apiKey string, mode
 			Schema:            cfg.schema,
 			SystemPrompt:      cfg.systemPrompt,
 			Temperature:       0.2,
+			Telemetry:         telemetry,
 		},
 		parseMintConversationDeclarationsDraft,
 		normalizeMintConversationDeclarationsDraft,
@@ -80,6 +87,12 @@ func MintConversationDeclarationsOpenAI(ctx context.Context, apiKey string, mode
 
 // MintConversationDeclarationsAnthropic extracts declarations using Anthropic strict tool-use output.
 func MintConversationDeclarationsAnthropic(ctx context.Context, apiKey string, modelSet string, in MintConversationDeclarationsInput) (MintConversationDeclarationsDraft, models.AIUsage, error) {
+	return MintConversationDeclarationsAnthropicWithTelemetry(ctx, apiKey, modelSet, in, nil)
+}
+
+// MintConversationDeclarationsAnthropicWithTelemetry performs declaration
+// extraction while emitting content-free provider phase metadata.
+func MintConversationDeclarationsAnthropicWithTelemetry(ctx context.Context, apiKey string, modelSet string, in MintConversationDeclarationsInput, telemetry ProviderTelemetrySink) (MintConversationDeclarationsDraft, models.AIUsage, error) {
 	cfg, err := mintConversationDeclarationsConfig(in)
 	if err != nil {
 		return MintConversationDeclarationsDraft{}, models.AIUsage{}, err
@@ -96,6 +109,7 @@ func MintConversationDeclarationsAnthropic(ctx context.Context, apiKey string, m
 			SystemPrompt:    cfg.systemPrompt,
 			Temperature:     0.2,
 			MaxTokens:       8192,
+			Telemetry:       telemetry,
 		},
 		parseMintConversationDeclarationsDraft,
 		normalizeMintConversationDeclarationsDraft,

@@ -8,11 +8,11 @@ import (
 	openaioption "github.com/openai/openai-go/option"
 )
 
-// DefaultProviderHTTPTimeout is the explicit per-provider HTTP timeout applied
-// to every LLM provider call. It is intentionally shorter than the Lambda
-// envelope that hosts a call so a hanging provider fails at the client boundary
-// with a typed net/http deadline-exceeded error instead of being killed by the
-// runtime and surfaced as an opaque platform timeout (G8).
+// DefaultProviderHTTPTimeout is the explicit per-request-attempt timeout applied
+// to both LLM provider SDK HTTP clients. Provider SDK retries can span multiple
+// attempts, so callers that need a whole-call bound must also use a context
+// deadline; the Hosted Genesis MicroVM workload does so and retains enough of
+// its outer runtime envelope to persist a guarded typed failure (G8).
 //
 // The value is sized for the longest legitimate single mint-conversation turn
 // (streaming assistant response + declaration extraction). It bounds a single
@@ -25,11 +25,9 @@ const DefaultProviderHTTPTimeout = 120 * time.Second
 // SDK defaults (no explicit timeout). The client's Transport is left to the
 // caller; only the Timeout field is load-bearing here.
 //
-// This is the single seam the in-VM hosted-genesis workload and tests use to
-// guarantee provider calls carry an explicit HTTP deadline rather than relying
-// on the surrounding Lambda/context envelope. Streaming and parsing behavior is
-// unchanged: the same request bodies, stream decoders, and usage accounting run
-// underneath; only the transport-level deadline is bounded.
+// This is the transport seam the in-VM hosted-genesis workload and tests use;
+// it complements, but does not replace, the workload's whole-call context
+// deadline. Streaming and parsing behavior is otherwise unchanged.
 func ConfigureProviderHTTPClient(c *http.Client) {
 	if c == nil {
 		openAIHTTPClient = nil

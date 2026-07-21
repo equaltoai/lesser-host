@@ -94,7 +94,8 @@ func (s *Store) FailHostedGenesisSessionAndConversation(ctx context.Context, ses
 		return err
 	}
 	return s.DB.TransactWrite(ctx, func(tx core.TransactionBuilder) error {
-		addHostedGenesisSessionUpdate(tx, session, expectedVersion, expectedStatus)
+		addHostedGenesisSessionUpdate(tx, session, expectedVersion, expectedStatus,
+			tabletheory.Condition("LatestTurnID", "=", strings.TrimSpace(session.LatestTurnID)))
 		tx.UpdateWithBuilder(conversation, func(ub core.UpdateBuilder) error {
 			ub.Set("Status", conversation.Status)
 			ub.Set("StatusReason", conversation.StatusReason)
@@ -103,7 +104,9 @@ func (s *Store) FailHostedGenesisSessionAndConversation(ctx context.Context, ses
 			ub.Set("UpdatedAt", conversation.UpdatedAt)
 			ub.Set("CompletedAt", conversation.CompletedAt)
 			return nil
-		}, tabletheory.IfExists(), tabletheory.Condition("Status", "=", string(expectedStatus)))
+		}, tabletheory.IfExists(),
+			tabletheory.Condition("Status", "=", string(expectedStatus)),
+			tabletheory.Condition("LatestTurnID", "=", strings.TrimSpace(conversation.LatestTurnID)))
 		return nil
 	})
 }
@@ -125,7 +128,13 @@ func validateHostedGenesisSessionUpdate(item *models.HostedGenesisSession, expec
 	return expectedStatus, nil
 }
 
-func addHostedGenesisSessionUpdate(tx core.TransactionBuilder, item *models.HostedGenesisSession, expectedVersion int64, expectedStatus hostedgenesis.Status) {
+func addHostedGenesisSessionUpdate(tx core.TransactionBuilder, item *models.HostedGenesisSession, expectedVersion int64, expectedStatus hostedgenesis.Status, extraConditions ...core.TransactCondition) {
+	conditions := []core.TransactCondition{
+		tabletheory.IfExists(),
+		tabletheory.AtVersion(expectedVersion),
+		tabletheory.Condition("Status", "=", string(expectedStatus)),
+	}
+	conditions = append(conditions, extraConditions...)
 	tx.UpdateWithBuilder(item, func(ub core.UpdateBuilder) error {
 		ub.Set("Status", item.Status)
 		ub.Set("Model", item.Model)
@@ -146,5 +155,5 @@ func addHostedGenesisSessionUpdate(tx core.TransactionBuilder, item *models.Host
 		ub.Set("CompletedAt", item.CompletedAt)
 		ub.Add("Version", int64(1))
 		return nil
-	}, tabletheory.IfExists(), tabletheory.AtVersion(expectedVersion), tabletheory.Condition("Status", "=", string(expectedStatus)))
+	}, conditions...)
 }

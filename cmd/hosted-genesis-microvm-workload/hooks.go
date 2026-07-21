@@ -338,8 +338,12 @@ func (s *hookServer) acceptTurnEndpoint(ctx context.Context, event runtimemicrov
 		return result
 	}
 	turn := binding.completionTurn()
+	telemetry := newTurnLifecycleTelemetry(turn)
+	telemetry.emit("accepted", "turn_accepted", "", "")
+	telemetry.emit("store_preflight", "store_preflight_started", "", "")
 	preparedRunner, preparedInput, err := s.runner.prepareTurn(ctx, turn)
 	if err != nil {
+		telemetry.emit("store_preflight", "store_preflight_failed", "", "store_error")
 		// The controller must observe this failure before it acknowledges invoke.
 		// The AI worker then persists microvm_unavailable with its own Host store;
 		// the workload cannot be expected to record a failure through the store that
@@ -355,7 +359,9 @@ func (s *hookServer) acceptTurnEndpoint(ctx context.Context, event runtimemicrov
 		result.Error = &runtimemicrovm.SafeError{Code: hookErrorCode, Message: "hosted genesis turn store is unavailable", RequestID: strings.TrimSpace(event.RequestID)}
 		return result
 	}
-	s.runTurnDetached(preparedRunner, turn, preparedInput)
+	telemetry.bind(preparedInput)
+	telemetry.emit("store_preflight", "store_preflight_completed", "", "")
+	s.runTurnDetached(preparedRunner, turn, preparedInput, telemetry)
 	return result
 }
 
@@ -375,7 +381,7 @@ func (s *hookServer) validateTurnEndpointEvent(event runtimemicrovm.LifecycleEve
 	return hookBinding{}.fromEvent(event)
 }
 
-func (s *hookServer) runTurnDetached(runner *turnRunner, turn completion.CompletionTurn, in turnInput) {
+func (s *hookServer) runTurnDetached(runner *turnRunner, turn completion.CompletionTurn, in turnInput, telemetry *turnLifecycleTelemetry) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer cancel()
@@ -385,7 +391,7 @@ func (s *hookServer) runTurnDetached(runner *turnRunner, turn completion.Complet
 			slog.String("turn_id", turn.TurnID),
 			slog.String("request_id", turn.RequestID),
 		)
-		if err := runner.runPreparedTurnAndPersist(ctx, turn, in); err != nil {
+		if err := runner.runPreparedTurnAndPersist(ctx, turn, in, telemetry); err != nil {
 			slog.Error(serviceName+": turn execution failed", //nolint:gosec // G706: ids/error are structured slog attrs, not a format string.
 				slog.String("instance_slug", turn.InstanceSlug),
 				slog.String("conversation_id", turn.ConversationID),

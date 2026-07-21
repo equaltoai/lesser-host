@@ -146,7 +146,8 @@ func TestStore_FailHostedGenesisSessionAndConversationUsesOneGuardedTransaction(
 	}), mock.Anything, mock.MatchedBy(func(conditions []core.TransactCondition) bool {
 		return hasConditionKind(conditions, core.TransactConditionKindPrimaryKeyExists) &&
 			hasVersionCondition(conditions, 7) &&
-			hasStatusCondition(conditions, hostedgenesis.StatusInProgress)
+			hasStatusCondition(conditions, hostedgenesis.StatusInProgress) &&
+			hasFieldCondition(conditions, "LatestTurnID", "turn_123")
 	})).Return(tx).Once()
 	tx.On("UpdateWithBuilder", mock.MatchedBy(func(item any) bool {
 		conversation, ok := item.(*models.SoulAgentMintConversation)
@@ -155,7 +156,8 @@ func TestStore_FailHostedGenesisSessionAndConversationUsesOneGuardedTransaction(
 			conversation.Status == models.SoulMintConversationStatusFailed
 	}), mock.Anything, mock.MatchedBy(func(conditions []core.TransactCondition) bool {
 		return hasConditionKind(conditions, core.TransactConditionKindPrimaryKeyExists) &&
-			hasStatusCondition(conditions, hostedgenesis.StatusInProgress)
+			hasStatusCondition(conditions, hostedgenesis.StatusInProgress) &&
+			hasFieldCondition(conditions, "LatestTurnID", "turn_123")
 	})).Return(tx).Once()
 
 	session, conversation := validStoreHostedGenesisFailure()
@@ -213,6 +215,7 @@ func validStoreHostedGenesisFailure() (*models.HostedGenesisSession, *models.Sou
 		Model:          "deterministic",
 		Status:         models.SoulMintConversationStatusFailed,
 		StatusReason:   "microvm_unavailable",
+		LatestTurnID:   session.LatestTurnID,
 		RequestID:      session.RequestID,
 		CreatedAt:      session.CreatedAt,
 		UpdatedAt:      now,
@@ -291,6 +294,18 @@ func hasStatusCondition(conditions []core.TransactCondition, status hostedgenesi
 			condition.Field == "Status" &&
 			condition.Operator == "=" &&
 			condition.Value == string(status) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasFieldCondition(conditions []core.TransactCondition, field string, value any) bool {
+	for _, condition := range conditions {
+		if condition.Kind == core.TransactConditionKindField &&
+			condition.Field == field &&
+			condition.Operator == "=" &&
+			condition.Value == value {
 			return true
 		}
 	}

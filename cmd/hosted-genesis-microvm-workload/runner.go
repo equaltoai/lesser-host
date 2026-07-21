@@ -45,10 +45,12 @@ type turnStore interface {
 type turnStoreFactory func(context.Context) (turnStore, *completion.CompletionWriter, error)
 
 type turnRunner struct {
-	store        turnStore
-	writer       *completion.CompletionWriter
-	storeFactory turnStoreFactory
-	nowFunc      func() time.Time
+	store                     turnStore
+	writer                    *completion.CompletionWriter
+	storeFactory              turnStoreFactory
+	nowFunc                   func() time.Time
+	providerCallTimeout       time.Duration
+	providerHeartbeatInterval time.Duration
 }
 
 // turnInput is the resolved, prompt-ready input for one assistant turn. It is
@@ -113,17 +115,22 @@ func (r *turnRunner) loadTurnInput(ctx context.Context, turn completion.Completi
 // by model-set prefix, mirroring the control-plane runner. Provider keys come
 // from the process environment (the image is provisioned with them at deploy
 // time); a missing key fails closed.
-func (r *turnRunner) runAssistantTurn(ctx context.Context, in turnInput) (string, models.AIUsage, error) {
+func (r *turnRunner) runAssistantTurn(ctx context.Context, turn completion.CompletionTurn, in turnInput) (string, models.AIUsage, error) {
 	apiKey, err := providerAPIKey(ctx, in.modelSet)
 	if err != nil {
 		return "", models.AIUsage{}, err
 	}
+	providerCtx, cancel := context.WithTimeout(ctx, r.providerTimeout())
+	defer cancel()
+	telemetry := newProviderCallTelemetry(turn, in, "assistant_stream")
+	stopHeartbeat := telemetry.startHeartbeat(providerCtx, r.providerHeartbeat())
+	defer stopHeartbeat()
 	modelSet := strings.ToLower(strings.TrimSpace(in.modelSet))
 	switch {
 	case strings.HasPrefix(modelSet, "openai:"):
-		return llm.StreamMintConversationOpenAI(ctx, apiKey, in.modelSet, in.systemPrompt, in.messages, func(string) {})
+		return llm.StreamMintConversationOpenAIWithTelemetry(providerCtx, apiKey, in.modelSet, in.systemPrompt, in.messages, nil, telemetry.observe)
 	case strings.HasPrefix(modelSet, "anthropic:"):
-		return llm.StreamMintConversationAnthropic(ctx, apiKey, in.modelSet, in.systemPrompt, in.messages, func(string) {})
+		return llm.StreamMintConversationAnthropicWithTelemetry(providerCtx, apiKey, in.modelSet, in.systemPrompt, in.messages, nil, telemetry.observe)
 	default:
 		return "", models.AIUsage{}, fmt.Errorf("unsupported model set %q", in.modelSet)
 	}
@@ -132,11 +139,16 @@ func (r *turnRunner) runAssistantTurn(ctx context.Context, in turnInput) (string
 // runDeclarationExtraction extracts structured declarations from the supplied
 // post-turn transcript (accepted user messages + produced assistant message)
 // through the existing internal/ai/llm declaration clients.
-func (r *turnRunner) runDeclarationExtraction(ctx context.Context, in turnInput, messages []llm.MintConversationMessage) (llm.MintConversationDeclarationsDraft, models.AIUsage, error) {
+func (r *turnRunner) runDeclarationExtraction(ctx context.Context, turn completion.CompletionTurn, in turnInput, messages []llm.MintConversationMessage) (llm.MintConversationDeclarationsDraft, models.AIUsage, error) {
 	apiKey, err := providerAPIKey(ctx, in.modelSet)
 	if err != nil {
 		return llm.MintConversationDeclarationsDraft{}, models.AIUsage{}, err
 	}
+	providerCtx, cancel := context.WithTimeout(ctx, r.providerTimeout())
+	defer cancel()
+	telemetry := newProviderCallTelemetry(turn, in, "declaration_extraction")
+	stopHeartbeat := telemetry.startHeartbeat(providerCtx, r.providerHeartbeat())
+	defer stopHeartbeat()
 	declInput := llm.MintConversationDeclarationsInput{
 		SchemaVersion:   in.contract.SchemaVersion,
 		GuidanceVersion: in.contract.GuidanceVersion,
@@ -151,9 +163,9 @@ func (r *turnRunner) runDeclarationExtraction(ctx context.Context, in turnInput,
 	modelSet := strings.ToLower(strings.TrimSpace(in.modelSet))
 	switch {
 	case strings.HasPrefix(modelSet, "openai:"):
-		return llm.MintConversationDeclarationsOpenAI(ctx, apiKey, in.modelSet, declInput)
+		return llm.MintConversationDeclarationsOpenAIWithTelemetry(providerCtx, apiKey, in.modelSet, declInput, telemetry.observe)
 	case strings.HasPrefix(modelSet, "anthropic:"):
-		return llm.MintConversationDeclarationsAnthropic(ctx, apiKey, in.modelSet, declInput)
+		return llm.MintConversationDeclarationsAnthropicWithTelemetry(providerCtx, apiKey, in.modelSet, declInput, telemetry.observe)
 	default:
 		return llm.MintConversationDeclarationsDraft{}, models.AIUsage{}, fmt.Errorf("unsupported model set %q", in.modelSet)
 	}
@@ -165,17 +177,23 @@ func (r *turnRunner) runDeclarationExtraction(ctx context.Context, in turnInput,
 // against an already-advanced session is recorded as a conflict (not a silent
 // re-apply).
 func (r *turnRunner) runTurnAndPersist(ctx context.Context, turn completion.CompletionTurn) error {
+	telemetry := newTurnLifecycleTelemetry(turn)
+	telemetry.emit("accepted", "turn_accepted", "", "")
+	telemetry.emit("store_preflight", "store_preflight_started", "", "")
 	runner, in, err := r.prepareTurn(ctx, turn)
 	if err != nil {
+		telemetry.emit("store_preflight", "store_preflight_failed", "", "store_error")
 		if runner == nil {
 			return fmt.Errorf("initialize hosted genesis microvm turn store: %w", err)
 		}
 		if errors.Is(err, hostedgenesis.ErrDeclarationContractUnconfigured) {
-			return runner.recordFailure(ctx, turn, hostedgenesis.FailureCodeOperatorActionRequired, err.Error())
+			return runner.recordFailure(ctx, turn, hostedgenesis.FailureCodeOperatorActionRequired, err.Error(), telemetry)
 		}
-		return runner.recordFailure(ctx, turn, hostedgenesis.FailureCodeInvalidCompletionState, err.Error())
+		return runner.recordFailure(ctx, turn, hostedgenesis.FailureCodeInvalidCompletionState, err.Error(), telemetry)
 	}
-	return runner.runPreparedTurnAndPersist(ctx, turn, in)
+	telemetry.bind(in)
+	telemetry.emit("store_preflight", "store_preflight_completed", "", "")
+	return runner.runPreparedTurnAndPersist(ctx, turn, in, telemetry)
 }
 
 // prepareTurn initializes a fresh turn-scoped store and performs the first
@@ -196,25 +214,27 @@ func (r *turnRunner) prepareTurn(ctx context.Context, turn completion.Completion
 	return runner, in, nil
 }
 
-func (r *turnRunner) runPreparedTurnAndPersist(ctx context.Context, turn completion.CompletionTurn, in turnInput) error {
+func (r *turnRunner) runPreparedTurnAndPersist(ctx context.Context, turn completion.CompletionTurn, in turnInput, telemetry *turnLifecycleTelemetry) error {
+	telemetry.bind(in)
 	actor := newConversationActor()
 	decision := actor.decideBeforeProvider(in)
+	telemetry.emit("actor_decision", "actor_decision_completed", string(decision.action), "")
 	switch decision.action {
 	case actorActionAsk, actorActionRevise:
-		return r.runAssistantTurnAndPersist(ctx, turn, in, actor, decision)
+		return r.runAssistantTurnAndPersist(ctx, turn, in, actor, decision, telemetry)
 	case actorActionExtractFinalize:
 		// The VM actor owns the extract/finalize decision. Host has already
 		// accepted the user turn, applied billing/idempotency policy, and left the
 		// latest turn in guarded Host truth; RecordDeclarationReady enforces the
 		// current status/version/turn checkpoint instead of requiring a separate
 		// Host-orchestrated declaration_extraction_pending job.
-		return r.runDeclarationExtractionAndPersist(ctx, turn, in, actor, decision)
+		return r.runDeclarationExtractionAndPersist(ctx, turn, in, actor, decision, telemetry)
 	case actorActionWait:
 		return nil
 	case actorActionFailRecoverably:
-		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeInvalidCompletionState, decision.reason)
+		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeInvalidCompletionState, decision.reason, telemetry)
 	default:
-		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeInvalidCompletionState, "unknown hosted genesis actor decision")
+		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeInvalidCompletionState, "unknown hosted genesis actor decision", telemetry)
 	}
 }
 
@@ -241,14 +261,15 @@ func (r *turnRunner) withTurnStore(ctx context.Context) (*turnRunner, error) {
 	return &copy, nil
 }
 
-func (r *turnRunner) runAssistantTurnAndPersist(ctx context.Context, turn completion.CompletionTurn, in turnInput, actor conversationActor, decision actorDecision) error {
-	assistantContent, assistantUsage, err := r.runAssistantTurn(ctx, in)
+func (r *turnRunner) runAssistantTurnAndPersist(ctx context.Context, turn completion.CompletionTurn, in turnInput, actor conversationActor, decision actorDecision, telemetry *turnLifecycleTelemetry) error {
+	assistantContent, assistantUsage, err := r.runAssistantTurn(ctx, turn, in)
 	if err != nil || strings.TrimSpace(assistantContent) == "" {
 		msg := "assistant turn failed"
 		if err != nil {
-			msg = err.Error()
+			msg = providerFailureMessage("assistant_stream", err)
 		}
-		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeAssistantTurnFailed, msg)
+		telemetry.emit("assistant_stream", "provider_call_failed", string(decision.action), llm.ProviderFailureClass(err))
+		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeAssistantTurnFailed, msg, telemetry)
 	}
 
 	postTurnMessageCount := len(in.messages) + 1
@@ -256,53 +277,68 @@ func (r *turnRunner) runAssistantTurnAndPersist(ctx context.Context, turn comple
 		Role:    "assistant",
 		Content: strings.TrimSpace(assistantContent),
 	})
+	telemetry.emit("persist", "persist_started", string(decision.action), "")
 	if persistErr := r.persistConversationAssistantTurn(ctx, &in, turn, postTurnMessages, assistantUsage); persistErr != nil {
-		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeAssistantTurnFailed, "persist assistant turn: "+persistErr.Error())
+		telemetry.emit("persist", "persist_failed", string(decision.action), "store_error")
+		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeAssistantTurnFailed, "persist assistant turn: "+persistErr.Error(), telemetry)
 	}
 	checkpoint, checkpointErr := actor.checkpoint(in, completionTurnView{turnID: turn.TurnID, requestID: turn.RequestID}, decision, hostedgenesis.CheckpointRef("assistant", in.session.ConversationID, turn.TurnID))
 	if checkpointErr != nil {
-		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeInvalidCompletionState, "build assistant checkpoint: "+checkpointErr.Error())
+		telemetry.emit("persist", "persist_failed", string(decision.action), "checkpoint_error")
+		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeInvalidCompletionState, "build assistant checkpoint: "+checkpointErr.Error(), telemetry)
 	}
 	if _, werr := r.writer.RecordAssistantTurnReadyWithCheckpoint(ctx, turn, completion.AssistantTurnCompletion{
 		AssistantContent: assistantContent,
 		MessageCount:     postTurnMessageCount,
 	}, checkpoint); werr != nil {
+		telemetry.emit("persist", "persist_failed", string(decision.action), "completion_conflict")
 		// A conflict here means the session already advanced (e.g. a replay or
 		// a concurrent recovery). Do not overwrite; surface the conflict.
 		return fmt.Errorf("record assistant turn ready: %w", werr)
 	}
+	telemetry.emit("persist", "persist_completed", string(decision.action), "")
 	return nil
 }
 
-func (r *turnRunner) runDeclarationExtractionAndPersist(ctx context.Context, turn completion.CompletionTurn, in turnInput, actor conversationActor, decision actorDecision) error {
+func (r *turnRunner) runDeclarationExtractionAndPersist(ctx context.Context, turn completion.CompletionTurn, in turnInput, actor conversationActor, decision actorDecision, telemetry *turnLifecycleTelemetry) error {
 	if !hasAssistantMessage(in.messages) {
-		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeInvalidCompletionState, "declaration extraction requires an assistant transcript")
+		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeInvalidCompletionState, "declaration extraction requires an assistant transcript", telemetry)
 	}
-	draft, declarationUsage, err := r.runDeclarationExtraction(ctx, in, in.messages)
+	draft, declarationUsage, err := r.runDeclarationExtraction(ctx, turn, in, in.messages)
 	if err != nil {
-		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeDeclarationExtractionFailed, err.Error())
+		telemetry.emit("declaration_extraction", "provider_call_failed", string(decision.action), llm.ProviderFailureClass(err))
+		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeDeclarationExtractionFailed, providerFailureMessage("declaration_extraction", err), telemetry)
 	}
+	telemetry.emit("declaration_validation", "validation_started", string(decision.action), "")
 	declarationsJSON, err := r.buildProducedDeclarationsJSON(draft, in.modelSet, in.contract)
 	if err != nil {
+		telemetry.emit("declaration_validation", "validation_failed", string(decision.action), "validation_error")
 		if errors.Is(err, hostedgenesis.ErrDeclarationContractUnconfigured) {
-			return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeOperatorActionRequired, err.Error())
+			return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeOperatorActionRequired, err.Error(), telemetry)
 		}
-		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeInvalidProducedDeclarations, string(hostedgenesis.DeclarationValidationCodeFromError(err)))
+		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeInvalidProducedDeclarations, string(hostedgenesis.DeclarationValidationCodeFromError(err)), telemetry)
 	}
+	telemetry.emit("declaration_validation", "validation_completed", string(decision.action), "")
+	telemetry.emit("persist", "persist_started", string(decision.action), "")
 	if persistErr := r.persistConversationDeclarationReady(ctx, &in, turn, declarationsJSON, declarationUsage); persistErr != nil {
-		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeInvalidProducedDeclarations, "persist declarations: "+persistErr.Error())
+		telemetry.emit("persist", "persist_failed", string(decision.action), "store_error")
+		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeInvalidProducedDeclarations, "persist declarations: "+persistErr.Error(), telemetry)
 	}
 	checkpoint, err := r.buildDeclarationCheckpoint(turn, in, declarationsJSON)
 	if err != nil {
-		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeInvalidProducedDeclarations, err.Error())
+		telemetry.emit("persist", "persist_failed", string(decision.action), "checkpoint_error")
+		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeInvalidProducedDeclarations, err.Error(), telemetry)
 	}
 	vmCheckpoint, checkpointErr := actor.checkpoint(in, completionTurnView{turnID: turn.TurnID, requestID: turn.RequestID}, decision, checkpoint.DeclarationHash)
 	if checkpointErr != nil {
-		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeInvalidCompletionState, "build declaration checkpoint: "+checkpointErr.Error())
+		telemetry.emit("persist", "persist_failed", string(decision.action), "checkpoint_error")
+		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeInvalidCompletionState, "build declaration checkpoint: "+checkpointErr.Error(), telemetry)
 	}
 	if _, werr := r.writer.RecordDeclarationReadyWithCheckpoint(ctx, turn, checkpoint, vmCheckpoint); werr != nil {
+		telemetry.emit("persist", "persist_failed", string(decision.action), "completion_conflict")
 		return fmt.Errorf("record declaration ready: %w", werr)
 	}
+	telemetry.emit("persist", "persist_completed", string(decision.action), "")
 	return nil
 }
 
@@ -507,7 +543,8 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
-func (r *turnRunner) recordFailure(ctx context.Context, turn completion.CompletionTurn, code hostedgenesis.FailureCode, message string) error {
+func (r *turnRunner) recordFailure(ctx context.Context, turn completion.CompletionTurn, code hostedgenesis.FailureCode, message string, telemetry *turnLifecycleTelemetry) error {
+	telemetry.emit("failure_persist", "failure_persist_started", "", string(code))
 	_, err := r.writer.RecordFailure(ctx, turn, completion.CompletionFailure{
 		Code:      code,
 		Message:   message,
@@ -520,8 +557,10 @@ func (r *turnRunner) recordFailure(ctx context.Context, turn completion.Completi
 		},
 	})
 	if err == nil {
+		telemetry.emit("failure_persist", "failure_persist_completed", "", string(code))
 		return nil
 	}
+	telemetry.emit("failure_persist", "failure_persist_failed", "", "completion_conflict")
 	// A conflict recording failure means the session already reached a terminal
 	// state; report the original failure as the run error but do not mask the
 	// conflict.
@@ -536,6 +575,36 @@ func (r *turnRunner) now() time.Time {
 		return r.nowFunc().UTC()
 	}
 	return time.Now().UTC()
+}
+
+// providerTimeout is a whole-call deadline. The SDK-configured HTTP client
+// timeout is per request attempt; both provider SDKs retry by default, so that
+// transport timeout alone can outlive the MicroVM's maximum duration. The
+// call-scoped context bounds the complete retry lifecycle and leaves the outer
+// workload envelope time to persist a guarded typed failure.
+func (r *turnRunner) providerTimeout() time.Duration {
+	if r != nil && r.providerCallTimeout > 0 {
+		return r.providerCallTimeout
+	}
+	return llm.DefaultProviderHTTPTimeout
+}
+
+func (r *turnRunner) providerHeartbeat() time.Duration {
+	if r != nil && r.providerHeartbeatInterval > 0 {
+		return r.providerHeartbeatInterval
+	}
+	return defaultProviderHeartbeatInterval
+}
+
+// providerFailureMessage deliberately excludes SDK error text. Provider errors
+// may echo request/response bodies or headers, so durable Host truth stores only
+// the phase and stable content-free class already used by telemetry.
+func providerFailureMessage(phase string, err error) string {
+	failureClass := llm.ProviderFailureClass(err)
+	if failureClass == "" {
+		failureClass = "provider_error"
+	}
+	return strings.TrimSpace(phase) + " " + failureClass
 }
 
 func isRetryableFailureCode(code hostedgenesis.FailureCode) bool {

@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
@@ -23,6 +24,7 @@ type anthropicToolBatchConfig struct {
 	SystemPrompt    string
 	Temperature     float64
 	MaxTokens       int64
+	Telemetry       ProviderTelemetrySink
 }
 
 type anthropicJSONTextBatchConfig struct {
@@ -312,15 +314,20 @@ func anthropicToolBatch[Prompt any, Parsed any, Out any](
 	if err != nil {
 		return zero, models.AIUsage{}, err
 	}
+	recorder := newProviderTelemetryRecorder("anthropic", string(model), "declaration_extraction", cfg.Telemetry)
 
 	payload, err := json.Marshal(prompt)
 	if err != nil {
+		recorder.emit(ProviderTelemetryEvent{EventType: "provider_call_failed", LastEvent: true, FailureClass: ProviderFailureClass(err)})
 		return zero, models.AIUsage{}, err
 	}
+	recorder.emit(ProviderTelemetryEvent{EventType: "request_start", ToolName: cfg.ToolName})
 
 	toolName := strings.TrimSpace(cfg.ToolName)
 	if toolName == "" {
-		return zero, models.AIUsage{}, fmt.Errorf("anthropic: tool name is required")
+		toolErr := fmt.Errorf("anthropic: tool name is required")
+		recorder.emit(ProviderTelemetryEvent{EventType: "provider_call_failed", LastEvent: true, FailureClass: ProviderFailureClass(toolErr)})
+		return zero, models.AIUsage{}, toolErr
 	}
 	if cfg.MaxTokens <= 0 {
 		cfg.MaxTokens = 2048
@@ -348,24 +355,39 @@ func anthropicToolBatch[Prompt any, Parsed any, Out any](
 		Temperature: anthropic.Float(cfg.Temperature),
 	})
 	if err != nil {
+		recorder.emit(ProviderTelemetryEvent{EventType: "provider_call_failed", LastEvent: true, FailureClass: ProviderFailureClass(err), ToolName: toolName})
 		return zero, models.AIUsage{}, err
 	}
+	usage := anthropicUsageFromMessage(message, start)
+	stopReason := strings.TrimSpace(string(message.StopReason))
+	recorder.emit(ProviderTelemetryEvent{EventType: "response_received", InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens, TotalTokens: usage.TotalTokens, ToolCalls: 1, OutputCount: int64(len(message.Content)), StopReason: stopReason, ToolName: toolName})
 	if stopErr := anthropicValidateStopReason(message, anthropic.StopReasonToolUse); stopErr != nil {
+		recorder.emit(ProviderTelemetryEvent{EventType: "provider_call_failed", LastEvent: true, FailureClass: "stop_reason", StopReason: stopReason, ToolName: toolName})
 		return zero, models.AIUsage{}, stopErr
 	}
 
 	raw, err := anthropicToolUseInput(message, toolName)
 	if err != nil {
+		recorder.emit(ProviderTelemetryEvent{EventType: "provider_call_failed", LastEvent: true, FailureClass: ProviderFailureClass(err), ToolName: toolName})
 		return zero, models.AIUsage{}, err
 	}
+	rawBytes, rawHash := providerPayloadMetadata(raw)
+	rawRunes := utf8.RuneCount(raw)
+	recorder.emit(ProviderTelemetryEvent{EventType: "tool_input_received", OutputBytes: rawBytes, OutputRunes: rawRunes, OutputSHA256: rawHash, OutputCount: 1, ToolCalls: 1, StopReason: stopReason, ToolName: toolName})
+	recorder.emit(ProviderTelemetryEvent{EventType: "parse_start", OutputBytes: rawBytes, OutputRunes: rawRunes, OutputSHA256: rawHash, ToolCalls: 1, StopReason: stopReason, ToolName: toolName})
 
 	parsed, err := parse(string(raw))
 	if err != nil {
+		recorder.emit(ProviderTelemetryEvent{EventType: "provider_call_failed", LastEvent: true, FailureClass: "parse_error", OutputBytes: rawBytes, OutputRunes: rawRunes, OutputSHA256: rawHash, ToolName: toolName})
 		return zero, models.AIUsage{}, err
 	}
+	recorder.emit(ProviderTelemetryEvent{EventType: "parse_completed", OutputBytes: rawBytes, OutputRunes: rawRunes, OutputSHA256: rawHash, ToolName: toolName})
 
+	recorder.emit(ProviderTelemetryEvent{EventType: "validation_start", OutputBytes: rawBytes, OutputRunes: rawRunes, OutputSHA256: rawHash, ToolName: toolName})
 	out := normalize(parsed)
-	return out, anthropicUsageFromMessage(message, start), nil
+	recorder.emit(ProviderTelemetryEvent{EventType: "validation_completed", OutputBytes: rawBytes, OutputRunes: rawRunes, OutputSHA256: rawHash, ToolName: toolName})
+	recorder.emit(ProviderTelemetryEvent{EventType: "provider_call_completed", LastEvent: true, OutputBytes: rawBytes, OutputRunes: rawRunes, OutputSHA256: rawHash, OutputCount: 1, InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens, TotalTokens: usage.TotalTokens, ToolCalls: 1, StopReason: stopReason, ToolName: toolName})
+	return out, usage, nil
 }
 
 func anthropicJSONTextBatch[Prompt any, Parsed any, Out any](
