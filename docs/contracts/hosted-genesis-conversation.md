@@ -109,9 +109,11 @@ transparency object.
 
 Declaration validation failures cross the worker and API boundary only as stable field codes, never provider errors,
 raw model output, transcripts, or private declaration text. Examples are `self_description.invalid`,
-`capabilities.invalid`, `boundaries.required`, and `transparency.required`. A terminal failure's public message is a
-fixed code-derived message such as `Produced declarations are invalid.`; the optional recovery reason is limited to a
-single stable field code.
+`capabilities.capability.invalid`, `capabilities.scope.invalid`,
+`capabilities.claim_level.invalid`, `capabilities.last_validated.invalid`, `boundaries.required`, and
+`transparency.required`. Provider capability evidence is deterministically canonicalized into Host identifiers;
+malformed rows are not silently dropped. A terminal failure's public message is a fixed code-derived message such as
+`Produced declarations are invalid.`; the optional recovery reason is limited to a single stable field code.
 
 When produced declarations are missing or invalid, Host writes the terminal `HostedGenesisSession` and the
 `SoulAgentMintConversation` compatibility projection together. `restart_soul_bootstrap` is not a successful no-op:

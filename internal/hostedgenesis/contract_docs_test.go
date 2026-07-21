@@ -102,6 +102,15 @@ func assertFiveBodyContractOptionalEvidence(t *testing.T, schema map[string]any)
 			t.Fatalf("published capability schema must not require optional validation metadata %s", optional)
 		}
 	}
+	capabilityProps := requireJSONMap(t, capabilityItems, "properties")
+	capabilityName := requireJSONMap(t, capabilityProps, "capability")
+	if capabilityName["pattern"] != ProducedCapabilityIdentifierPattern {
+		t.Fatalf("published capability identifier pattern drift: %#v", capabilityName)
+	}
+	lastValidated := requireJSONMap(t, capabilityProps, "lastValidated")
+	if lastValidated["pattern"] != ProducedCapabilityOptionalRFC3339Pattern {
+		t.Fatalf("published lastValidated RFC3339 pattern drift: %#v", lastValidated)
+	}
 }
 
 func assertFiveBodyContractExample(t *testing.T) {
