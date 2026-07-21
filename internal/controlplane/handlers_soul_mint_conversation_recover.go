@@ -34,6 +34,9 @@ func (s *Server) handleSoulInstanceRecoverMintConversation(ctx *apptheory.Contex
 	if appErr := rejectOversizeSoulMintInstanceConversation(convCtx.conv); appErr != nil {
 		return nil, appErr
 	}
+	if appErr := s.repairSoulInstanceHostedGenesisPublishedPendingOnRead(ctx, convCtx); appErr != nil {
+		return nil, appErr
+	}
 
 	if resp, handled, err := s.handleSoulInstanceRetryableMintConversationRecovery(ctx, convCtx, started); handled || err != nil {
 		return resp, err

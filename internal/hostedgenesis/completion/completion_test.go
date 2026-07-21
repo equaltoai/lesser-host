@@ -576,20 +576,24 @@ func TestRecordFailure_SanitizesProviderAndDeclarationDetailsAcrossProjections(t
 }
 
 func TestRecordFailure_ReplayAgainstTerminalRejected(t *testing.T) {
-	store := &fakeCompletionStore{session: newFakeSession("acme", "conv-1", "turn-1", hostedgenesis.StatusFailed, 4)}
-	w := NewCompletionWriter(store, nil)
+	for _, status := range []hostedgenesis.Status{hostedgenesis.StatusFailed, hostedgenesis.StatusPublished} {
+		t.Run(string(status), func(t *testing.T) {
+			store := &fakeCompletionStore{session: newFakeSession("acme", "conv-1", "turn-1", status, 4)}
+			w := NewCompletionWriter(store, nil)
 
-	_, err := w.RecordFailure(context.Background(), CompletionTurn{InstanceSlug: "acme", ConversationID: "conv-1", TurnID: "turn-1", RequestID: "req-1"}, CompletionFailure{
-		Code:      hostedgenesis.FailureCodeAssistantTurnFailed,
-		Message:   "provider timed out",
-		Retryable: true,
-		Recovery:  hostedgenesis.Recovery{Action: hostedgenesis.RecoveryActionRetrySameStep, MaxAttempts: 3, RetryAfterSeconds: 5, Reason: "provider timed out"},
-	})
-	if err == nil {
-		t.Fatal("expected conflict on replay against failed, got nil")
-	}
-	if !errors.Is(err, ErrCompletionConflict) {
-		t.Fatalf("expected ErrCompletionConflict, got %v", err)
+			_, err := w.RecordFailure(context.Background(), CompletionTurn{InstanceSlug: "acme", ConversationID: "conv-1", TurnID: "turn-1", RequestID: "req-1"}, CompletionFailure{
+				Code:      hostedgenesis.FailureCodeAssistantTurnFailed,
+				Message:   "provider timed out",
+				Retryable: true,
+				Recovery:  hostedgenesis.Recovery{Action: hostedgenesis.RecoveryActionRetrySameStep, MaxAttempts: 3, RetryAfterSeconds: 5, Reason: "provider timed out"},
+			})
+			if err == nil {
+				t.Fatalf("expected conflict on replay against %s, got nil", status)
+			}
+			if !errors.Is(err, ErrCompletionConflict) {
+				t.Fatalf("expected ErrCompletionConflict, got %v", err)
+			}
+		})
 	}
 }
 

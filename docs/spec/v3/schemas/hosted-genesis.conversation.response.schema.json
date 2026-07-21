@@ -14,6 +14,7 @@
         "assistant_turn_ready",
         "declaration_extraction_pending",
         "declaration_ready",
+        "published",
         "failed"
       ]
     },
@@ -163,13 +164,45 @@
         "messages_redacted": { "type": "boolean" },
         "produced_declarations": { "$ref": "#/$defs/produced_declarations" },
         "failure": { "$ref": "#/$defs/failure" },
+        "published_version": { "type": "integer", "minimum": 1 },
+        "published_at": { "type": "string", "format": "date-time" },
         "request_id": { "type": "string", "minLength": 1, "maxLength": 128 },
         "trace_ids": { "$ref": "#/$defs/trace_ids" },
         "poll_after_seconds": { "type": "integer", "minimum": 1, "maximum": 3600 },
         "created_at": { "type": "string", "format": "date-time" },
         "updated_at": { "type": "string", "format": "date-time" },
         "completed_at": { "type": "string", "format": "date-time" }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "status": { "const": "published" } },
+            "required": ["status"]
+          },
+          "then": {
+            "required": ["published_version", "published_at"],
+            "not": {
+              "anyOf": [
+                { "required": ["messages"] },
+                { "required": ["produced_declarations"] },
+                { "required": ["failure"] },
+                { "required": ["poll_after_seconds"] }
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "anyOf": [
+              { "required": ["published_version"] },
+              { "required": ["published_at"] }
+            ]
+          },
+          "then": {
+            "properties": { "status": { "const": "published" } }
+          }
+        }
+      ]
     }
   },
   "properties": {

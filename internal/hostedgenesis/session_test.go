@@ -24,6 +24,7 @@ func TestStatusTransitionTable(t *testing.T) {
 		{StatusAssistantTurnReady, StatusInProgress},
 		{StatusAssistantTurnReady, StatusDeclarationExtractionPending},
 		{StatusDeclarationExtractionPending, StatusDeclarationReady},
+		{StatusDeclarationReady, StatusPublished},
 		{StatusCreated, StatusFailed},
 		{StatusInProgress, StatusFailed},
 		{StatusAssistantTurnReady, StatusFailed},
@@ -43,6 +44,8 @@ func TestStatusTransitionTable(t *testing.T) {
 		{StatusCreated, StatusDeclarationReady},
 		{StatusDeclarationExtractionPending, StatusAssistantTurnReady},
 		{StatusDeclarationReady, StatusInProgress},
+		{StatusDeclarationReady, StatusFailed},
+		{StatusPublished, StatusDeclarationReady},
 		{StatusFailed, StatusInProgress},
 	}
 	for _, tt := range illegal {
@@ -51,6 +54,50 @@ func TestStatusTransitionTable(t *testing.T) {
 			require.ErrorIs(t, ValidateTransition(tt.from, tt.to), ErrInvalidStatusTransition)
 		})
 	}
+}
+
+func TestPublishedProjectionRequiresBoundPublicationCheckpoint(t *testing.T) {
+	t.Parallel()
+
+	declaration := validDeclarationCheckpoint()
+	publishedAt := declaration.ProducedAt.Add(time.Minute)
+	publication := PublicationCheckpoint{
+		RegistrationID:       declaration.RegistrationID,
+		ConversationID:       declaration.ConversationID,
+		AgentID:              declaration.AgentID,
+		Version:              1,
+		RegistrationSHA256:   strings.Repeat("b", 64),
+		RegistrationIssuedAt: declaration.ProducedAt,
+		PublishedAt:          publishedAt,
+	}
+	projection, err := NewConversationProjection(ProjectionInput{
+		RegistrationID:        declaration.RegistrationID,
+		ConversationID:        declaration.ConversationID,
+		AgentID:               declaration.AgentID,
+		Status:                StatusPublished,
+		MessageCount:          declaration.MessageCount,
+		DeclarationCheckpoint: &declaration,
+		Publication:           &publication,
+		CompletedAt:           declaration.ProducedAt,
+	}, true)
+	require.NoError(t, err)
+	require.Equal(t, StatusPublished, projection.Status)
+	require.Equal(t, 1, projection.PublishedVersion)
+	require.Equal(t, publishedAt, projection.PublishedAt)
+	require.Nil(t, projection.DeclarationCheckpoint)
+	require.Nil(t, projection.Failure)
+	require.Zero(t, projection.PollAfterSeconds)
+
+	publication.ConversationID = "conv_other"
+	_, err = NewConversationProjection(ProjectionInput{
+		RegistrationID:        declaration.RegistrationID,
+		ConversationID:        declaration.ConversationID,
+		AgentID:               declaration.AgentID,
+		Status:                StatusPublished,
+		DeclarationCheckpoint: &declaration,
+		Publication:           &publication,
+	}, true)
+	require.ErrorIs(t, err, ErrInvalidPublicationCheckpoint)
 }
 
 func TestCreatedCollapsesForInstanceKeyRead(t *testing.T) {

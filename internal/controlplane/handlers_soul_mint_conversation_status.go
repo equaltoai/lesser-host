@@ -60,6 +60,8 @@ type hostedGenesisConversationProjection struct {
 	MessagesRedacted     bool                               `json:"messages_redacted,omitempty"`
 	ProducedDeclarations *hostedGenesisProducedDeclarations `json:"produced_declarations,omitempty"`
 	Failure              *hostedGenesisFailure              `json:"failure,omitempty"`
+	PublishedVersion     int                                `json:"published_version,omitempty"`
+	PublishedAt          *time.Time                         `json:"published_at,omitempty"`
 	RequestID            string                             `json:"request_id"`
 	TraceIDs             *hostedGenesisTraceIDs             `json:"trace_ids,omitempty"`
 	PollAfterSeconds     int                                `json:"poll_after_seconds,omitempty"`

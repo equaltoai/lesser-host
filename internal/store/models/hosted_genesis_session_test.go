@@ -49,6 +49,37 @@ func TestHostedGenesisSessionRejectsUngatedTerminalStates(t *testing.T) {
 	failed.Status = string(hostedgenesis.StatusFailed)
 	failed.Failure = nil
 	require.ErrorIs(t, failed.BeforeCreate(), hostedgenesis.ErrInvalidFailureRecovery)
+
+	published := validHostedGenesisSessionModel()
+	published.Status = string(hostedgenesis.StatusPublished)
+	checkpoint := validHostedGenesisDeclarationCheckpoint()
+	published.DeclarationCheckpoint = &checkpoint
+	require.ErrorIs(t, published.BeforeCreate(), hostedgenesis.ErrInvalidPublicationCheckpoint)
+}
+
+func TestHostedGenesisSessionAcceptsBoundPublishedState(t *testing.T) {
+	t.Parallel()
+
+	session := validHostedGenesisSessionModel()
+	session.Status = string(hostedgenesis.StatusPublished)
+	checkpoint := validHostedGenesisDeclarationCheckpoint()
+	session.DeclarationCheckpoint = &checkpoint
+	session.Publication = &hostedgenesis.PublicationCheckpoint{
+		RegistrationID:       session.RegistrationID,
+		ConversationID:       session.ConversationID,
+		AgentID:              strings.TrimSpace(session.AgentID),
+		Version:              1,
+		RegistrationSHA256:   strings.Repeat("b", 64),
+		RegistrationIssuedAt: checkpoint.ProducedAt,
+		PublishedAt:          checkpoint.ProducedAt.Add(time.Minute),
+	}
+	require.NoError(t, session.BeforeCreate())
+
+	projection, err := hostedgenesis.NewConversationProjection(session.ToProjectionInput(), true)
+	require.NoError(t, err)
+	require.Equal(t, hostedgenesis.StatusPublished, projection.Status)
+	require.Equal(t, 1, projection.PublishedVersion)
+	require.Equal(t, session.Publication.PublishedAt, projection.PublishedAt)
 }
 
 func TestHostedGenesisSessionRejectsInvalidTurnLedger(t *testing.T) {

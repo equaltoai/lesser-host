@@ -8,7 +8,8 @@ This document is a contract artifact for Host, Lesser, Greater, and Sim. Project
 Project 50 Milestone A implements the Host-owned source-of-truth model/repository foundation. Project 51 M2 routes
 the Lesser instance-key runtime through `HostedGenesisSession` first: POST commits the session and idempotency/debit
 ledger before transport execution, GET/status projects from the session, completion/finalize gates read declaration
-checkpoint readiness from the session, and `SoulAgentMintConversation` is compatibility/projection input only.
+checkpoint readiness and terminal publication truth from the session, and `SoulAgentMintConversation` is
+compatibility/projection input only.
 
 ## Authoritative Lesser route family
 
@@ -61,6 +62,23 @@ by `status=declaration_ready` plus a valid declaration checkpoint (`declaration_
 `checkpoint_ref`, registration/conversation/agent ids, message count, request id, and produced timestamp). Typed
 `failed` recovery actions are server-authored and limited to the locked recovery enum below.
 
+Successful publication advances the authoritative session from `declaration_ready` to the single explicit terminal
+state `published`. Before the irreversible publication path starts, Host reserves a bounded publication checkpoint on
+the session: registration/conversation/agent ids, the exact registration SHA256, version, and issued timestamp. After
+the publication and graduation side effects succeed, Host atomically writes `status=published` plus `published_at` to
+the session and writes `status=published` to the `SoulAgentMintConversation` compatibility row under the session's
+expected `version` and `status=declaration_ready` conditions. `published` and `failed` are terminal; only
+`declaration_ready -> published` is legal from the publish-ready state.
+
+An interrupted publish does not create a second version. A retry must reproduce the reserved digest, version, and
+issued timestamp before the existing version/artifacts can be repaired and the remaining finalization work can
+continue. Prototype rows finalized before this checkpoint existed converge only when Host can bind an exact graduated
+promotion and exact `SoulAgentVersion` record to the same tenant-scoped session registration, conversation, agent, and
+published version. The promotion conversation state must be the prototype's prior `completed` marker or the current
+`published` marker; other states are not publication evidence. An active identity alone is insufficient. Exact reads, recovery, finalize/preflight replay, and
+agent lists apply this bounded convergence; no Body override, status alias, or indefinite compatibility fallback is
+part of the contract.
+
 For the production Lesser instance-key path, the final minted-soul affirmation is an ordinary accepted user turn delivered
 to the AppTheory MicroVM conversation actor. Host persists that turn, applies idempotency/debit policy, leaves the durable
 session in `in_progress`, and dispatches the accepted turn through the MicroVM gateway. The VM actor, not Host-side
@@ -69,7 +87,9 @@ When the actor finalizes, it advances the same durable conversation to `declarat
 under Host status/version/checkpoint guards; the registration-scoped instance-key status read projects that terminal
 declaration evidence without publishing as a read side effect. Lesser polls Host status until `declaration_ready`, then
 calls the explicit instance-key `/finalize` publish route (`PublishHostedSoul`) to publish the hosted/off-chain
-registration from the same Host state.
+registration from the same Host state. A successful finalize response and every subsequent exact read, recovery read,
+and list summary return `status=published`, `published_version`, and `published_at`; they do not return declarations,
+polling guidance, or recovery actions.
 
 ### Idempotency ledger semantics
 
@@ -132,6 +152,7 @@ Examples:
 - `docs/spec/v3/fixtures/hosted-genesis.conversation.in-progress.example.json`
 - `docs/spec/v3/fixtures/hosted-genesis.conversation.assistant-turn-ready.example.json`
 - `docs/spec/v3/fixtures/hosted-genesis.conversation.completed-declaration-ready.example.json`
+- `docs/spec/v3/fixtures/hosted-genesis.conversation.published.example.json`
 - `docs/spec/v3/fixtures/hosted-genesis.conversation.failed.example.json`
 
 Field names locked for M1.1:
@@ -149,6 +170,8 @@ Field names locked for M1.1:
 | `messages_redacted` | no | `true` when one or more secret-shaped message bodies were replaced with the fixed redaction marker. |
 | `produced_declarations` | only `declaration_ready` | Terminal declaration evidence. Publish is forbidden without it. |
 | `failure` | only `failed` | Typed bounded recovery instructions. |
+| `published_version` | only `published` | Exact durable Soul registration version produced by this session. |
+| `published_at` | only `published` | Host terminal-publication timestamp. |
 | `request_id` | yes | Host request id for the snapshot; safe for correlation/log lookup. |
 | `trace_ids` | no | Client-safe correlation/idempotency ids, never raw transcripts or credential material. |
 
@@ -159,11 +182,12 @@ Locked status enum:
 - `assistant_turn_ready`
 - `declaration_extraction_pending`
 - `declaration_ready`
+- `published`
 - `failed`
 
-The current implementation's legacy `completed` state maps to the locked `declaration_ready` contract status when and
-only when valid `produced_declarations` are present. Downstream M1.2/M1.3 consumers should project
-`declaration_ready`, not infer terminal success from transport status or from the legacy word `completed`.
+`declaration_ready` is publish-ready and still actionable. It is not successful publication. `published` is the only
+successful terminal publication status; clients proceed to agent read/list surfaces and must not repeat complete or
+finalize preflight after observing it.
 
 
 ### Bounded private transcript projection
@@ -217,9 +241,9 @@ should not wait for an explicit local `created` projection before persisting `ho
 
 1. Transport is not state. SSE, JSON, and HTTP status codes only deliver state; durable Host records are the source of
    truth.
-2. `HTTP 200` and `HTTP 202` are not terminal. Terminal publish readiness requires `status=declaration_ready` plus
-   valid `produced_declarations`; for instance-trust hosted genesis, the registration-scoped GET reconciles that
-   readiness into hosted/off-chain publication before returning the status envelope.
+2. `HTTP 200` and `HTTP 202` are not terminal by themselves. Publish readiness requires
+   `status=declaration_ready` plus valid `produced_declarations`; successful publication requires durable
+   `status=published` plus its exact publication checkpoint.
 3. `conversation_id` is persisted early. Lesser persists it before returning control to a browser or retry loop.
 4. Publish requires declaration evidence. Lesser, Greater, and Sim fail closed without active-conversation
    `produced_declarations`.
@@ -227,9 +251,9 @@ should not wait for an explicit local `created` projection before persisting `ho
    `restart_soul_bootstrap`, or `operator_action`.
 6. Idempotency is cross-boundary. `idempotency_key` and `correlation_id` are accepted on POST and echoed through
    `trace_ids` when available; callers must keep them client-safe.
-7. Legacy migration is deterministic. Existing `SOUL_REG` / `MINT_CONVERSATION` rows are dry-run planned into
-   `HostedGenesisSession` seeds without importing raw transcripts; ambiguous active rows become typed recovery states
-   rather than deriving progress from SQS.
+7. Finalized-but-stale prototype convergence is deterministic. Only exact tenant/session-bound promotion and version
+   evidence can advance an existing row to `published`; ambiguous rows remain fail-closed and actionable rather than
+   being hidden by a client override.
 8. `SoulAgentMintConversation` is compatibility/projection input after Project 51 M2. It may supply legacy declaration
    JSON, safe migration hints, and the bounded private transcript projection for Lesser display, but it no longer defines
    user-visible status, retry, billing, recovery, or finalize authority for the Lesser instance-key route family.
