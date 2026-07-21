@@ -481,7 +481,7 @@ func TestAdvanceUpdateBodyDeployWait_UsesReceiptWhenTrackedRunIsStale(t *testing
 		store: st,
 		s3: &fakeS3{byKey: map[string]*s3.GetObjectOutput{
 			"managed/updates/slug/job-1/body-state.json": {
-				Body: io.NopCloser(strings.NewReader(`{"version":1,"stage":"dev","base_domain":"slug.example.com","lesser_body_version":"v0.1.14"}`)),
+				Body: io.NopCloser(strings.NewReader(`{"version":1,"stage":"dev","base_domain":"slug.example.com","lesser_body_version":"v0.1.14","soul_binding_integration":{"version":1,"source":"deploy-runner-managed-profile","secret_arn":"arn:aws:secretsmanager:us-east-1:123456789012:secret:dev/slug/soul-binding-integration-Ab12Cd","key_id":"5b0a2f9f8a3f0d3c8a3b1e0f2c4d6e8f0a1b2c3d4e5f60718293a4b5c6d7e8f9","instance_slug":"slug","stage":"dev","verified_at":"2026-06-27T00:00:00Z"}}`)),
 			},
 		}},
 	}

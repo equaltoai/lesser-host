@@ -98,14 +98,18 @@ func (s *Server) populateUpdateDeployRunnerDerivedInputs(job *models.UpdateJob, 
 	if inputs.adminWallet == "" {
 		return updateDeployRunnerInputs{}, fmt.Errorf("instance owner is not a wallet username")
 	}
+	inputs.stage = normalizeManagedLesserStage(strings.TrimSpace(s.cfg.Stage))
 
 	// Update jobs created before the soul-binding automation carry no secret reference;
-	// fall back to the canonical name so the runner can ensure the secret deterministically.
+	// use the one target-stage canonical name so the runner can ensure the secret deterministically.
 	if inputs.soulBindingSecretArn == "" {
 		inputs.soulBindingSecretArn = s.resolveUpdateSoulBindingSecretRef(job, inst)
 	}
-
-	inputs.stage = normalizeManagedLesserStage(strings.TrimSpace(s.cfg.Stage))
+	binding := updateManagedInstanceKeyReceiptBinding(job)
+	binding.stage = inputs.stage
+	if err := validateSoulBindingIntegrationSecretRef(binding, inputs.stage, inputs.soulBindingSecretArn); err != nil {
+		return updateDeployRunnerInputs{}, err
+	}
 	inputs.receiptKey = s.updateReceiptS3Key(job)
 	inputs.bootstrapKey = s.updateBootstrapS3Key(strings.TrimSpace(job.InstanceSlug))
 	inputs.lesserHostURL = strings.TrimSpace(job.LesserHostBaseURL)
@@ -249,7 +253,6 @@ func (s *Server) startUpdateDeployRunnerWithMode(ctx context.Context, job *model
 	if mode == deployRunnerModeLesserBody && job.BodyTemplateCertify {
 		env = append(env, cbtypes.EnvironmentVariable{Name: aws.String("BODY_TEMPLATE_CERTIFY"), Value: aws.String(envBoolTrue)})
 	}
-
 	idempotencyToken := codebuildIdempotencyToken(
 		projectName,
 		inputs.stage,
@@ -265,7 +268,21 @@ func (s *Server) startUpdateDeployRunnerWithMode(ctx context.Context, job *model
 	if idempotencyToken != "" {
 		startIn.IdempotencyToken = aws.String(idempotencyToken)
 	}
+	return s.startVerifiedUpdateDeployRunner(ctx, job, inputs, startIn)
+}
 
+func (s *Server) startVerifiedUpdateDeployRunner(ctx context.Context, job *models.UpdateJob, inputs updateDeployRunnerInputs, startIn *codebuild.StartBuildInput) (string, error) {
+	trustErr := s.ensureDeployRunnerAssumeRoleTrust(
+		ctx,
+		inputs.accountID,
+		inputs.roleName,
+		inputs.region,
+		strings.TrimSpace(job.InstanceSlug),
+		strings.TrimSpace(job.ID),
+	)
+	if trustErr != nil {
+		return "", fmt.Errorf("deploy runner trust bootstrap failed: %s", compactErr(trustErr))
+	}
 	out, err := s.cb.StartBuild(ctx, startIn)
 	if err != nil {
 		return "", err

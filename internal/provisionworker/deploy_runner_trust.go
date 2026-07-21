@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"slices"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -12,6 +13,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/iam"
 )
+
+const iamServiceName = "iam"
 
 type iamAPI interface {
 	GetRole(ctx context.Context, params *iam.GetRoleInput, optFns ...func(*iam.Options)) (*iam.GetRoleOutput, error)
@@ -48,8 +51,13 @@ func (s *Server) ensureDeployRunnerAssumeRoleTrust(ctx context.Context, accountI
 	if err != nil {
 		return fmt.Errorf("get managed instance role trust policy: %w", err)
 	}
-	if out == nil || out.Role == nil || strings.TrimSpace(aws.ToString(out.Role.AssumeRolePolicyDocument)) == "" {
+	rawPolicy := managedInstanceRoleTrustPolicy(out)
+	if rawPolicy == "" {
 		return fmt.Errorf("managed instance role trust policy is empty")
+	}
+	managementPrincipalARN, err := s.resolveManagementRootPrincipalARN(rawPolicy)
+	if err != nil {
+		return err
 	}
 
 	// Derive a tenant-scoped external ID to prevent cross-tenant assume-role.
@@ -57,21 +65,136 @@ func (s *Server) ensureDeployRunnerAssumeRoleTrust(ctx context.Context, accountI
 	// because tenant B's trust policy requires an external ID the runner does not know.
 	externalID := deployRunnerExternalID(slug)
 
-	updated, changed, err := ensureAssumeRolePolicyAllowsPrincipal(aws.ToString(out.Role.AssumeRolePolicyDocument), runnerRoleARN, externalID)
+	updated, changed, err := ensureAssumeRolePolicyAllowsPrincipal(rawPolicy, runnerRoleARN, externalID, managementPrincipalARN)
 	if err != nil {
 		return err
 	}
-	if !changed {
-		return nil
+	verifiedPolicy := rawPolicy
+	if changed {
+		verifiedPolicy, err = updateAndReadBackAssumeRoleTrustPolicy(ctx, childIAM, roleName, updated)
+		if err != nil {
+			return err
+		}
 	}
 
-	if _, err := childIAM.UpdateAssumeRolePolicy(ctx, &iam.UpdateAssumeRolePolicyInput{
-		RoleName:       aws.String(roleName),
-		PolicyDocument: aws.String(updated),
-	}); err != nil {
-		return fmt.Errorf("update managed instance role trust policy: %w", err)
+	if err := verifyDeployRunnerAssumeRoleTrustPolicy(verifiedPolicy, runnerRoleARN, externalID, managementPrincipalARN); err != nil {
+		return fmt.Errorf("verify managed instance role trust policy: %w", err)
 	}
 	return nil
+}
+
+func updateAndReadBackAssumeRoleTrustPolicy(ctx context.Context, childIAM iamAPI, roleName string, policy string) (string, error) {
+	if _, err := childIAM.UpdateAssumeRolePolicy(ctx, &iam.UpdateAssumeRolePolicyInput{
+		RoleName:       aws.String(roleName),
+		PolicyDocument: aws.String(policy),
+	}); err != nil {
+		return "", fmt.Errorf("update managed instance role trust policy: %w", err)
+	}
+
+	verified, err := childIAM.GetRole(ctx, &iam.GetRoleInput{RoleName: aws.String(roleName)})
+	if err != nil {
+		return "", fmt.Errorf("verify managed instance role trust policy: %w", err)
+	}
+	verifiedPolicy := managedInstanceRoleTrustPolicy(verified)
+	if verifiedPolicy == "" {
+		return "", fmt.Errorf("verify managed instance role trust policy: policy is empty")
+	}
+	return verifiedPolicy, nil
+}
+
+func managedInstanceRoleTrustPolicy(out *iam.GetRoleOutput) string {
+	if out == nil || out.Role == nil {
+		return ""
+	}
+	return strings.TrimSpace(aws.ToString(out.Role.AssumeRolePolicyDocument))
+}
+
+func (s *Server) resolveManagementRootPrincipalARN(rawPolicy string) (string, error) {
+	if s != nil && strings.TrimSpace(s.cfg.ManagedOrgVendingRoleARN) != "" {
+		managementIdentityARN := strings.TrimSpace(s.cfg.ManagedOrgVendingRoleARN)
+		if err := validateIAMRoleARN(managementIdentityARN); err != nil {
+			return "", fmt.Errorf("invalid managed org vending role arn: %w", err)
+		}
+		return managementRootPrincipalARN(managementIdentityARN)
+	}
+
+	roots, err := directManagementRootPrincipals(rawPolicy)
+	if err != nil {
+		return "", err
+	}
+	if len(roots) == 1 {
+		return roots[0], nil
+	}
+	if len(roots) == 0 {
+		return "", fmt.Errorf("management root trust is missing and managed org vending role arn is not configured")
+	}
+	return "", fmt.Errorf("management root trust is ambiguous and managed org vending role arn is not configured")
+}
+
+func directManagementRootPrincipals(rawPolicy string) ([]string, error) {
+	policyJSON, err := decodeAssumeRolePolicyDocument(rawPolicy)
+	if err != nil {
+		return nil, err
+	}
+	var doc map[string]any
+	if unmarshalErr := json.Unmarshal([]byte(policyJSON), &doc); unmarshalErr != nil {
+		return nil, fmt.Errorf("parse managed instance role trust policy: %w", unmarshalErr)
+	}
+	statements, err := normalizedPolicyStatements(doc["Statement"])
+	if err != nil {
+		return nil, err
+	}
+
+	seen := map[string]struct{}{}
+	for _, statement := range statements {
+		stmt, ok := statement.(map[string]any)
+		if !ok || !strings.EqualFold(strings.TrimSpace(fmt.Sprint(stmt["Effect"])), "Allow") {
+			continue
+		}
+		if !policyValueContains(stmt["Action"], "sts:AssumeRole") && !policyValueContains(stmt["Action"], "sts:*") && !policyValueContains(stmt["Action"], "*") {
+			continue
+		}
+		if conditionMentionsExternalID(stmt["Condition"]) {
+			continue
+		}
+		for _, candidate := range policyPrincipalAWSValues(stmt["Principal"]) {
+			candidate = strings.TrimSpace(candidate)
+			if validateIAMRootARN(candidate) == nil {
+				seen[candidate] = struct{}{}
+			}
+		}
+	}
+
+	roots := make([]string, 0, len(seen))
+	for root := range seen {
+		roots = append(roots, root)
+	}
+	slices.Sort(roots)
+	return roots, nil
+}
+
+func policyPrincipalAWSValues(value any) []string {
+	if principal, ok := value.(map[string]any); ok {
+		return policyStringValues(principal["AWS"])
+	}
+	return policyStringValues(value)
+}
+
+func policyStringValues(value any) []string {
+	switch v := value.(type) {
+	case string:
+		return []string{v}
+	case []any:
+		out := make([]string, 0, len(v))
+		for _, item := range v {
+			out = append(out, policyStringValues(item)...)
+		}
+		return out
+	case []string:
+		return append([]string(nil), v...)
+	default:
+		return nil
+	}
 }
 
 // deployRunnerExternalID returns a tenant-scoped external ID used for sts:ExternalId
@@ -124,13 +247,24 @@ func validateIAMRoleARN(value string) error {
 	if err != nil {
 		return err
 	}
-	if parsed.Service != "iam" || parsed.AccountID == "" || !strings.HasPrefix(parsed.Resource, "role/") {
+	if parsed.Service != iamServiceName || parsed.AccountID == "" || !strings.HasPrefix(parsed.Resource, "role/") {
 		return fmt.Errorf("expected iam role arn")
 	}
 	return nil
 }
 
-func ensureAssumeRolePolicyAllowsPrincipal(rawPolicy string, principalARN string, externalID string) (string, bool, error) {
+func validateIAMRootARN(value string) error {
+	parsed, err := arn.Parse(strings.TrimSpace(value))
+	if err != nil {
+		return fmt.Errorf("invalid management root principal arn: %w", err)
+	}
+	if parsed.Service != iamServiceName || parsed.AccountID == "" || parsed.Resource != "root" {
+		return fmt.Errorf("invalid management root principal arn: expected iam account root arn")
+	}
+	return nil
+}
+
+func ensureAssumeRolePolicyAllowsPrincipal(rawPolicy string, principalARN string, externalID string, managementPrincipalARN string) (string, bool, error) {
 	principalARN = strings.TrimSpace(principalARN)
 	if principalARN == "" {
 		return "", false, fmt.Errorf("principal arn is required")
@@ -155,9 +289,8 @@ func ensureAssumeRolePolicyAllowsPrincipal(rawPolicy string, principalARN string
 		return "", false, err
 	}
 
-	managementPrincipalARN, err := managementRootPrincipalARN(principalARN)
-	if err != nil {
-		return "", false, err
+	if rootErr := validateIAMRootARN(managementPrincipalARN); rootErr != nil {
+		return "", false, rootErr
 	}
 
 	updatedStatements, changed, err := applyExternalIDCondition(statements, principalARN, externalID, managementPrincipalARN)
@@ -174,6 +307,46 @@ func ensureAssumeRolePolicyAllowsPrincipal(rawPolicy string, principalARN string
 		return "", false, fmt.Errorf("marshal managed instance role trust policy: %w", err)
 	}
 	return string(updated), true, nil
+}
+
+func verifyDeployRunnerAssumeRoleTrustPolicy(rawPolicy string, principalARN string, externalID string, managementPrincipalARN string) error {
+	policyJSON, err := decodeAssumeRolePolicyDocument(rawPolicy)
+	if err != nil {
+		return err
+	}
+	var doc map[string]any
+	if unmarshalErr := json.Unmarshal([]byte(policyJSON), &doc); unmarshalErr != nil {
+		return fmt.Errorf("parse managed instance role trust policy: %w", unmarshalErr)
+	}
+	statements, err := normalizedPolicyStatements(doc["Statement"])
+	if err != nil {
+		return err
+	}
+
+	runnerAllowFound := false
+	runnerDenyFound := false
+	managementTrustFound := false
+	for _, statement := range statements {
+		if assumeRoleStatementAllowsExactPrincipal(statement, principalARN) && assumeRoleStatementHasExternalID(statement, externalID) {
+			runnerAllowFound = true
+		}
+		if assumeRoleStatementDeniesExternalIDMismatch(statement, principalARN, externalID) {
+			runnerDenyFound = true
+		}
+		if assumeRoleStatementAllowsExactPrincipal(statement, managementPrincipalARN) && !conditionMentionsExternalID(statement) {
+			managementTrustFound = true
+		}
+	}
+	if !runnerAllowFound {
+		return fmt.Errorf("exact deploy runner ExternalId allow is missing")
+	}
+	if !runnerDenyFound {
+		return fmt.Errorf("exact deploy runner ExternalId mismatch deny is missing")
+	}
+	if !managementTrustFound {
+		return fmt.Errorf("management root trust is missing")
+	}
+	return nil
 }
 
 // assumeRoleStatementHasExternalID checks whether a trust-policy statement
@@ -218,6 +391,9 @@ func applyExternalIDCondition(statements []any, principalARN string, externalID 
 		}
 	}
 	updatedStatements, changed := transform.finish()
+	if externalID != "" && !transform.managementTrustFound {
+		return nil, false, fmt.Errorf("management root trust is missing from managed instance role trust policy")
+	}
 	if !changed {
 		return statements, false, nil
 	}
@@ -256,7 +432,10 @@ func (t *externalIDConditionTransform) processStatement(statement any) error {
 	}
 
 	broadPrincipal := assumeRoleStatementHasWildcardPrincipal(statement)
-	if t.externalID == "" || (assumeRoleStatementHasExternalID(statement, t.externalID) && !broadPrincipal) {
+	if !broadPrincipal && !assumeRoleStatementHasExactPrincipal(statement, t.principalARN) {
+		return fmt.Errorf("refusing to rewrite deploy runner trust shared with other principals")
+	}
+	if t.externalID == "" || (assumeRoleStatementHasExternalID(statement, t.externalID) && assumeRoleStatementHasExactPrincipal(statement, t.principalARN) && !broadPrincipal) {
 		t.keepRunnerStatement(statement)
 		return nil
 	}
@@ -300,7 +479,7 @@ func (t *externalIDConditionTransform) finish() ([]any, bool) {
 		t.filtered = append(t.filtered, deployRunnerAssumeRoleStatement(t.principalARN, t.externalID))
 		t.changed = true
 	}
-	if t.externalID != "" && t.managementTrustFound && !t.runnerDenyFound {
+	if t.externalID != "" && !t.runnerDenyFound {
 		t.filtered = append(t.filtered, deployRunnerExternalIDDenyStatement(t.principalARN, t.externalID))
 		t.changed = true
 	}
@@ -382,10 +561,10 @@ func clonePolicyJSONValue(value any) (any, error) {
 func managementRootPrincipalARN(principalARN string) (string, error) {
 	parsed, err := arn.Parse(strings.TrimSpace(principalARN))
 	if err != nil {
-		return "", fmt.Errorf("derive management principal from deploy runner arn: %w", err)
+		return "", fmt.Errorf("derive management principal from role arn: %w", err)
 	}
 	if parsed.Service != "iam" || parsed.AccountID == "" {
-		return "", fmt.Errorf("derive management principal from deploy runner arn: expected iam role arn")
+		return "", fmt.Errorf("derive management principal from role arn: expected iam role arn")
 	}
 	return fmt.Sprintf("arn:aws:iam::%s:root", parsed.AccountID), nil
 }
@@ -436,6 +615,25 @@ func assumeRoleStatementAllowsPrincipal(statement any, principalARN string) bool
 	return principalAllowsARN(stmt["Principal"], principalARN)
 }
 
+func assumeRoleStatementAllowsExactPrincipal(statement any, principalARN string) bool {
+	stmt, ok := statement.(map[string]any)
+	if !ok {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSpace(fmt.Sprint(stmt["Effect"])), "Allow") {
+		return false
+	}
+	if !policyValueContains(stmt["Action"], "sts:AssumeRole") && !policyValueContains(stmt["Action"], "sts:*") && !policyValueContains(stmt["Action"], "*") {
+		return false
+	}
+	return principalExactlyARN(stmt["Principal"], principalARN)
+}
+
+func assumeRoleStatementHasExactPrincipal(statement any, principalARN string) bool {
+	stmt, ok := statement.(map[string]any)
+	return ok && principalExactlyARN(stmt["Principal"], principalARN)
+}
+
 func assumeRoleStatementAllowsExplicitPrincipal(statement any, principalARN string) bool {
 	stmt, ok := statement.(map[string]any)
 	if !ok {
@@ -461,7 +659,7 @@ func assumeRoleStatementDeniesExternalIDMismatch(statement any, principalARN str
 	if !policyValueContains(stmt["Action"], "sts:AssumeRole") && !policyValueContains(stmt["Action"], "sts:*") && !policyValueContains(stmt["Action"], "*") {
 		return false
 	}
-	if !principalAllowsARN(stmt["Principal"], principalARN) {
+	if !principalExactlyARN(stmt["Principal"], principalARN) {
 		return false
 	}
 	condition, ok := stmt["Condition"].(map[string]any)
@@ -493,6 +691,35 @@ func principalAllowsARN(value any, principalARN string) bool {
 		return false
 	}
 	return policyValueContains(principal["AWS"], principalARN) || policyValueContains(principal["AWS"], "*")
+}
+
+func principalExactlyARN(value any, principalARN string) bool {
+	principalARN = strings.TrimSpace(principalARN)
+	switch v := value.(type) {
+	case string:
+		return strings.EqualFold(strings.TrimSpace(v), principalARN)
+	case map[string]any:
+		if len(v) != 1 {
+			return false
+		}
+		awsValue, ok := v["AWS"]
+		return ok && policyValueExactly(awsValue, principalARN)
+	default:
+		return false
+	}
+}
+
+func policyValueExactly(value any, want string) bool {
+	switch v := value.(type) {
+	case string:
+		return strings.EqualFold(strings.TrimSpace(v), strings.TrimSpace(want))
+	case []any:
+		return len(v) == 1 && policyValueExactly(v[0], want)
+	case []string:
+		return len(v) == 1 && policyValueExactly(v[0], want)
+	default:
+		return false
+	}
 }
 
 func principalNamesARN(value any, principalARN string) bool {

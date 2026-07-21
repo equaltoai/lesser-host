@@ -109,6 +109,21 @@ test('runner manages soul-binding integration secret and passes one ARN to both 
 	assert.match(buildCommands, /soul_binding_integration:\$soul_binding\[0\]/);
 });
 
+test('runner reuses the one canonical soul-binding secret without rotation', () => {
+	const start = buildCommands.indexOf('ensure_soul_binding_integration_secret()');
+	const end = buildCommands.indexOf('validate_https_custom_domain()', start);
+	assert.notEqual(start, -1);
+	assert.notEqual(end, -1);
+	const ensureBody = buildCommands.slice(start, end);
+
+	assert.match(ensureBody, /secret_ref="\$\{SOUL_BINDING_INTEGRATION_KEY_ARN:-\}"/);
+	assert.match(ensureBody, /if \[ -z "\$secret_ref" \]; then secret_ref=\$\(soul_binding_integration_secret_name\); fi/);
+	assert.match(ensureBody, /describe-secret --profile managed --secret-id "\$secret_ref"/);
+	assert.match(ensureBody, /validate_soul_binding_integration_secret_tags "\$desc_path"/);
+	assert.match(ensureBody, /read_managed_instance_key_plaintext "\$secret_arn"/);
+	assert.doesNotMatch(ensureBody, /update-secret|put-secret-value|SOUL_BINDING_INTEGRATION_ROTATE/);
+});
+
 test('runner emits explicit asset-contract failure messages', () => {
 	assert.match(buildCommands, /lesser-body release unexpectedly requires a source checkout/);
 	assert.match(buildCommands, /unexpected lesser-body deploy manifest path/);

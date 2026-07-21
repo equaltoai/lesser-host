@@ -53,8 +53,11 @@ It assumes:
      - `--provisioning-input <path>`
      - `--release-dir <verified-release-dir>`
    - before CodeBuild starts, the provisioning worker revalidates that the job's slug, account ID, role, region, and
-     base domain match the instance metadata; the runner also verifies that its assumed `managed` AWS profile resolves
-     to the requested account ID.
+     base domain match the instance metadata. It then idempotently repairs and reads back the target role trust policy:
+     the Organizations management-account root trust remains present, and only the exact configured CodeBuild role is
+     allowed with `sts:ExternalId=lesser-host/deploy/<slug>` plus an explicit mismatch deny. A repair or verification
+     failure stops before `StartBuild`. The runner also verifies that its assumed `managed` AWS profile resolves to the
+     requested account ID.
    - immediately seed the admin wallet and unlock the instance:
      - `lesser init-admin --base-domain <slug.greater.website> --aws-profile <temp-profile> --provisioning-input <path>`
    - read the deployment receipt `~/.lesser/<app>/<base-domain>/state.json`.
@@ -280,13 +283,14 @@ operator step** to create or pair matching secrets for managed instances: the ea
 configures matching secret ARNs for Body and Lesser is obsolete and wrong for managed instances.
 
 The deploy runner (all of `RUN_MODE=lesser`, `lesser-mcp`, and `lesser-body`) idempotently ensures one Secrets Manager
-secret per managed instance in the instance account, named by the normalized control-plane stage
-(`lab/<slug>/soul-binding-integration`, `live/<slug>/soul-binding-integration`, etc.). The bearer value uses the
+secret per managed instance in the instance account, named by the normalized **target deployment stage**. A `lab`
+control plane targets `dev/<slug>/soul-binding-integration`; `live`, `prod`, and `production` target
+`live/<slug>/soul-binding-integration`. There is no alternate or legacy prefix. The bearer value uses the
 `lsbi_` prefix (distinct from `lhk_` instance keys) and the secret carries host-managed tags for slug
 (`lesser-host:instance-slug`), key ID (`lesser-host:soul-binding-key-id`, the sha256 of the bearer), managed status
-(`lesser-host:managed`), and control-plane stage (`lesser-host:control-plane-stage`). Reruns and updates reuse the
-existing secret; a recorded ARN on the instance/update job is carried forward through the deploy-runner environment
-(`SOUL_BINDING_INTEGRATION_KEY_ARN`).
+(`lesser-host:managed`), and target deployment stage (`lesser-host:control-plane-stage`). Reruns and updates validate
+and reuse the existing canonical secret without rotation or replacement; a recorded canonical ARN on the
+instance/update job is carried forward through the deploy-runner environment (`SOUL_BINDING_INTEGRATION_KEY_ARN`).
 
 The **same exact ARN** is injected into both children:
 
@@ -295,7 +299,8 @@ The **same exact ARN** is injected into both children:
   `deploy-lesser-body-from-release.sh`
 
 Each runner receipt includes a `soul_binding_integration` proof (`secret_arn`, `key_id`, `instance_slug`, `stage`,
-`source`) that the provisioning worker validates against the job's tenant binding and persists as
+`source`) that the provisioning worker validates against the canonical account, region, slug, and target-stage binding
+before persisting the ARN as
 `soul_binding_integration_secret_arn` on the instance and update job. The raw bearer value never appears in receipts,
 logs, job records, or operator output — only the ARN and the sha256 key id.
 
