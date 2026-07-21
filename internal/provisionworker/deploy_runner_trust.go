@@ -13,6 +13,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/iam"
 )
 
+const iamServiceName = "iam"
+
 type iamAPI interface {
 	GetRole(ctx context.Context, params *iam.GetRoleInput, optFns ...func(*iam.Options)) (*iam.GetRoleOutput, error)
 	UpdateAssumeRolePolicy(ctx context.Context, params *iam.UpdateAssumeRolePolicyInput, optFns ...func(*iam.Options)) (*iam.UpdateAssumeRolePolicyOutput, error)
@@ -68,20 +70,9 @@ func (s *Server) ensureDeployRunnerAssumeRoleTrust(ctx context.Context, accountI
 	}
 	verifiedPolicy := rawPolicy
 	if changed {
-		if _, err := childIAM.UpdateAssumeRolePolicy(ctx, &iam.UpdateAssumeRolePolicyInput{
-			RoleName:       aws.String(roleName),
-			PolicyDocument: aws.String(updated),
-		}); err != nil {
-			return fmt.Errorf("update managed instance role trust policy: %w", err)
-		}
-
-		verified, verifyReadErr := childIAM.GetRole(ctx, &iam.GetRoleInput{RoleName: aws.String(roleName)})
-		if verifyReadErr != nil {
-			return fmt.Errorf("verify managed instance role trust policy: %w", verifyReadErr)
-		}
-		verifiedPolicy = managedInstanceRoleTrustPolicy(verified)
-		if verifiedPolicy == "" {
-			return fmt.Errorf("verify managed instance role trust policy: policy is empty")
+		verifiedPolicy, err = updateAndReadBackAssumeRoleTrustPolicy(ctx, childIAM, roleName, updated)
+		if err != nil {
+			return err
 		}
 	}
 
@@ -89,6 +80,25 @@ func (s *Server) ensureDeployRunnerAssumeRoleTrust(ctx context.Context, accountI
 		return fmt.Errorf("verify managed instance role trust policy: %w", err)
 	}
 	return nil
+}
+
+func updateAndReadBackAssumeRoleTrustPolicy(ctx context.Context, childIAM iamAPI, roleName string, policy string) (string, error) {
+	if _, err := childIAM.UpdateAssumeRolePolicy(ctx, &iam.UpdateAssumeRolePolicyInput{
+		RoleName:       aws.String(roleName),
+		PolicyDocument: aws.String(policy),
+	}); err != nil {
+		return "", fmt.Errorf("update managed instance role trust policy: %w", err)
+	}
+
+	verified, err := childIAM.GetRole(ctx, &iam.GetRoleInput{RoleName: aws.String(roleName)})
+	if err != nil {
+		return "", fmt.Errorf("verify managed instance role trust policy: %w", err)
+	}
+	verifiedPolicy := managedInstanceRoleTrustPolicy(verified)
+	if verifiedPolicy == "" {
+		return "", fmt.Errorf("verify managed instance role trust policy: policy is empty")
+	}
+	return verifiedPolicy, nil
 }
 
 func managedInstanceRoleTrustPolicy(out *iam.GetRoleOutput) string {
@@ -159,7 +169,7 @@ func validateIAMRoleARN(value string) error {
 	if err != nil {
 		return err
 	}
-	if parsed.Service != "iam" || parsed.AccountID == "" || !strings.HasPrefix(parsed.Resource, "role/") {
+	if parsed.Service != iamServiceName || parsed.AccountID == "" || !strings.HasPrefix(parsed.Resource, "role/") {
 		return fmt.Errorf("expected iam role arn")
 	}
 	return nil
@@ -170,7 +180,7 @@ func validateIAMRootARN(value string) error {
 	if err != nil {
 		return fmt.Errorf("invalid management root principal arn: %w", err)
 	}
-	if parsed.Service != "iam" || parsed.AccountID == "" || parsed.Resource != "root" {
+	if parsed.Service != iamServiceName || parsed.AccountID == "" || parsed.Resource != "root" {
 		return fmt.Errorf("invalid management root principal arn: expected iam account root arn")
 	}
 	return nil
@@ -201,8 +211,8 @@ func ensureAssumeRolePolicyAllowsPrincipal(rawPolicy string, principalARN string
 		return "", false, err
 	}
 
-	if err := validateIAMRootARN(managementPrincipalARN); err != nil {
-		return "", false, err
+	if rootErr := validateIAMRootARN(managementPrincipalARN); rootErr != nil {
+		return "", false, rootErr
 	}
 
 	updatedStatements, changed, err := applyExternalIDCondition(statements, principalARN, externalID, managementPrincipalARN)
@@ -227,8 +237,8 @@ func verifyDeployRunnerAssumeRoleTrustPolicy(rawPolicy string, principalARN stri
 		return err
 	}
 	var doc map[string]any
-	if err := json.Unmarshal([]byte(policyJSON), &doc); err != nil {
-		return fmt.Errorf("parse managed instance role trust policy: %w", err)
+	if unmarshalErr := json.Unmarshal([]byte(policyJSON), &doc); unmarshalErr != nil {
+		return fmt.Errorf("parse managed instance role trust policy: %w", unmarshalErr)
 	}
 	statements, err := normalizedPolicyStatements(doc["Statement"])
 	if err != nil {
