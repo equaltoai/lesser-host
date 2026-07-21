@@ -1483,6 +1483,9 @@ func (s *Server) advanceUpdateLoadedDeployReceipt(
 			return 0, false, s.failUpdateJob(ctx, job, requestID, now, "receipt_instance_key_invalid", "failed to validate managed instance key receipt: "+keyErr.Error())
 		}
 	}
+	if soulErr := s.applyUpdateSoulBindingIntegrationReceiptJSON(job, receiptJSON); soulErr != nil {
+		return 0, false, s.failUpdateJob(ctx, job, requestID, now, "receipt_soul_binding_invalid", "failed to validate soul binding integration receipt: "+soulErr.Error())
+	}
 	if strings.TrimSpace(job.RunID) != "" {
 		if info, infoErr := s.getDeployRunnerInfo(ctx, strings.TrimSpace(job.RunID)); infoErr == nil && strings.TrimSpace(info.DeepLink) != "" {
 			job.RunURL = strings.TrimSpace(info.DeepLink)
@@ -1495,7 +1498,7 @@ func (s *Server) advanceUpdateLoadedDeployReceipt(
 	job.Step = updateStepVerify
 	job.Note = noteVerifyingDeployment
 	setUpdateJobActivePhase(job, updatePhaseVerify)
-	if err := s.persistUpdateJobAndInstance(ctx, job, requestID, now, nil); err != nil {
+	if err := s.persistUpdateJobAndInstance(ctx, job, requestID, now, updateSoulBindingIntegrationInstanceUpdate(job)); err != nil {
 		return 0, false, err
 	}
 	return s.advanceUpdateVerify(ctx, job, requestID, now)
@@ -1547,6 +1550,9 @@ func (s *Server) advanceUpdateReceiptIngest(ctx context.Context, job *models.Upd
 			return 0, false, s.failUpdateJob(ctx, job, requestID, now, "receipt_instance_key_invalid", "failed to validate managed instance key receipt: "+keyErr.Error())
 		}
 	}
+	if soulErr := s.applyUpdateSoulBindingIntegrationReceiptJSON(job, receiptJSON); soulErr != nil {
+		return 0, false, s.failUpdateJob(ctx, job, requestID, now, "receipt_soul_binding_invalid", "failed to validate soul binding integration receipt: "+soulErr.Error())
+	}
 
 	job.ReceiptJSON = strings.TrimSpace(receiptJSON)
 	job.RunID = ""
@@ -1555,7 +1561,7 @@ func (s *Server) advanceUpdateReceiptIngest(ctx context.Context, job *models.Upd
 	job.Step = updateStepVerify
 	job.Note = noteVerifyingDeployment
 	setUpdateJobActivePhase(job, updatePhaseVerify)
-	if err := s.persistUpdateJobAndInstance(ctx, job, requestID, now, nil); err != nil {
+	if err := s.persistUpdateJobAndInstance(ctx, job, requestID, now, updateSoulBindingIntegrationInstanceUpdate(job)); err != nil {
 		return 0, false, err
 	}
 	return 0, false, nil

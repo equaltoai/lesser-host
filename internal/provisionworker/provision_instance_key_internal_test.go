@@ -250,6 +250,108 @@ func TestStartDeployRunnerWithMode_FollowOnModesReverifyTrustWithoutReadingSecre
 	}
 }
 
+func TestStartUpdateDeployRunnerWithMode_ReverifiesTrustBeforeEveryCodeBuildPhase(t *testing.T) {
+	t.Parallel()
+
+	for _, mode := range []string{deployRunnerModeLesser, deployRunnerModeLesserBody, deployRunnerModeLesserMCP} {
+		mode := mode
+		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
+
+			cb := &fakeCodebuild{startOut: &codebuild.StartBuildOutput{Build: &cbtypes.Build{Id: aws.String("run1")}}}
+			iamClient := &fakeIAM{getOut: &iam.GetRoleOutput{Role: &iamtypes.Role{AssumeRolePolicyDocument: aws.String(testExternalManagementRootTrust)}}}
+			srv := &Server{
+				cfg: config.Config{
+					Stage:                             "lab",
+					ManagedOrgVendingRoleARN:          "arn:aws:iam::902552026581:role/lesser-host-org-vending",
+					ManagedInstanceRoleName:           "OrganizationAccountAccessRole",
+					ManagedProvisionRunnerProjectName: "runner-project",
+					ManagedProvisionRunnerRoleARN:     testDeployRunnerRoleARN,
+					ArtifactBucketName:                "artifact-bucket",
+					ManagedLesserGitHubOwner:          "equaltoai",
+					ManagedLesserGitHubRepo:           "lesser",
+				},
+				cb: cb,
+				iamFactory: func(context.Context, string, string, string, string, string) (iamAPI, error) {
+					return iamClient, nil
+				},
+			}
+			job := &models.UpdateJob{
+				ID:                             "update1",
+				InstanceSlug:                   "theory",
+				AccountID:                      "922120356241",
+				AccountRoleName:                "OrganizationAccountAccessRole",
+				Region:                         "us-east-1",
+				BaseDomain:                     "theory.greater.website",
+				LesserVersion:                  "v1.2.3",
+				LesserBodyVersion:              "v1.0.8",
+				LesserHostInstanceKeySecretARN: "arn:aws:secretsmanager:us-east-1:922120356241:secret:dev/theory/instance-key",
+			}
+			inst := &models.Instance{
+				Slug:             "theory",
+				Owner:            "wallet-0000000000000000000000000000000000000003",
+				HostedAccountID:  "922120356241",
+				HostedRegion:     "us-east-1",
+				HostedBaseDomain: "theory.greater.website",
+			}
+
+			runID, err := srv.startUpdateDeployRunnerWithMode(context.Background(), job, inst, mode, "receipt.json")
+			require.NoError(t, err)
+			require.Equal(t, "run1", runID)
+			require.Len(t, iamClient.getInputs, 2, "trust repair must be read back before StartBuild")
+			require.Len(t, iamClient.updateInputs, 1)
+			require.Len(t, cb.startInputs, 1)
+		})
+	}
+}
+
+func TestStartUpdateDeployRunnerWithMode_TrustVerificationFailureSkipsCodeBuild(t *testing.T) {
+	t.Parallel()
+
+	cb := &fakeCodebuild{startOut: &codebuild.StartBuildOutput{Build: &cbtypes.Build{Id: aws.String("must-not-start")}}}
+	iamClient := &fakeIAM{
+		getOut:                &iam.GetRoleOutput{Role: &iamtypes.Role{AssumeRolePolicyDocument: aws.String(testExternalManagementRootTrust)}},
+		keepPolicyAfterUpdate: true,
+	}
+	srv := &Server{
+		cfg: config.Config{
+			Stage:                             "lab",
+			ManagedOrgVendingRoleARN:          "arn:aws:iam::902552026581:role/lesser-host-org-vending",
+			ManagedInstanceRoleName:           "OrganizationAccountAccessRole",
+			ManagedProvisionRunnerProjectName: "runner-project",
+			ManagedProvisionRunnerRoleARN:     testDeployRunnerRoleARN,
+			ArtifactBucketName:                "artifact-bucket",
+			ManagedLesserGitHubOwner:          "equaltoai",
+			ManagedLesserGitHubRepo:           "lesser",
+		},
+		cb: cb,
+		iamFactory: func(context.Context, string, string, string, string, string) (iamAPI, error) {
+			return iamClient, nil
+		},
+	}
+	job := &models.UpdateJob{
+		ID:                             "update1",
+		InstanceSlug:                   "theory",
+		AccountID:                      "922120356241",
+		AccountRoleName:                "OrganizationAccountAccessRole",
+		Region:                         "us-east-1",
+		BaseDomain:                     "theory.greater.website",
+		LesserVersion:                  "v1.2.3",
+		LesserHostInstanceKeySecretARN: "arn:aws:secretsmanager:us-east-1:922120356241:secret:dev/theory/instance-key",
+	}
+	inst := &models.Instance{
+		Slug:             "theory",
+		Owner:            "wallet-0000000000000000000000000000000000000003",
+		HostedAccountID:  "922120356241",
+		HostedRegion:     "us-east-1",
+		HostedBaseDomain: "theory.greater.website",
+	}
+
+	_, err := srv.startUpdateDeployRunnerWithMode(context.Background(), job, inst, deployRunnerModeLesser, "receipt.json")
+	require.ErrorContains(t, err, "deploy runner trust bootstrap failed")
+	require.Empty(t, cb.startInputs, "StartBuild must not run when update trust verification fails")
+}
+
 func TestAdvanceProvisionReceiptIngest_AppliesManagedInstanceKeyProofWithoutTargetRead(t *testing.T) {
 	t.Parallel()
 

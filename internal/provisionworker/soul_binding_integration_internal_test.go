@@ -215,7 +215,7 @@ func TestApplyProvisionSoulBindingIntegrationReceipt_Validation(t *testing.T) {
 
 	badStage := validSoulBindingIntegrationReceipt("922120356241", "us-east-1", "theory", "dev")
 	_, err = s.applyProvisionSoulBindingIntegrationReceipt(job, badStage)
-	require.ErrorContains(t, err, "stage does not match control plane stage")
+	require.ErrorContains(t, err, "stage does not match target deployment stage")
 
 	badAccount := validSoulBindingIntegrationReceipt("922120356241", "us-east-1", "theory", "live")
 	badAccount.SecretARN = provisionTestSoulBindingSecretARN("111111111111", "us-east-1", "theory", "live")
@@ -270,8 +270,8 @@ func TestApplyUpdateSoulBindingIntegrationReceiptJSON(t *testing.T) {
 	s := &Server{cfg: config.Config{Stage: "live"}}
 	job := &models.UpdateJob{ID: "u1", InstanceSlug: "theory", AccountID: "922120356241", Region: "us-east-1"}
 
-	// Receipts without the proof are tolerated and leave the job untouched.
-	require.NoError(t, s.applyUpdateSoulBindingIntegrationReceiptJSON(job, `{"version":1}`))
+	// Every managed phase must carry proof; there is no legacy/fallback lane.
+	require.ErrorContains(t, s.applyUpdateSoulBindingIntegrationReceiptJSON(job, `{"version":1}`), "proof missing")
 	require.Empty(t, job.SoulBindingIntegrationSecretARN)
 
 	receiptJSON := provisionReceiptWithManagedInstanceKey(

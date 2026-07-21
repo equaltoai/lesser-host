@@ -157,7 +157,7 @@ func (s *Server) validateSoulBindingIntegrationReceiptForBinding(binding managed
 		expectedStage = normalizeManagedLesserStage(binding.stage)
 	}
 	if got := strings.ToLower(strings.TrimSpace(receipt.Stage)); got != expectedStage {
-		return fmt.Errorf("soul binding integration receipt stage does not match control plane stage")
+		return fmt.Errorf("soul binding integration receipt stage does not match target deployment stage")
 	}
 	if err := validateSoulBindingIntegrationReceiptSecretARN(binding, expectedStage, receipt.SecretARN); err != nil {
 		return err
@@ -181,7 +181,7 @@ func (s *Server) applyUpdateSoulBindingIntegrationReceiptJSON(job *models.Update
 		return err
 	}
 	if receipt == nil {
-		return nil
+		return fmt.Errorf("soul binding integration proof missing from receipt")
 	}
 	if err := s.validateSoulBindingIntegrationReceiptForBinding(updateManagedInstanceKeyReceiptBinding(job), receipt); err != nil {
 		return err

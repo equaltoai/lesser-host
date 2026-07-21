@@ -253,6 +253,17 @@ func (s *Server) startUpdateDeployRunnerWithMode(ctx context.Context, job *model
 	if mode == deployRunnerModeLesserBody && job.BodyTemplateCertify {
 		env = append(env, cbtypes.EnvironmentVariable{Name: aws.String("BODY_TEMPLATE_CERTIFY"), Value: aws.String(envBoolTrue)})
 	}
+	trustErr := s.ensureDeployRunnerAssumeRoleTrust(
+		ctx,
+		inputs.accountID,
+		inputs.roleName,
+		inputs.region,
+		strings.TrimSpace(job.InstanceSlug),
+		strings.TrimSpace(job.ID),
+	)
+	if trustErr != nil {
+		return "", fmt.Errorf("deploy runner trust bootstrap failed: %s", compactErr(trustErr))
+	}
 
 	idempotencyToken := codebuildIdempotencyToken(
 		projectName,
