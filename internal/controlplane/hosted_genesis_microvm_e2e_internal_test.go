@@ -211,6 +211,7 @@ func TestH1_5_E2E_MaximumDurationSecondsWired(t *testing.T) {
 	idle := stub.capturedIdlePolicy()
 	if idle == nil {
 		t.Fatalf("expected AppTheory IdlePolicy on the run request")
+		return
 	}
 	if idle.AutoResumeEnabled {
 		t.Fatalf("expected Host default auto-resume disabled until lab proof, got %#v", idle)
