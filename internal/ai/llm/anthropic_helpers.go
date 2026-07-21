@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -124,6 +125,14 @@ var anthropicUnsupportedSchemaKeywords = map[string][]string{
 	"integer": {"minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf"},
 }
 
+// Anthropic documents simple {n,m} regex quantifiers as supported but complex
+// quantifiers with large ranges as unsupported, without publishing a numeric
+// cutoff. Do not guess that cutoff: strip any ranged-quantifier pattern from
+// the provider schema and rely on the field description plus Host's original
+// post-response validation. Fixed quantifiers such as RFC3339's {4} and {2}
+// remain in the strict tool schema.
+var anthropicRangedRegexQuantifier = regexp.MustCompile(`\{[0-9]+,[0-9]+\}`)
+
 func anthropicSchemaKeywordUnsupported(nodeType, keyword string) bool {
 	for _, unsupported := range anthropicUnsupportedSchemaKeywords[nodeType] {
 		if keyword == unsupported {
@@ -146,6 +155,11 @@ func sanitizeAnthropicToolSchemaMap(schema map[string]any) map[string]any {
 		}
 		if anthropicSchemaKeywordUnsupported(nodeType, k) {
 			continue
+		}
+		if nodeType == "string" && k == "pattern" {
+			if pattern, ok := v.(string); ok && anthropicRangedRegexQuantifier.MatchString(pattern) {
+				continue
+			}
 		}
 		out[k] = sanitizeAnthropicToolSchemaValue(v)
 	}

@@ -219,6 +219,53 @@ func TestMintConversationDeclarationsCapabilityContractSurvivesHostValidation(t 
 	if err := validated[0].Validate(); err != nil {
 		t.Fatalf("validated producer output must be a valid CapabilityV2: %v", err)
 	}
+
+	privateValue := "private-provider-capability-evidence"
+	for _, tc := range []struct {
+		name       string
+		capability soul.CapabilityV2
+		wantCode   hostedgenesis.DeclarationValidationCode
+	}{
+		{
+			name: "overlong identifier",
+			capability: soul.CapabilityV2{
+				Capability: strings.Repeat("a", hostedgenesis.MaxProducedCapabilityIdentifierLength+1),
+				Scope:      "scope",
+				ClaimLevel: mintConversationClaimLevelSelfDeclared,
+			},
+			wantCode: hostedgenesis.DeclarationCodeCapabilityIdentifier,
+		},
+		{
+			name: "overlong scope",
+			capability: soul.CapabilityV2{
+				Capability: "planning",
+				Scope:      strings.Repeat(privateValue, hostedgenesis.MaxProducedCapabilityScopeLength),
+				ClaimLevel: mintConversationClaimLevelSelfDeclared,
+			},
+			wantCode: hostedgenesis.DeclarationCodeCapabilityScope,
+		},
+		{
+			name: "malformed last validated",
+			capability: soul.CapabilityV2{
+				Capability:    "planning",
+				Scope:         "scope",
+				ClaimLevel:    mintConversationClaimLevelSelfDeclared,
+				LastValidated: privateValue,
+			},
+			wantCode: hostedgenesis.DeclarationCodeCapabilityLastValidated,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			normalized := normalizeMintConversationDeclarationsDraft(MintConversationDeclarationsDraft{Capabilities: []soul.CapabilityV2{tc.capability}})
+			_, gotErr := hostedgenesis.ValidateAndNormalizeProducedCapabilities(normalized.Capabilities)
+			if got := hostedgenesis.DeclarationValidationCodeFromError(gotErr); got != tc.wantCode {
+				t.Fatalf("expected bounded field code %q, got %q (%v)", tc.wantCode, got, gotErr)
+			}
+			if strings.Contains(gotErr.Error(), privateValue) {
+				t.Fatalf("bounded failure leaked raw provider content: %q", gotErr)
+			}
+		})
+	}
 }
 
 func TestMintConversationDeclarationsFiveBodyNormalization(t *testing.T) {
@@ -352,6 +399,12 @@ func assertProviderParityArrayConstraintHandling(t *testing.T, openAIRequest, an
 	t.Helper()
 	if !strings.Contains(openAIRequest, `"maxItems"`) {
 		t.Fatalf("OpenAI strict schema request should keep maxItems: %s", openAIRequest)
+	}
+	if !strings.Contains(openAIRequest, hostedgenesis.ProducedCapabilityEvidencePattern) {
+		t.Fatalf("OpenAI strict schema request should keep the supported capability pattern: %s", openAIRequest)
+	}
+	if strings.Contains(anthropicRequest, hostedgenesis.ProducedCapabilityEvidencePattern) || strings.Contains(anthropicRequest, `{0,62}`) {
+		t.Fatalf("Anthropic strict tool request must not emit the unproven ranged capability pattern: %s", anthropicRequest)
 	}
 	for _, banned := range []string{`"maxItems"`, `"minItems"`} {
 		if strings.Contains(anthropicRequest, banned) {
@@ -594,37 +647,62 @@ func TestAnthropicToolInputSchemaSanitizesPermissiveAdditionalProperties(t *test
 func TestAnthropicToolInputSchemaStripsUnsupportedConstraints(t *testing.T) {
 	t.Parallel()
 
-	contract := hostedgenesis.FiveBodyDeclarationContract()
-	for name, schema := range map[string]map[string]any{
-		"v2": mintConversationDeclarationsJSONSchemaV2(contract),
-	} {
-		source, err := json.Marshal(schema)
-		if err != nil {
-			t.Fatalf("%s: marshal source schema: %v", name, err)
-		}
-		if !strings.Contains(string(source), `"maxItems"`) {
-			t.Fatalf("%s: expected source schema to keep maxItems for the OpenAI strict path, got %s", name, source)
-		}
+	schema := mintConversationDeclarationsJSONSchemaV2(hostedgenesis.FiveBodyDeclarationContract())
+	source, err := json.Marshal(schema)
+	if err != nil {
+		t.Fatalf("marshal source schema: %v", err)
+	}
+	if !strings.Contains(string(source), `"maxItems"`) {
+		t.Fatalf("expected source schema to keep maxItems for the OpenAI strict path, got %s", source)
+	}
+	if !strings.Contains(string(source), hostedgenesis.ProducedCapabilityEvidencePattern) {
+		t.Fatalf("expected source schema to keep the strict OpenAI capability pattern, got %s", source)
+	}
 
-		raw, err := json.Marshal(anthropicToolInputSchemaFromJSONSchema(schema))
-		if err != nil {
-			t.Fatalf("%s: marshal anthropic schema: %v", name, err)
-		}
-		for _, keyword := range []string{`"maxItems"`, `"minItems"`, `"maxLength"`, `"minLength"`} {
-			if strings.Contains(string(raw), keyword) {
-				t.Fatalf("%s: expected anthropic schema to strip %s (Anthropic strict custom tools reject it), got %s", name, keyword, raw)
-			}
-		}
-		if !strings.Contains(string(raw), `"additionalProperties":false`) {
-			t.Fatalf("%s: expected anthropic schema to keep additionalProperties=false, got %s", name, raw)
-		}
+	raw, err := json.Marshal(anthropicToolInputSchemaFromJSONSchema(schema))
+	if err != nil {
+		t.Fatalf("marshal anthropic schema: %v", err)
+	}
+	assertJSONOmits(t, raw, `"maxItems"`, `"minItems"`, `"maxLength"`, `"minLength"`)
+	if !strings.Contains(string(raw), `"additionalProperties":false`) {
+		t.Fatalf("expected anthropic schema to keep additionalProperties=false, got %s", raw)
+	}
+	if strings.Contains(string(raw), hostedgenesis.ProducedCapabilityEvidencePattern) || strings.Contains(string(raw), `{0,62}`) {
+		t.Fatalf("anthropic schema must not emit the unsupported ranged capability pattern, got %s", raw)
+	}
 
-		after, err := json.Marshal(schema)
-		if err != nil {
-			t.Fatalf("%s: re-marshal source schema: %v", name, err)
-		}
-		if string(after) != string(source) {
-			t.Fatalf("%s: sanitizing must not mutate the shared provider schema:\nbefore=%s\nafter=%s", name, source, after)
+	var anthropicSchema map[string]any
+	if unmarshalErr := json.Unmarshal(raw, &anthropicSchema); unmarshalErr != nil {
+		t.Fatalf("unmarshal anthropic schema: %v", unmarshalErr)
+	}
+	anthropicProps := requireSchemaMap(t, anthropicSchema, "properties")
+	anthropicCapabilities := requireSchemaMap(t, anthropicProps, "capabilities")
+	anthropicItems := requireSchemaMap(t, anthropicCapabilities, "items")
+	anthropicCapabilityProps := requireSchemaMap(t, anthropicItems, "properties")
+	if _, exists := requireSchemaMap(t, anthropicCapabilityProps, "capability")["pattern"]; exists {
+		t.Fatalf("anthropic capability pattern with an unproven ranged quantifier must be stripped, got %s", raw)
+	}
+	if got := requireSchemaMap(t, anthropicCapabilityProps, "scope")["pattern"]; got != hostedgenesis.ProducedCapabilityNonWhitespacePattern {
+		t.Fatalf("anthropic schema should preserve the supported simple scope pattern, got %#v", got)
+	}
+	if got := requireSchemaMap(t, anthropicCapabilityProps, "lastValidated")["pattern"]; got != hostedgenesis.ProducedCapabilityOptionalRFC3339Pattern {
+		t.Fatalf("anthropic schema should preserve fixed-quantifier RFC3339 validation, got %#v", got)
+	}
+
+	after, err := json.Marshal(schema)
+	if err != nil {
+		t.Fatalf("re-marshal source schema: %v", err)
+	}
+	if string(after) != string(source) {
+		t.Fatalf("sanitizing must not mutate the shared provider schema:\nbefore=%s\nafter=%s", source, after)
+	}
+}
+
+func assertJSONOmits(t *testing.T, raw []byte, keywords ...string) {
+	t.Helper()
+	for _, keyword := range keywords {
+		if strings.Contains(string(raw), keyword) {
+			t.Fatalf("expected anthropic schema to strip %s (Anthropic strict custom tools reject it), got %s", keyword, raw)
 		}
 	}
 }
