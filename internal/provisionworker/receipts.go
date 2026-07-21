@@ -132,6 +132,7 @@ type managedInstanceKeyReceiptBinding struct {
 	slug      string
 	accountID string
 	region    string
+	stage     string
 }
 
 func updateManagedInstanceKeyReceiptBinding(job *models.UpdateJob) managedInstanceKeyReceiptBinding {
@@ -155,6 +156,7 @@ func provisionManagedInstanceKeyReceiptBinding(job *models.ProvisionJob) managed
 		slug:      strings.TrimSpace(job.InstanceSlug),
 		accountID: strings.TrimSpace(job.AccountID),
 		region:    strings.TrimSpace(job.Region),
+		stage:     strings.TrimSpace(job.Stage),
 	}
 }
 

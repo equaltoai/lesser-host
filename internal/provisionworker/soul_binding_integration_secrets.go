@@ -20,8 +20,8 @@ import (
 
 const soulBindingIntegrationSecretARNPrefix = "arn:aws:secretsmanager:"
 
-func soulBindingIntegrationSecretName(controlPlaneStage, slug string) string {
-	stage := managedInstanceKeySecretStage(controlPlaneStage)
+func soulBindingIntegrationSecretName(targetDeploymentStage, slug string) string {
+	stage := normalizeManagedLesserStage(targetDeploymentStage)
 	slug = strings.ToLower(strings.TrimSpace(slug))
 	if slug == "" {
 		return ""
@@ -64,20 +64,64 @@ func validateSoulBindingIntegrationReceiptKeyID(keyID string) error {
 	return nil
 }
 
-func validateSoulBindingIntegrationReceiptSecretARN(binding managedInstanceKeyReceiptBinding, secretARN string) error {
+func validateSoulBindingIntegrationSecretRef(binding managedInstanceKeyReceiptBinding, targetDeploymentStage string, secretRef string) error {
+	canonicalName := soulBindingIntegrationSecretName(targetDeploymentStage, binding.slug)
+	secretRef = strings.TrimSpace(secretRef)
+	if canonicalName == "" || secretRef == "" {
+		return fmt.Errorf("soul binding integration secret reference is invalid")
+	}
+	if secretRef == canonicalName {
+		return nil
+	}
+	if !strings.HasPrefix(secretRef, soulBindingIntegrationSecretARNPrefix) {
+		return fmt.Errorf("soul binding integration secret name does not match canonical target stage and slug")
+	}
+
+	parsed, err := arn.Parse(secretRef)
+	if err != nil || parsed.Service != "secretsmanager" || strings.TrimSpace(parsed.Region) == "" || strings.TrimSpace(parsed.AccountID) == "" || !strings.HasPrefix(parsed.Resource, "secret:") {
+		return fmt.Errorf("soul binding integration secret reference is invalid")
+	}
+	if want := strings.TrimSpace(binding.accountID); want != "" && parsed.AccountID != want {
+		return fmt.Errorf("soul binding integration secret ARN account does not match %s", binding.kind)
+	}
+	if want := strings.TrimSpace(binding.region); want != "" && parsed.Region != want {
+		return fmt.Errorf("soul binding integration secret ARN region does not match %s", binding.kind)
+	}
+	if !secretsManagerARNResourceMatchesName(parsed.Resource, canonicalName) {
+		return fmt.Errorf("soul binding integration secret ARN name does not match canonical target stage and slug")
+	}
+	return nil
+}
+
+func secretsManagerARNResourceMatchesName(resource string, canonicalName string) bool {
+	secretName := strings.TrimPrefix(strings.TrimSpace(resource), "secret:")
+	canonicalName = strings.TrimSpace(canonicalName)
+	if secretName == canonicalName {
+		return true
+	}
+	prefix := canonicalName + "-"
+	if !strings.HasPrefix(secretName, prefix) {
+		return false
+	}
+	suffix := strings.TrimPrefix(secretName, prefix)
+	if len(suffix) != 6 {
+		return false
+	}
+	for _, r := range suffix {
+		if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') {
+			return false
+		}
+	}
+	return true
+}
+
+func validateSoulBindingIntegrationReceiptSecretARN(binding managedInstanceKeyReceiptBinding, targetDeploymentStage string, secretARN string) error {
 	secretARN = strings.TrimSpace(secretARN)
 	if secretARN == "" {
 		return fmt.Errorf("soul binding integration receipt secret ARN is invalid")
 	}
-	parsed, err := arn.Parse(secretARN)
-	if err != nil || parsed.Service != "secretsmanager" || strings.TrimSpace(parsed.Region) == "" || strings.TrimSpace(parsed.AccountID) == "" || !strings.HasPrefix(parsed.Resource, "secret:") {
-		return fmt.Errorf("soul binding integration receipt secret ARN is invalid")
-	}
-	if want := strings.TrimSpace(binding.accountID); want != "" && parsed.AccountID != want {
-		return fmt.Errorf("soul binding integration receipt secret ARN account does not match %s", binding.kind)
-	}
-	if want := strings.TrimSpace(binding.region); want != "" && parsed.Region != want {
-		return fmt.Errorf("soul binding integration receipt secret ARN region does not match %s", binding.kind)
+	if err := validateSoulBindingIntegrationSecretRef(binding, targetDeploymentStage, secretARN); err != nil {
+		return fmt.Errorf("soul binding integration receipt secret ARN validation failed: %w", err)
 	}
 	return nil
 }
@@ -108,10 +152,14 @@ func (s *Server) validateSoulBindingIntegrationReceiptForBinding(binding managed
 	if strings.TrimSpace(receipt.Stage) == "" {
 		return fmt.Errorf("soul binding integration receipt stage is missing")
 	}
-	if got, want := managedInstanceKeySecretStage(receipt.Stage), expectedManagedInstanceKeyReceiptStage(s.cfg.Stage); got != want {
+	expectedStage := normalizeManagedLesserStage(s.cfg.Stage)
+	if strings.TrimSpace(binding.stage) != "" {
+		expectedStage = normalizeManagedLesserStage(binding.stage)
+	}
+	if got := strings.ToLower(strings.TrimSpace(receipt.Stage)); got != expectedStage {
 		return fmt.Errorf("soul binding integration receipt stage does not match control plane stage")
 	}
-	if err := validateSoulBindingIntegrationReceiptSecretARN(binding, receipt.SecretARN); err != nil {
+	if err := validateSoulBindingIntegrationReceiptSecretARN(binding, expectedStage, receipt.SecretARN); err != nil {
 		return err
 	}
 	return validateSoulBindingIntegrationReceiptKeyID(receipt.KeyID)
@@ -156,9 +204,20 @@ func (s *Server) resolveUpdateSoulBindingSecretRef(job *models.UpdateJob, inst *
 	if s == nil || job == nil || inst == nil {
 		return ""
 	}
+	targetStage := normalizeManagedLesserStage(s.cfg.Stage)
 	ref := strings.TrimSpace(inst.SoulBindingIntegrationSecretARN)
 	if ref == "" {
-		ref = soulBindingIntegrationSecretName(s.cfg.Stage, strings.TrimSpace(job.InstanceSlug))
+		ref = soulBindingIntegrationSecretName(targetStage, strings.TrimSpace(job.InstanceSlug))
+	}
+	binding := managedInstanceKeyReceiptBinding{
+		kind:      "managed instance",
+		slug:      strings.TrimSpace(job.InstanceSlug),
+		accountID: strings.TrimSpace(inst.HostedAccountID),
+		region:    strings.TrimSpace(inst.HostedRegion),
+		stage:     targetStage,
+	}
+	if err := validateSoulBindingIntegrationSecretRef(binding, targetStage, ref); err != nil {
+		return ""
 	}
 	return ref
 }

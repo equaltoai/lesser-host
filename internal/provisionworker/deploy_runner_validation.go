@@ -71,6 +71,15 @@ func (s *Server) resolveProvisionDeployRunnerInstanceInputs(ctx context.Context,
 	if tipErr := validateManagedTipDeployConfig(inputs.tipEnabled, inputs.tipChainID, inputs.tipContractAddress); tipErr != nil {
 		return provisionDeployRunnerInstanceInputs{}, tipErr
 	}
+	targetStage := s.deployRunnerStage(job)
+	if inputs.soulBindingSecretArn == "" {
+		inputs.soulBindingSecretArn = soulBindingIntegrationSecretName(targetStage, strings.TrimSpace(job.InstanceSlug))
+	}
+	binding := provisionManagedInstanceKeyReceiptBinding(job)
+	binding.stage = targetStage
+	if err := validateSoulBindingIntegrationSecretRef(binding, targetStage, inputs.soulBindingSecretArn); err != nil {
+		return provisionDeployRunnerInstanceInputs{}, err
+	}
 	return inputs, nil
 }
 
