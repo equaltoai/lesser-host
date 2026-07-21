@@ -137,8 +137,8 @@ func directManagementRootPrincipals(rawPolicy string) ([]string, error) {
 		return nil, err
 	}
 	var doc map[string]any
-	if err := json.Unmarshal([]byte(policyJSON), &doc); err != nil {
-		return nil, fmt.Errorf("parse managed instance role trust policy: %w", err)
+	if unmarshalErr := json.Unmarshal([]byte(policyJSON), &doc); unmarshalErr != nil {
+		return nil, fmt.Errorf("parse managed instance role trust policy: %w", unmarshalErr)
 	}
 	statements, err := normalizedPolicyStatements(doc["Statement"])
 	if err != nil {

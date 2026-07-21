@@ -253,18 +253,6 @@ func (s *Server) startUpdateDeployRunnerWithMode(ctx context.Context, job *model
 	if mode == deployRunnerModeLesserBody && job.BodyTemplateCertify {
 		env = append(env, cbtypes.EnvironmentVariable{Name: aws.String("BODY_TEMPLATE_CERTIFY"), Value: aws.String(envBoolTrue)})
 	}
-	trustErr := s.ensureDeployRunnerAssumeRoleTrust(
-		ctx,
-		inputs.accountID,
-		inputs.roleName,
-		inputs.region,
-		strings.TrimSpace(job.InstanceSlug),
-		strings.TrimSpace(job.ID),
-	)
-	if trustErr != nil {
-		return "", fmt.Errorf("deploy runner trust bootstrap failed: %s", compactErr(trustErr))
-	}
-
 	idempotencyToken := codebuildIdempotencyToken(
 		projectName,
 		inputs.stage,
@@ -280,7 +268,21 @@ func (s *Server) startUpdateDeployRunnerWithMode(ctx context.Context, job *model
 	if idempotencyToken != "" {
 		startIn.IdempotencyToken = aws.String(idempotencyToken)
 	}
+	return s.startVerifiedUpdateDeployRunner(ctx, job, inputs, startIn)
+}
 
+func (s *Server) startVerifiedUpdateDeployRunner(ctx context.Context, job *models.UpdateJob, inputs updateDeployRunnerInputs, startIn *codebuild.StartBuildInput) (string, error) {
+	trustErr := s.ensureDeployRunnerAssumeRoleTrust(
+		ctx,
+		inputs.accountID,
+		inputs.roleName,
+		inputs.region,
+		strings.TrimSpace(job.InstanceSlug),
+		strings.TrimSpace(job.ID),
+	)
+	if trustErr != nil {
+		return "", fmt.Errorf("deploy runner trust bootstrap failed: %s", compactErr(trustErr))
+	}
 	out, err := s.cb.StartBuild(ctx, startIn)
 	if err != nil {
 		return "", err
