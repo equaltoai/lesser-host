@@ -27,9 +27,11 @@ func envVarValue(env []cbtypes.EnvironmentVariable, name string) (string, bool) 
 func TestSoulBindingIntegrationSecretName(t *testing.T) {
 	t.Parallel()
 
-	require.Equal(t, "lab/theory/soul-binding-integration", soulBindingIntegrationSecretName("lab", "Theory"))
+	require.Equal(t, "dev/theory/soul-binding-integration", soulBindingIntegrationSecretName("lab", "Theory"))
+	require.Equal(t, "dev/theory/soul-binding-integration", soulBindingIntegrationSecretName("development", "Theory"))
 	require.Equal(t, "live/theory/soul-binding-integration", soulBindingIntegrationSecretName("prod", "theory"))
 	require.Equal(t, "live/theory/soul-binding-integration", soulBindingIntegrationSecretName("production", "theory"))
+	require.Equal(t, "live/theory/soul-binding-integration", soulBindingIntegrationSecretName("live", "theory"))
 	require.Empty(t, soulBindingIntegrationSecretName("lab", "  "))
 }
 
@@ -69,22 +71,45 @@ func TestResolveProvisionDeployRunnerInstanceInputs_CarriesSoulBindingSecretArn(
 	require.Equal(t, soulARN, got)
 }
 
-func TestAppendProvisionDeployRunnerInstanceEnv_PassesEmptySoulBindingRefForFirstProvision(t *testing.T) {
+func TestResolveProvisionDeployRunnerInstanceInputs_UsesCanonicalDevRefWhenMetadataEmpty(t *testing.T) {
 	t.Parallel()
 
-	env := appendProvisionDeployRunnerInstanceEnv(nil, provisionDeployRunnerInstanceInputs{lesserHostURL: "https://lesser.host"})
+	db := ttmocks.NewMockExtendedDB()
+	mockProvisionRunnerInstanceLookup(t, db, models.Instance{
+		Slug:              "theory",
+		HostedAccountID:   "922120356241",
+		HostedRegion:      "us-east-1",
+		HostedBaseDomain:  "theory.example.com",
+		LesserHostBaseURL: "https://lesser.host",
+	})
+	s := &Server{cfg: config.Config{Stage: "lab", ManagedInstanceRoleName: "role"}, store: store.New(db)}
+	job := &models.ProvisionJob{
+		ID:              "job1",
+		InstanceSlug:    "theory",
+		AccountID:       "922120356241",
+		AccountRoleName: "role",
+		Region:          "us-east-1",
+		BaseDomain:      "theory.example.com",
+		LesserVersion:   "v1.2.3",
+	}
+
+	inputs, err := s.resolveProvisionDeployRunnerInstanceInputs(context.Background(), job)
+	require.NoError(t, err)
+	require.Equal(t, "dev/theory/soul-binding-integration", inputs.soulBindingSecretArn)
+
+	env := appendProvisionDeployRunnerInstanceEnv(nil, inputs)
 	got, ok := envVarValue(env, "SOUL_BINDING_INTEGRATION_KEY_ARN")
 	require.True(t, ok)
-	require.Empty(t, got)
+	require.Equal(t, "dev/theory/soul-binding-integration", got)
 }
 
 func TestBuildUpdateDeployRunnerEnv_CarriesSoulBindingSecretArn(t *testing.T) {
 	t.Parallel()
 
-	const soulARN = "arn:aws:secretsmanager:us-east-1:123456789012:secret:lab/slug/soul-binding-integration"
+	const soulARN = "arn:aws:secretsmanager:us-east-1:123456789012:secret:dev/slug/soul-binding-integration"
 	s := &Server{cfg: config.Config{Stage: "lab", ArtifactBucketName: "bucket"}}
 	job := &models.UpdateJob{ID: "u1", InstanceSlug: "slug"}
-	env := s.buildUpdateDeployRunnerEnv(job, updateDeployRunnerInputs{soulBindingSecretArn: soulARN})
+	env := s.buildUpdateDeployRunnerEnv(job, updateDeployRunnerInputs{stage: "dev", soulBindingSecretArn: soulARN})
 	got, ok := envVarValue(env, "SOUL_BINDING_INTEGRATION_KEY_ARN")
 	require.True(t, ok)
 	require.Equal(t, soulARN, got)
@@ -112,23 +137,51 @@ func TestResolveUpdateDeployRunnerInputs_SoulBindingCarryAndFallback(t *testing.
 		HostedBaseDomain: "slug.example.com",
 	}
 
-	// Legacy job + legacy instance: fall back to the canonical secret name.
+	// Empty Host metadata derives only the normalized target-stage name.
 	inputs, err := s.resolveUpdateDeployRunnerInputs(job, inst)
 	require.NoError(t, err)
-	require.Equal(t, "lab/slug/soul-binding-integration", inputs.soulBindingSecretArn)
+	require.Equal(t, "dev", inputs.stage)
+	require.Equal(t, "dev/slug/soul-binding-integration", inputs.soulBindingSecretArn)
 
 	// Instance carries the ensured ARN: the job fallback resolves to it.
-	const soulARN = "arn:aws:secretsmanager:us-east-1:123456789012:secret:lab/slug/soul-binding-integration"
+	const soulARN = "arn:aws:secretsmanager:us-east-1:123456789012:secret:dev/slug/soul-binding-integration-Ab12Cd"
 	inst.SoulBindingIntegrationSecretARN = soulARN
 	inputs, err = s.resolveUpdateDeployRunnerInputs(job, inst)
 	require.NoError(t, err)
 	require.Equal(t, soulARN, inputs.soulBindingSecretArn)
 
-	// Job state wins when already carried.
-	job.SoulBindingIntegrationSecretARN = "arn:aws:secretsmanager:us-east-1:123456789012:secret:lab/slug/soul-binding-integration-carried"
+	// Canonical job state wins when already carried across phases/retries.
+	job.SoulBindingIntegrationSecretARN = "arn:aws:secretsmanager:us-east-1:123456789012:secret:dev/slug/soul-binding-integration-Zz90Yx"
 	inputs, err = s.resolveUpdateDeployRunnerInputs(job, inst)
 	require.NoError(t, err)
 	require.Equal(t, job.SoulBindingIntegrationSecretARN, inputs.soulBindingSecretArn)
+
+	// A wrong control-plane-stage prefix is rejected, never treated as a fallback.
+	job.SoulBindingIntegrationSecretARN = "lab/slug/soul-binding-integration"
+	_, err = s.resolveUpdateDeployRunnerInputs(job, inst)
+	require.ErrorContains(t, err, "canonical target stage and slug")
+}
+
+func TestResolveProvisionDeployRunnerInstanceInputs_RejectsMismatchedSoulBindingARN(t *testing.T) {
+	t.Parallel()
+
+	db := ttmocks.NewMockExtendedDB()
+	mockProvisionRunnerInstanceLookup(t, db, models.Instance{
+		Slug:                            "theory",
+		HostedAccountID:                 "922120356241",
+		HostedRegion:                    "us-east-1",
+		HostedBaseDomain:                "theory.example.com",
+		LesserHostBaseURL:               "https://lesser.host",
+		SoulBindingIntegrationSecretARN: "arn:aws:secretsmanager:us-east-1:922120356241:secret:live/other/soul-binding-integration",
+	})
+	s := &Server{cfg: config.Config{Stage: "live", ManagedInstanceRoleName: "role"}, store: store.New(db)}
+	job := &models.ProvisionJob{
+		ID: "job1", InstanceSlug: "theory", AccountID: "922120356241", AccountRoleName: "role",
+		Region: "us-east-1", BaseDomain: "theory.example.com", LesserVersion: "v1.2.3",
+	}
+
+	_, err := s.resolveProvisionDeployRunnerInstanceInputs(context.Background(), job)
+	require.ErrorContains(t, err, "canonical target stage and slug")
 }
 
 func validSoulBindingIntegrationReceipt(accountID, region, slug, stage string) *soulBindingIntegrationReceipt {
@@ -188,6 +241,27 @@ func TestApplyProvisionSoulBindingIntegrationReceipt_Validation(t *testing.T) {
 	badVersion.Version = 2
 	_, err = s.applyProvisionSoulBindingIntegrationReceipt(job, badVersion)
 	require.ErrorContains(t, err, "unsupported soul binding integration receipt version")
+}
+
+func TestApplyProvisionSoulBindingIntegrationReceipt_LabRequiresCanonicalDevIdentity(t *testing.T) {
+	t.Parallel()
+
+	s := &Server{cfg: config.Config{Stage: "lab"}}
+	job := &models.ProvisionJob{ID: "job1", InstanceSlug: "theory", AccountID: "922120356241", Region: "us-east-1", Stage: "dev"}
+
+	receipt := validSoulBindingIntegrationReceipt("922120356241", "us-east-1", "theory", "dev")
+	arn, err := s.applyProvisionSoulBindingIntegrationReceipt(job, receipt)
+	require.NoError(t, err)
+	require.Equal(t, provisionTestSoulBindingSecretARN("922120356241", "us-east-1", "theory", "dev"), arn)
+
+	wrongStage := validSoulBindingIntegrationReceipt("922120356241", "us-east-1", "theory", "lab")
+	_, err = s.applyProvisionSoulBindingIntegrationReceipt(job, wrongStage)
+	require.ErrorContains(t, err, "stage does not match")
+
+	wrongName := validSoulBindingIntegrationReceipt("922120356241", "us-east-1", "theory", "dev")
+	wrongName.SecretARN = provisionTestSoulBindingSecretARN("922120356241", "us-east-1", "theory", "live")
+	_, err = s.applyProvisionSoulBindingIntegrationReceipt(job, wrongName)
+	require.ErrorContains(t, err, "canonical target stage and slug")
 }
 
 func TestApplyUpdateSoulBindingIntegrationReceiptJSON(t *testing.T) {
