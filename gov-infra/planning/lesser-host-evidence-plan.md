@@ -1,4 +1,4 @@
-# lesser-host: Evidence Plan (Rubric v0.1.10)
+# lesser-host: Evidence Plan (Rubric v0.1.11)
 
 This document defines the **evidence surface** for the lesser-host governance rubric.
 
@@ -63,6 +63,7 @@ Legend:
 | Security | SEC-10 | The full Consumer release verification locked-file semantic diff is empty/whitespace-only or exactly the reviewed Project 17 M15 fingerprint; any additional drift fails closed | `gov-infra/evidence/SEC-10-output.log` |
 | Security | SEC-14 | Hosted-genesis MicroVM registry boundary stays Host-owned, TableTheory-friendly, and reconstruction-backed | `gov-infra/evidence/SEC-14-output.log` |
 | Security | SEC-15 | Hosted-genesis declaration production is five-body-only across deployed Host Go code and fails closed without an explicit contract | `gov-infra/evidence/SEC-15-output.log` |
+| Security | SEC-16 | Hosted-genesis OpenAI/Anthropic SDK telemetry stays content-free and provider/MicroVM terminal states converge through AppTheory lifecycle observation plus exact TableTheory guards without client nudges | `gov-infra/evidence/SEC-16-output.log` |
 | Compliance readiness | CMP-1 | Controls matrix exists and is readable | (presence check) + `gov-infra/evidence/CMP-1-output.log` |
 | Compliance readiness | CMP-2 | Evidence plan exists and is readable | (presence check) + `gov-infra/evidence/CMP-2-output.log` |
 | Compliance readiness | CMP-3 | Threat model exists and is readable | (presence check) + `gov-infra/evidence/CMP-3-output.log` |
