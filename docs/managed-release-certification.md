@@ -48,9 +48,10 @@ The managed release is only certified when every required check passes.
   - required when the certification run includes `lesser-body` or MCP follow-on wiring
 - `lesser_body_compatibility_contract_valid`
   - required when the certification run includes `lesser-body` or MCP follow-on wiring
+  - rejects releases before v1.0.8 because they predate the deterministic instance-plane SSM contract
 - `lesser_body_template_preflight_valid`
   - required when the certification run includes `lesser-body` or MCP follow-on wiring
-  - validates the published managed template, schema-2 auxiliary assets, and (when present) the instance-plane Lambda /
+  - validates the published managed template, schema-2 auxiliary assets, and the required instance-plane Lambda /
     table / SSM-export logical-ID baseline before the real consumer-path change-set check
 - `lesser_body_template_changeset_valid`
   - required when the certification run includes `lesser-body`

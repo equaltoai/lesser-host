@@ -238,10 +238,14 @@ func (s *Server) startUpdateDeployRunnerWithMode(ctx context.Context, job *model
 	env := s.buildUpdateDeployRunnerEnv(job, inputs)
 
 	mode = normalizeDeployRunnerMode(mode)
+	if phaseErr := validateDeployRunnerLesserBodyPhaseVersion(mode, job.LesserBodyVersion); phaseErr != nil {
+		return "", phaseErr
+	}
 	env = append(env, cbtypes.EnvironmentVariable{Name: aws.String("RUN_MODE"), Value: aws.String(mode)})
 	if bodyEnabled, ok := updateDeployRunnerBodyEnabledForMode(mode, inst); ok {
 		env = append(env, cbtypes.EnvironmentVariable{Name: aws.String("BODY_ENABLED"), Value: aws.String(bodyEnabled)})
 	}
+	env = appendDeployRunnerInstancePlaneEnv(env, mode)
 	if mode == deployRunnerModeLesserBody && job.BodyTemplateCertify {
 		env = append(env, cbtypes.EnvironmentVariable{Name: aws.String("BODY_TEMPLATE_CERTIFY"), Value: aws.String(envBoolTrue)})
 	}
@@ -283,7 +287,7 @@ func updateDeployRunnerBodyEnabledForMode(mode string, inst *models.Instance) (s
 		if enabled {
 			return envBoolTrue, true
 		}
-		return "false", true
+		return envBoolFalse, true
 	case deployRunnerModeLesserMCP:
 		return envBoolTrue, true
 	default:

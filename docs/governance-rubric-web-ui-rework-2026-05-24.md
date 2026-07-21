@@ -145,7 +145,7 @@ Plus a presence check: at least one bundled module imports `startAwsOacFormTrans
 **Claim**: Across the planning branch's milestone commits, `git diff origin/main` shows no changes to:
 
 - `internal/provisionworker/release_compatibility.go` (including `minimumSupportedManagedLesserReleaseVersion = "v1.2.6"` constant)
-- `internal/provisionworker/release_compatibility_lesser_body.go` (including `minimumSupportedManagedLesserBodyReleaseVersion = "v0.2.3"` constant)
+- `internal/provisionworker/release_compatibility_lesser_body.go` (including `minimumSupportedManagedLesserBodyReleaseVersion = "v1.0.8"` constant)
 - `internal/provisionworker/release_preflight.go`
 - `internal/provisionworker/release_preflight_lesser_body.go`
 - `scripts/managed-release-certification/main.go`
@@ -160,6 +160,12 @@ and fails SEC-10.
 release verification by requiring `dist/lesser-body-instance.zip` to be declared as a required auxiliary asset,
 checksum-covered, and template-bound before managed rollout. Its reviewed semantic diff fingerprint is
 `d25674c5c67269e48c659449de25487efe6fcd3366c8f6329ed68f1cbf48df4e`.
+
+**Reviewed event**: Project 17 M15 (`lesser-host#960` / governance subissue `#964` / PR #965) intentionally raises the
+exact compatible managed Body floor to v1.0.8 and aligns fail-closed fixtures with the explicit `lesser` →
+`lesser-body` → `lesser-mcp` deployment contract. Exact-version selection is tightened; checksum, release-manifest,
+template, and auxiliary-asset verification remain mandatory and unchanged. Its full locked-file semantic diff
+fingerprint is `fd940a48f56dbcf6c99b92dd9ad493b447ddc2fe00ca85fc1b80dec70245e2df`.
 
 **Input surface**: `git diff` against `origin/main`. Deterministic.
 

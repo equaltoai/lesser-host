@@ -79,6 +79,13 @@ It assumes:
    - for soul comm mailbox tools, `lesser-body` calls host's instance-authenticated mailbox APIs and treats host as the
      source of truth for delivery metadata, bounded content, and read/archive/delete state.
 
+   The managed flow is phase-separated for both fresh provisioning and Managed updates. Phase 1 uses
+   `RUN_MODE=lesser` with `INSTANCE_PLANE_ENABLED=false`; `BODY_ENABLED` remains independently selected so an existing
+   `/mcp` route is preserved during updates. Phase 2 deploys an exact compatible `lesser-body` release. Phase 3 uses
+   `RUN_MODE=lesser-mcp` with both `BODY_ENABLED=true` and `INSTANCE_PLANE_ENABLED=true`. These values are written to the
+   Lesser provisioning input and are never inferred from Lesser defaults. Standard three-phase admission requires
+   `lesser-body` v1.0.8 or newer; older releases do not publish the required instance-plane SSM contract.
+
 7) **Register with lesser.host**
    - store instance endpoints from the receipt.
    - mint an instance API key for `lesser.host` calls (future: inject into Lesser at deploy time).
@@ -249,6 +256,15 @@ From Lesser (inputs for `lesser-body`):
 
 From `lesser-body` (inputs for Lesser API Gateway `/mcp/{actor}` wiring):
 - `/${app}/${stage}/lesser-body/exports/v1/mcp_lambda_arn`
+- `/${app}/${stage}/lesser-body/exports/v1/instance_mcp_lambda_arn`
+- `/${app}/${stage}/lesser-body/exports/v1/instance_mcp_endpoint_url`
+- `/${app}/${stage}/lesser-body/exports/v1/instance_content_table_name`
+- `/${app}/${stage}/lesser-body/exports/v1/instance_registry_table_name`
+- `/${app}/${stage}/lesser-body/exports/v1/instance_grant_table_name`
+- `/${app}/${stage}/lesser-body/exports/v1/instance_session_table_name`
+
+All names are constructed only from `${app}` and `${stage}`. The managed flow does not use CloudFormation exports /
+imports, fallback parameter names, or operator-created parameters for this wiring.
 
 ## Instance key secret stage aliases
 

@@ -153,6 +153,7 @@ func TestStartDeployRunnerWithMode_FollowOnModesDoNotPreflightTargetAccountAcces
 					ArtifactBucketName:                "artifact-bucket",
 					ManagedLesserGitHubOwner:          "equaltoai",
 					ManagedLesserGitHubRepo:           "lesser",
+					ManagedLesserBodyDefaultVersion:   "v1.0.8",
 				},
 				store: store.New(db),
 				cb:    cb,

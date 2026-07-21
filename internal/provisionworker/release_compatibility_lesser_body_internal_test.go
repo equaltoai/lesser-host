@@ -21,15 +21,19 @@ func TestCurrentManagedLesserBodyCompatibilityContract_MatchesPublishedJSON(t *t
 	var published ManagedLesserBodyCompatibilityContract
 	require.NoError(t, json.Unmarshal(raw, &published))
 	require.Equal(t, CurrentManagedLesserBodyCompatibilityContract(), published)
+	require.Equal(t, "v1.0.8", published.MinimumReleaseVersion)
+	require.Contains(t, published.InstancePlane.RequiredSSMParameters, "InstanceMcpLambdaArnParam")
 }
 
 func TestValidateManagedLesserBodyReleaseVersionSupported(t *testing.T) {
 	t.Parallel()
 
-	require.NoError(t, ValidateManagedLesserBodyReleaseVersionSupported("v0.2.3"))
-	require.NoError(t, ValidateManagedLesserBodyReleaseVersionSupported("v0.2.4"))
+	require.NoError(t, ValidateManagedLesserBodyReleaseVersionSupported("v1.0.8"))
+	require.NoError(t, ValidateManagedLesserBodyReleaseVersionSupported("v1.0.9"))
 	require.ErrorContains(t, ValidateManagedLesserBodyReleaseVersionSupported("v0.3.0-rc.1"), "must be a concrete semver tag like v1.2.6")
-	require.ErrorContains(t, ValidateManagedLesserBodyReleaseVersionSupported("v0.2.2"), "before v0.2.3 are not supported")
+	require.ErrorContains(t, ValidateManagedLesserBodyReleaseVersionSupported("v1.0.7"), "before v1.0.8 are not supported")
+	require.ErrorContains(t, ValidateManagedLesserBodyReleaseVersionSupported("v1.0.7"), "instance-plane SSM contract")
+	require.ErrorContains(t, ValidateManagedLesserBodyReleaseVersionSupported("v1.0.7"), "instance_mcp_lambda_arn")
 	require.ErrorContains(t, ValidateManagedLesserBodyReleaseVersionSupported("latest"), "must be a concrete semver tag like v1.2.6")
 }
 
@@ -42,15 +46,17 @@ func TestValidateManagedLesserBodyReleaseCompatibility_RejectsUnsupportedVersion
 		return nil, nil
 	})}
 
-	err := ValidateManagedLesserBodyReleaseCompatibility(context.Background(), client, "equaltoai", "lesser-body", "v0.2.2", managedStageDev)
-	require.ErrorContains(t, err, "before v0.2.3 are not supported")
+	err := ValidateManagedLesserBodyReleaseCompatibility(context.Background(), client, "equaltoai", "lesser-body", "v1.0.7", managedStageDev)
+	require.ErrorContains(t, err, "before v1.0.8 are not supported")
+	require.ErrorContains(t, err, "instance-plane SSM contract")
+	require.ErrorContains(t, err, "instance_mcp_lambda_arn")
 	require.False(t, called, "expected compatibility check to fail before any network request")
 }
 
 func TestValidateManagedLesserBodyReleaseTemplatePreflight_RejectsNonStringTemplateDefaults(t *testing.T) {
 	t.Parallel()
 
-	const version = "v0.2.3"
+	const version = "v1.0.8"
 	client := newManagedReleaseTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/equaltoai/lesser-body/releases/download/" + version + "/lesser-body-release.json":
@@ -75,7 +81,7 @@ func TestValidateManagedLesserBodyReleaseTemplatePreflight_RejectsNonStringTempl
 func TestValidateManagedLesserBodyReleaseTemplatePreflight_RejectsLargeTemplatesWithoutS3BucketHelper(t *testing.T) {
 	t.Parallel()
 
-	const version = "v0.2.3"
+	const version = "v1.0.8"
 	largeDescription := strings.Repeat("a", 52000)
 	templateRaw, err := json.Marshal(map[string]any{
 		"AWSTemplateFormatVersion": "2010-09-09",
@@ -112,7 +118,7 @@ func TestValidateManagedLesserBodyReleaseTemplatePreflight_RejectsLargeTemplates
 func TestValidateManagedLesserBodyReleaseTemplatePreflight_AllowsLargeTemplatesWithS3BucketHelper(t *testing.T) {
 	t.Parallel()
 
-	const version = "v0.2.3"
+	const version = "v1.0.8"
 	largeDescription := strings.Repeat("a", 52000)
 	templateRaw, err := json.Marshal(map[string]any{
 		"AWSTemplateFormatVersion": "2010-09-09",

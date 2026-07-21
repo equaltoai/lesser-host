@@ -20,7 +20,7 @@ const (
 	testBaseURL                 = "https://lab.lesser.host"
 	testInstanceSlug            = "simulacrum"
 	testLesserVersion           = "v1.2.6"
-	testLesserBodyVersion       = "v0.2.3"
+	testLesserBodyVersion       = "v1.0.8"
 	testCertificationReport     = "managed-release-certification.json"
 	testBodyCertificationReport = "managed-release-certification-lesser-body.json"
 	testLabelsPath              = "/repos/equaltoai/lesser-host/labels"
