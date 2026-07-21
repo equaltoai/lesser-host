@@ -740,6 +740,7 @@ func assertVMCheckpoint(t *testing.T, checkpoint *hostedgenesis.VMCheckpointMeta
 	t.Helper()
 	if checkpoint == nil {
 		t.Fatal("expected VM actor checkpoint metadata")
+		return
 	}
 	if err := checkpoint.Validate(); err != nil {
 		t.Fatalf("VM checkpoint should validate: %#v err=%v", checkpoint, err)

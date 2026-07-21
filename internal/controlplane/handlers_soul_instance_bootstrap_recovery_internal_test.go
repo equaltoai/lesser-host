@@ -341,6 +341,7 @@ func (d *stateReadingMicroVMDispatcher) DispatchMicroVMRun(ctx context.Context, 
 	session := d.readSession()
 	if session == nil {
 		d.t.Fatalf("workload test double could not read durable Host state")
+		return hostedgenesis.MicroVMDispatchResult{}, errors.New("workload test double could not read durable Host state")
 	}
 	expectedFailureCode := d.expectedFailureCode
 	if expectedFailureCode == "" {

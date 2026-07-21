@@ -369,6 +369,7 @@ func TestH1_5_NewServerSetsNonNilDispatcherOnServer(t *testing.T) {
 	srv2 := NewServer(cfg, store.New(nil))
 	if srv2 == nil {
 		t.Fatalf("NewServer returned nil")
+		return
 	}
 	if srv2.hostedGenesisMicroVMDispatcher == nil {
 		t.Fatalf("expected NewServer to wire a non-nil MicroVM dispatcher for a complete enabled config")
@@ -386,6 +387,7 @@ func TestH1_5_NewServerLeavesDispatcherNilForEmptyConfig(t *testing.T) {
 	srv := NewServer(config.Config{}, store.New(nil))
 	if srv == nil {
 		t.Fatalf("NewServer returned nil")
+		return
 	}
 	if srv.hostedGenesisMicroVMDispatcher != nil {
 		t.Fatalf("empty config must leave the dispatcher nil (fail-closed), got %T", srv.hostedGenesisMicroVMDispatcher)
