@@ -12,6 +12,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/codebuild"
 	cbtypes "github.com/aws/aws-sdk-go-v2/service/codebuild/types"
+	"github.com/aws/aws-sdk-go-v2/service/iam"
+	iamtypes "github.com/aws/aws-sdk-go-v2/service/iam/types"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -61,7 +63,7 @@ func mockProvisionRunnerInstanceLookup(t *testing.T, db *ttmocks.MockExtendedDB,
 	}).Maybe()
 }
 
-func TestStartDeployRunnerWithMode_DoesNotPreflightTargetAccountAccess(t *testing.T) {
+func TestStartDeployRunnerWithMode_BootstrapsTrustBeforeCodeBuild(t *testing.T) {
 	t.Parallel()
 
 	db := ttmocks.NewMockExtendedDB()
@@ -75,12 +77,14 @@ func TestStartDeployRunnerWithMode_DoesNotPreflightTargetAccountAccess(t *testin
 
 	cb := &fakeCodebuild{startOut: &codebuild.StartBuildOutput{Build: &cbtypes.Build{Id: aws.String("run1")}}}
 	stsClient := &fakeSTS{err: errors.New("AccessDenied")}
+	iamClient := &fakeIAM{getOut: &iam.GetRoleOutput{Role: &iamtypes.Role{AssumeRolePolicyDocument: aws.String(testExternalManagementRootTrust)}}}
 	srv := &Server{
 		cfg: config.Config{
 			Stage:                             "live",
+			ManagedOrgVendingRoleARN:          "arn:aws:iam::902552026581:role/lesser-host-org-vending",
 			ManagedInstanceRoleName:           "OrganizationAccountAccessRole",
 			ManagedProvisionRunnerProjectName: "runner-project",
-			ManagedProvisionRunnerRoleARN:     "arn:aws:iam::693925625407:role/runner",
+			ManagedProvisionRunnerRoleARN:     testDeployRunnerRoleARN,
 			ArtifactBucketName:                "artifact-bucket",
 			ManagedLesserGitHubOwner:          "equaltoai",
 			ManagedLesserGitHubRepo:           "lesser",
@@ -89,8 +93,7 @@ func TestStartDeployRunnerWithMode_DoesNotPreflightTargetAccountAccess(t *testin
 		cb:    cb,
 		sts:   stsClient,
 		iamFactory: func(context.Context, string, string, string, string, string) (iamAPI, error) {
-			t.Fatalf("startDeployRunnerWithMode must not preflight target-account IAM")
-			return nil, errors.New("unexpected target IAM preflight")
+			return iamClient, nil
 		},
 		smFactory: func(context.Context, string, string, string, string, string) (secretsManagerAPI, error) {
 			t.Fatalf("startDeployRunnerWithMode must not preflight target-account Secrets Manager")
@@ -113,6 +116,8 @@ func TestStartDeployRunnerWithMode_DoesNotPreflightTargetAccountAccess(t *testin
 	require.NoError(t, err)
 	require.Equal(t, "run1", runID)
 	require.Empty(t, stsClient.lastArn)
+	require.Len(t, iamClient.updateInputs, 1)
+	require.Len(t, iamClient.getInputs, 2, "trust repair must be verified before StartBuild")
 	require.Len(t, cb.startInputs, 1)
 
 	env := envOverrideMap(cb.startInputs[0].EnvironmentVariablesOverride)
@@ -127,7 +132,59 @@ func TestStartDeployRunnerWithMode_DoesNotPreflightTargetAccountAccess(t *testin
 	require.Equal(t, "false", env["BODY_ENABLED"])
 }
 
-func TestStartDeployRunnerWithMode_FollowOnModesDoNotPreflightTargetAccountAccess(t *testing.T) {
+func TestStartDeployRunnerWithMode_TrustVerificationFailureSkipsCodeBuild(t *testing.T) {
+	t.Parallel()
+
+	db := ttmocks.NewMockExtendedDB()
+	mockProvisionRunnerInstanceLookup(t, db, models.Instance{
+		Slug:              "theory",
+		HostedAccountID:   "922120356241",
+		HostedRegion:      "us-east-1",
+		HostedBaseDomain:  "theory.greater.website",
+		LesserHostBaseURL: "https://lesser.host",
+	})
+
+	cb := &fakeCodebuild{startOut: &codebuild.StartBuildOutput{Build: &cbtypes.Build{Id: aws.String("must-not-start")}}}
+	iamClient := &fakeIAM{
+		getOut:                &iam.GetRoleOutput{Role: &iamtypes.Role{AssumeRolePolicyDocument: aws.String(testExternalManagementRootTrust)}},
+		keepPolicyAfterUpdate: true,
+	}
+	srv := &Server{
+		cfg: config.Config{
+			Stage:                             "live",
+			ManagedOrgVendingRoleARN:          "arn:aws:iam::902552026581:role/lesser-host-org-vending",
+			ManagedInstanceRoleName:           "OrganizationAccountAccessRole",
+			ManagedProvisionRunnerProjectName: "runner-project",
+			ManagedProvisionRunnerRoleARN:     testDeployRunnerRoleARN,
+			ArtifactBucketName:                "artifact-bucket",
+			ManagedLesserGitHubOwner:          "equaltoai",
+			ManagedLesserGitHubRepo:           "lesser",
+		},
+		store: store.New(db),
+		cb:    cb,
+		iamFactory: func(context.Context, string, string, string, string, string) (iamAPI, error) {
+			return iamClient, nil
+		},
+	}
+	job := &models.ProvisionJob{
+		ID:              "job1",
+		InstanceSlug:    "theory",
+		AdminUsername:   "theory",
+		AdminWalletAddr: "0x0000000000000000000000000000000000000003",
+		AccountID:       "922120356241",
+		AccountRoleName: "OrganizationAccountAccessRole",
+		Region:          "us-east-1",
+		BaseDomain:      "theory.greater.website",
+		LesserVersion:   "v1.2.3",
+	}
+
+	_, err := srv.startDeployRunnerWithMode(context.Background(), job, deployRunnerModeLesser, srv.receiptS3Key(job))
+	require.ErrorContains(t, err, "deploy runner trust bootstrap failed")
+	require.ErrorContains(t, err, "exact deploy runner ExternalId allow is missing")
+	require.Empty(t, cb.startInputs, "StartBuild must not be called until repaired trust is verified")
+}
+
+func TestStartDeployRunnerWithMode_FollowOnModesReverifyTrustWithoutReadingSecrets(t *testing.T) {
 	t.Parallel()
 
 	for _, mode := range []string{deployRunnerModeLesserBody, deployRunnerModeLesserMCP} {
@@ -145,11 +202,14 @@ func TestStartDeployRunnerWithMode_FollowOnModesDoNotPreflightTargetAccountAcces
 
 			cb := &fakeCodebuild{startOut: &codebuild.StartBuildOutput{Build: &cbtypes.Build{Id: aws.String("run1")}}}
 			stsClient := &fakeSTS{err: errors.New("AccessDenied")}
+			iamClient := &fakeIAM{getOut: &iam.GetRoleOutput{Role: &iamtypes.Role{AssumeRolePolicyDocument: aws.String(testExternalManagementRootTrust)}}}
 			srv := &Server{
 				cfg: config.Config{
 					Stage:                             "live",
+					ManagedOrgVendingRoleARN:          "arn:aws:iam::902552026581:role/lesser-host-org-vending",
 					ManagedInstanceRoleName:           "OrganizationAccountAccessRole",
 					ManagedProvisionRunnerProjectName: "runner-project",
+					ManagedProvisionRunnerRoleARN:     testDeployRunnerRoleARN,
 					ArtifactBucketName:                "artifact-bucket",
 					ManagedLesserGitHubOwner:          "equaltoai",
 					ManagedLesserGitHubRepo:           "lesser",
@@ -159,8 +219,7 @@ func TestStartDeployRunnerWithMode_FollowOnModesDoNotPreflightTargetAccountAcces
 				cb:    cb,
 				sts:   stsClient,
 				iamFactory: func(context.Context, string, string, string, string, string) (iamAPI, error) {
-					t.Fatalf("follow-on provision runner mode %s must not preflight target-account IAM", mode)
-					return nil, errors.New("unexpected target IAM preflight")
+					return iamClient, nil
 				},
 				smFactory: func(context.Context, string, string, string, string, string) (secretsManagerAPI, error) {
 					t.Fatalf("follow-on provision runner mode %s must not preflight target-account Secrets Manager", mode)
@@ -183,6 +242,8 @@ func TestStartDeployRunnerWithMode_FollowOnModesDoNotPreflightTargetAccountAcces
 			require.NoError(t, err)
 			require.Equal(t, "run1", runID)
 			require.Empty(t, stsClient.lastArn)
+			require.Len(t, iamClient.updateInputs, 1)
+			require.Len(t, iamClient.getInputs, 2)
 			require.Len(t, cb.startInputs, 1)
 			require.Equal(t, mode, updateStartBuildEnvValue(cb.startInputs[0], "RUN_MODE"))
 		})
