@@ -128,22 +128,13 @@ func normalizeMintConversationDeclarationsDraft(parsed MintConversationDeclarati
 
 	caps := make([]soul.CapabilityV2, 0, len(parsed.Capabilities))
 	for _, c := range parsed.Capabilities {
-		c.Capability = strings.TrimSpace(c.Capability)
+		c.Capability = hostedgenesis.NormalizeProducedCapabilityIdentifier(c.Capability)
 		c.Scope = strings.TrimSpace(c.Scope)
 		c.ClaimLevel = strings.ToLower(strings.TrimSpace(c.ClaimLevel))
 		c.LastValidated = strings.TrimSpace(c.LastValidated)
 		c.ValidationRef = strings.TrimSpace(c.ValidationRef)
 		c.DegradesTo = strings.TrimSpace(c.DegradesTo)
-		if c.Capability == "" || c.Scope == "" {
-			continue
-		}
-		if c.ClaimLevel == "" {
-			c.ClaimLevel = mintConversationClaimLevelSelfDeclared
-		}
 		caps = append(caps, c)
-		if len(caps) >= 25 {
-			break
-		}
 	}
 	parsed.Capabilities = caps
 
@@ -215,7 +206,10 @@ Guidance:
 - The boundaries body records scope limits, human handoff triggers, and safety invariants.
 - The soul body records load-bearing commitments and at least three concrete refusals.
 - Each soul.refusals item must name a bypass attempt, invariant, and closestSafePath. Reject generic refusals such as "unsafe requests", "policy violations", or "bad things".
-- Capabilities are satellites. Include only concrete abilities supported by the transcript. Use claimLevel "` + mintConversationClaimLevelSelfDeclared + `".
+- Capabilities are satellites. Include at most ` + fmt.Sprint(hostedgenesis.MaxProducedCapabilities) + ` concrete abilities supported by the transcript. Use claimLevel "` + mintConversationClaimLevelSelfDeclared + `".
+- Translate each human-readable capability into a canonical lowercase machine identifier of 1-64 ASCII characters. Use letters and digits plus ".", "_", or "-" separators; for example, "Hosted Genesis Planning" becomes "hosted_genesis_planning". Put the human explanation in scope, not capability.
+- Scope must be non-empty and no longer than ` + fmt.Sprint(hostedgenesis.MaxProducedCapabilityScopeLength) + ` characters.
+- lastValidated must be an empty string unless the transcript explicitly supplies an RFC3339 timestamp. Never invent or translate a human date. validationRef and degradesTo must each be empty or at most ` + fmt.Sprint(hostedgenesis.MaxProducedCapabilityMetadataLength) + ` characters.
 - It is valid to return an empty capabilities array when no concrete capability is supported; never invent a fallback or placeholder capability.
 - Never emit "simulacrum.hosted-first-default"; it is a deprecated hosted-genesis placeholder, not a real capability.
 - Transparency is a satellite and should describe model/provider uncertainty and any relevant operational notes.
@@ -276,20 +270,37 @@ func mintConversationDeclarationsJSONSchemaV2(contract hostedgenesis.Declaration
 			"capabilities": map[string]any{
 				"type":     "array",
 				"minItems": 0,
-				"maxItems": 25,
+				"maxItems": hostedgenesis.MaxProducedCapabilities,
 				"items": map[string]any{
 					"type":                 "object",
 					"additionalProperties": false,
 					"properties": map[string]any{
-						"capability": map[string]any{"type": "string"},
-						"scope":      map[string]any{"type": "string"},
+						"capability": map[string]any{
+							"type":        "string",
+							"minLength":   1,
+							"maxLength":   hostedgenesis.MaxProducedCapabilityIdentifierLength,
+							"pattern":     hostedgenesis.ProducedCapabilityEvidencePattern,
+							"description": "Canonical Host capability identifier or short human-readable capability evidence that Host can deterministically canonicalize.",
+						},
+						"scope": map[string]any{
+							"type":        "string",
+							"minLength":   1,
+							"maxLength":   hostedgenesis.MaxProducedCapabilityScopeLength,
+							"pattern":     hostedgenesis.ProducedCapabilityNonWhitespacePattern,
+							"description": "Non-empty human-readable scope supported by the transcript.",
+						},
 						"claimLevel": map[string]any{
 							"type": "string",
 							"enum": []string{mintConversationClaimLevelSelfDeclared},
 						},
-						"lastValidated": map[string]any{"type": "string"},
-						"validationRef": map[string]any{"type": "string"},
-						"degradesTo":    map[string]any{"type": "string"},
+						"lastValidated": map[string]any{
+							"type":        "string",
+							"maxLength":   hostedgenesis.MaxProducedCapabilityLastValidatedLength,
+							"pattern":     hostedgenesis.ProducedCapabilityOptionalRFC3339Pattern,
+							"description": "Empty when unsupported by evidence; otherwise an exact RFC3339 timestamp from the transcript.",
+						},
+						"validationRef": map[string]any{"type": "string", "maxLength": hostedgenesis.MaxProducedCapabilityMetadataLength},
+						"degradesTo":    map[string]any{"type": "string", "maxLength": hostedgenesis.MaxProducedCapabilityMetadataLength},
 					},
 					"required": []string{"capability", "scope", "claimLevel", "lastValidated", "validationRef", "degradesTo"},
 				},

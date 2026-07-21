@@ -16,6 +16,7 @@ import (
 	"github.com/anthropics/anthropic-sdk-go"
 
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
+	"github.com/equaltoai/lesser-host/internal/soul"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
@@ -41,7 +42,7 @@ func TestMintConversationDeclarationsDraftParsingAndNormalization(t *testing.T) 
 			"mintingModel": "  openai:gpt-4o-mini  "
 		},
 		"capabilities": [
-			{"capability":" itinerary-planning ","scope":" build routes ","claimLevel":" ","lastValidated":" 2026-03-05T00:00:00Z ","validationRef":" ref ","degradesTo":" email "},
+			{"capability":" Itinerary Planning ","scope":" build routes ","claimLevel":" self-declared ","lastValidated":" 2026-03-05T00:00:00Z ","validationRef":" ref ","degradesTo":" email "},
 			{"capability":" ","scope":"skip","claimLevel":"self-declared"},
 			{"capability":"skip","scope":" ","claimLevel":"self-declared"}
 		],
@@ -64,11 +65,14 @@ func TestMintConversationDeclarationsDraftParsingAndNormalization(t *testing.T) 
 	if norm.SelfDescription.AuthoredBy != mintConversationTestAuthoredByAgent {
 		t.Fatalf("unexpected authoredBy: %q", norm.SelfDescription.AuthoredBy)
 	}
-	if len(norm.Capabilities) != 1 {
-		t.Fatalf("expected 1 capability, got %d", len(norm.Capabilities))
+	if len(norm.Capabilities) != 3 {
+		t.Fatalf("normalization must preserve malformed rows for fail-closed validation, got %d", len(norm.Capabilities))
 	}
-	if norm.Capabilities[0].ClaimLevel != "self-declared" {
-		t.Fatalf("expected default claimLevel, got %q", norm.Capabilities[0].ClaimLevel)
+	if norm.Capabilities[0].Capability != "itinerary_planning" || norm.Capabilities[0].ClaimLevel != "self-declared" {
+		t.Fatalf("expected canonical capability identifier, got %#v", norm.Capabilities[0])
+	}
+	if norm.Capabilities[1].Capability != "" || norm.Capabilities[2].Scope != "" {
+		t.Fatalf("malformed capability rows must remain visible to validation, got %#v", norm.Capabilities)
 	}
 	if len(norm.Boundaries) != 1 {
 		t.Fatalf("expected 1 boundary, got %d", len(norm.Boundaries))
@@ -143,7 +147,7 @@ func TestMintConversationDeclarationsFiveBodyPromptAndSchema(t *testing.T) {
 	if strings.Contains(strings.ToLower(cfg.systemPrompt), "re-deriv") {
 		t.Fatalf("v2 extraction prompt must not teach re-derivation: %q", cfg.systemPrompt)
 	}
-	for _, want := range []string{"five first-class bodies", "identity", "philosophy", "discipline", "boundaries", "soul.refusals", `claimLevel "` + mintConversationClaimLevelSelfDeclared + `"`} {
+	for _, want := range []string{"five first-class bodies", "identity", "philosophy", "discipline", "boundaries", "soul.refusals", `claimLevel "` + mintConversationClaimLevelSelfDeclared + `"`, "canonical lowercase machine identifier", "RFC3339"} {
 		if !strings.Contains(cfg.systemPrompt, want) {
 			t.Fatalf("expected v2 extraction prompt to mention %q, got %q", want, cfg.systemPrompt)
 		}
@@ -167,7 +171,54 @@ func TestMintConversationDeclarationsFiveBodyPromptAndSchema(t *testing.T) {
 	if got, ok := refusals["minItems"].(int); !ok || got != 3 {
 		t.Fatalf("expected soul.refusals minItems=3, got %#v", refusals["minItems"])
 	}
+	assertMintConversationCapabilitySchema(t, props)
 	assertOpenAIStrictObjectSchema(t, schema)
+}
+
+func assertMintConversationCapabilitySchema(t *testing.T, declarationProperties map[string]any) {
+	t.Helper()
+
+	capabilities := requireSchemaMap(t, declarationProperties, "capabilities")
+	capabilityItems := requireSchemaMap(t, capabilities, "items")
+	capabilityProps := requireSchemaMap(t, capabilityItems, "properties")
+	capabilityName := requireSchemaMap(t, capabilityProps, "capability")
+	if capabilityName["pattern"] != hostedgenesis.ProducedCapabilityEvidencePattern || capabilityName["maxLength"] != hostedgenesis.MaxProducedCapabilityIdentifierLength {
+		t.Fatalf("provider schema must admit only bounded canonicalizable capability evidence, got %#v", capabilityName)
+	}
+	capabilityScope := requireSchemaMap(t, capabilityProps, "scope")
+	if capabilityScope["pattern"] != hostedgenesis.ProducedCapabilityNonWhitespacePattern || capabilityScope["maxLength"] != hostedgenesis.MaxProducedCapabilityScopeLength {
+		t.Fatalf("provider schema must require a bounded non-empty scope, got %#v", capabilityScope)
+	}
+	lastValidated := requireSchemaMap(t, capabilityProps, "lastValidated")
+	if lastValidated["pattern"] != hostedgenesis.ProducedCapabilityOptionalRFC3339Pattern {
+		t.Fatalf("provider schema must constrain lastValidated to empty or RFC3339, got %#v", lastValidated)
+	}
+}
+
+func TestMintConversationDeclarationsCapabilityContractSurvivesHostValidation(t *testing.T) {
+	t.Parallel()
+
+	parsed := MintConversationDeclarationsDraft{Capabilities: []soul.CapabilityV2{{
+		Capability:    "Hosted Genesis Conversation Planning",
+		Scope:         "Translate affirmed five-body interview evidence into declarations.",
+		ClaimLevel:    "self-declared",
+		LastValidated: "2026-07-21T17:00:00Z",
+	}}}
+	normalized := normalizeMintConversationDeclarationsDraft(parsed)
+	if len(normalized.Capabilities) != 1 || normalized.Capabilities[0].Capability != "hosted_genesis_conversation_planning" {
+		t.Fatalf("expected deterministic human-evidence canonicalization, got %#v", normalized.Capabilities)
+	}
+
+	validated, err := hostedgenesis.ValidateAndNormalizeProducedCapabilities(normalized.Capabilities)
+	if err != nil {
+		t.Fatalf("provider-contract output must survive Host validation: %v", err)
+	}
+	if len(validated) != 1 {
+		t.Fatalf("expected one validated capability, got %#v", validated)
+	}
+	if err := validated[0].Validate(); err != nil {
+		t.Fatalf("validated producer output must be a valid CapabilityV2: %v", err)
+	}
 }
 
 func TestMintConversationDeclarationsFiveBodyNormalization(t *testing.T) {
@@ -236,7 +287,7 @@ func TestMintConversationDeclarationsProviderParityUsesStrictAnthropicTool(t *te
 			DeclaredCapabilities: []string{"hosted_genesis_planning"},
 		},
 		Messages: []MintConversationMessage{
-			{Role: "user", Content: "I help plan hosted genesis declarations."},
+			{Role: "user", Content: "I help with Hosted Genesis Planning and last validated that ability at 2026-07-21T17:00:00Z."},
 			{Role: "assistant", Content: "Draft: five bodies, one capability, three refusals."},
 		},
 	}
@@ -284,12 +335,12 @@ func TestMintConversationDeclarationsProviderParityUsesStrictAnthropicTool(t *te
 	if usage.Provider != testProviderAnthropic || usage.Model != mintConversationTestAnthropicModel || usage.ToolCalls != 1 {
 		t.Fatalf("unexpected anthropic usage: %#v", usage)
 	}
-	for _, want := range []string{`"json_schema"`, `"strict":true`, `"fiveBodies"`, `"capabilities"`, `"transparency"`, `"refusals"`} {
+	for _, want := range []string{`"json_schema"`, `"strict":true`, `"fiveBodies"`, `"capabilities"`, `"transparency"`, `"refusals"`, "Canonical Host capability", "RFC3339"} {
 		if !strings.Contains(openAIRequest, want) {
 			t.Fatalf("OpenAI strict schema request missing %s: %s", want, openAIRequest)
 		}
 	}
-	for _, want := range []string{`"tool_choice"`, `"soul_five_body_declarations"`, `"strict":true`, `"max_tokens":8192`, `"fiveBodies"`, `"capabilities"`, `"transparency"`, `"refusals"`} {
+	for _, want := range []string{`"tool_choice"`, `"soul_five_body_declarations"`, `"strict":true`, `"max_tokens":8192`, `"fiveBodies"`, `"capabilities"`, `"transparency"`, `"refusals"`, "Canonical Host capability", "RFC3339"} {
 		if !strings.Contains(anthropicRequest, want) {
 			t.Fatalf("Anthropic strict tool request missing %s: %s", want, anthropicRequest)
 		}
@@ -388,10 +439,10 @@ func mintConversationDeclarationDraftFixture() map[string]any {
 			},
 		},
 		"capabilities": []any{map[string]any{
-			"capability":    "hosted_genesis_planning",
+			"capability":    "Hosted Genesis Planning",
 			"scope":         "Draft safe hosted genesis registration declarations.",
 			"claimLevel":    "self-declared",
-			"lastValidated": "",
+			"lastValidated": "2026-07-21T17:00:00Z",
 			"validationRef": "",
 			"degradesTo":    "",
 		}},
@@ -415,7 +466,7 @@ func assertMintConversationDeclarationDraftsEquivalent(t *testing.T, openOut Min
 	if len(openOut.FiveBodies.Soul.Refusals) != 3 || len(anthropicOut.FiveBodies.Soul.Refusals) != 3 {
 		t.Fatalf("refusal floor mismatch: openai=%#v anthropic=%#v", openOut.FiveBodies.Soul.Refusals, anthropicOut.FiveBodies.Soul.Refusals)
 	}
-	if len(openOut.Capabilities) != 1 || len(anthropicOut.Capabilities) != 1 || openOut.Capabilities[0].Capability != anthropicOut.Capabilities[0].Capability || anthropicOut.Capabilities[0].ClaimLevel != mintConversationClaimLevelSelfDeclared {
+	if len(openOut.Capabilities) != 1 || len(anthropicOut.Capabilities) != 1 || openOut.Capabilities[0].Capability != "hosted_genesis_planning" || openOut.Capabilities[0].Capability != anthropicOut.Capabilities[0].Capability || anthropicOut.Capabilities[0].ClaimLevel != mintConversationClaimLevelSelfDeclared {
 		t.Fatalf("capability mismatch: openai=%#v anthropic=%#v", openOut.Capabilities, anthropicOut.Capabilities)
 	}
 	if openOut.Transparency["operationalNotes"] != anthropicOut.Transparency["operationalNotes"] {
