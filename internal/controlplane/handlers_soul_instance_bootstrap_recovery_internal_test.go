@@ -18,7 +18,10 @@ import (
 	"github.com/equaltoai/lesser-host/internal/testutil"
 )
 
-const hostedGenesisMicroVMRecoveryTurnID = "turn-microvm"
+const (
+	hostedGenesisMicroVMRecoveryPriorTurnID = "turn-microvm-prior"
+	hostedGenesisMicroVMRecoveryTurnID      = "turn-microvm"
+)
 
 func TestSoulInstanceRecoverMintConversation_RetriggersStuckTurn(t *testing.T) {
 	tdb := newMintConversationTestDB()
@@ -332,8 +335,9 @@ func TestSoulInstanceRecoverMintConversation_AssistantRetryPersistsPendingBefore
 
 type stateReadingMicroVMDispatcher struct {
 	*stubMicroVMDispatcher
-	readSession         func() *models.HostedGenesisSession
-	expectedFailureCode hostedgenesis.FailureCode
+	readSession               func() *models.HostedGenesisSession
+	expectedFailureCode       hostedgenesis.FailureCode
+	expectedRemainingAttempts int
 }
 
 func (d *stateReadingMicroVMDispatcher) DispatchMicroVMRun(ctx context.Context, requestID string, binding hostedgenesis.MicroVMSessionBinding) (hostedgenesis.MicroVMDispatchResult, error) {
@@ -347,11 +351,15 @@ func (d *stateReadingMicroVMDispatcher) DispatchMicroVMRun(ctx context.Context, 
 	if expectedFailureCode == "" {
 		expectedFailureCode = hostedgenesis.FailureCodeAssistantTurnFailed
 	}
+	expectedRemainingAttempts := d.expectedRemainingAttempts
+	if expectedRemainingAttempts == 0 {
+		expectedRemainingAttempts = 1
+	}
 	if hostedgenesis.NormalizeStatus(session.Status) != hostedgenesis.StatusInProgress ||
 		session.LatestTurnID != binding.TurnID ||
 		session.Failure == nil ||
 		session.Failure.Code != expectedFailureCode ||
-		session.Failure.Recovery.MaxAttempts != 1 {
+		session.Failure.Recovery.MaxAttempts != expectedRemainingAttempts {
 		d.t.Fatalf("workload observed old or invalid durable retry state during dispatch: %#v", session)
 	}
 	if expectedFailureCode == hostedgenesis.FailureCodeMicroVMUnavailable && session.VMCheckpoint == nil {
@@ -577,17 +585,36 @@ func TestHostedGenesisMicroVMRecoveryCheckpointValidationGuardsDurableInvariants
 	}
 
 	for name, mutate := range map[string]func(*models.HostedGenesisSession){
-		"latest turn mismatch": func(session *models.HostedGenesisSession) {
-			session.VMCheckpoint.LatestTurnID = "turn-other"
+		"current turn missing from ledger": func(session *models.HostedGenesisSession) {
+			session.TurnLedger = session.TurnLedger[:1]
 		},
-		"turn missing from ledger": func(session *models.HostedGenesisSession) {
-			session.TurnLedger = nil
+		"checkpoint turn missing from ledger": func(session *models.HostedGenesisSession) {
+			session.TurnLedger = session.TurnLedger[1:]
+		},
+		"current input checkpoint missing from session": func(session *models.HostedGenesisSession) {
+			session.InputCheckpointRef = ""
+		},
+		"current input checkpoint missing from ledger": func(session *models.HostedGenesisSession) {
+			session.TurnLedger[1].InputCheckpointRef = ""
+		},
+		"current input checkpoint cross conversation": func(session *models.HostedGenesisSession) {
+			session.InputCheckpointRef = hostedgenesis.CheckpointRef("input", "other-conversation", session.LatestTurnID)
 		},
 		"conversation ref mismatch": func(session *models.HostedGenesisSession) {
 			session.VMCheckpoint.Ref = hostedgenesis.CheckpointRef("vm-actor", "other-conversation", fmt.Sprintf("%s-%d-%s", session.VMCheckpoint.Step, session.VMCheckpoint.Sequence, session.VMCheckpoint.LatestTurnID))
 		},
+		"malformed checkpoint ref": func(session *models.HostedGenesisSession) {
+			session.VMCheckpoint.Ref = ""
+		},
+		"current turn checkpoint is not prior": func(session *models.HostedGenesisSession) {
+			session.VMCheckpoint.LatestTurnID = session.LatestTurnID
+			session.VMCheckpoint.Ref = hostedgenesis.CheckpointRef("vm-actor", session.ConversationID, fmt.Sprintf("%s-%d-%s", session.VMCheckpoint.Step, session.VMCheckpoint.Sequence, session.VMCheckpoint.LatestTurnID))
+		},
 		"failed checkpoint status": func(session *models.HostedGenesisSession) {
 			session.VMCheckpoint.StatusTo = string(hostedgenesis.StatusFailed)
+		},
+		"terminal declaration checkpoint": func(session *models.HostedGenesisSession) {
+			session.VMCheckpoint.StatusTo = string(hostedgenesis.StatusDeclarationReady)
 		},
 		"checkpoint ahead of version budget": func(session *models.HostedGenesisSession) {
 			session.VMCheckpoint.Sequence = session.Version + 2
@@ -882,20 +909,32 @@ func failedAssistantTurnRecoveryFailure() *hostedgenesis.Failure {
 func failedMicroVMUnavailableRecoverySessionFixture(t *testing.T, reg models.SoulAgentRegistration, now time.Time) models.HostedGenesisSession {
 	t.Helper()
 	session := failedAssistantTurnRecoveryHostedGenesisSessionFixture(t, reg, now)
+	session.Version = 38
 	session.LatestTurnID = hostedGenesisMicroVMRecoveryTurnID
-	session.MessageCount = 1
-	session.TurnLedger = []hostedgenesis.TurnLedgerEntry{{
-		TurnID:         hostedGenesisMicroVMRecoveryTurnID,
-		ChargedCredits: soulMintConversationStreamBaseCredits,
-		MessageCount:   1,
-		AcceptedAt:     now.Add(-5 * time.Minute),
-	}}
+	session.MessageCount = 3
+	session.InputCheckpointRef = hostedgenesis.CheckpointRef("input", session.ConversationID, hostedGenesisMicroVMRecoveryTurnID)
+	session.TurnLedger = []hostedgenesis.TurnLedgerEntry{
+		{
+			TurnID:             hostedGenesisMicroVMRecoveryPriorTurnID,
+			InputCheckpointRef: hostedgenesis.CheckpointRef("input", session.ConversationID, hostedGenesisMicroVMRecoveryPriorTurnID),
+			ChargedCredits:     soulMintConversationStreamBaseCredits,
+			MessageCount:       1,
+			AcceptedAt:         now.Add(-10 * time.Minute),
+		},
+		{
+			TurnID:             hostedGenesisMicroVMRecoveryTurnID,
+			InputCheckpointRef: session.InputCheckpointRef,
+			ChargedCredits:     soulMintConversationStreamBaseCredits,
+			MessageCount:       3,
+			AcceptedAt:         now.Add(-5 * time.Minute),
+		},
+	}
 	session.Failure = failedMicroVMUnavailableRecoveryFailure()
 	checkpoint, err := hostedgenesis.NewVMCheckpointMetadata(hostedgenesis.VMCheckpointInput{
 		ConversationID:     session.ConversationID,
-		LatestTurnID:       hostedGenesisMicroVMRecoveryTurnID,
+		LatestTurnID:       hostedGenesisMicroVMRecoveryPriorTurnID,
 		RequestID:          "req-checkpoint",
-		Sequence:           session.Version + 1,
+		Sequence:           session.Version - 1,
 		Step:               "assistant_turn",
 		Action:             "ask",
 		StatusFrom:         hostedgenesis.StatusInProgress,

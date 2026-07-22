@@ -241,10 +241,24 @@ Lesser-facing route family above remains unchanged, but the execution contract f
   Host-owned;
 - if controller reconstruction observes a terminal/expired MicroVM before Host truth has advanced, Host records a loud
   retryable `failed` state with `failure.code=microvm_unavailable`; recovery may relaunch the actor only after a
-  persisted VM-authored checkpoint validates against the durable conversation id, latest turn id, turn ledger, status
-  transition, and session version budget, and the relaunch write remains conditional on the failed Host status/version;
+  persisted VM-authored checkpoint validates as a completed assistant actor step for a prior turn in the same durable
+  turn ledger,
+  the current accepted turn is the last ledger entry, and both the session and that entry carry the exact deterministic
+  current-turn input checkpoint reference; the relaunch binds the official AppTheory MicroVM `Run` to that same current
+  turn, preserves its ledger/input/charge, decrements the retry budget, clears stale execution refs, and remains
+  conditional on the failed Host status/version;
   a missing or invalid checkpoint is an actionable conflict, never a silent success and never a Host-run provider loop;
 - `MaximumDurationSeconds` caps one active in-VM provider/declaration step, while `IdlePolicy` and explicit
   checkpoint/relaunch/replay semantics cover human wait gaps;
 - until live lab evidence proves process-memory preservation across human-scale suspend/resume, process memory is an
   optimization only, never the recovery source of truth.
+
+The prior completed VM checkpoint plus the current durable input checkpoint and final turn-ledger entry is sufficient
+for `microvm_unavailable` replay because the actor rebuilds from the last completed state and consumes the already-paid,
+already-accepted current turn. A provider that dies before producing current-turn SDK output cannot author a
+current-turn VM checkpoint. Requiring `VMCheckpoint.latest_turn_id == HostedGenesisSession.latest_turn_id` therefore
+made the observer-authored `retry_same_step` action unreachable for exactly that failure. Recovery instead requires the
+VM checkpoint turn to precede the current ledger tail and fails closed for a first turn with no prior completed actor
+checkpoint, malformed or cross-conversation refs, invalid ledger/input state, non-completed checkpoint transitions, or
+checkpoint sequences ahead of the durable session version. Recovery never appends another owner message or turn,
+debits another charge, resumes/nudges the dead provider, or selects a synchronous/local fallback.

@@ -280,13 +280,41 @@ func validateHostedGenesisMicroVMRecoveryCheckpoint(session *models.HostedGenesi
 	if err := checkpoint.Validate(); err != nil {
 		return fmt.Errorf("invalid vm checkpoint: %w", err)
 	}
-	if strings.TrimSpace(checkpoint.LatestTurnID) == "" ||
-		strings.TrimSpace(checkpoint.LatestTurnID) != strings.TrimSpace(session.LatestTurnID) {
-		return fmt.Errorf("checkpoint turn %q does not match latest turn %q", checkpoint.LatestTurnID, session.LatestTurnID)
+	if err := validateHostedGenesisMicroVMRecoveryTurns(session, checkpoint); err != nil {
+		return err
 	}
-	if !hostedGenesisTurnLedgerContainsTurn(session.TurnLedger, checkpoint.LatestTurnID) {
+	return validateHostedGenesisMicroVMRecoveryActorCheckpoint(session, checkpoint)
+}
+
+func validateHostedGenesisMicroVMRecoveryTurns(session *models.HostedGenesisSession, checkpoint hostedgenesis.VMCheckpointMetadata) error {
+	currentTurnID := strings.TrimSpace(session.LatestTurnID)
+	if currentTurnID == "" {
+		return fmt.Errorf("missing current turn")
+	}
+	if err := hostedgenesis.ValidateTurnLedger(session.TurnLedger); err != nil {
+		return fmt.Errorf("invalid durable turn ledger: %w", err)
+	}
+	currentTurnIndex := hostedGenesisTurnLedgerIndex(session.TurnLedger, currentTurnID)
+	if currentTurnIndex < 0 || currentTurnIndex != len(session.TurnLedger)-1 {
+		return fmt.Errorf("current turn %q is not the latest durable turn", currentTurnID)
+	}
+	checkpointTurnIndex := hostedGenesisTurnLedgerIndex(session.TurnLedger, checkpoint.LatestTurnID)
+	if checkpointTurnIndex < 0 {
 		return fmt.Errorf("checkpoint turn %q is not in the durable turn ledger", checkpoint.LatestTurnID)
 	}
+	if checkpointTurnIndex >= currentTurnIndex {
+		return fmt.Errorf("checkpoint turn %q is not prior to current turn %q", checkpoint.LatestTurnID, currentTurnID)
+	}
+	expectedInputRef := hostedgenesis.CheckpointRef("input", session.ConversationID, currentTurnID)
+	currentTurn := session.TurnLedger[currentTurnIndex].Normalize()
+	if hostedgenesis.NormalizeCheckpointRef(session.InputCheckpointRef) != expectedInputRef ||
+		currentTurn.InputCheckpointRef != expectedInputRef {
+		return fmt.Errorf("current turn input checkpoint does not match the durable conversation binding")
+	}
+	return nil
+}
+
+func validateHostedGenesisMicroVMRecoveryActorCheckpoint(session *models.HostedGenesisSession, checkpoint hostedgenesis.VMCheckpointMetadata) error {
 	expectedRef := hostedgenesis.CheckpointRef(
 		"vm-actor",
 		session.ConversationID,
@@ -297,29 +325,29 @@ func validateHostedGenesisMicroVMRecoveryCheckpoint(session *models.HostedGenesi
 	}
 	statusFrom := hostedgenesis.NormalizeStatus(checkpoint.StatusFrom)
 	statusTo := hostedgenesis.NormalizeStatus(checkpoint.StatusTo)
-	if statusTo == hostedgenesis.StatusFailed {
-		return fmt.Errorf("checkpoint failed status cannot be replayed")
+	if statusTo != hostedgenesis.StatusAssistantTurnReady {
+		return fmt.Errorf("checkpoint does not represent a completed assistant actor step")
 	}
 	if err := hostedgenesis.ValidateTransition(statusFrom, statusTo); err != nil {
 		return err
 	}
-	if checkpoint.Sequence > session.Version+1 {
+	if checkpoint.Sequence > session.Version {
 		return fmt.Errorf("checkpoint sequence %d is ahead of session version %d", checkpoint.Sequence, session.Version)
 	}
 	return nil
 }
 
-func hostedGenesisTurnLedgerContainsTurn(ledger []hostedgenesis.TurnLedgerEntry, turnID string) bool {
+func hostedGenesisTurnLedgerIndex(ledger []hostedgenesis.TurnLedgerEntry, turnID string) int {
 	turnID = strings.TrimSpace(turnID)
 	if turnID == "" {
-		return false
+		return -1
 	}
-	for _, entry := range ledger {
+	for index, entry := range ledger {
 		if strings.TrimSpace(entry.Normalize().TurnID) == turnID {
-			return true
+			return index
 		}
 	}
-	return false
+	return -1
 }
 
 func hostedGenesisSessionHasPendingAssistantRetryFailure(session *models.HostedGenesisSession) bool {
