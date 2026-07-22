@@ -79,6 +79,9 @@ func (r *turnRunner) loadTurnInput(ctx context.Context, turn completion.Completi
 	if err != nil {
 		return turnInput{}, fmt.Errorf("resolve hosted genesis declaration contract: %w", err)
 	}
+	if !contract.IsFiveBody() {
+		return turnInput{}, hostedgenesis.ErrDeclarationContractUnconfigured
+	}
 	systemPrompt, err := mintprompt.MintConversationSystemPromptForContract(reg, contract)
 	if err != nil {
 		return turnInput{}, fmt.Errorf("build hosted genesis system prompt: %w", err)
@@ -88,6 +91,9 @@ func (r *turnRunner) loadTurnInput(ctx context.Context, turn completion.Completi
 			return turnInput{}, fmt.Errorf("validate typed declaration candidate: %w", err)
 		}
 		candidate := session.DeclarationCandidate
+		if err := hostedgenesis.ValidateDeclarationContractVersions(candidate.SchemaVersion, candidate.GuidanceVersion, contract); err != nil {
+			return turnInput{}, fmt.Errorf("validate typed declaration candidate contract: %w", err)
+		}
 		if candidate.InstanceSlug != strings.ToLower(strings.TrimSpace(session.InstanceSlug)) ||
 			candidate.RegistrationID != strings.TrimSpace(session.RegistrationID) ||
 			!strings.EqualFold(candidate.AgentID, session.AgentID) ||
