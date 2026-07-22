@@ -248,10 +248,10 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Complete or replay a registration-scoped mint conversation
-         * @description Completes an active mint conversation and persists produced declarations. If the stored conversation is already
-         *     `completed` and has valid produced declarations, the route is idempotent and returns the completed conversation
-         *     without re-extracting or rewriting declarations. Other terminal states fail closed with conflict metadata.
+         * Read or replay a registration-scoped mint conversation completion
+         * @description Replays an already terminal conversation. Active declaration construction and finalization belong exclusively
+         *     to the Hosted Genesis MicroVM typed-candidate lane; this route accepts no caller-authored declaration document,
+         *     invokes no provider, and returns a conflict for active legacy rows.
          */
         post: operations["soulCompleteMintConversation"];
         delete?: never;
@@ -573,14 +573,12 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Complete or replay an instance-key registration mint conversation
-         * @description Server-to-server route for managed Lesser instances. Completes a conversation inside the authenticated instance
-         *     boundary and persists the produced declarations for finalize preflight/finalize. If Host has accepted the turn
-         *     but the assistant turn or declaration extraction is not ready yet, this route returns `202` plus the durable
-         *     HostConversation progress envelope; HTTP success is not terminal. If the stored conversation is already
-         *     `completed`/`declaration_ready` and has valid produced declarations, the route is idempotent and returns the
-         *     compact HostConversation declaration-ready envelope without re-extracting or rewriting declarations. Failed conversations and completed
-         *     conversations without valid produced declarations fail closed with structured state details.
+         * Read or replay an instance-key registration mint conversation completion
+         * @description Progress-safe read/convergence route for managed Lesser instances. If the conversation is still `in_progress`
+         *     or `assistant_turn_ready`, the route returns `HTTP 202` with the compact HostConversation progress envelope.
+         *     If the MicroVM has deterministically finalized the exact structurally affirmed candidate, the route
+         *     idempotently returns the `declaration_ready` envelope. The request accepts no caller-authored declaration
+         *     document and invokes no provider. Failed or invalid states fail closed.
          */
         post: operations["soulInstanceCompleteRegistrationMintConversation"];
         delete?: never;
@@ -663,10 +661,10 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Complete or replay an agent-scoped mint conversation
-         * @description Completes an active mint conversation for a stable agent handle. If the stored conversation is already
-         *     `completed` and has valid produced declarations, the route is idempotent and returns the completed conversation
-         *     without re-extracting or rewriting declarations. Other terminal states fail closed with conflict metadata.
+         * Read or replay an agent-scoped mint conversation completion
+         * @description Replays an already terminal conversation for a stable agent handle. Active declaration construction and
+         *     finalization belong exclusively to the Hosted Genesis MicroVM typed-candidate lane; this route accepts no
+         *     caller-authored declaration document, invokes no provider, and returns a conflict for active legacy rows.
          */
         post: operations["soulAgentCompleteMintConversation"];
         delete?: never;
@@ -1182,7 +1180,7 @@ export interface components {
                 details?: {
                     reason?: string;
                     /** @enum {string} */
-                    conversation_status?: "unknown" | "pending" | "created" | "in_progress" | "assistant_turn_ready" | "declaration_extraction_pending" | "declaration_ready" | "completed" | "failed";
+                    conversation_status?: "unknown" | "pending" | "created" | "in_progress" | "assistant_turn_ready" | "declaration_ready" | "completed" | "failed";
                     expected_status?: string;
                     produced_declarations_present?: boolean;
                     produced_declarations_valid?: boolean;
@@ -1442,7 +1440,7 @@ export interface components {
             principal_address?: string;
             latest_conversation_id?: string;
             /** @enum {string} */
-            latest_conversation_status?: "created" | "in_progress" | "assistant_turn_ready" | "declaration_extraction_pending" | "declaration_ready" | "published" | "completed" | "failed";
+            latest_conversation_status?: "created" | "in_progress" | "assistant_turn_ready" | "declaration_ready" | "published" | "completed" | "failed";
             latest_review_sha256?: string;
             latest_boundary_count?: number;
             latest_capability_count?: number;
@@ -1587,6 +1585,16 @@ export interface components {
             idempotency_key?: string;
             correlation_id?: string;
             lesser_request_id?: string;
+            /** @description Structural owner action bound to the exact deterministic review. Free-form affirmation text is not authoritative. */
+            candidate_action?: {
+                /** @enum {string} */
+                action: "affirm" | "edit";
+                /** @enum {string} */
+                section?: "identity" | "philosophy" | "discipline" | "boundaries" | "soul";
+                candidate_revision: number;
+                candidate_hash: string;
+                review_hash: string;
+            } & (unknown & unknown);
         };
         SoulHostedGenesisConversationResponse: components["schemas"]["hosted-genesis.conversation.response.schema"];
         SoulMintConversation: {
@@ -1599,7 +1607,7 @@ export interface components {
              * @description Legacy raw Host record status. `completed` is retained for backward compatibility and maps to the durable hosted-genesis contract status `declaration_ready` only when valid produced declarations exist.
              * @enum {string}
              */
-            status: "created" | "in_progress" | "assistant_turn_ready" | "declaration_extraction_pending" | "declaration_ready" | "completed" | "failed";
+            status: "created" | "in_progress" | "assistant_turn_ready" | "declaration_ready" | "completed" | "failed";
             usage?: components["schemas"]["AIUsage"];
             charged_credits?: number;
             /** Format: date-time */
@@ -1607,9 +1615,8 @@ export interface components {
             /** Format: date-time */
             completed_at?: string;
         };
-        SoulMintConversationCompleteRequest: {
-            declarations?: string | components["schemas"]["SoulMintConversationDeclarationPreview"];
-        };
+        /** @description Read/convergence request. Hosted Genesis declaration bytes are finalized only by the MicroVM from the structurally affirmed typed candidate. */
+        SoulMintConversationCompleteRequest: Record<string, never>;
         SoulAgentMintConversationsResponse: {
             /** @enum {string} */
             version: "1";
@@ -1621,7 +1628,7 @@ export interface components {
             registration_id: string;
             conversation_id: string;
             /** @enum {string} */
-            status: "created" | "in_progress" | "assistant_turn_ready" | "declaration_extraction_pending" | "declaration_ready" | "published" | "failed";
+            status: "created" | "in_progress" | "assistant_turn_ready" | "declaration_ready" | "published" | "failed";
             message_count?: number;
             latest_turn_id?: string;
             /** Format: date-time */
@@ -2087,7 +2094,7 @@ export interface components {
             };
         };
         /** @enum {string} */
-        status: "created" | "in_progress" | "assistant_turn_ready" | "declaration_extraction_pending" | "declaration_ready" | "published" | "failed";
+        status: "created" | "in_progress" | "assistant_turn_ready" | "declaration_ready" | "published" | "failed";
         conversation_message: {
             id: string;
             /** @enum {string} */
@@ -2118,7 +2125,7 @@ export interface components {
         };
         failure: {
             /** @enum {string} */
-            code: "llm_unavailable" | "assistant_turn_failed" | "declaration_extraction_failed" | "invalid_completion_state" | "missing_produced_declarations" | "invalid_produced_declarations" | "tenant_boundary_violation" | "operator_action_required" | "microvm_unavailable";
+            code: "llm_unavailable" | "assistant_turn_failed" | "invalid_completion_state" | "missing_produced_declarations" | "invalid_produced_declarations" | "tenant_boundary_violation" | "operator_action_required" | "microvm_unavailable";
             /** @enum {string} */
             class?: "provider_timeout" | "provider_canceled" | "provider_api_failure" | "invalid_provider_output" | "parse_validation_failure";
             message: string;
@@ -2136,6 +2143,26 @@ export interface components {
             correlation_id?: string;
             idempotency_key?: string;
             lesser_request_id?: string;
+        };
+        candidate_review: {
+            /** @constant */
+            renderer_version: "hosted-genesis-owner-review.v1";
+            candidate_revision: number;
+            candidate_hash: string;
+            review_hash: string;
+            review_text: string;
+        };
+        declaration_candidate: {
+            /** @constant */
+            version: "hosted-genesis-declaration-candidate.v1";
+            /** @enum {string} */
+            phase: "section" | "review" | "affirmed" | "finalized";
+            /** @enum {string} */
+            current_section?: "identity" | "philosophy" | "discipline" | "boundaries" | "soul";
+            completed_sections?: ("identity" | "philosophy" | "discipline" | "boundaries" | "soul")[];
+            revision: number;
+            candidate_hash: string;
+            review?: components["schemas"]["candidate_review"];
         };
         conversation: {
             registration_id: string;
@@ -2161,6 +2188,7 @@ export interface components {
             updated_at?: string;
             /** Format: date-time */
             completed_at?: string;
+            declaration_candidate?: components["schemas"]["declaration_candidate"];
         } & (unknown & unknown);
         /** Hosted genesis durable conversation response */
         "hosted-genesis.conversation.response.schema": {
@@ -2170,7 +2198,7 @@ export interface components {
             conversation: components["schemas"]["conversation"];
             $defs: {
                 /** @enum {string} */
-                status: "created" | "in_progress" | "assistant_turn_ready" | "declaration_extraction_pending" | "declaration_ready" | "published" | "failed";
+                status: "created" | "in_progress" | "assistant_turn_ready" | "declaration_ready" | "published" | "failed";
                 trace_ids: {
                     host_request_id?: string;
                     correlation_id?: string;
@@ -2221,7 +2249,7 @@ export interface components {
                 };
                 failure: {
                     /** @enum {string} */
-                    code: "llm_unavailable" | "assistant_turn_failed" | "declaration_extraction_failed" | "invalid_completion_state" | "missing_produced_declarations" | "invalid_produced_declarations" | "tenant_boundary_violation" | "operator_action_required" | "microvm_unavailable";
+                    code: "llm_unavailable" | "assistant_turn_failed" | "invalid_completion_state" | "missing_produced_declarations" | "invalid_produced_declarations" | "tenant_boundary_violation" | "operator_action_required" | "microvm_unavailable";
                     /** @enum {string} */
                     class?: "provider_timeout" | "provider_canceled" | "provider_api_failure" | "invalid_provider_output" | "parse_validation_failure";
                     message: string;
@@ -2258,7 +2286,28 @@ export interface components {
                     updated_at?: string;
                     /** Format: date-time */
                     completed_at?: string;
+                    declaration_candidate?: components["schemas"]["declaration_candidate"];
                 } & (unknown & unknown);
+                candidate_review: {
+                    /** @constant */
+                    renderer_version: "hosted-genesis-owner-review.v1";
+                    candidate_revision: number;
+                    candidate_hash: string;
+                    review_hash: string;
+                    review_text: string;
+                };
+                declaration_candidate: {
+                    /** @constant */
+                    version: "hosted-genesis-declaration-candidate.v1";
+                    /** @enum {string} */
+                    phase: "section" | "review" | "affirmed" | "finalized";
+                    /** @enum {string} */
+                    current_section?: "identity" | "philosophy" | "discipline" | "boundaries" | "soul";
+                    completed_sections?: ("identity" | "philosophy" | "discipline" | "boundaries" | "soul")[];
+                    revision: number;
+                    candidate_hash: string;
+                    review?: components["schemas"]["candidate_review"];
+                };
             };
         };
         /** Instance-key soul bootstrap error envelope */
@@ -4757,7 +4806,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Terminal replay or synchronous completion with valid produced declarations; returns the compact HostConversation envelope and never raw transcript fields. */
+            /** @description Terminal replay with valid produced declarations; returns the compact HostConversation envelope and never raw transcript fields. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -4766,7 +4815,7 @@ export interface operations {
                     "application/json": components["schemas"]["hosted-genesis.conversation.response.schema"];
                 };
             };
-            /** @description Assistant turn or declaration extraction is still in progress; inspect `conversation.status`. */
+            /** @description Typed section construction or provider-free candidate finalization is still in progress; inspect `conversation.status` and `conversation.declaration_candidate`. */
             202: {
                 headers: {
                     [name: string]: unknown;
