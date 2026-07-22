@@ -18,8 +18,6 @@ import (
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
-const hostedGenesisRunTimeout = 2 * time.Minute
-
 const (
 	hostedGenesisFailureLLMUnavailable              = "llm_unavailable"
 	hostedGenesisFailureAssistantTurnFailed         = "assistant_turn_failed"
@@ -30,8 +28,6 @@ const (
 	hostedGenesisFailureTenantBoundaryViolation     = "tenant_boundary_violation"
 	hostedGenesisFailureOperatorActionRequired      = "operator_action_required"
 )
-
-const hostedGenesisSelfDescriptionAuthoredByAgent = "agent"
 
 type hostedGenesisStore interface {
 	GetSoulAgentRegistration(ctx context.Context, id string) (*models.SoulAgentRegistration, error)

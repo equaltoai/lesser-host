@@ -86,22 +86,33 @@ func (r *turnRunner) loadTurnInput(ctx context.Context, turn completion.Completi
 	if err != nil {
 		return turnInput{}, fmt.Errorf("build hosted genesis system prompt: %w", err)
 	}
-	if session.DeclarationCandidate != nil {
-		if err := session.DeclarationCandidate.Validate(); err != nil {
-			return turnInput{}, fmt.Errorf("validate typed declaration candidate: %w", err)
-		}
-		candidate := session.DeclarationCandidate
-		if err := hostedgenesis.ValidateDeclarationContractVersions(candidate.SchemaVersion, candidate.GuidanceVersion, contract); err != nil {
-			return turnInput{}, fmt.Errorf("validate typed declaration candidate contract: %w", err)
-		}
-		if candidate.InstanceSlug != strings.ToLower(strings.TrimSpace(session.InstanceSlug)) ||
-			candidate.RegistrationID != strings.TrimSpace(session.RegistrationID) ||
-			!strings.EqualFold(candidate.AgentID, session.AgentID) ||
-			candidate.ConversationID != session.ConversationID || candidate.Model != modelSet {
-			return turnInput{}, errors.New("typed declaration candidate binding mismatch")
-		}
+	if err := validateTurnInputCandidate(session, modelSet, contract); err != nil {
+		return turnInput{}, err
 	}
 	return turnInput{modelSet: modelSet, systemPrompt: systemPrompt, messages: messages, contract: contract, registration: reg, conv: conv, session: session}, nil
+}
+
+func validateTurnInputCandidate(session *models.HostedGenesisSession, modelSet string, contract hostedgenesis.DeclarationContract) error {
+	if session.DeclarationCandidate == nil {
+		return nil
+	}
+	candidate := session.DeclarationCandidate
+	if err := candidate.Validate(); err != nil {
+		return fmt.Errorf("validate typed declaration candidate: %w", err)
+	}
+	if err := hostedgenesis.ValidateDeclarationContractVersions(candidate.SchemaVersion, candidate.GuidanceVersion, contract); err != nil {
+		return fmt.Errorf("validate typed declaration candidate contract: %w", err)
+	}
+	if !declarationCandidateMatchesTurnSession(candidate, session, modelSet) {
+		return errors.New("typed declaration candidate binding mismatch")
+	}
+	return nil
+}
+
+func declarationCandidateMatchesTurnSession(candidate *hostedgenesis.DeclarationCandidate, session *models.HostedGenesisSession, modelSet string) bool {
+	return candidate.InstanceSlug == strings.ToLower(strings.TrimSpace(session.InstanceSlug)) &&
+		candidate.RegistrationID == strings.TrimSpace(session.RegistrationID) && strings.EqualFold(candidate.AgentID, session.AgentID) &&
+		candidate.ConversationID == session.ConversationID && candidate.Model == modelSet
 }
 
 func (r *turnRunner) runTurnAndPersist(ctx context.Context, turn completion.CompletionTurn) error {
@@ -219,61 +230,12 @@ func (r *turnRunner) runDeclarationPhaseAndPersist(ctx context.Context, turn com
 		phaseRunner = llm.RunMintConversationPhase
 	}
 	candidate := in.session.DeclarationCandidate
-	phaseRevision, phaseHash, phaseSection := candidate.Revision, candidate.CandidateHash, candidate.CurrentSection
-	var evidenceMu sync.Mutex
-	var evidenceErr error
-	observeProvider := func(event llm.ProviderTelemetryEvent) {
-		providerTelemetry.observe(event)
-		if !providerAttemptEvidenceEvent(event.EventType) {
-			return
-		}
-		if err := r.checkpointProviderAttemptEvidence(providerCtx, in, turn, phaseSection, phaseRevision, phaseHash, event); err != nil {
-			evidenceMu.Lock()
-			if evidenceErr == nil {
-				evidenceErr = err
-			}
-			evidenceMu.Unlock()
-		}
-	}
+	evidence := &providerEvidenceTracker{}
 	output, err := phaseRunner(providerCtx, apiKey, llm.MintConversationPhaseInput{
 		ModelSet: in.modelSet, SystemPrompt: in.systemPrompt, Messages: append([]llm.MintConversationMessage(nil), in.messages...),
 		Section: candidate.CurrentSection, CandidateRevision: candidate.Revision, CandidateHash: candidate.CandidateHash, SourceTurnID: turn.TurnID,
-	}, func(toolCtx context.Context, call llm.MintConversationPhaseToolCall) (hostedgenesis.DeclarationToolResult, error) {
-		evidenceMu.Lock()
-		priorEvidenceErr := evidenceErr
-		evidenceMu.Unlock()
-		if priorEvidenceErr != nil {
-			return hostedgenesis.DeclarationToolResult{}, priorEvidenceErr
-		}
-		current := in.session
-		if current == nil || current.DeclarationCandidate == nil {
-			return hostedgenesis.DeclarationToolResult{}, errors.New("typed declaration candidate disappeared")
-		}
-		next, result, applyErr := hostedgenesis.ApplyDeclarationTool(current.DeclarationCandidate, hostedgenesis.DeclarationToolRequest{
-			ToolName: call.Name, ToolCallID: call.CallID, ExpectedRevision: current.DeclarationCandidate.Revision,
-			ExpectedHash: current.DeclarationCandidate.CandidateHash, SourceTurnID: turn.TurnID, Payload: call.Arguments,
-		}, r.now())
-		if applyErr != nil || !result.Accepted {
-			return result, applyErr
-		}
-		if result.Idempotent {
-			return result, nil
-		}
-		progressed := cloneSessionForRunner(current)
-		progressed.DeclarationCandidate = next
-		progressed.RequestID = strings.TrimSpace(turn.RequestID)
-		progressed.UpdatedAt = r.now()
-		if checkpointErr := r.store.CheckpointHostedGenesisCandidate(toolCtx, progressed, current.Version, hostedgenesis.StatusInProgress, turn.TurnID, current.DeclarationCandidate.Revision, current.DeclarationCandidate.CandidateHash); checkpointErr != nil {
-			return hostedgenesis.DeclarationToolResult{}, fmt.Errorf("checkpoint typed declaration candidate: %w", checkpointErr)
-		}
-		progressed.Version = current.Version + 1
-		in.session = progressed
-		return result, nil
-	}, observeProvider)
-	evidenceMu.Lock()
-	providerEvidenceErr := evidenceErr
-	evidenceMu.Unlock()
-	if providerEvidenceErr != nil {
+	}, r.declarationPhaseToolHandler(in, turn, evidence), r.declarationProviderObserver(providerCtx, in, turn, candidate, providerTelemetry, evidence))
+	if evidence.errValue() != nil {
 		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeAssistantTurnFailed, "persist provider attempt evidence", telemetry)
 	}
 	if err != nil || strings.TrimSpace(output.AssistantContent) == "" {
@@ -281,13 +243,86 @@ func (r *turnRunner) runDeclarationPhaseAndPersist(ctx context.Context, turn com
 		telemetry.emit("declaration_phase", "provider_call_failed", string(decision.action), string(failureClass))
 		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeAssistantTurnFailed, providerFailureMessage("declaration_phase", err), telemetry, failureClass)
 	}
+	return r.persistDeclarationPhaseOutput(ctx, turn, in, actor, decision, telemetry, output)
+}
+
+type providerEvidenceTracker struct {
+	mu  sync.Mutex
+	err error
+}
+
+func (tracker *providerEvidenceTracker) record(err error) {
+	if err == nil {
+		return
+	}
+	tracker.mu.Lock()
+	defer tracker.mu.Unlock()
+	if tracker.err == nil {
+		tracker.err = err
+	}
+}
+
+func (tracker *providerEvidenceTracker) errValue() error {
+	tracker.mu.Lock()
+	defer tracker.mu.Unlock()
+	return tracker.err
+}
+
+func (r *turnRunner) declarationProviderObserver(ctx context.Context, in *turnInput, turn completion.CompletionTurn, candidate *hostedgenesis.DeclarationCandidate, telemetry *providerCallTelemetry, evidence *providerEvidenceTracker) llm.ProviderTelemetrySink {
+	return func(event llm.ProviderTelemetryEvent) {
+		telemetry.observe(event)
+		if !providerAttemptEvidenceEvent(event.EventType) {
+			return
+		}
+		evidence.record(r.checkpointProviderAttemptEvidence(ctx, in, turn, candidate.CurrentSection, candidate.Revision, candidate.CandidateHash, event))
+	}
+}
+
+func (r *turnRunner) declarationPhaseToolHandler(in *turnInput, turn completion.CompletionTurn, evidence *providerEvidenceTracker) llm.MintConversationPhaseToolHandler {
+	return func(ctx context.Context, call llm.MintConversationPhaseToolCall) (hostedgenesis.DeclarationToolResult, error) {
+		if err := evidence.errValue(); err != nil {
+			return hostedgenesis.DeclarationToolResult{}, err
+		}
+		current := in.session
+		if current == nil || current.DeclarationCandidate == nil {
+			return hostedgenesis.DeclarationToolResult{}, errors.New("typed declaration candidate disappeared")
+		}
+		next, result, err := hostedgenesis.ApplyDeclarationTool(current.DeclarationCandidate, hostedgenesis.DeclarationToolRequest{
+			ToolName: call.Name, ToolCallID: call.CallID, ExpectedRevision: current.DeclarationCandidate.Revision,
+			ExpectedHash: current.DeclarationCandidate.CandidateHash, SourceTurnID: turn.TurnID, Payload: call.Arguments,
+		}, r.now())
+		if err != nil || !result.Accepted || result.Idempotent {
+			return result, err
+		}
+		if err := r.checkpointDeclarationPhaseTool(ctx, in, turn, current, next); err != nil {
+			return hostedgenesis.DeclarationToolResult{}, err
+		}
+		return result, nil
+	}
+}
+
+func (r *turnRunner) checkpointDeclarationPhaseTool(ctx context.Context, in *turnInput, turn completion.CompletionTurn, current *models.HostedGenesisSession, next *hostedgenesis.DeclarationCandidate) error {
+	progressed := cloneSessionForRunner(current)
+	progressed.DeclarationCandidate = next
+	progressed.RequestID = strings.TrimSpace(turn.RequestID)
+	progressed.UpdatedAt = r.now()
+	if err := r.store.CheckpointHostedGenesisCandidate(ctx, progressed, current.Version, hostedgenesis.StatusInProgress, turn.TurnID, current.DeclarationCandidate.Revision, current.DeclarationCandidate.CandidateHash); err != nil {
+		return fmt.Errorf("checkpoint typed declaration candidate: %w", err)
+	}
+	progressed.Version = current.Version + 1
+	in.session = progressed
+	return nil
+}
+
+func (r *turnRunner) persistDeclarationPhaseOutput(ctx context.Context, turn completion.CompletionTurn, in *turnInput, actor conversationActor, decision actorDecision, telemetry *turnLifecycleTelemetry, output llm.MintConversationPhaseOutput) error {
 	assistantContent := strings.TrimSpace(output.AssistantContent)
-	if candidate := in.session.DeclarationCandidate; candidate != nil && candidate.Phase == hostedgenesis.DeclarationCandidatePhaseReview && candidate.Review != nil {
+	candidate := in.session.DeclarationCandidate
+	if candidate != nil && candidate.Phase == hostedgenesis.DeclarationCandidatePhaseReview && candidate.Review != nil {
 		assistantContent = candidate.Review.ReviewText
 	}
 	postTurnMessages := append(append([]llm.MintConversationMessage(nil), in.messages...), llm.MintConversationMessage{Role: "assistant", Content: assistantContent})
 	telemetry.emit("persist", "persist_started", string(decision.action), "")
-	checkpoint, err := actor.checkpoint(*in, completionTurnView{turnID: turn.TurnID, requestID: turn.RequestID}, decision, in.session.DeclarationCandidate.CandidateHash)
+	checkpoint, err := actor.checkpoint(*in, completionTurnView{turnID: turn.TurnID, requestID: turn.RequestID}, decision, candidate.CandidateHash)
 	if err != nil {
 		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeInvalidCompletionState, "build phase checkpoint", telemetry)
 	}
@@ -313,19 +348,10 @@ func (r *turnRunner) checkpointProviderAttemptEvidence(ctx context.Context, in *
 		return errors.New("typed candidate provider evidence store is unavailable")
 	}
 	if event.SDKAttemptOrdinal == 0 {
-		found := false
-		for index := len(in.session.DeclarationCandidate.ProviderAttempts) - 1; index >= 0; index-- {
-			attempt := in.session.DeclarationCandidate.ProviderAttempts[index]
-			if attempt.SourceTurnID == strings.TrimSpace(turn.TurnID) && attempt.Section == section &&
-				attempt.CandidateRevision == revision && attempt.CandidateHash == strings.TrimSpace(candidateHash) {
-				found = true
-				break
-			}
-		}
 		// Tests and explicitly injected clients may not use Host's production
 		// attempt-observing transport. In production, every non-SDK observation
 		// follows the sdk_http_attempt record emitted by that transport.
-		if !found {
+		if !hasProviderAttemptBinding(in.session.DeclarationCandidate.ProviderAttempts, turn.TurnID, section, revision, candidateHash) {
 			return nil
 		}
 	}
@@ -359,6 +385,17 @@ func (r *turnRunner) checkpointProviderAttemptEvidence(ctx context.Context, in *
 	progressed.Version = current.Version + 1
 	in.session = progressed
 	return nil
+}
+
+func hasProviderAttemptBinding(attempts []hostedgenesis.DeclarationProviderAttempt, turnID string, section hostedgenesis.DeclarationSection, revision int64, candidateHash string) bool {
+	for index := len(attempts) - 1; index >= 0; index-- {
+		attempt := attempts[index]
+		if attempt.SourceTurnID == strings.TrimSpace(turnID) && attempt.Section == section &&
+			attempt.CandidateRevision == revision && attempt.CandidateHash == strings.TrimSpace(candidateHash) {
+			return true
+		}
+	}
+	return false
 }
 
 func maxInt64Runner(a, b int64) int64 {

@@ -36,15 +36,6 @@ func TestOpenAIModelSupportsTemperature(t *testing.T) {
 	}
 }
 
-func assertJSONOmits(t *testing.T, raw []byte, keywords ...string) {
-	t.Helper()
-	for _, keyword := range keywords {
-		if strings.Contains(string(raw), keyword) {
-			t.Fatalf("expected anthropic schema to strip %s (Anthropic strict custom tools reject it), got %s", keyword, raw)
-		}
-	}
-}
-
 func TestSanitizeAnthropicToolSchemaMapKeepsConstraintLikePropertyNames(t *testing.T) {
 	t.Parallel()
 
@@ -303,82 +294,6 @@ func assertAnthropicUsage(t *testing.T, usage models.AIUsage) {
 	}
 }
 
-func assertOpenAIStrictObjectSchema(t *testing.T, schema map[string]any) {
-	t.Helper()
-	assertOpenAIStrictObjectSchemaAt(t, "root", schema)
-}
-
-func assertOpenAIStrictObjectSchemaAt(t *testing.T, path string, schema map[string]any) {
-	t.Helper()
-	if schema == nil {
-		return
-	}
-	if schemaType(schema) == "object" {
-		assertOpenAIStrictObjectRequired(t, path, schema)
-	}
-	for key, value := range schema {
-		assertOpenAIStrictSchemaValue(t, path, key, value)
-	}
-}
-
-func assertOpenAIStrictObjectRequired(t *testing.T, path string, schema map[string]any) {
-	t.Helper()
-	assertSchemaBool(t, schema, "additionalProperties", false)
-	props, _ := schema["properties"].(map[string]any)
-	required, ok := schemaRequiredSet(schema)
-	if !ok {
-		t.Fatalf("%s: object schema missing required list", path)
-	}
-	for name := range props {
-		if !required[name] {
-			t.Fatalf("%s: strict object property %q missing from required", path, name)
-		}
-	}
-}
-
-func assertOpenAIStrictSchemaValue(t *testing.T, path string, key string, value any) {
-	t.Helper()
-	switch typed := value.(type) {
-	case map[string]any:
-		assertOpenAIStrictObjectSchemaAt(t, path+"."+key, typed)
-	case []any:
-		for idx, item := range typed {
-			child, ok := item.(map[string]any)
-			if !ok {
-				continue
-			}
-			assertOpenAIStrictObjectSchemaAt(t, fmt.Sprintf("%s.%s[%d]", path, key, idx), child)
-		}
-	}
-}
-
-func schemaType(schema map[string]any) string {
-	typ, _ := schema["type"].(string)
-	return typ
-}
-
-func schemaRequiredSet(schema map[string]any) (map[string]bool, bool) {
-	switch req := schema["required"].(type) {
-	case []string:
-		out := make(map[string]bool, len(req))
-		for _, name := range req {
-			out[name] = true
-		}
-		return out, true
-	case []any:
-		out := make(map[string]bool, len(req))
-		for _, raw := range req {
-			name, ok := raw.(string)
-			if ok {
-				out[name] = true
-			}
-		}
-		return out, true
-	default:
-		return nil, false
-	}
-}
-
 func requireSchemaMap(t *testing.T, src map[string]any, key string) map[string]any {
 	t.Helper()
 	value, ok := src[key].(map[string]any)
@@ -386,14 +301,6 @@ func requireSchemaMap(t *testing.T, src map[string]any, key string) map[string]a
 		t.Fatalf("expected %s schema", key)
 	}
 	return value
-}
-
-func assertSchemaBool(t *testing.T, src map[string]any, key string, want bool) {
-	t.Helper()
-	got, ok := src[key].(bool)
-	if !ok || got != want {
-		t.Fatalf("expected %s=%t, got %#v", key, want, src[key])
-	}
 }
 
 func TestMintConversationStreamingHelpers(t *testing.T) {

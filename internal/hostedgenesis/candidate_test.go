@@ -73,17 +73,30 @@ func TestDeclarationCandidateToolPayloadBindingFailsClosed(t *testing.T) {
 func TestDeclarationCandidateFiveToolsIdempotencyAndGuards(t *testing.T) {
 	candidate := testDeclarationCandidate(t)
 	initialHash := candidate.CandidateHash
-	_, wrongTurn, err := ApplyDeclarationTool(candidate, DeclarationToolRequest{
+	assertCandidateRejectsCrossTurnTool(t, candidate)
+	candidate = acceptCandidateSection(t, candidate, DeclarationToolIdentityPut, "identity", declarationSectionPayload{Section: testFiveBody().Identity}, 1)
+	assertCandidateExactToolReplayIsIdempotent(t, candidate, initialHash)
+	assertCandidateRejectsStaleToolBindings(t, candidate)
+	candidate = acceptCandidateSection(t, candidate, DeclarationToolPhilosophyPut, "philosophy", declarationSectionPayload{Section: testFiveBody().Philosophy}, 2)
+	candidate = acceptCandidateSection(t, candidate, DeclarationToolDisciplinePut, "discipline", declarationSectionPayload{Section: testFiveBody().Discipline}, 3)
+	candidate = acceptCandidateSection(t, candidate, DeclarationToolBoundariesPut, "boundaries", declarationSectionPayload{Section: testFiveBody().Boundaries}, 4)
+	candidate = acceptCandidateSection(t, candidate, DeclarationToolSoulPut, "soul", testSoulPayload(), 5)
+	assertDeclarationCandidateFiveSectionsComplete(t, candidate)
+}
+
+func assertCandidateRejectsCrossTurnTool(t *testing.T, candidate *DeclarationCandidate) {
+	t.Helper()
+	_, result, err := ApplyDeclarationTool(candidate, DeclarationToolRequest{
 		ToolName: DeclarationToolIdentityPut, ToolCallID: "identity-wrong-turn", SourceTurnID: "turn-other",
 		ExpectedRevision: candidate.Revision, ExpectedHash: candidate.CandidateHash, Payload: mustJSON(t, declarationSectionPayload{Section: testFiveBody().Identity}),
 	}, time.Unix(109, 0))
-	if err != nil || wrongTurn.Accepted || len(wrongTurn.Errors) != 1 || wrongTurn.Errors[0].Path != "candidate.source_turn_id" {
-		t.Fatalf("cross-turn tool call did not fail closed: %#v err=%v", wrongTurn, err)
+	if err != nil || result.Accepted || len(result.Errors) != 1 || result.Errors[0].Path != "candidate.source_turn_id" {
+		t.Fatalf("cross-turn tool call did not fail closed: %#v err=%v", result, err)
 	}
-	candidate = acceptCandidateSection(t, candidate, DeclarationToolIdentityPut, "identity", declarationSectionPayload{Section: testFiveBody().Identity}, 1)
+}
 
-	// An exact provider replay is idempotent and returns the revision/hash from
-	// the first acceptance without applying the payload twice.
+func assertCandidateExactToolReplayIsIdempotent(t *testing.T, candidate *DeclarationCandidate, initialHash string) {
+	t.Helper()
 	initialRevision := int64(0)
 	payload, _ := json.Marshal(declarationSectionPayload{
 		CandidateRevision: &initialRevision,
@@ -97,7 +110,10 @@ func TestDeclarationCandidateFiveToolsIdempotencyAndGuards(t *testing.T) {
 	if err != nil || next == nil || !result.Accepted || !result.Idempotent || next.Revision != 1 {
 		t.Fatalf("exact duplicate was not idempotent: next=%#v result=%#v err=%v", next, result, err)
 	}
+}
 
+func assertCandidateRejectsStaleToolBindings(t *testing.T, candidate *DeclarationCandidate) {
+	t.Helper()
 	_, stale, err := ApplyDeclarationTool(candidate, DeclarationToolRequest{
 		ToolName: DeclarationToolPhilosophyPut, ToolCallID: "philosophy-stale", SourceTurnID: candidate.SourceTurnID,
 		ExpectedRevision: 0, ExpectedHash: candidate.CandidateHash, Payload: mustJSON(t, declarationSectionPayload{Section: testFiveBody().Philosophy}),
@@ -112,11 +128,10 @@ func TestDeclarationCandidateFiveToolsIdempotencyAndGuards(t *testing.T) {
 	if err != nil || staleHash.Accepted || len(staleHash.Errors) != 1 || staleHash.Errors[0].Path != "candidate.hash" {
 		t.Fatalf("stale hash did not fail closed: %#v err=%v", staleHash, err)
 	}
+}
 
-	candidate = acceptCandidateSection(t, candidate, DeclarationToolPhilosophyPut, "philosophy", declarationSectionPayload{Section: testFiveBody().Philosophy}, 2)
-	candidate = acceptCandidateSection(t, candidate, DeclarationToolDisciplinePut, "discipline", declarationSectionPayload{Section: testFiveBody().Discipline}, 3)
-	candidate = acceptCandidateSection(t, candidate, DeclarationToolBoundariesPut, "boundaries", declarationSectionPayload{Section: testFiveBody().Boundaries}, 4)
-	candidate = acceptCandidateSection(t, candidate, DeclarationToolSoulPut, "soul", testSoulPayload(), 5)
+func assertDeclarationCandidateFiveSectionsComplete(t *testing.T, candidate *DeclarationCandidate) {
+	t.Helper()
 	if candidate.Phase != DeclarationCandidatePhaseReview || candidate.Review == nil || len(candidate.CompletedSections) != 5 || len(candidate.SectionHashes) != 5 {
 		t.Fatalf("all five tools did not produce accepted checkpoints: %#v", candidate)
 	}
@@ -128,7 +143,17 @@ func TestDeclarationCandidateFiveToolsIdempotencyAndGuards(t *testing.T) {
 func TestDeclarationCandidateReviewAffirmationAndDeterministicBytes(t *testing.T) {
 	candidate := completeTestDeclarationCandidate(t)
 	beforeJSON, beforeHash, beforeReview := candidate.CanonicalJSON, candidate.CandidateHash, candidate.Review.ReviewHash
+	assertCandidateRejectsStaleAffirmation(t, candidate)
+	affirmed := affirmExactReviewedCandidate(t, candidate)
+	if affirmed.CanonicalJSON != beforeJSON || affirmed.CandidateHash != beforeHash || affirmed.Review.ReviewHash != beforeReview {
+		t.Fatal("affirmation changed the exact reviewed candidate")
+	}
+	assertCandidateEditInvalidatesReview(t, candidate)
+	assertCandidateFinalizationIsDeterministic(t, affirmed, beforeJSON, beforeHash)
+}
 
+func assertCandidateRejectsStaleAffirmation(t *testing.T, candidate *DeclarationCandidate) {
+	t.Helper()
 	if _, err := ApplyDeclarationCandidateAction(candidate, DeclarationCandidateAction{
 		Action: "affirm", CandidateRevision: candidate.Revision - 1, CandidateHash: candidate.CandidateHash, ReviewHash: candidate.Review.ReviewHash,
 	}, candidate.SourceTurnID, time.Unix(300, 0)); err == nil {
@@ -139,23 +164,31 @@ func TestDeclarationCandidateReviewAffirmationAndDeterministicBytes(t *testing.T
 	}, candidate.SourceTurnID, time.Unix(300, 0)); err == nil {
 		t.Fatal("expected mismatched review affirmation to fail")
 	}
+}
+
+func affirmExactReviewedCandidate(t *testing.T, candidate *DeclarationCandidate) *DeclarationCandidate {
+	t.Helper()
 	affirmed, err := ApplyDeclarationCandidateAction(candidate, DeclarationCandidateAction{
 		Action: "affirm", CandidateRevision: candidate.Revision, CandidateHash: candidate.CandidateHash, ReviewHash: candidate.Review.ReviewHash,
 	}, candidate.SourceTurnID, time.Unix(300, 0))
 	if err != nil || affirmed.Phase != DeclarationCandidatePhaseAffirmed || affirmed.Affirmation == nil {
 		t.Fatalf("matching structural affirmation rejected: %#v err=%v", affirmed, err)
 	}
-	if affirmed.CanonicalJSON != beforeJSON || affirmed.CandidateHash != beforeHash || affirmed.Review.ReviewHash != beforeReview {
-		t.Fatal("affirmation changed the exact reviewed candidate")
-	}
+	return affirmed
+}
 
+func assertCandidateEditInvalidatesReview(t *testing.T, candidate *DeclarationCandidate) {
+	t.Helper()
 	edited, err := ApplyDeclarationCandidateAction(candidate, DeclarationCandidateAction{
 		Action: "edit", Section: DeclarationSectionPhilosophy, CandidateRevision: candidate.Revision, CandidateHash: candidate.CandidateHash, ReviewHash: candidate.Review.ReviewHash,
 	}, candidate.SourceTurnID, time.Unix(301, 0))
 	if err != nil || edited.Phase != DeclarationCandidatePhaseSection || edited.CurrentSection != DeclarationSectionPhilosophy || edited.Review != nil || edited.Affirmation != nil {
 		t.Fatalf("edit did not invalidate review/affirmation: %#v err=%v", edited, err)
 	}
+}
 
+func assertCandidateFinalizationIsDeterministic(t *testing.T, affirmed *DeclarationCandidate, beforeJSON string, beforeHash string) {
+	t.Helper()
 	clone := affirmed.Clone()
 	if clone.CanonicalJSON != affirmed.CanonicalJSON || clone.CandidateHash != affirmed.CandidateHash {
 		t.Fatal("process-recovery clone changed finalization bytes")

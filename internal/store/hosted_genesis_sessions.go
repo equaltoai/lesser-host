@@ -107,16 +107,10 @@ func (s *Store) RecordHostedGenesisAssistantTurnAndConversation(ctx context.Cont
 	expectedTurnID = strings.TrimSpace(expectedTurnID)
 	expectedCandidateHash = strings.TrimSpace(expectedCandidateHash)
 	candidate := session.DeclarationCandidate
-	if hostedgenesis.NormalizeStatus(session.Status) != hostedgenesis.StatusAssistantTurnReady ||
-		expectedTurnID == "" || strings.TrimSpace(session.LatestTurnID) != expectedTurnID ||
-		expectedCandidateRevision != candidate.Revision || expectedCandidateHash != candidate.CandidateHash ||
-		session.CandidateRevision != candidate.Revision || session.CandidateHash != candidate.CandidateHash || session.CandidatePhase != string(candidate.Phase) {
+	if !hostedGenesisAssistantCandidateGuardValid(session, candidate, expectedTurnID, expectedCandidateRevision, expectedCandidateHash) {
 		return fmt.Errorf("hosted genesis assistant candidate guard is invalid")
 	}
-	if !strings.EqualFold(strings.TrimSpace(session.AgentID), strings.TrimSpace(conversation.AgentID)) ||
-		strings.TrimSpace(session.ConversationID) != strings.TrimSpace(conversation.ConversationID) ||
-		strings.TrimSpace(conversation.LatestTurnID) != expectedTurnID ||
-		strings.TrimSpace(conversation.Status) != models.SoulMintConversationStatusAssistantTurnReady {
+	if !hostedGenesisAssistantProjectionValid(session, conversation, expectedTurnID) {
 		return fmt.Errorf("hosted genesis assistant projection is invalid")
 	}
 	expectedStatus, err := validateHostedGenesisSessionUpdate(session, expectedVersion, expectedStatus)
@@ -126,27 +120,8 @@ func (s *Store) RecordHostedGenesisAssistantTurnAndConversation(ctx context.Cont
 	if err := conversation.BeforeUpdate(); err != nil {
 		return err
 	}
-	return s.DB.TransactWrite(ctx, func(tx core.TransactionBuilder) error {
-		addHostedGenesisSessionUpdate(tx, session, expectedVersion, expectedStatus,
-			tabletheory.Condition("LatestTurnID", "=", expectedTurnID),
-			tabletheory.Condition("CandidateRevision", "=", expectedCandidateRevision),
-			tabletheory.Condition("CandidateHash", "=", expectedCandidateHash),
-			tabletheory.Condition("CandidatePhase", "=", string(candidate.Phase)))
-		tx.UpdateWithBuilder(conversation, func(ub core.UpdateBuilder) error {
-			ub.Set("Messages", conversation.Messages)
-			ub.Set("Usage", conversation.Usage)
-			ub.Set("Status", conversation.Status)
-			ub.Set("StatusReason", conversation.StatusReason)
-			ub.Set("LatestTurnID", conversation.LatestTurnID)
-			ub.Set("RequestID", conversation.RequestID)
-			ub.Set("UpdatedAt", conversation.UpdatedAt)
-			ub.Set("CompletedAt", conversation.CompletedAt)
-			return nil
-		}, tabletheory.IfExists(),
-			tabletheory.Condition("Status", "=", string(expectedStatus)),
-			tabletheory.Condition("LatestTurnID", "=", expectedTurnID))
-		return nil
-	})
+	return s.transactHostedGenesisCandidateProjection(ctx, session, expectedVersion, expectedStatus, expectedTurnID,
+		expectedCandidateRevision, expectedCandidateHash, candidate.Phase, conversation, true, false)
 }
 
 // FinalizeHostedGenesisCandidateAndConversation atomically transitions an
@@ -161,21 +136,13 @@ func (s *Store) FinalizeHostedGenesisCandidateAndConversation(ctx context.Contex
 	expectedTurnID = strings.TrimSpace(expectedTurnID)
 	expectedCandidateHash = strings.TrimSpace(expectedCandidateHash)
 	candidate := session.DeclarationCandidate
-	if candidate.Phase != hostedgenesis.DeclarationCandidatePhaseFinalized ||
-		session.CandidateRevision != candidate.Revision || session.CandidateHash != candidate.CandidateHash ||
-		expectedTurnID == "" || strings.TrimSpace(session.LatestTurnID) != expectedTurnID ||
-		expectedCandidateRevision != candidate.Revision || expectedCandidateHash != candidate.CandidateHash {
+	if !hostedGenesisFinalizationCandidateGuardValid(session, candidate, expectedTurnID, expectedCandidateRevision, expectedCandidateHash) {
 		return fmt.Errorf("hosted genesis candidate finalization guard is invalid")
 	}
-	if hostedgenesis.NormalizeStatus(session.Status) != hostedgenesis.StatusDeclarationReady || session.DeclarationCheckpoint == nil ||
-		strings.TrimSpace(session.DeclarationCheckpoint.DeclarationHash) != candidate.CandidateHash {
+	if !hostedGenesisFinalizationCheckpointValid(session, candidate) {
 		return fmt.Errorf("hosted genesis candidate finalization checkpoint is invalid")
 	}
-	if !strings.EqualFold(strings.TrimSpace(session.AgentID), strings.TrimSpace(conversation.AgentID)) ||
-		strings.TrimSpace(session.ConversationID) != strings.TrimSpace(conversation.ConversationID) ||
-		strings.TrimSpace(conversation.LatestTurnID) != expectedTurnID ||
-		strings.TrimSpace(models.DecodeSoulMintConversationBlob(conversation.ProducedDeclarations)) != candidate.CanonicalJSON ||
-		strings.TrimSpace(conversation.Status) != models.SoulMintConversationStatusDeclarationReady {
+	if !hostedGenesisFinalizationProjectionValid(session, candidate, conversation, expectedTurnID) {
 		return fmt.Errorf("hosted genesis candidate finalization projection is invalid")
 	}
 	expectedStatus, err := validateHostedGenesisSessionUpdate(session, expectedVersion, expectedStatus)
@@ -185,27 +152,71 @@ func (s *Store) FinalizeHostedGenesisCandidateAndConversation(ctx context.Contex
 	if err := conversation.BeforeUpdate(); err != nil {
 		return err
 	}
+	return s.transactHostedGenesisCandidateProjection(ctx, session, expectedVersion, expectedStatus, expectedTurnID,
+		expectedCandidateRevision, expectedCandidateHash, hostedgenesis.DeclarationCandidatePhaseAffirmed, conversation, false, true)
+}
+
+func hostedGenesisAssistantCandidateGuardValid(session *models.HostedGenesisSession, candidate *hostedgenesis.DeclarationCandidate, expectedTurnID string, expectedRevision int64, expectedHash string) bool {
+	return hostedgenesis.NormalizeStatus(session.Status) == hostedgenesis.StatusAssistantTurnReady && expectedTurnID != "" &&
+		strings.TrimSpace(session.LatestTurnID) == expectedTurnID && expectedRevision == candidate.Revision && expectedHash == candidate.CandidateHash &&
+		session.CandidateRevision == candidate.Revision && session.CandidateHash == candidate.CandidateHash && session.CandidatePhase == string(candidate.Phase)
+}
+
+func hostedGenesisAssistantProjectionValid(session *models.HostedGenesisSession, conversation *models.SoulAgentMintConversation, expectedTurnID string) bool {
+	return strings.EqualFold(strings.TrimSpace(session.AgentID), strings.TrimSpace(conversation.AgentID)) &&
+		strings.TrimSpace(session.ConversationID) == strings.TrimSpace(conversation.ConversationID) &&
+		strings.TrimSpace(conversation.LatestTurnID) == expectedTurnID && strings.TrimSpace(conversation.Status) == models.SoulMintConversationStatusAssistantTurnReady
+}
+
+func hostedGenesisFinalizationCandidateGuardValid(session *models.HostedGenesisSession, candidate *hostedgenesis.DeclarationCandidate, expectedTurnID string, expectedRevision int64, expectedHash string) bool {
+	return candidate.Phase == hostedgenesis.DeclarationCandidatePhaseFinalized && session.CandidateRevision == candidate.Revision &&
+		session.CandidateHash == candidate.CandidateHash && expectedTurnID != "" && strings.TrimSpace(session.LatestTurnID) == expectedTurnID &&
+		expectedRevision == candidate.Revision && expectedHash == candidate.CandidateHash
+}
+
+func hostedGenesisFinalizationCheckpointValid(session *models.HostedGenesisSession, candidate *hostedgenesis.DeclarationCandidate) bool {
+	return hostedgenesis.NormalizeStatus(session.Status) == hostedgenesis.StatusDeclarationReady && session.DeclarationCheckpoint != nil &&
+		strings.TrimSpace(session.DeclarationCheckpoint.DeclarationHash) == candidate.CandidateHash
+}
+
+func hostedGenesisFinalizationProjectionValid(session *models.HostedGenesisSession, candidate *hostedgenesis.DeclarationCandidate, conversation *models.SoulAgentMintConversation, expectedTurnID string) bool {
+	return strings.EqualFold(strings.TrimSpace(session.AgentID), strings.TrimSpace(conversation.AgentID)) &&
+		strings.TrimSpace(session.ConversationID) == strings.TrimSpace(conversation.ConversationID) && strings.TrimSpace(conversation.LatestTurnID) == expectedTurnID &&
+		strings.TrimSpace(models.DecodeSoulMintConversationBlob(conversation.ProducedDeclarations)) == candidate.CanonicalJSON &&
+		strings.TrimSpace(conversation.Status) == models.SoulMintConversationStatusDeclarationReady
+}
+
+func (s *Store) transactHostedGenesisCandidateProjection(ctx context.Context, session *models.HostedGenesisSession, expectedVersion int64, expectedStatus hostedgenesis.Status, expectedTurnID string, expectedRevision int64, expectedHash string, expectedPhase hostedgenesis.DeclarationCandidatePhase, conversation *models.SoulAgentMintConversation, includeMessages bool, includeDeclarations bool) error {
 	return s.DB.TransactWrite(ctx, func(tx core.TransactionBuilder) error {
 		addHostedGenesisSessionUpdate(tx, session, expectedVersion, expectedStatus,
 			tabletheory.Condition("LatestTurnID", "=", expectedTurnID),
-			tabletheory.Condition("CandidateRevision", "=", expectedCandidateRevision),
-			tabletheory.Condition("CandidateHash", "=", expectedCandidateHash),
-			tabletheory.Condition("CandidatePhase", "=", string(hostedgenesis.DeclarationCandidatePhaseAffirmed)))
-		tx.UpdateWithBuilder(conversation, func(ub core.UpdateBuilder) error {
-			ub.Set("ProducedDeclarations", conversation.ProducedDeclarations)
-			ub.Set("Usage", conversation.Usage)
-			ub.Set("Status", conversation.Status)
-			ub.Set("StatusReason", conversation.StatusReason)
-			ub.Set("LatestTurnID", conversation.LatestTurnID)
-			ub.Set("RequestID", conversation.RequestID)
-			ub.Set("UpdatedAt", conversation.UpdatedAt)
-			ub.Set("CompletedAt", conversation.CompletedAt)
-			return nil
-		}, tabletheory.IfExists(),
-			tabletheory.Condition("Status", "=", string(expectedStatus)),
-			tabletheory.Condition("LatestTurnID", "=", expectedTurnID))
+			tabletheory.Condition("CandidateRevision", "=", expectedRevision),
+			tabletheory.Condition("CandidateHash", "=", expectedHash),
+			tabletheory.Condition("CandidatePhase", "=", string(expectedPhase)))
+		addHostedGenesisConversationProjectionUpdate(tx, conversation, expectedStatus, expectedTurnID, includeMessages, includeDeclarations)
 		return nil
 	})
+}
+
+func addHostedGenesisConversationProjectionUpdate(tx core.TransactionBuilder, conversation *models.SoulAgentMintConversation, expectedStatus hostedgenesis.Status, expectedTurnID string, includeMessages bool, includeDeclarations bool) {
+	tx.UpdateWithBuilder(conversation, func(ub core.UpdateBuilder) error {
+		if includeMessages {
+			ub.Set("Messages", conversation.Messages)
+		}
+		if includeDeclarations {
+			ub.Set("ProducedDeclarations", conversation.ProducedDeclarations)
+		}
+		ub.Set("Usage", conversation.Usage)
+		ub.Set("Status", conversation.Status)
+		ub.Set("StatusReason", conversation.StatusReason)
+		ub.Set("LatestTurnID", conversation.LatestTurnID)
+		ub.Set("RequestID", conversation.RequestID)
+		ub.Set("UpdatedAt", conversation.UpdatedAt)
+		ub.Set("CompletedAt", conversation.CompletedAt)
+		return nil
+	}, tabletheory.IfExists(),
+		tabletheory.Condition("Status", "=", string(expectedStatus)),
+		tabletheory.Condition("LatestTurnID", "=", expectedTurnID))
 }
 
 // FailHostedGenesisSessionAndConversation atomically projects a terminal

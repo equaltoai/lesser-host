@@ -522,28 +522,6 @@ func requireMintConversationReadyForFinalize(conv *models.SoulAgentMintConversat
 	return nil
 }
 
-func mintConversationHasDurableAssistantTurn(conv *models.SoulAgentMintConversation) (bool, string) {
-	if conv == nil {
-		return false, "conversation has no durable messages"
-	}
-	decodeMintConversationFields(conv)
-	rawMessages := strings.TrimSpace(conv.Messages)
-	if rawMessages == "" {
-		return false, "conversation has no durable messages"
-	}
-
-	var messages []soulMintConversationMessage
-	if err := json.Unmarshal([]byte(rawMessages), &messages); err != nil {
-		return false, "conversation messages are invalid"
-	}
-	for _, msg := range messages {
-		if strings.EqualFold(strings.TrimSpace(msg.Role), "assistant") && strings.TrimSpace(msg.Content) != "" {
-			return true, ""
-		}
-	}
-	return false, "conversation has no completed assistant turn"
-}
-
 func (s *Server) loadMintConversationFinalizeContext(ctx *apptheory.Context) (mintConversationFinalizeContext, *apptheory.AppTheoryError) {
 	regCtx, appErr := s.requireMintConversationRegistrationContext(ctx, true)
 	if appErr != nil {

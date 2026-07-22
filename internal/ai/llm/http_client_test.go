@@ -61,7 +61,7 @@ func TestProviderHTTPClientEmitsBoundedSDKAttemptEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp, err := client.Do(req)
+	resp, err := client.Transport.RoundTrip(req)
 	if err != nil {
 		t.Fatal(err)
 	}

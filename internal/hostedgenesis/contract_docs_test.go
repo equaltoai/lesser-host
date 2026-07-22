@@ -19,6 +19,14 @@ func TestFiveBodyContractDocsPinSchemaGuidanceVersions(t *testing.T) {
 }
 
 func TestHostedGenesisConversationContractCodifiesM11TypedCandidateCutover(t *testing.T) {
+	assertHostedGenesisConversationContractM11Policy(t)
+	assertHostedGenesisConversationSourceM11Cutover(t)
+	assertHostedGenesisConversationCandidateResponseSchema(t)
+	assertHostedGenesisConversationCandidateOpenAPI(t)
+}
+
+func assertHostedGenesisConversationContractM11Policy(t *testing.T) {
+	t.Helper()
 	contractBody, readErr := os.ReadFile(filepath.Join("..", "..", "docs", "contracts", "hosted-genesis-conversation.md"))
 	if readErr != nil {
 		t.Fatalf("read hosted-genesis conversation contract: %v", readErr)
@@ -34,7 +42,10 @@ func TestHostedGenesisConversationContractCodifiesM11TypedCandidateCutover(t *te
 			t.Fatalf("hosted-genesis conversation contract missing M11 billing policy phrase %q", want)
 		}
 	}
+}
 
+func assertHostedGenesisConversationSourceM11Cutover(t *testing.T) {
+	t.Helper()
 	asyncBody, readErr := os.ReadFile(filepath.Join("..", "controlplane", "handlers_soul_mint_conversation_async.go"))
 	if readErr != nil {
 		t.Fatalf("read async mint conversation source: %v", readErr)
@@ -54,7 +65,10 @@ func TestHostedGenesisConversationContractCodifiesM11TypedCandidateCutover(t *te
 	if _, statErr := os.Stat(filepath.Join("..", "ai", "llm", "mint_conversation_declarations.go")); !os.IsNotExist(statErr) {
 		t.Fatalf("whole-transcript declaration extractor must be deleted, stat err=%v", statErr)
 	}
+}
 
+func assertHostedGenesisConversationCandidateResponseSchema(t *testing.T) {
+	t.Helper()
 	responseSchemaBody, readErr := os.ReadFile(filepath.Join("..", "..", "docs", "spec", "v3", "schemas", "hosted-genesis.conversation.response.schema.json"))
 	if readErr != nil {
 		t.Fatalf("read hosted-genesis response schema: %v", readErr)
@@ -71,7 +85,10 @@ func TestHostedGenesisConversationContractCodifiesM11TypedCandidateCutover(t *te
 			t.Fatalf("typed candidate response schema missing %s", field)
 		}
 	}
+}
 
+func assertHostedGenesisConversationCandidateOpenAPI(t *testing.T) {
+	t.Helper()
 	openAPIBody, readErr := os.ReadFile(filepath.Join("..", "..", "docs", "contracts", "openapi.yaml"))
 	if readErr != nil {
 		t.Fatalf("read Host OpenAPI: %v", readErr)
@@ -232,19 +249,6 @@ func requiredHas(required []string, want string) bool {
 		}
 	}
 	return false
-}
-
-func between(body string, start string, end string) (string, bool) {
-	startIdx := strings.Index(body, start)
-	if startIdx < 0 {
-		return "", false
-	}
-	tail := body[startIdx:]
-	endIdx := strings.Index(tail[len(start):], end)
-	if endIdx < 0 {
-		return "", false
-	}
-	return tail[:len(start)+endIdx], true
 }
 
 func compileContractSchema(t *testing.T, name string) *jsonschema.Schema {

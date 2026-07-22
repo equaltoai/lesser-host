@@ -765,10 +765,6 @@ func mintConversationHandleReg() models.SoulAgentRegistration {
 	}
 }
 
-func mintConversationDurableAssistantMessagesJSON() string {
-	return `[{"role":"user","content":"describe yourself"},{"role":"assistant","content":"done"}]`
-}
-
 func testMintConversationHandleRequiresRegistrationID(t *testing.T) {
 	t.Helper()
 	tdb := newMintConversationTestDB()

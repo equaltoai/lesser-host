@@ -315,95 +315,32 @@ func ApplyDeclarationTool(candidate *DeclarationCandidate, request DeclarationTo
 	if candidate == nil {
 		return nil, DeclarationToolResult{}, errors.New("typed declaration candidate is required")
 	}
-	section, ok := DeclarationSectionForTool(request.ToolName)
-	if !ok {
-		return nil, candidate.resultFor(section, issue(section, "tool.name", DeclarationCodeInvalid)), nil
+	preflight, rejection := preflightDeclarationTool(candidate, request)
+	if rejection != nil {
+		return nil, *rejection, nil
 	}
-	callHash := hashText(strings.TrimSpace(request.ToolCallID))
-	inputHash := hashBytes(request.Payload)
-	sourceTurnID := strings.TrimSpace(request.SourceTurnID)
-	if strings.TrimSpace(request.ToolCallID) == "" || sourceTurnID == "" {
-		return nil, candidate.resultFor(section, issue(section, "tool.call_id", DeclarationCodeInvalid)), nil
-	}
-	if sourceTurnID != candidate.SourceTurnID {
-		return nil, candidate.resultFor(section, issue(section, "candidate.source_turn_id", DeclarationCodeInvalid)), nil
-	}
-	for _, record := range candidate.ToolRecords {
-		if record.ToolCallHash != callHash {
-			continue
-		}
-		if record.InputHash != inputHash || record.ToolName != request.ToolName || record.Section != section || record.SourceTurnID != sourceTurnID {
-			return nil, candidate.resultFor(section, issue(section, "tool.call_id", DeclarationCodeInvalid)), nil
-		}
-		return candidate.Clone(), DeclarationToolResult{
-			Accepted: true, Idempotent: true, Section: record.Section, Revision: record.Revision,
-			SectionHash: record.SectionHash, CandidateHash: record.CandidateHash,
-		}, nil
-	}
-	if len(candidate.ToolRecords) >= MaxDeclarationToolRecords {
-		return nil, candidate.resultFor(section, issue(section, "tool.call_id", DeclarationCodeInvalid)), nil
-	}
-	if candidate.Phase != DeclarationCandidatePhaseSection || candidate.CurrentSection != section {
-		return nil, candidate.resultFor(section, issue(section, "candidate.current_section", DeclarationCodeInvalid)), nil
-	}
-	if candidate.Revision != request.ExpectedRevision {
-		return nil, candidate.resultFor(section, issue(section, "candidate.revision", DeclarationCodeInvalid)), nil
-	}
-	if strings.TrimSpace(candidate.CandidateHash) != strings.TrimSpace(request.ExpectedHash) {
-		return nil, candidate.resultFor(section, issue(section, "candidate.hash", DeclarationCodeInvalid)), nil
+	if preflight.replay != nil {
+		return candidate.Clone(), *preflight.replay, nil
 	}
 
 	updated := candidate.Clone()
-	updated.SourceTurnID = strings.TrimSpace(request.SourceTurnID)
-	var validationIssues []DeclarationValidationIssue
-	if section == DeclarationSectionSoul {
-		var payload declarationSoulPayload
-		if err := decodeDeclarationToolPayload(request.Payload, &payload); err != nil {
-			validationIssues = append(validationIssues, issue(section, "fiveBodies.soul", DeclarationCodeInvalid))
-		} else if payload.CandidateRevision == nil || *payload.CandidateRevision != request.ExpectedRevision {
-			validationIssues = append(validationIssues, issue(section, "candidate.revision", DeclarationCodeInvalid))
-		} else if strings.TrimSpace(payload.CandidateHash) != strings.TrimSpace(request.ExpectedHash) {
-			validationIssues = append(validationIssues, issue(section, "candidate.hash", DeclarationCodeInvalid))
-		} else {
-			updated.FiveBodies.Soul = NormalizeFiveBodyDeclaration(FiveBodyDeclaration{Soul: payload.Section}).Soul
-			updated.SelfDescription = normalizeCandidateSelfDescription(payload.SelfDescription, updated.FiveBodies, updated.Model)
-			updated.Transparency = normalizeCandidateTransparency(payload.Transparency)
-			updated.Capabilities, validationIssues = validateCandidateSoulSatellites(section, payload.Capabilities, updated.SelfDescription, updated.Transparency)
-			if err := validateDeclarationSection(section, updated.FiveBodies); err != nil {
-				validationIssues = append(validationIssues, issueForCode(section, DeclarationValidationCodeFromError(err)))
-			}
-		}
-	} else {
-		var payload declarationSectionPayload
-		if err := decodeDeclarationToolPayload(request.Payload, &payload); err != nil {
-			validationIssues = append(validationIssues, issue(section, "fiveBodies."+string(section), DeclarationCodeInvalid))
-		} else if payload.CandidateRevision == nil || *payload.CandidateRevision != request.ExpectedRevision {
-			validationIssues = append(validationIssues, issue(section, "candidate.revision", DeclarationCodeInvalid))
-		} else if strings.TrimSpace(payload.CandidateHash) != strings.TrimSpace(request.ExpectedHash) {
-			validationIssues = append(validationIssues, issue(section, "candidate.hash", DeclarationCodeInvalid))
-		} else {
-			normalized := normalizeFiveBodySection(payload.Section)
-			setCandidateSection(updated, section, normalized)
-			if err := validateDeclarationSection(section, updated.FiveBodies); err != nil {
-				validationIssues = append(validationIssues, issueForCode(section, DeclarationValidationCodeFromError(err)))
-			}
-		}
-	}
+	updated.SourceTurnID = preflight.sourceTurnID
+	validationIssues := applyDeclarationToolPayload(updated, preflight.section, request)
 	if len(validationIssues) > 0 {
-		return nil, candidate.resultFor(section, validationIssues...), nil
+		return nil, candidate.resultFor(preflight.section, validationIssues...), nil
 	}
 
 	updated.Revision++
 	updated.Review = nil
 	updated.Affirmation = nil
 	updated.UpdatedAt = now.UTC()
-	updated.markCompleted(section)
-	sectionBytes, err := updated.sectionBytes(section)
+	updated.markCompleted(preflight.section)
+	sectionBytes, err := updated.sectionBytes(preflight.section)
 	if err != nil {
 		return nil, DeclarationToolResult{}, err
 	}
 	sectionHash := hashBytes(sectionBytes)
-	updated.SectionHashes[string(section)] = sectionHash
+	updated.SectionHashes[string(preflight.section)] = sectionHash
 	if next, found := updated.nextIncompleteSection(); found {
 		updated.CurrentSection = next
 		updated.Phase = DeclarationCandidatePhaseSection
@@ -417,7 +354,7 @@ func ApplyDeclarationTool(candidate *DeclarationCandidate, request DeclarationTo
 	if updated.Phase == DeclarationCandidatePhaseReview {
 		if err := ValidateDeclarationCandidateComplete(updated); err != nil {
 			code := DeclarationValidationCodeFromError(err)
-			return nil, candidate.resultFor(section, issueForCode(declarationSectionForValidationCode(section, code), code)), nil
+			return nil, candidate.resultFor(preflight.section, issueForCode(declarationSectionForValidationCode(preflight.section, code), code)), nil
 		}
 		review, err := RenderDeclarationOwnerReview(updated, request.SourceTurnID, now)
 		if err != nil {
@@ -426,8 +363,8 @@ func ApplyDeclarationTool(candidate *DeclarationCandidate, request DeclarationTo
 		updated.Review = &review
 	}
 	record := DeclarationToolRecord{
-		ToolCallHash: callHash, InputHash: inputHash, ToolName: request.ToolName, Section: section,
-		SourceTurnID: strings.TrimSpace(request.SourceTurnID), Revision: updated.Revision,
+		ToolCallHash: preflight.callHash, InputHash: preflight.inputHash, ToolName: request.ToolName, Section: preflight.section,
+		SourceTurnID: preflight.sourceTurnID, Revision: updated.Revision,
 		SectionHash: sectionHash, CandidateHash: updated.CandidateHash,
 	}
 	updated.ToolRecords = append(updated.ToolRecords, record)
@@ -435,9 +372,123 @@ func ApplyDeclarationTool(candidate *DeclarationCandidate, request DeclarationTo
 		return nil, DeclarationToolResult{}, err
 	}
 	return updated, DeclarationToolResult{
-		Accepted: true, Section: section, Revision: updated.Revision,
+		Accepted: true, Section: preflight.section, Revision: updated.Revision,
 		SectionHash: sectionHash, CandidateHash: updated.CandidateHash,
 	}, nil
+}
+
+type declarationToolPreflight struct {
+	section      DeclarationSection
+	callHash     string
+	inputHash    string
+	sourceTurnID string
+	replay       *DeclarationToolResult
+}
+
+func preflightDeclarationTool(candidate *DeclarationCandidate, request DeclarationToolRequest) (declarationToolPreflight, *DeclarationToolResult) {
+	section, ok := DeclarationSectionForTool(request.ToolName)
+	if !ok {
+		result := candidate.resultFor(section, issue(section, "tool.name", DeclarationCodeInvalid))
+		return declarationToolPreflight{}, &result
+	}
+	preflight := declarationToolPreflight{
+		section: section, callHash: hashText(strings.TrimSpace(request.ToolCallID)), inputHash: hashBytes(request.Payload),
+		sourceTurnID: strings.TrimSpace(request.SourceTurnID),
+	}
+	if strings.TrimSpace(request.ToolCallID) == "" || preflight.sourceTurnID == "" {
+		return preflight, declarationToolRejection(candidate, section, "tool.call_id")
+	}
+	if preflight.sourceTurnID != candidate.SourceTurnID {
+		return preflight, declarationToolRejection(candidate, section, "candidate.source_turn_id")
+	}
+	if replay, rejection := declarationToolReplay(candidate, request, preflight); replay != nil || rejection != nil {
+		preflight.replay = replay
+		return preflight, rejection
+	}
+	if len(candidate.ToolRecords) >= MaxDeclarationToolRecords {
+		return preflight, declarationToolRejection(candidate, section, "tool.call_id")
+	}
+	if candidate.Phase != DeclarationCandidatePhaseSection || candidate.CurrentSection != section {
+		return preflight, declarationToolRejection(candidate, section, "candidate.current_section")
+	}
+	if candidate.Revision != request.ExpectedRevision {
+		return preflight, declarationToolRejection(candidate, section, "candidate.revision")
+	}
+	if strings.TrimSpace(candidate.CandidateHash) != strings.TrimSpace(request.ExpectedHash) {
+		return preflight, declarationToolRejection(candidate, section, "candidate.hash")
+	}
+	return preflight, nil
+}
+
+func declarationToolReplay(candidate *DeclarationCandidate, request DeclarationToolRequest, preflight declarationToolPreflight) (*DeclarationToolResult, *DeclarationToolResult) {
+	for _, record := range candidate.ToolRecords {
+		if record.ToolCallHash != preflight.callHash {
+			continue
+		}
+		if record.InputHash != preflight.inputHash || record.ToolName != request.ToolName || record.Section != preflight.section || record.SourceTurnID != preflight.sourceTurnID {
+			return nil, declarationToolRejection(candidate, preflight.section, "tool.call_id")
+		}
+		return &DeclarationToolResult{
+			Accepted: true, Idempotent: true, Section: record.Section, Revision: record.Revision,
+			SectionHash: record.SectionHash, CandidateHash: record.CandidateHash,
+		}, nil
+	}
+	return nil, nil
+}
+
+func declarationToolRejection(candidate *DeclarationCandidate, section DeclarationSection, path string) *DeclarationToolResult {
+	result := candidate.resultFor(section, issue(section, path, DeclarationCodeInvalid))
+	return &result
+}
+
+func applyDeclarationToolPayload(updated *DeclarationCandidate, section DeclarationSection, request DeclarationToolRequest) []DeclarationValidationIssue {
+	if section == DeclarationSectionSoul {
+		return applyDeclarationSoulPayload(updated, request)
+	}
+	var payload declarationSectionPayload
+	if err := decodeDeclarationToolPayload(request.Payload, &payload); err != nil {
+		return []DeclarationValidationIssue{issue(section, "fiveBodies."+string(section), DeclarationCodeInvalid)}
+	}
+	if bindingIssue := declarationPayloadBindingIssue(section, payload.CandidateRevision, payload.CandidateHash, request); bindingIssue != nil {
+		return []DeclarationValidationIssue{*bindingIssue}
+	}
+	setCandidateSection(updated, section, normalizeFiveBodySection(payload.Section))
+	if err := validateDeclarationSection(section, updated.FiveBodies); err != nil {
+		return []DeclarationValidationIssue{issueForCode(section, DeclarationValidationCodeFromError(err))}
+	}
+	return nil
+}
+
+func applyDeclarationSoulPayload(updated *DeclarationCandidate, request DeclarationToolRequest) []DeclarationValidationIssue {
+	section := DeclarationSectionSoul
+	var payload declarationSoulPayload
+	if err := decodeDeclarationToolPayload(request.Payload, &payload); err != nil {
+		return []DeclarationValidationIssue{issue(section, "fiveBodies.soul", DeclarationCodeInvalid)}
+	}
+	if bindingIssue := declarationPayloadBindingIssue(section, payload.CandidateRevision, payload.CandidateHash, request); bindingIssue != nil {
+		return []DeclarationValidationIssue{*bindingIssue}
+	}
+	updated.FiveBodies.Soul = NormalizeFiveBodyDeclaration(FiveBodyDeclaration{Soul: payload.Section}).Soul
+	updated.SelfDescription = normalizeCandidateSelfDescription(payload.SelfDescription, updated.FiveBodies, updated.Model)
+	updated.Transparency = normalizeCandidateTransparency(payload.Transparency)
+	capabilities, issues := validateCandidateSoulSatellites(section, payload.Capabilities, updated.SelfDescription, updated.Transparency)
+	updated.Capabilities = capabilities
+	if err := validateDeclarationSection(section, updated.FiveBodies); err != nil {
+		issues = append(issues, issueForCode(section, DeclarationValidationCodeFromError(err)))
+	}
+	return issues
+}
+
+func declarationPayloadBindingIssue(section DeclarationSection, revision *int64, candidateHash string, request DeclarationToolRequest) *DeclarationValidationIssue {
+	if revision == nil || *revision != request.ExpectedRevision {
+		value := issue(section, "candidate.revision", DeclarationCodeInvalid)
+		return &value
+	}
+	if strings.TrimSpace(candidateHash) != strings.TrimSpace(request.ExpectedHash) {
+		value := issue(section, "candidate.hash", DeclarationCodeInvalid)
+		return &value
+	}
+	return nil
 }
 
 func decodeDeclarationToolPayload(raw json.RawMessage, target any) error {
@@ -460,55 +511,84 @@ func decodeDeclarationToolPayload(raw json.RawMessage, target any) error {
 // attempt update appends a new record; later tool/completion observations bind
 // to the most recent record for the exact turn/section/revision/hash tuple.
 func ApplyDeclarationProviderAttempt(candidate *DeclarationCandidate, update DeclarationProviderAttemptUpdate, now time.Time) (*DeclarationCandidate, error) {
-	if candidate == nil || now.IsZero() || update.SourceTurnID == "" || update.CandidateRevision < 0 || update.CandidateHash == "" {
-		return nil, errors.New("declaration provider attempt binding is invalid")
-	}
-	if _, ok := DeclarationToolForSection(update.Section); !ok || update.Provider == "" || update.Model == "" || update.Phase != "declaration_phase" {
-		return nil, errors.New("declaration provider attempt metadata is invalid")
-	}
 	provider := strings.ToLower(strings.TrimSpace(update.Provider))
 	model := strings.TrimSpace(update.Model)
-	if !strings.EqualFold(candidate.Model, provider+":"+model) {
-		return nil, errors.New("declaration provider attempt model binding mismatch")
+	if err := validateDeclarationProviderAttemptUpdate(candidate, update, provider, model, now); err != nil {
+		return nil, err
 	}
 	updated := candidate.Clone()
-	index := -1
-	if update.SDKAttemptOrdinal > 0 {
-		if update.SourceTurnID != candidate.SourceTurnID || update.CandidateRevision != candidate.Revision || update.CandidateHash != candidate.CandidateHash ||
-			candidate.Phase != DeclarationCandidatePhaseSection || candidate.CurrentSection != update.Section {
-			return nil, errors.New("declaration provider attempt candidate binding mismatch")
-		}
-		for _, prior := range candidate.ProviderAttempts {
-			if prior.SourceTurnID == update.SourceTurnID && prior.Section == update.Section && prior.CandidateRevision == update.CandidateRevision &&
-				prior.CandidateHash == update.CandidateHash && prior.SDKAttemptOrdinal >= update.SDKAttemptOrdinal {
-				return nil, errors.New("declaration provider attempt ordinal is stale")
-			}
-		}
-		if len(updated.ProviderAttempts) >= MaxDeclarationProviderAttempts {
-			return nil, errors.New("declaration provider attempt limit exceeded")
-		}
-		updated.ProviderAttempts = append(updated.ProviderAttempts, DeclarationProviderAttempt{
-			Sequence: int64(len(updated.ProviderAttempts) + 1), Provider: provider,
-			Model: model, Phase: update.Phase, Section: update.Section,
-			SourceTurnID: strings.TrimSpace(update.SourceTurnID), CandidateRevision: update.CandidateRevision,
-			CandidateHash: strings.TrimSpace(update.CandidateHash), SDKAttemptOrdinal: update.SDKAttemptOrdinal,
-			SDKRetryBudget: update.SDKRetryBudget, ObservedAt: now.UTC(),
-		})
-		index = len(updated.ProviderAttempts) - 1
-	} else {
-		for candidateIndex := len(updated.ProviderAttempts) - 1; candidateIndex >= 0; candidateIndex-- {
-			attempt := updated.ProviderAttempts[candidateIndex]
-			if attempt.SourceTurnID == strings.TrimSpace(update.SourceTurnID) && attempt.Section == update.Section &&
-				attempt.CandidateRevision == update.CandidateRevision && attempt.CandidateHash == strings.TrimSpace(update.CandidateHash) {
-				index = candidateIndex
-				break
-			}
-		}
-		if index < 0 {
-			return nil, errors.New("declaration provider attempt observation has no SDK attempt")
-		}
+	index, err := declarationProviderAttemptIndex(updated, update, provider, model, now)
+	if err != nil {
+		return nil, err
 	}
 	attempt := &updated.ProviderAttempts[index]
+	applyDeclarationProviderAttemptMetadata(attempt, update, now)
+	updated.UpdatedAt = now.UTC()
+	if err := updated.Validate(); err != nil {
+		return nil, err
+	}
+	return updated, nil
+}
+
+func validateDeclarationProviderAttemptUpdate(candidate *DeclarationCandidate, update DeclarationProviderAttemptUpdate, provider, model string, now time.Time) error {
+	if candidate == nil || now.IsZero() || strings.TrimSpace(update.SourceTurnID) == "" || update.CandidateRevision < 0 || strings.TrimSpace(update.CandidateHash) == "" {
+		return errors.New("declaration provider attempt binding is invalid")
+	}
+	if _, ok := DeclarationToolForSection(update.Section); !ok || provider == "" || model == "" || update.Phase != "declaration_phase" {
+		return errors.New("declaration provider attempt metadata is invalid")
+	}
+	if !strings.EqualFold(candidate.Model, provider+":"+model) {
+		return errors.New("declaration provider attempt model binding mismatch")
+	}
+	return nil
+}
+
+func declarationProviderAttemptIndex(candidate *DeclarationCandidate, update DeclarationProviderAttemptUpdate, provider, model string, now time.Time) (int, error) {
+	if update.SDKAttemptOrdinal <= 0 {
+		return existingDeclarationProviderAttemptIndex(candidate.ProviderAttempts, update)
+	}
+	if update.SourceTurnID != candidate.SourceTurnID || update.CandidateRevision != candidate.Revision || update.CandidateHash != candidate.CandidateHash ||
+		candidate.Phase != DeclarationCandidatePhaseSection || candidate.CurrentSection != update.Section {
+		return -1, errors.New("declaration provider attempt candidate binding mismatch")
+	}
+	if declarationProviderAttemptOrdinalIsStale(candidate.ProviderAttempts, update) {
+		return -1, errors.New("declaration provider attempt ordinal is stale")
+	}
+	if len(candidate.ProviderAttempts) >= MaxDeclarationProviderAttempts {
+		return -1, errors.New("declaration provider attempt limit exceeded")
+	}
+	candidate.ProviderAttempts = append(candidate.ProviderAttempts, DeclarationProviderAttempt{
+		Sequence: int64(len(candidate.ProviderAttempts) + 1), Provider: provider,
+		Model: model, Phase: update.Phase, Section: update.Section,
+		SourceTurnID: strings.TrimSpace(update.SourceTurnID), CandidateRevision: update.CandidateRevision,
+		CandidateHash: strings.TrimSpace(update.CandidateHash), SDKAttemptOrdinal: update.SDKAttemptOrdinal,
+		SDKRetryBudget: update.SDKRetryBudget, ObservedAt: now.UTC(),
+	})
+	return len(candidate.ProviderAttempts) - 1, nil
+}
+
+func declarationProviderAttemptOrdinalIsStale(attempts []DeclarationProviderAttempt, update DeclarationProviderAttemptUpdate) bool {
+	for _, prior := range attempts {
+		if prior.SourceTurnID == update.SourceTurnID && prior.Section == update.Section && prior.CandidateRevision == update.CandidateRevision &&
+			prior.CandidateHash == update.CandidateHash && prior.SDKAttemptOrdinal >= update.SDKAttemptOrdinal {
+			return true
+		}
+	}
+	return false
+}
+
+func existingDeclarationProviderAttemptIndex(attempts []DeclarationProviderAttempt, update DeclarationProviderAttemptUpdate) (int, error) {
+	for index := len(attempts) - 1; index >= 0; index-- {
+		attempt := attempts[index]
+		if attempt.SourceTurnID == strings.TrimSpace(update.SourceTurnID) && attempt.Section == update.Section &&
+			attempt.CandidateRevision == update.CandidateRevision && attempt.CandidateHash == strings.TrimSpace(update.CandidateHash) {
+			return index, nil
+		}
+	}
+	return -1, errors.New("declaration provider attempt observation has no SDK attempt")
+}
+
+func applyDeclarationProviderAttemptMetadata(attempt *DeclarationProviderAttempt, update DeclarationProviderAttemptUpdate, now time.Time) {
 	if update.HTTPStatus != 0 {
 		attempt.HTTPStatus = update.HTTPStatus
 	}
@@ -538,11 +618,6 @@ func ApplyDeclarationProviderAttempt(candidate *DeclarationCandidate, update Dec
 	}
 	attempt.DurationMS = maxCandidateInt64(attempt.DurationMS, update.DurationMS)
 	attempt.ObservedAt = now.UTC()
-	updated.UpdatedAt = now.UTC()
-	if err := updated.Validate(); err != nil {
-		return nil, err
-	}
-	return updated, nil
 }
 
 func (c *DeclarationCandidate) resultFor(section DeclarationSection, issues ...DeclarationValidationIssue) DeclarationToolResult {
@@ -838,35 +913,13 @@ func ApplyDeclarationCandidateAction(candidate *DeclarationCandidate, action Dec
 	updated := candidate.Clone()
 	switch strings.ToLower(strings.TrimSpace(action.Action)) {
 	case "edit":
-		if updated.Phase != DeclarationCandidatePhaseReview || updated.Review == nil ||
-			updated.Review.CandidateRevision != action.CandidateRevision ||
-			updated.Review.CandidateHash != strings.TrimSpace(action.CandidateHash) ||
-			updated.Review.ReviewHash != strings.TrimSpace(action.ReviewHash) {
-			return nil, errors.New("declaration edit does not match the reviewed candidate")
+		if err := applyDeclarationCandidateEdit(updated, action, sourceTurnID, now); err != nil {
+			return nil, err
 		}
-		if _, ok := DeclarationToolForSection(action.Section); !ok {
-			return nil, errors.New("declaration candidate edit section is invalid")
-		}
-		updated.Revision++
-		updated.Phase = DeclarationCandidatePhaseSection
-		updated.CurrentSection = action.Section
-		updated.Review = nil
-		updated.Affirmation = nil
-		updated.SourceTurnID = strings.TrimSpace(sourceTurnID)
-		updated.UpdatedAt = now.UTC()
 	case "affirm":
-		if updated.Phase != DeclarationCandidatePhaseReview || updated.Review == nil ||
-			updated.Review.CandidateRevision != action.CandidateRevision || updated.Review.CandidateHash != action.CandidateHash ||
-			updated.Review.ReviewHash != strings.TrimSpace(action.ReviewHash) {
-			return nil, errors.New("declaration affirmation does not match the reviewed candidate")
+		if err := applyDeclarationCandidateAffirmation(updated, action, sourceTurnID, now); err != nil {
+			return nil, err
 		}
-		updated.Affirmation = &DeclarationAffirmationCheckpoint{
-			CandidateRevision: updated.Revision, CandidateHash: updated.CandidateHash,
-			ReviewHash: updated.Review.ReviewHash, SourceTurnID: strings.TrimSpace(sourceTurnID), AffirmedAt: now.UTC(),
-		}
-		updated.Phase = DeclarationCandidatePhaseAffirmed
-		updated.SourceTurnID = strings.TrimSpace(sourceTurnID)
-		updated.UpdatedAt = now.UTC()
 	default:
 		return nil, errors.New("declaration candidate action is invalid")
 	}
@@ -874,6 +927,44 @@ func ApplyDeclarationCandidateAction(candidate *DeclarationCandidate, action Dec
 		return nil, err
 	}
 	return updated, nil
+}
+
+func applyDeclarationCandidateEdit(candidate *DeclarationCandidate, action DeclarationCandidateAction, sourceTurnID string, now time.Time) error {
+	if !declarationReviewMatchesAction(candidate, action) {
+		return errors.New("declaration edit does not match the reviewed candidate")
+	}
+	if _, ok := DeclarationToolForSection(action.Section); !ok {
+		return errors.New("declaration candidate edit section is invalid")
+	}
+	candidate.Revision++
+	candidate.Phase = DeclarationCandidatePhaseSection
+	candidate.CurrentSection = action.Section
+	candidate.Review = nil
+	candidate.Affirmation = nil
+	candidate.SourceTurnID = strings.TrimSpace(sourceTurnID)
+	candidate.UpdatedAt = now.UTC()
+	return nil
+}
+
+func applyDeclarationCandidateAffirmation(candidate *DeclarationCandidate, action DeclarationCandidateAction, sourceTurnID string, now time.Time) error {
+	if !declarationReviewMatchesAction(candidate, action) {
+		return errors.New("declaration affirmation does not match the reviewed candidate")
+	}
+	candidate.Affirmation = &DeclarationAffirmationCheckpoint{
+		CandidateRevision: candidate.Revision, CandidateHash: candidate.CandidateHash,
+		ReviewHash: candidate.Review.ReviewHash, SourceTurnID: strings.TrimSpace(sourceTurnID), AffirmedAt: now.UTC(),
+	}
+	candidate.Phase = DeclarationCandidatePhaseAffirmed
+	candidate.SourceTurnID = strings.TrimSpace(sourceTurnID)
+	candidate.UpdatedAt = now.UTC()
+	return nil
+}
+
+func declarationReviewMatchesAction(candidate *DeclarationCandidate, action DeclarationCandidateAction) bool {
+	return candidate.Phase == DeclarationCandidatePhaseReview && candidate.Review != nil &&
+		candidate.Review.CandidateRevision == action.CandidateRevision &&
+		candidate.Review.CandidateHash == strings.TrimSpace(action.CandidateHash) &&
+		candidate.Review.ReviewHash == strings.TrimSpace(action.ReviewHash)
 }
 
 // FinalizeDeclarationCandidate performs the provider-free terminal transition.
@@ -902,15 +993,40 @@ func FinalizeDeclarationCandidate(candidate *DeclarationCandidate, sourceTurnID 
 }
 
 func (c *DeclarationCandidate) Validate() error {
+	for _, validate := range []func(*DeclarationCandidate) error{
+		validateDeclarationCandidateCore,
+		validateDeclarationCandidateCompletedSections,
+		validateDeclarationCandidatePhase,
+		validateDeclarationCandidateToolRecords,
+		validateDeclarationCandidateProviderAttempts,
+		validateDeclarationCandidateCanonicalBindings,
+	} {
+		if err := validate(c); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateDeclarationCandidateCore(c *DeclarationCandidate) error {
 	if c == nil || c.Version != DeclarationCandidateVersionV1 || c.SchemaVersion != DeclarationSchemaVersionV2 || c.GuidanceVersion != GuidanceVersionV2 {
 		return errors.New("declaration candidate version is invalid")
 	}
-	if c.InstanceSlug == "" || c.RegistrationID == "" || c.AgentID == "" || c.ConversationID == "" || c.SourceTurnID == "" || c.Model == "" || c.EstablishedAt.IsZero() || c.UpdatedAt.IsZero() {
+	if !declarationCandidateBindingsComplete(c) {
 		return errors.New("declaration candidate binding is incomplete")
 	}
 	if c.Revision < 0 || len(c.ToolRecords) > MaxDeclarationToolRecords || len(c.ProviderAttempts) > MaxDeclarationProviderAttempts {
 		return errors.New("declaration candidate revision is invalid")
 	}
+	return nil
+}
+
+func declarationCandidateBindingsComplete(c *DeclarationCandidate) bool {
+	return c.InstanceSlug != "" && c.RegistrationID != "" && c.AgentID != "" && c.ConversationID != "" &&
+		c.SourceTurnID != "" && c.Model != "" && !c.EstablishedAt.IsZero() && !c.UpdatedAt.IsZero()
+}
+
+func validateDeclarationCandidateCompletedSections(c *DeclarationCandidate) error {
 	completed := make(map[DeclarationSection]bool, len(c.CompletedSections))
 	for index, section := range c.CompletedSections {
 		if declarationSectionIndex(section) == len(declarationSectionOrder) || completed[section] {
@@ -925,27 +1041,50 @@ func (c *DeclarationCandidate) Validate() error {
 			return errors.New("declaration candidate section hash mismatch")
 		}
 	}
+	return nil
+}
+
+func validateDeclarationCandidatePhase(c *DeclarationCandidate) error {
 	switch c.Phase {
 	case DeclarationCandidatePhaseSection:
-		if _, ok := DeclarationToolForSection(c.CurrentSection); !ok || c.Review != nil || c.Affirmation != nil {
-			return errors.New("declaration candidate section phase is invalid")
-		}
-		if len(c.CompletedSections) != len(declarationSectionOrder) {
-			if expected, ok := c.nextIncompleteSection(); !ok || expected != c.CurrentSection {
-				return errors.New("declaration candidate current section is invalid")
-			}
-		}
+		return validateDeclarationCandidateSectionPhase(c)
 	case DeclarationCandidatePhaseReview:
-		if c.CurrentSection != "" || len(c.CompletedSections) != len(declarationSectionOrder) || c.Review == nil || c.Affirmation != nil {
-			return errors.New("declaration candidate review phase is invalid")
-		}
+		return validateDeclarationCandidateReviewPhase(c)
 	case DeclarationCandidatePhaseAffirmed, DeclarationCandidatePhaseFinalized:
-		if c.CurrentSection != "" || len(c.CompletedSections) != len(declarationSectionOrder) || c.Review == nil || c.Affirmation == nil {
-			return errors.New("declaration candidate affirmed phase is invalid")
-		}
+		return validateDeclarationCandidateAffirmedPhase(c)
 	default:
 		return errors.New("declaration candidate phase is invalid")
 	}
+}
+
+func validateDeclarationCandidateSectionPhase(c *DeclarationCandidate) error {
+	if _, ok := DeclarationToolForSection(c.CurrentSection); !ok || c.Review != nil || c.Affirmation != nil {
+		return errors.New("declaration candidate section phase is invalid")
+	}
+	if len(c.CompletedSections) == len(declarationSectionOrder) {
+		return nil
+	}
+	if expected, ok := c.nextIncompleteSection(); !ok || expected != c.CurrentSection {
+		return errors.New("declaration candidate current section is invalid")
+	}
+	return nil
+}
+
+func validateDeclarationCandidateReviewPhase(c *DeclarationCandidate) error {
+	if c.CurrentSection != "" || len(c.CompletedSections) != len(declarationSectionOrder) || c.Review == nil || c.Affirmation != nil {
+		return errors.New("declaration candidate review phase is invalid")
+	}
+	return nil
+}
+
+func validateDeclarationCandidateAffirmedPhase(c *DeclarationCandidate) error {
+	if c.CurrentSection != "" || len(c.CompletedSections) != len(declarationSectionOrder) || c.Review == nil || c.Affirmation == nil {
+		return errors.New("declaration candidate affirmed phase is invalid")
+	}
+	return nil
+}
+
+func validateDeclarationCandidateToolRecords(c *DeclarationCandidate) error {
 	seenCalls := make(map[string]bool, len(c.ToolRecords))
 	for _, record := range c.ToolRecords {
 		if record.ToolCallHash == "" || record.InputHash == "" || record.SourceTurnID == "" || record.Revision <= 0 || record.Revision > c.Revision ||
@@ -958,36 +1097,66 @@ func (c *DeclarationCandidate) Validate() error {
 		}
 		seenCalls[record.ToolCallHash] = true
 	}
+	return nil
+}
+
+func validateDeclarationCandidateProviderAttempts(c *DeclarationCandidate) error {
 	for index, attempt := range c.ProviderAttempts {
-		if attempt.Sequence != int64(index+1) || attempt.Provider == "" || attempt.Model == "" || attempt.Phase != "declaration_phase" ||
-			attempt.SourceTurnID == "" || attempt.CandidateRevision < 0 || !isSHA256Digest(attempt.CandidateHash) ||
-			attempt.SDKAttemptOrdinal <= 0 || attempt.SDKRetryBudget < 0 || attempt.SDKRetryBudget > 8 ||
-			(attempt.HTTPStatus != 0 && (attempt.HTTPStatus < 100 || attempt.HTTPStatus > 599)) || attempt.DurationMS < 0 || attempt.ObservedAt.IsZero() ||
-			attempt.OutputBytes < 0 || attempt.InputTokens < 0 || attempt.OutputTokens < 0 || attempt.TotalTokens < 0 || attempt.ToolCalls < 0 {
-			return errors.New("declaration provider attempt is invalid")
-		}
-		if _, ok := DeclarationToolForSection(attempt.Section); !ok || !safeCandidateMetadata(attempt.ProviderRequestID, 160) ||
-			!safeCandidateMetadata(attempt.StopReason, 80) {
-			return errors.New("declaration provider attempt metadata is unsafe")
-		}
-		if attempt.OutputSHA256 != "" && !isSHA256HexDigest(attempt.OutputSHA256) {
-			return errors.New("declaration provider output hash is invalid")
-		}
-		if attempt.ToolName != "" {
-			section, ok := DeclarationSectionForTool(attempt.ToolName)
-			if !ok || section != attempt.Section || !isSHA256Digest(attempt.ToolCallHash) || len(attempt.ValidationCodes) != len(attempt.ValidationPaths) || len(attempt.ValidationCodes) > 16 {
-				return errors.New("declaration provider tool evidence is invalid")
-			}
-			for issueIndex, code := range attempt.ValidationCodes {
-				if !isDeclarationValidationCode(code) || !safeCandidateMetadata(attempt.ValidationPaths[issueIndex], 256) {
-					return errors.New("declaration provider validation evidence is invalid")
-				}
-			}
-		}
-		if attempt.FailureClass != "" && NormalizeFailureClass(string(attempt.FailureClass)) != attempt.FailureClass {
-			return errors.New("declaration provider failure class is invalid")
+		if err := validateDeclarationProviderAttempt(attempt, int64(index+1)); err != nil {
+			return err
 		}
 	}
+	return nil
+}
+
+func validateDeclarationProviderAttempt(attempt DeclarationProviderAttempt, expectedSequence int64) error {
+	if !declarationProviderAttemptBindingValid(attempt, expectedSequence) || !declarationProviderAttemptMetricsValid(attempt) {
+		return errors.New("declaration provider attempt is invalid")
+	}
+	if _, ok := DeclarationToolForSection(attempt.Section); !ok || !safeCandidateMetadata(attempt.ProviderRequestID, 160) || !safeCandidateMetadata(attempt.StopReason, 80) {
+		return errors.New("declaration provider attempt metadata is unsafe")
+	}
+	if attempt.OutputSHA256 != "" && !isSHA256HexDigest(attempt.OutputSHA256) {
+		return errors.New("declaration provider output hash is invalid")
+	}
+	if err := validateDeclarationProviderToolEvidence(attempt); err != nil {
+		return err
+	}
+	if attempt.FailureClass != "" && NormalizeFailureClass(string(attempt.FailureClass)) != attempt.FailureClass {
+		return errors.New("declaration provider failure class is invalid")
+	}
+	return nil
+}
+
+func declarationProviderAttemptBindingValid(attempt DeclarationProviderAttempt, expectedSequence int64) bool {
+	return attempt.Sequence == expectedSequence && attempt.Provider != "" && attempt.Model != "" &&
+		attempt.Phase == "declaration_phase" && attempt.SourceTurnID != "" && attempt.CandidateRevision >= 0 &&
+		isSHA256Digest(attempt.CandidateHash) && attempt.SDKAttemptOrdinal > 0 && attempt.SDKRetryBudget >= 0 && attempt.SDKRetryBudget <= 8
+}
+
+func declarationProviderAttemptMetricsValid(attempt DeclarationProviderAttempt) bool {
+	statusValid := attempt.HTTPStatus == 0 || (attempt.HTTPStatus >= 100 && attempt.HTTPStatus <= 599)
+	return statusValid && attempt.DurationMS >= 0 && !attempt.ObservedAt.IsZero() && attempt.OutputBytes >= 0 &&
+		attempt.InputTokens >= 0 && attempt.OutputTokens >= 0 && attempt.TotalTokens >= 0 && attempt.ToolCalls >= 0
+}
+
+func validateDeclarationProviderToolEvidence(attempt DeclarationProviderAttempt) error {
+	if attempt.ToolName == "" {
+		return nil
+	}
+	section, ok := DeclarationSectionForTool(attempt.ToolName)
+	if !ok || section != attempt.Section || !isSHA256Digest(attempt.ToolCallHash) || len(attempt.ValidationCodes) != len(attempt.ValidationPaths) || len(attempt.ValidationCodes) > 16 {
+		return errors.New("declaration provider tool evidence is invalid")
+	}
+	for index, code := range attempt.ValidationCodes {
+		if !isDeclarationValidationCode(code) || !safeCandidateMetadata(attempt.ValidationPaths[index], 256) {
+			return errors.New("declaration provider validation evidence is invalid")
+		}
+	}
+	return nil
+}
+
+func validateDeclarationCandidateCanonicalBindings(c *DeclarationCandidate) error {
 	copy := c.Clone()
 	if err := copy.refreshCanonical(); err != nil {
 		return err
@@ -995,20 +1164,28 @@ func (c *DeclarationCandidate) Validate() error {
 	if copy.CandidateHash != c.CandidateHash || copy.CanonicalJSON != c.CanonicalJSON {
 		return errors.New("declaration candidate canonical hash mismatch")
 	}
-	if c.Review != nil {
-		if c.Review.RendererVersion != DeclarationReviewRendererV1 || c.Review.SchemaVersion != c.SchemaVersion || c.Review.GuidanceVersion != c.GuidanceVersion ||
-			c.Review.SourceTurnID == "" || c.Review.ReviewedAt.IsZero() || c.Review.CandidateRevision != c.Revision || c.Review.CandidateHash != c.CandidateHash || c.Review.ReviewHash != hashText(c.Review.ReviewText) {
-			return errors.New("declaration review binding mismatch")
-		}
-		rendered, err := RenderDeclarationOwnerReview(c, c.Review.SourceTurnID, c.Review.ReviewedAt)
-		if err != nil || rendered.ReviewText != c.Review.ReviewText || rendered.ReviewHash != c.Review.ReviewHash {
-			return errors.New("declaration review rendering mismatch")
-		}
+	if err := validateDeclarationReviewBinding(c); err != nil {
+		return err
 	}
 	if c.Affirmation != nil {
 		if c.Review == nil || c.Affirmation.SourceTurnID == "" || c.Affirmation.AffirmedAt.IsZero() || c.Affirmation.CandidateRevision != c.Revision || c.Affirmation.CandidateHash != c.CandidateHash || c.Affirmation.ReviewHash != c.Review.ReviewHash {
 			return errors.New("declaration affirmation binding mismatch")
 		}
+	}
+	return nil
+}
+
+func validateDeclarationReviewBinding(c *DeclarationCandidate) error {
+	if c.Review == nil {
+		return nil
+	}
+	if c.Review.RendererVersion != DeclarationReviewRendererV1 || c.Review.SchemaVersion != c.SchemaVersion || c.Review.GuidanceVersion != c.GuidanceVersion ||
+		c.Review.SourceTurnID == "" || c.Review.ReviewedAt.IsZero() || c.Review.CandidateRevision != c.Revision || c.Review.CandidateHash != c.CandidateHash || c.Review.ReviewHash != hashText(c.Review.ReviewText) {
+		return errors.New("declaration review binding mismatch")
+	}
+	rendered, err := RenderDeclarationOwnerReview(c, c.Review.SourceTurnID, c.Review.ReviewedAt)
+	if err != nil || rendered.ReviewText != c.Review.ReviewText || rendered.ReviewHash != c.Review.ReviewHash {
+		return errors.New("declaration review rendering mismatch")
 	}
 	return nil
 }

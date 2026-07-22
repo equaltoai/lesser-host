@@ -755,40 +755,8 @@ func applyHostedGenesisAcceptedTurnToSession(session hostedGenesisTurnSession, r
 	if decision.Replayed {
 		return session, nil
 	}
-	if session.session.DeclarationCandidate != nil {
-		phase := session.session.DeclarationCandidate.Phase
-		if phase == hostedgenesis.DeclarationCandidatePhaseReview && req.CandidateAction == nil {
-			return hostedGenesisTurnSession{}, newAppTheoryError("app.conflict", "a structurally bound candidate_action is required for owner review")
-		}
-		if phase != hostedgenesis.DeclarationCandidatePhaseReview && req.CandidateAction != nil {
-			return hostedGenesisTurnSession{}, newAppTheoryError("app.conflict", "candidate_action is only valid for the current owner review")
-		}
-	}
-	if session.sessionIsNew {
-		candidate, candidateErr := hostedgenesis.NewDeclarationCandidate(hostedgenesis.DeclarationCandidateBinding{
-			InstanceSlug: session.session.InstanceSlug, RegistrationID: session.session.RegistrationID,
-			AgentID: session.session.AgentID, ConversationID: session.session.ConversationID,
-			SourceTurnID: decision.Turn.TurnID, Model: session.modelSet,
-		}, now)
-		if candidateErr != nil {
-			return hostedGenesisTurnSession{}, newAppTheoryError("app.internal", "failed to initialize typed declaration candidate")
-		}
-		session.session.DeclarationCandidate = candidate
-	}
-	if req.CandidateAction != nil {
-		candidate, candidateErr := hostedgenesis.ApplyDeclarationCandidateAction(session.session.DeclarationCandidate, *req.CandidateAction, decision.Turn.TurnID, now)
-		if candidateErr != nil {
-			return hostedGenesisTurnSession{}, newAppTheoryError("app.conflict", "candidate_action does not match the exact owner review")
-		}
-		session.session.DeclarationCandidate = candidate
-	} else {
-		candidate := session.session.DeclarationCandidate.Clone()
-		candidate.SourceTurnID = decision.Turn.TurnID
-		candidate.UpdatedAt = now
-		if candidateErr := candidate.Validate(); candidateErr != nil {
-			return hostedGenesisTurnSession{}, newAppTheoryError("app.conflict", "typed declaration candidate cannot bind the accepted turn")
-		}
-		session.session.DeclarationCandidate = candidate
+	if appErr := advanceHostedGenesisCandidateForAcceptedTurn(&session, req.CandidateAction, decision.Turn.TurnID, now); appErr != nil {
+		return hostedGenesisTurnSession{}, appErr
 	}
 	session.session.Status = string(hostedgenesis.StatusInProgress)
 	session.session.Model = session.modelSet
@@ -808,6 +776,56 @@ func applyHostedGenesisAcceptedTurnToSession(session hostedGenesisTurnSession, r
 	session.session.UpdatedAt = now
 	session.session.CompletedAt = time.Time{}
 	return session, nil
+}
+
+func advanceHostedGenesisCandidateForAcceptedTurn(session *hostedGenesisTurnSession, action *hostedgenesis.DeclarationCandidateAction, turnID string, now time.Time) *apptheory.AppTheoryError {
+	if appErr := validateHostedGenesisCandidateActionPhase(session.session.DeclarationCandidate, action); appErr != nil {
+		return appErr
+	}
+	if session.sessionIsNew {
+		candidate, err := newHostedGenesisCandidateForAcceptedTurn(*session, turnID, now)
+		if err != nil {
+			return newAppTheoryError("app.internal", "failed to initialize typed declaration candidate")
+		}
+		session.session.DeclarationCandidate = candidate
+	}
+	if action != nil {
+		candidate, err := hostedgenesis.ApplyDeclarationCandidateAction(session.session.DeclarationCandidate, *action, turnID, now)
+		if err != nil {
+			return newAppTheoryError("app.conflict", "candidate_action does not match the exact owner review")
+		}
+		session.session.DeclarationCandidate = candidate
+		return nil
+	}
+	candidate := session.session.DeclarationCandidate.Clone()
+	candidate.SourceTurnID = turnID
+	candidate.UpdatedAt = now
+	if err := candidate.Validate(); err != nil {
+		return newAppTheoryError("app.conflict", "typed declaration candidate cannot bind the accepted turn")
+	}
+	session.session.DeclarationCandidate = candidate
+	return nil
+}
+
+func validateHostedGenesisCandidateActionPhase(candidate *hostedgenesis.DeclarationCandidate, action *hostedgenesis.DeclarationCandidateAction) *apptheory.AppTheoryError {
+	if candidate == nil {
+		return nil
+	}
+	if candidate.Phase == hostedgenesis.DeclarationCandidatePhaseReview && action == nil {
+		return newAppTheoryError("app.conflict", "a structurally bound candidate_action is required for owner review")
+	}
+	if candidate.Phase != hostedgenesis.DeclarationCandidatePhaseReview && action != nil {
+		return newAppTheoryError("app.conflict", "candidate_action is only valid for the current owner review")
+	}
+	return nil
+}
+
+func newHostedGenesisCandidateForAcceptedTurn(session hostedGenesisTurnSession, turnID string, now time.Time) (*hostedgenesis.DeclarationCandidate, error) {
+	return hostedgenesis.NewDeclarationCandidate(hostedgenesis.DeclarationCandidateBinding{
+		InstanceSlug: session.session.InstanceSlug, RegistrationID: session.session.RegistrationID,
+		AgentID: session.session.AgentID, ConversationID: session.session.ConversationID,
+		SourceTurnID: turnID, Model: session.modelSet,
+	}, now)
 }
 
 func buildHostedGenesisIdempotency(instanceSlug string, regCtx mintConversationRegistrationContext, session hostedGenesisTurnSession, req soulMintConversationRequest, reqHash string, now time.Time, requestID string) *models.SoulMintConversationIdempotency {

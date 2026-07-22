@@ -103,42 +103,67 @@ func runMintConversationPhaseOpenAI(ctx context.Context, apiKey string, in MintC
 			return MintConversationPhaseOutput{}, callErr
 		}
 		mergeAIUsage(&usage, openAIUsageFromChat(chat, requestStarted))
-		if len(chat.Choices) != 1 {
-			return MintConversationPhaseOutput{}, errors.New("openai declaration phase returned invalid choices")
-		}
-		message := chat.Choices[0].Message
-		messages = append(messages, message.ToParam())
-		if len(message.ToolCalls) == 0 {
-			content := strings.TrimSpace(message.Content)
-			if content == "" {
-				return MintConversationPhaseOutput{}, errors.New("openai declaration phase returned no content or tool")
-			}
-			emitMintConversationPhaseCompletion(recorder, content, usage, strings.TrimSpace(chat.Choices[0].FinishReason))
-			return MintConversationPhaseOutput{AssistantContent: content, Usage: usage}, nil
-		}
-		if !toolEnabled || len(message.ToolCalls) != 1 {
-			return MintConversationPhaseOutput{}, errors.New("openai declaration phase returned unexpected tool calls")
-		}
-		call := message.ToolCalls[0]
-		result, handleErr := handler(ctx, MintConversationPhaseToolCall{Name: call.Function.Name, CallID: call.ID, Arguments: json.RawMessage(call.Function.Arguments)})
+		outcome, handleErr := handleOpenAIMintConversationPhaseResponse(ctx, chat, in.Section, toolEnabled, handler, recorder, usage, &messages)
 		if handleErr != nil {
 			return MintConversationPhaseOutput{}, handleErr
 		}
-		emitMintConversationToolValidation(recorder, call.Function.Name, call.ID, result)
-		body, marshalErr := json.Marshal(result)
-		if marshalErr != nil {
-			return MintConversationPhaseOutput{}, marshalErr
+		if outcome.done {
+			return outcome.output, nil
 		}
-		messages = append(messages, openai.ToolMessage(string(body), call.ID))
-		if result.Accepted {
-			if in.Section == hostedgenesis.DeclarationSectionSoul {
-				emitMintConversationPhaseCompletion(recorder, "", usage, "tool_accepted")
-				return MintConversationPhaseOutput{AssistantContent: "typed declaration candidate accepted", Usage: usage}, nil
-			}
+		if outcome.accepted {
 			toolEnabled = false
 		}
 	}
 	return MintConversationPhaseOutput{}, errors.New("openai declaration phase exceeded bounded tool rounds")
+}
+
+type mintConversationPhaseRoundOutcome struct {
+	output   MintConversationPhaseOutput
+	done     bool
+	accepted bool
+}
+
+func handleOpenAIMintConversationPhaseResponse(ctx context.Context, chat *openai.ChatCompletion, section hostedgenesis.DeclarationSection, toolEnabled bool, handler MintConversationPhaseToolHandler, recorder *providerTelemetryRecorder, usage models.AIUsage, messages *[]openai.ChatCompletionMessageParamUnion) (mintConversationPhaseRoundOutcome, error) {
+	if len(chat.Choices) != 1 {
+		return mintConversationPhaseRoundOutcome{}, errors.New("openai declaration phase returned invalid choices")
+	}
+	message := chat.Choices[0].Message
+	*messages = append(*messages, message.ToParam())
+	if len(message.ToolCalls) == 0 {
+		return finishOpenAIMintConversationPhaseText(chat, recorder, usage)
+	}
+	if !toolEnabled || len(message.ToolCalls) != 1 {
+		return mintConversationPhaseRoundOutcome{}, errors.New("openai declaration phase returned unexpected tool calls")
+	}
+	call := message.ToolCalls[0]
+	result, err := handler(ctx, MintConversationPhaseToolCall{Name: call.Function.Name, CallID: call.ID, Arguments: json.RawMessage(call.Function.Arguments)})
+	if err != nil {
+		return mintConversationPhaseRoundOutcome{}, err
+	}
+	emitMintConversationToolValidation(recorder, call.Function.Name, call.ID, result)
+	body, err := json.Marshal(result)
+	if err != nil {
+		return mintConversationPhaseRoundOutcome{}, err
+	}
+	*messages = append(*messages, openai.ToolMessage(string(body), call.ID))
+	return acceptedMintConversationPhaseOutcome(section, result.Accepted, recorder, usage), nil
+}
+
+func finishOpenAIMintConversationPhaseText(chat *openai.ChatCompletion, recorder *providerTelemetryRecorder, usage models.AIUsage) (mintConversationPhaseRoundOutcome, error) {
+	content := strings.TrimSpace(chat.Choices[0].Message.Content)
+	if content == "" {
+		return mintConversationPhaseRoundOutcome{}, errors.New("openai declaration phase returned no content or tool")
+	}
+	emitMintConversationPhaseCompletion(recorder, content, usage, strings.TrimSpace(chat.Choices[0].FinishReason))
+	return mintConversationPhaseRoundOutcome{output: MintConversationPhaseOutput{AssistantContent: content, Usage: usage}, done: true}, nil
+}
+
+func acceptedMintConversationPhaseOutcome(section hostedgenesis.DeclarationSection, accepted bool, recorder *providerTelemetryRecorder, usage models.AIUsage) mintConversationPhaseRoundOutcome {
+	if accepted && section == hostedgenesis.DeclarationSectionSoul {
+		emitMintConversationPhaseCompletion(recorder, "", usage, "tool_accepted")
+		return mintConversationPhaseRoundOutcome{output: MintConversationPhaseOutput{AssistantContent: "typed declaration candidate accepted", Usage: usage}, done: true, accepted: true}
+	}
+	return mintConversationPhaseRoundOutcome{accepted: accepted}
 }
 
 func runMintConversationPhaseAnthropic(ctx context.Context, apiKey string, in MintConversationPhaseInput, handler MintConversationPhaseToolHandler, telemetry ProviderTelemetrySink) (MintConversationPhaseOutput, error) {
@@ -170,51 +195,67 @@ func runMintConversationPhaseAnthropic(ctx context.Context, apiKey string, in Mi
 			return MintConversationPhaseOutput{}, callErr
 		}
 		mergeAIUsage(&usage, anthropicUsageFromMessage(message, requestStarted))
-		assistantBlocks := make([]anthropic.ContentBlockParamUnion, 0, len(message.Content))
-		var text strings.Builder
-		var toolUses []anthropic.ToolUseBlock
-		for _, block := range message.Content {
-			switch value := block.AsAny().(type) {
-			case anthropic.TextBlock:
-				assistantBlocks = append(assistantBlocks, anthropic.NewTextBlock(value.Text))
-				text.WriteString(value.Text)
-			case anthropic.ToolUseBlock:
-				assistantBlocks = append(assistantBlocks, anthropic.NewToolUseBlock(value.ID, value.Input, value.Name))
-				toolUses = append(toolUses, value)
-			}
-		}
-		messages = append(messages, anthropic.NewAssistantMessage(assistantBlocks...))
-		if len(toolUses) == 0 {
-			content := strings.TrimSpace(text.String())
-			if content == "" {
-				return MintConversationPhaseOutput{}, errors.New("anthropic declaration phase returned no content or tool")
-			}
-			emitMintConversationPhaseCompletion(recorder, content, usage, strings.TrimSpace(string(message.StopReason)))
-			return MintConversationPhaseOutput{AssistantContent: content, Usage: usage}, nil
-		}
-		if !toolEnabled || len(toolUses) != 1 {
-			return MintConversationPhaseOutput{}, errors.New("anthropic declaration phase returned unexpected tool calls")
-		}
-		call := toolUses[0]
-		result, handleErr := handler(ctx, MintConversationPhaseToolCall{Name: call.Name, CallID: call.ID, Arguments: append(json.RawMessage(nil), call.Input...)})
+		outcome, handleErr := handleAnthropicMintConversationPhaseResponse(ctx, message, in.Section, toolEnabled, handler, recorder, usage, &messages)
 		if handleErr != nil {
 			return MintConversationPhaseOutput{}, handleErr
 		}
-		emitMintConversationToolValidation(recorder, call.Name, call.ID, result)
-		body, marshalErr := json.Marshal(result)
-		if marshalErr != nil {
-			return MintConversationPhaseOutput{}, marshalErr
+		if outcome.done {
+			return outcome.output, nil
 		}
-		messages = append(messages, anthropic.NewUserMessage(anthropic.NewToolResultBlock(call.ID, string(body), !result.Accepted)))
-		if result.Accepted {
-			if in.Section == hostedgenesis.DeclarationSectionSoul {
-				emitMintConversationPhaseCompletion(recorder, "", usage, "tool_accepted")
-				return MintConversationPhaseOutput{AssistantContent: "typed declaration candidate accepted", Usage: usage}, nil
-			}
+		if outcome.accepted {
 			toolEnabled = false
 		}
 	}
 	return MintConversationPhaseOutput{}, errors.New("anthropic declaration phase exceeded bounded tool rounds")
+}
+
+func handleAnthropicMintConversationPhaseResponse(ctx context.Context, message *anthropic.Message, section hostedgenesis.DeclarationSection, toolEnabled bool, handler MintConversationPhaseToolHandler, recorder *providerTelemetryRecorder, usage models.AIUsage, messages *[]anthropic.MessageParam) (mintConversationPhaseRoundOutcome, error) {
+	assistantBlocks, text, toolUses := parseAnthropicMintConversationPhaseContent(message)
+	*messages = append(*messages, anthropic.NewAssistantMessage(assistantBlocks...))
+	if len(toolUses) == 0 {
+		return finishAnthropicMintConversationPhaseText(message, text, recorder, usage)
+	}
+	if !toolEnabled || len(toolUses) != 1 {
+		return mintConversationPhaseRoundOutcome{}, errors.New("anthropic declaration phase returned unexpected tool calls")
+	}
+	call := toolUses[0]
+	result, err := handler(ctx, MintConversationPhaseToolCall{Name: call.Name, CallID: call.ID, Arguments: append(json.RawMessage(nil), call.Input...)})
+	if err != nil {
+		return mintConversationPhaseRoundOutcome{}, err
+	}
+	emitMintConversationToolValidation(recorder, call.Name, call.ID, result)
+	body, err := json.Marshal(result)
+	if err != nil {
+		return mintConversationPhaseRoundOutcome{}, err
+	}
+	*messages = append(*messages, anthropic.NewUserMessage(anthropic.NewToolResultBlock(call.ID, string(body), !result.Accepted)))
+	return acceptedMintConversationPhaseOutcome(section, result.Accepted, recorder, usage), nil
+}
+
+func parseAnthropicMintConversationPhaseContent(message *anthropic.Message) ([]anthropic.ContentBlockParamUnion, string, []anthropic.ToolUseBlock) {
+	assistantBlocks := make([]anthropic.ContentBlockParamUnion, 0, len(message.Content))
+	var text strings.Builder
+	var toolUses []anthropic.ToolUseBlock
+	for _, block := range message.Content {
+		switch value := block.AsAny().(type) {
+		case anthropic.TextBlock:
+			assistantBlocks = append(assistantBlocks, anthropic.NewTextBlock(value.Text))
+			text.WriteString(value.Text)
+		case anthropic.ToolUseBlock:
+			assistantBlocks = append(assistantBlocks, anthropic.NewToolUseBlock(value.ID, value.Input, value.Name))
+			toolUses = append(toolUses, value)
+		}
+	}
+	return assistantBlocks, text.String(), toolUses
+}
+
+func finishAnthropicMintConversationPhaseText(message *anthropic.Message, text string, recorder *providerTelemetryRecorder, usage models.AIUsage) (mintConversationPhaseRoundOutcome, error) {
+	content := strings.TrimSpace(text)
+	if content == "" {
+		return mintConversationPhaseRoundOutcome{}, errors.New("anthropic declaration phase returned no content or tool")
+	}
+	emitMintConversationPhaseCompletion(recorder, content, usage, strings.TrimSpace(string(message.StopReason)))
+	return mintConversationPhaseRoundOutcome{output: MintConversationPhaseOutput{AssistantContent: content, Usage: usage}, done: true}, nil
 }
 
 func mintConversationPhaseSystemPrompt(in MintConversationPhaseInput) string {

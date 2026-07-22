@@ -15,8 +15,6 @@ import (
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
 )
 
-const providerTelemetryDeclarationSchemaName = "soul_five_body_declarations"
-
 func TestProviderFailureClassesAreCanonicalAndDoNotCarryErrorText(t *testing.T) {
 	privateDetail := "private-provider-response-body"
 	tests := []struct {
@@ -113,13 +111,6 @@ func TestProviderStreamTelemetryOpenAIAndAnthropicIsPerEventAndRedacted(t *testi
 	}
 	assertDeterministicProviderTelemetry(t, openAIEvents, privateOutput)
 	assertDeterministicProviderTelemetry(t, anthropicEvents, privateOutput)
-}
-
-func assertProviderRequestPayloadMetadata(t *testing.T, event ProviderTelemetryEvent, bytes int, hash string) {
-	t.Helper()
-	if event.PayloadBytes != bytes || event.PayloadSHA256 != hash {
-		t.Fatalf("unexpected content-free request payload metadata: got %#v want bytes=%d hash=%s", event, bytes, hash)
-	}
 }
 
 func assertDeterministicProviderTelemetry(t *testing.T, events []ProviderTelemetryEvent, output string) {

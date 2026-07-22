@@ -254,30 +254,39 @@ func TestDeclarationPhasePersistsContentFreeProviderAttemptEvidence(t *testing.T
 	t.Setenv("OPENAI_API_KEY", "test-key")
 	store, comp, turn := baseTurnInput()
 	runner := &turnRunner{store: store, writer: completion.NewCompletionWriter(comp, fixedClock), nowFunc: fixedClock,
-		phaseRunner: func(ctx context.Context, _ string, input llm.MintConversationPhaseInput, handler llm.MintConversationPhaseToolHandler, sink llm.ProviderTelemetrySink) (llm.MintConversationPhaseOutput, error) {
-			sink(llm.ProviderTelemetryEvent{
-				Provider: "openai", Model: "gpt-test", Phase: "declaration_phase", EventType: "sdk_http_attempt",
-				SDKAttemptOrdinal: 1, SDKRetryBudget: llm.DefaultProviderSDKRetryBudget, HTTPStatus: 200,
-				ProviderRequestID: "req_provider_1", DurationMS: 31,
-			})
-			result, err := handler(ctx, llm.MintConversationPhaseToolCall{Name: hostedgenesis.DeclarationToolIdentityPut, CallID: "accepted", Arguments: boundPhaseToolArgs(t, input, `{"section":{"summary":"I am the tenant-bound conversation actor.","notes":[]}}`)})
-			if err != nil || !result.Accepted {
-				t.Fatalf("checkpoint rejected: %#v err=%v", result, err)
-			}
-			sink(llm.ProviderTelemetryEvent{
-				Provider: "openai", Model: "gpt-test", Phase: "declaration_phase", EventType: "tool_validation_completed",
-				ToolName: hostedgenesis.DeclarationToolIdentityPut, ToolCallHash: "sha256:" + strings.Repeat("a", 64), Accepted: true,
-			})
-			sink(llm.ProviderTelemetryEvent{
-				Provider: "openai", Model: "gpt-test", Phase: "declaration_phase", EventType: "provider_call_completed",
-				OutputBytes: 38, OutputSHA256: strings.Repeat("b", 64), InputTokens: 20, OutputTokens: 8, TotalTokens: 28,
-			})
-			return llm.MintConversationPhaseOutput{AssistantContent: "Let us construct philosophy next."}, nil
-		}}
+		phaseRunner: contentFreeProviderAttemptPhaseRunner(t)}
 	if err := runner.runTurnAndPersist(context.Background(), turn); err != nil {
 		t.Fatal(err)
 	}
-	attempts := comp.session.DeclarationCandidate.ProviderAttempts
+	assertContentFreeProviderAttemptEvidence(t, comp.session.DeclarationCandidate.ProviderAttempts)
+}
+
+func contentFreeProviderAttemptPhaseRunner(t *testing.T) declarationPhaseRunner {
+	t.Helper()
+	return func(ctx context.Context, _ string, input llm.MintConversationPhaseInput, handler llm.MintConversationPhaseToolHandler, sink llm.ProviderTelemetrySink) (llm.MintConversationPhaseOutput, error) {
+		sink(llm.ProviderTelemetryEvent{
+			Provider: "openai", Model: "gpt-test", Phase: "declaration_phase", EventType: "sdk_http_attempt",
+			SDKAttemptOrdinal: 1, SDKRetryBudget: llm.DefaultProviderSDKRetryBudget, HTTPStatus: 200,
+			ProviderRequestID: "req_provider_1", DurationMS: 31,
+		})
+		result, err := handler(ctx, llm.MintConversationPhaseToolCall{Name: hostedgenesis.DeclarationToolIdentityPut, CallID: "accepted", Arguments: boundPhaseToolArgs(t, input, `{"section":{"summary":"I am the tenant-bound conversation actor.","notes":[]}}`)})
+		if err != nil || !result.Accepted {
+			t.Fatalf("checkpoint rejected: %#v err=%v", result, err)
+		}
+		sink(llm.ProviderTelemetryEvent{
+			Provider: "openai", Model: "gpt-test", Phase: "declaration_phase", EventType: "tool_validation_completed",
+			ToolName: hostedgenesis.DeclarationToolIdentityPut, ToolCallHash: "sha256:" + strings.Repeat("a", 64), Accepted: true,
+		})
+		sink(llm.ProviderTelemetryEvent{
+			Provider: "openai", Model: "gpt-test", Phase: "declaration_phase", EventType: "provider_call_completed",
+			OutputBytes: 38, OutputSHA256: strings.Repeat("b", 64), InputTokens: 20, OutputTokens: 8, TotalTokens: 28,
+		})
+		return llm.MintConversationPhaseOutput{AssistantContent: "Let us construct philosophy next."}, nil
+	}
+}
+
+func assertContentFreeProviderAttemptEvidence(t *testing.T, attempts []hostedgenesis.DeclarationProviderAttempt) {
+	t.Helper()
 	if len(attempts) != 1 {
 		t.Fatalf("expected one durable SDK attempt, got %#v", attempts)
 	}

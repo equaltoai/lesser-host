@@ -144,11 +144,7 @@ func TestHostedGenesisStructuralAffirmationQueuesProviderFreeFinalizationTurn(t 
 		InstanceSlug: soulInstanceBootstrapTestInstanceSlug, RegistrationID: reg.ID, AgentID: reg.AgentID,
 		ConversationID: mintConversationTestConversationID, SourceTurnID: "turn-ready", Model: "anthropic:claude-sonnet-4-6",
 	}, now)
-	if _, actionErr := hostedgenesis.ApplyDeclarationCandidateAction(candidate, hostedgenesis.DeclarationCandidateAction{
-		Action: "affirm", CandidateRevision: candidate.Revision, CandidateHash: candidate.CandidateHash, ReviewHash: candidate.Review.ReviewHash,
-	}, "turn-next", now.Add(time.Minute)); actionErr != nil {
-		t.Fatalf("canonical review candidate cannot affirm directly: %v", actionErr)
-	}
+	assertControlplaneReviewCandidateCanAffirm(t, candidate, "turn-next", now.Add(time.Minute))
 
 	expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, soulInstanceBootstrapTestInstanceSlug)
 	stubMintConversationRegistration(t, tdb, reg)
@@ -161,14 +157,8 @@ func TestHostedGenesisStructuralAffirmationQueuesProviderFreeFinalizationTurn(t 
 	}
 	stubMintConversationConversation(t, tdb, conv)
 	derived := hostedGenesisSessionFromLegacyConversationForTest(tdb, conv)
-	if derived.DeclarationCandidate == nil || derived.DeclarationCandidate.Review == nil || derived.DeclarationCandidate.CandidateHash != candidate.CandidateHash || derived.DeclarationCandidate.Review.ReviewHash != candidate.Review.ReviewHash {
-		t.Fatalf("review fixture drift: derived=%#v expected=%#v", derived.DeclarationCandidate, candidate)
-	}
-	if _, actionErr := hostedgenesis.ApplyDeclarationCandidateAction(derived.DeclarationCandidate, hostedgenesis.DeclarationCandidateAction{
-		Action: "affirm", CandidateRevision: candidate.Revision, CandidateHash: candidate.CandidateHash, ReviewHash: candidate.Review.ReviewHash,
-	}, "turn-next", now.Add(time.Minute)); actionErr != nil {
-		t.Fatalf("review fixture cannot affirm directly: %v", actionErr)
-	}
+	assertControlplaneReviewFixtureMatches(t, derived.DeclarationCandidate, candidate)
+	assertControlplaneReviewCandidateCanAffirm(t, derived.DeclarationCandidate, "turn-next", now.Add(time.Minute))
 	expectSoulInstanceMintConversationDebit(t, tdb, reg.AgentID, false)
 
 	resp, err := s.handleSoulInstanceMintConversation(newSoulInstanceBootstrapContext(
@@ -181,6 +171,27 @@ func TestHostedGenesisStructuralAffirmationQueuesProviderFreeFinalizationTurn(t 
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
+	assertProviderFreeFinalizationAccepted(t, resp, dispatcher)
+}
+
+func assertControlplaneReviewCandidateCanAffirm(t *testing.T, candidate *hostedgenesis.DeclarationCandidate, turnID string, now time.Time) {
+	t.Helper()
+	if _, err := hostedgenesis.ApplyDeclarationCandidateAction(candidate, hostedgenesis.DeclarationCandidateAction{
+		Action: "affirm", CandidateRevision: candidate.Revision, CandidateHash: candidate.CandidateHash, ReviewHash: candidate.Review.ReviewHash,
+	}, turnID, now); err != nil {
+		t.Fatalf("review candidate cannot affirm directly: %v", err)
+	}
+}
+
+func assertControlplaneReviewFixtureMatches(t *testing.T, derived *hostedgenesis.DeclarationCandidate, expected *hostedgenesis.DeclarationCandidate) {
+	t.Helper()
+	if derived == nil || derived.Review == nil || derived.CandidateHash != expected.CandidateHash || derived.Review.ReviewHash != expected.Review.ReviewHash {
+		t.Fatalf("review fixture drift: derived=%#v expected=%#v", derived, expected)
+	}
+}
+
+func assertProviderFreeFinalizationAccepted(t *testing.T, resp *apptheory.Response, dispatcher *stubMicroVMDispatcher) {
+	t.Helper()
 	if resp.Status != http.StatusAccepted {
 		t.Fatalf("expected structural affirmation 202, got %#v", resp)
 	}

@@ -2054,47 +2054,9 @@ func assertSoulInstanceFinalizeBoundaryRequirements(t *testing.T, out soulMintCo
 	}
 }
 
-func assertSoulInstanceMintConversationAcceptedResponse(t *testing.T, resp *apptheory.Response) hostedGenesisConversationResponse {
-	t.Helper()
-	if resp.Status != http.StatusOK || !strings.Contains(resp.Headers["content-type"][0], "application/json") {
-		t.Fatalf("expected JSON 200 response, got %#v", resp)
-	}
-	var out hostedGenesisConversationResponse
-	if err := json.Unmarshal(resp.Body, &out); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if out.Conversation.ConversationID == "" ||
-		out.Conversation.Status != models.SoulMintConversationStatusAssistantTurnReady ||
-		out.Conversation.RequestID != "req-instance-bootstrap" ||
-		out.Conversation.MessageCount != 2 {
-		t.Fatalf("expected progressed assistant-ready durable status, got %#v", out)
-	}
-	if out.Conversation.TraceIDs == nil ||
-		out.Conversation.TraceIDs.IdempotencyKey != soulInstanceBootstrapTestIdempotencyKey ||
-		out.Conversation.TraceIDs.CorrelationID != "corr-1" {
-		t.Fatalf("expected trace ids, got %#v", out.Conversation.TraceIDs)
-	}
-	assertSoulInstanceMintConversationAcceptedTranscript(t, out, resp.Body)
-	return out
-}
-
 // assertSoulInstanceMintConversationDispatchedResponse is in
 // handlers_soul_mint_conversation_async_internal_test.go (kept there to stay
 // under the gov-infra MAI-1 Go file budget for this file).
-
-func assertSoulInstanceMintConversationAcceptedTranscript(t *testing.T, out hostedGenesisConversationResponse, body []byte) {
-	t.Helper()
-	if len(out.Conversation.Messages) != 2 ||
-		out.Conversation.Messages[0].Role != hostedGenesisTranscriptRoleUser ||
-		out.Conversation.Messages[0].Content != soulInstanceBootstrapTestConversationMessage ||
-		out.Conversation.Messages[1].Role != hostedGenesisTranscriptRoleAssistant ||
-		out.Conversation.Messages[1].Content != "assistant reply" {
-		t.Fatalf("expected bounded assistant-ready transcript projection, got %#v", out.Conversation.Messages)
-	}
-	if strings.Contains(string(body), mintConversationInstanceReadTestRawKey) {
-		t.Fatalf("response leaked credential material: %s", string(body))
-	}
-}
 
 func assertSoulInstanceCompleteTerminalConflict(t *testing.T, legacyStatus string, expectedSessionStatus string, reason string) {
 	t.Helper()
