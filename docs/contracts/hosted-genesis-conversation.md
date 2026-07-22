@@ -90,9 +90,14 @@ section/path/code errors and retry only the current section. Every tool payload 
 `candidateRevision` and `candidateHash`; missing, stale, mismatched, or unknown payload fields fail closed before any
 candidate mutation. The VM actor never rebuilds the candidate from a transcript.
 
-The owner review is rendered deterministically from the exact canonical candidate. Structural affirmation binds the
-candidate revision/hash and review hash; any edit invalidates the prior review and affirmation. Finalization revalidates
-and publishes the exact canonical candidate bytes. **No provider request occurs after affirmation.**
+The owner review is rendered deterministically as a stable human header plus a byte-counted, delimited copy of the
+exact canonical JSON. The canonical block is reversible byte-for-byte without a provider and losslessly exposes every
+semantic value authenticated by `candidate_hash`, including all notes, self-description/capability/transparency fields,
+derived boundaries, refusals, and adversarial-review evidence. `candidate_hash` authenticates those canonical bytes;
+`review_hash` separately authenticates the complete `review_text`. The full lossless payload is authoritative at
+`declaration_candidate.review.review_text`; clients must not substitute a potentially truncated transcript-message
+projection. Structural affirmation binds the candidate revision/hash and review hash; any edit invalidates the prior
+review and affirmation. Finalization revalidates and publishes the exact canonical candidate bytes. **No provider request occurs after affirmation.**
 The fifth accepted tool also needs no provider-generated review prose: Host projects the stored deterministic review
 directly, including after process/VM recovery from the accepted review checkpoint.
 When the actor finalizes, it advances the same durable conversation to `declaration_ready` with `produced_declarations`

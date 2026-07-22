@@ -22,6 +22,7 @@ func TestHostedGenesisConversationContractCodifiesM11TypedCandidateCutover(t *te
 	assertHostedGenesisConversationContractM11Policy(t)
 	assertHostedGenesisConversationSourceM11Cutover(t)
 	assertHostedGenesisConversationCandidateResponseSchema(t)
+	assertHostedGenesisConversationReviewFixtures(t)
 	assertHostedGenesisConversationCandidateOpenAPI(t)
 }
 
@@ -35,6 +36,7 @@ func assertHostedGenesisConversationContractM11Policy(t *testing.T) {
 	for _, want := range []string{
 		"typed declaration candidate",
 		"candidate_action",
+		"exact canonical JSON",
 		"No provider request occurs after affirmation",
 		"hard cutover",
 	} {
@@ -83,6 +85,63 @@ func assertHostedGenesisConversationCandidateResponseSchema(t *testing.T) {
 	for _, field := range []string{"phase", "current_section", "completed_sections", "revision", "candidate_hash", "review"} {
 		if _, ok := candidateProps[field]; !ok {
 			t.Fatalf("typed candidate response schema missing %s", field)
+		}
+	}
+	review := requireJSONMap(t, defs, "candidate_review")
+	reviewText := requireJSONMap(t, requireJSONMap(t, review, "properties"), "review_text")
+	if got, ok := reviewText["maxLength"].(float64); !ok || int(got) != MaxDeclarationOwnerReviewRunes {
+		t.Fatalf("candidate review API limit drift: %#v", reviewText["maxLength"])
+	}
+	if description, _ := reviewText["description"].(string); !strings.Contains(description, "exact canonical JSON") {
+		t.Fatalf("candidate review schema does not describe the lossless payload: %#v", reviewText)
+	}
+}
+
+func assertHostedGenesisConversationReviewFixtures(t *testing.T) {
+	t.Helper()
+	for _, name := range []string{
+		"hosted-genesis.conversation.assistant-turn-ready.example.json",
+		"hosted-genesis.conversation.completed-declaration-ready.example.json",
+		"hosted-genesis.conversation.published.example.json",
+	} {
+		body, err := os.ReadFile(filepath.Join("..", "..", "docs", "spec", "v3", "fixtures", name))
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		var fixture struct {
+			Conversation struct {
+				Messages []struct {
+					Role    string `json:"role"`
+					Content string `json:"content"`
+				} `json:"messages"`
+				DeclarationCandidate struct {
+					CandidateHash string `json:"candidate_hash"`
+					Review        struct {
+						CandidateHash string `json:"candidate_hash"`
+						ReviewHash    string `json:"review_hash"`
+						ReviewText    string `json:"review_text"`
+					} `json:"review"`
+				} `json:"declaration_candidate"`
+			} `json:"conversation"`
+		}
+		if unmarshalErr := json.Unmarshal(body, &fixture); unmarshalErr != nil {
+			t.Fatalf("parse %s: %v", name, unmarshalErr)
+		}
+		candidate := fixture.Conversation.DeclarationCandidate
+		recovered, err := RecoverDeclarationOwnerReviewCanonicalJSON(candidate.Review.ReviewText)
+		if err != nil {
+			t.Fatalf("recover %s review payload: %v", name, err)
+		}
+		if candidate.CandidateHash != candidate.Review.CandidateHash || hashText(recovered) != candidate.CandidateHash {
+			t.Fatalf("%s candidate review hash does not authenticate exact canonical bytes", name)
+		}
+		if hashText(candidate.Review.ReviewText) != candidate.Review.ReviewHash {
+			t.Fatalf("%s review hash does not authenticate exact review text", name)
+		}
+		for _, message := range fixture.Conversation.Messages {
+			if message.Role == "assistant" && message.Content != candidate.Review.ReviewText {
+				t.Fatalf("%s assistant review projection diverges from candidate review", name)
+			}
 		}
 	}
 }

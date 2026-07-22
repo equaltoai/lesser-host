@@ -2150,6 +2150,7 @@ export interface components {
             candidate_revision: number;
             candidate_hash: string;
             review_hash: string;
+            /** @description Deterministic owner review containing a stable human header and a byte-counted, delimited copy of the exact canonical JSON authenticated by candidate_hash. review_hash authenticates this complete rendered string. */
             review_text: string;
         };
         declaration_candidate: {
@@ -2294,6 +2295,7 @@ export interface components {
                     candidate_revision: number;
                     candidate_hash: string;
                     review_hash: string;
+                    /** @description Deterministic owner review containing a stable human header and a byte-counted, delimited copy of the exact canonical JSON authenticated by candidate_hash. review_hash authenticates this complete rendered string. */
                     review_text: string;
                 };
                 declaration_candidate: {

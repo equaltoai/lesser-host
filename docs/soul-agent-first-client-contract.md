@@ -333,6 +333,11 @@ success only. Lesser must persist `conversation_id` immediately and treat `in_pr
 progress. `conversation.declaration_candidate` reports the bounded typed phase, current/completed sections, revision,
 canonical candidate hash, and deterministic owner review checkpoint when one is ready.
 
+The authoritative `declaration_candidate.review.review_text` contains a stable header and a byte-counted, delimited
+copy of the exact canonical JSON. Clients must display that full lossless payload for owner review rather than relying
+on the bounded transcript-message projection. `candidate_hash` authenticates the canonical JSON; `review_hash`
+authenticates the complete rendered review text, and structural affirmation repeats both with the exact revision.
+
 Owner authority is structural, not phrase based. When the candidate is in `review`, Lesser sends the next ordinary
 `POST /mint-conversation` turn with `candidate_action.action=affirm` plus the exact `candidate_revision`,
 `candidate_hash`, and `review_hash` that Host returned. To revise, it sends `candidate_action.action=edit` with those

@@ -154,10 +154,14 @@ conditions. Duplicate call identities with identical input are idempotent; reuse
 revision/hash submissions fail closed.
 
 After all sections are accepted, cross-section validation runs on the stored candidate. Host deterministically renders
-the owner review from the exact canonical candidate and checkpoints renderer/schema/guidance versions, source turn,
-candidate revision/hash, review hash, text, and timestamp. Owner authority is structural: `candidate_action=affirm`
-must match the reviewed revision, candidate hash, and review hash. `candidate_action=edit` selects a canonical section
-and invalidates the previous review and affirmation. Free-form affirmation phrases have no authority.
+the owner review as a stable human header followed by a byte-counted, delimited copy of the exact `CanonicalJSON` bytes.
+The block is reversibly extracted byte-for-byte without a provider, so every five-body note, self-description field,
+capability, derived boundary, transparency field, refusal, and adversarial-review value authenticated by `CandidateHash`
+is inspectable in `ReviewText`. Host checkpoints renderer/schema/guidance versions, source turn, candidate revision/hash,
+review hash, text, and timestamp. `CandidateHash` authenticates the canonical JSON while `ReviewHash` separately
+authenticates the complete rendered review. Owner authority is structural: `candidate_action=affirm` must match the
+reviewed revision, candidate hash, and review hash. `candidate_action=edit` selects a canonical section and invalidates
+the previous review and affirmation. Free-form affirmation phrases have no authority.
 
 The fifth tool acceptance does not require a follow-up provider request to produce review prose. The runtime projects
 the stored deterministic review directly. If the process or MicroVM stops after the candidate checkpoint but before

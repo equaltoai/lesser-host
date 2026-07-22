@@ -465,6 +465,7 @@
         },
         "review_text": {
           "type": "string",
+          "description": "Deterministic owner review containing a stable human header and a byte-counted, delimited copy of the exact canonical JSON authenticated by candidate_hash. review_hash authenticates this complete rendered string.",
           "minLength": 1,
           "maxLength": 65536
         }

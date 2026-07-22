@@ -9,8 +9,10 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/equaltoai/lesser-host/internal/soul"
 )
@@ -20,7 +22,19 @@ const (
 	DeclarationReviewRendererV1    = "hosted-genesis-owner-review.v1"
 	MaxDeclarationToolRecords      = 64
 	MaxDeclarationProviderAttempts = 64
+	// MaxDeclarationOwnerReviewRunes matches candidate_review.review_text's
+	// documented API maxLength. Renderers fail closed before a larger review
+	// can enter durable state or a response projection.
+	MaxDeclarationOwnerReviewRunes = 65536
 )
+
+const (
+	declarationOwnerReviewCanonicalLength = "Canonical JSON byte length: "
+	declarationOwnerReviewCanonicalBegin  = "-----BEGIN HOSTED GENESIS CANONICAL JSON-----"
+	declarationOwnerReviewCanonicalEnd    = "-----END HOSTED GENESIS CANONICAL JSON-----"
+)
+
+var errDeclarationOwnerReviewTooLarge = errors.New("declaration owner review exceeds the documented API limit")
 
 // DeclarationSection is one canonical five-body construction phase. The order
 // is part of the durable protocol and must not be inferred from transcript text.
@@ -358,6 +372,9 @@ func ApplyDeclarationTool(candidate *DeclarationCandidate, request DeclarationTo
 		}
 		review, err := RenderDeclarationOwnerReview(updated, request.SourceTurnID, now)
 		if err != nil {
+			if errors.Is(err, errDeclarationOwnerReviewTooLarge) {
+				return nil, candidate.resultFor(preflight.section, issue(preflight.section, "candidate.review_text", DeclarationCodeInvalid)), nil
+			}
 			return nil, DeclarationToolResult{}, err
 		}
 		updated.Review = &review
@@ -877,25 +894,59 @@ func RenderDeclarationOwnerReview(candidate *DeclarationCandidate, sourceTurnID 
 	}
 	var b strings.Builder
 	b.WriteString("Hosted Genesis owner review\n\n")
-	for _, item := range []struct{ title, summary string }{
-		{"Identity", candidate.FiveBodies.Identity.Summary}, {"Philosophy", candidate.FiveBodies.Philosophy.Summary},
-		{"Discipline", candidate.FiveBodies.Discipline.Summary}, {"Boundaries", candidate.FiveBodies.Boundaries.Summary},
-		{"Soul", candidate.FiveBodies.Soul.Summary},
-	} {
-		fmt.Fprintf(&b, "%s\n%s\n\n", item.title, strings.TrimSpace(item.summary))
-	}
-	b.WriteString("Concrete refusals\n")
-	for i, refusal := range candidate.FiveBodies.Soul.Refusals {
-		fmt.Fprintf(&b, "%d. Bypass: %s\n   Invariant: %s\n   Closest safe path: %s\n", i+1, refusal.Bypass, refusal.Invariant, refusal.ClosestSafePath)
-	}
-	fmt.Fprintf(&b, "\nCandidate revision: %d\nCandidate hash: %s\n", candidate.Revision, candidate.CandidateHash)
+	b.WriteString("Review the exact canonical JSON below. Structural affirmation binds this review text, these canonical bytes, and the candidate revision.\n\n")
+	fmt.Fprintf(&b, "Candidate revision: %d\nCandidate hash: %s\n", candidate.Revision, candidate.CandidateHash)
+	fmt.Fprintf(&b, "%s%d\n%s\n", declarationOwnerReviewCanonicalLength, len(candidate.CanonicalJSON), declarationOwnerReviewCanonicalBegin)
+	b.WriteString(candidate.CanonicalJSON)
+	fmt.Fprintf(&b, "\n%s\n", declarationOwnerReviewCanonicalEnd)
 	text := b.String()
+	if utf8.RuneCountInString(text) > MaxDeclarationOwnerReviewRunes {
+		return DeclarationReviewCheckpoint{}, errDeclarationOwnerReviewTooLarge
+	}
 	return DeclarationReviewCheckpoint{
 		RendererVersion: DeclarationReviewRendererV1, SchemaVersion: candidate.SchemaVersion,
 		GuidanceVersion: candidate.GuidanceVersion, SourceTurnID: strings.TrimSpace(sourceTurnID),
 		CandidateHash: candidate.CandidateHash, ReviewHash: hashText(text), CandidateRevision: candidate.Revision,
 		ReviewText: text, ReviewedAt: reviewedAt.UTC(),
 	}, nil
+}
+
+// RecoverDeclarationOwnerReviewCanonicalJSON reverses the deterministic owner
+// review envelope to the exact CanonicalJSON byte string authenticated by
+// CandidateHash. The byte-counted block is authoritative; no provider renders,
+// interprets, or reconstructs declaration content during review or recovery.
+func RecoverDeclarationOwnerReviewCanonicalJSON(reviewText string) (string, error) {
+	if !strings.HasPrefix(reviewText, "Hosted Genesis owner review\n\n") || utf8.RuneCountInString(reviewText) > MaxDeclarationOwnerReviewRunes {
+		return "", errors.New("declaration owner review envelope is invalid")
+	}
+	beginToken := "\n" + declarationOwnerReviewCanonicalBegin + "\n"
+	beginIndex := strings.Index(reviewText, beginToken)
+	if beginIndex < 0 {
+		return "", errors.New("declaration owner review canonical block is missing")
+	}
+	header := reviewText[:beginIndex]
+	lengthIndex := strings.LastIndex(header, declarationOwnerReviewCanonicalLength)
+	if lengthIndex < 0 {
+		return "", errors.New("declaration owner review canonical length is missing")
+	}
+	lengthText := header[lengthIndex+len(declarationOwnerReviewCanonicalLength):]
+	if strings.Contains(lengthText, "\n") || lengthText == "" {
+		return "", errors.New("declaration owner review canonical length is invalid")
+	}
+	canonicalLength, err := strconv.Atoi(lengthText)
+	if err != nil || canonicalLength <= 0 || canonicalLength > len(reviewText) {
+		return "", errors.New("declaration owner review canonical length is invalid")
+	}
+	canonicalStart := beginIndex + len(beginToken)
+	canonicalEnd := canonicalStart + canonicalLength
+	if canonicalEnd > len(reviewText) {
+		return "", errors.New("declaration owner review canonical payload is truncated")
+	}
+	canonicalJSON := reviewText[canonicalStart:canonicalEnd]
+	if reviewText[canonicalEnd:] != "\n"+declarationOwnerReviewCanonicalEnd+"\n" || !json.Valid([]byte(canonicalJSON)) {
+		return "", errors.New("declaration owner review canonical payload is invalid")
+	}
+	return canonicalJSON, nil
 }
 
 type DeclarationCandidateAction struct {
@@ -1182,6 +1233,10 @@ func validateDeclarationReviewBinding(c *DeclarationCandidate) error {
 	if c.Review.RendererVersion != DeclarationReviewRendererV1 || c.Review.SchemaVersion != c.SchemaVersion || c.Review.GuidanceVersion != c.GuidanceVersion ||
 		c.Review.SourceTurnID == "" || c.Review.ReviewedAt.IsZero() || c.Review.CandidateRevision != c.Revision || c.Review.CandidateHash != c.CandidateHash || c.Review.ReviewHash != hashText(c.Review.ReviewText) {
 		return errors.New("declaration review binding mismatch")
+	}
+	reviewCanonicalJSON, err := RecoverDeclarationOwnerReviewCanonicalJSON(c.Review.ReviewText)
+	if err != nil || reviewCanonicalJSON != c.CanonicalJSON {
+		return errors.New("declaration review canonical payload mismatch")
 	}
 	rendered, err := RenderDeclarationOwnerReview(c, c.Review.SourceTurnID, c.Review.ReviewedAt)
 	if err != nil || rendered.ReviewText != c.Review.ReviewText || rendered.ReviewHash != c.Review.ReviewHash {
