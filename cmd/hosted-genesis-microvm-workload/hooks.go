@@ -383,7 +383,7 @@ func (s *hookServer) validateTurnEndpointEvent(event runtimemicrovm.LifecycleEve
 
 func (s *hookServer) runTurnDetached(runner *turnRunner, turn completion.CompletionTurn, in turnInput, telemetry *turnLifecycleTelemetry) {
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		ctx, cancel := context.WithTimeout(context.Background(), runner.workloadTimeout())
 		defer cancel()
 		slog.Info(serviceName+": turn execution started", //nolint:gosec // G706: ids are structured slog attrs, not a format string.
 			slog.String("instance_slug", turn.InstanceSlug),

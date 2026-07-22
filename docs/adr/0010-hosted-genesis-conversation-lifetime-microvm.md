@@ -147,7 +147,11 @@ human conversations, the actor contract still holds through checkpoint/relaunch/
 
 M11 deployment policy chooses the following Host defaults for the CDK-deployed AppTheory controller and Host dispatchers:
 
-- `MaximumDurationSeconds=300`: one active provider/declaration step has five minutes to complete bounded work;
+- `MaximumDurationSeconds=28800`: one active provider/declaration step uses the documented eight-hour AWS Lambda
+  MicroVM maximum. The provider whole-call and SDK HTTP attempt bounds are both 27,900 seconds, the detached workload
+  bound is 28,200 seconds, and Host retains 300 seconds for guarded terminal persistence plus 600 seconds for
+  AppTheory/AWS lifecycle cleanup. These values are one validated deployment envelope; the HTTP attempt may never
+  abort before the whole-call deadline and the provider bound must remain strictly below the MicroVM maximum;
 - `IdlePolicy.MaxIdleDurationSeconds=300`: a ready conversation actor may be suspended after five minutes of ready idle;
 - `IdlePolicy.SuspendedDurationSeconds=1800`: suspended execution/cache state is allowed for up to thirty minutes,
   intentionally below Host's one-hour AppTheory registry reconstruction TTL;
@@ -224,6 +228,13 @@ hard conflict.
 Retry budgets remain Host-owned. The VM may report a failure and request `retry_same_step`, but Host decides whether a
 retry budget exists, persists that retry state before any re-dispatch, and chooses the next recovery action. The VM must
 not hide retry counters in provider SDK state or process memory.
+
+For a durable `provider_timeout`, Host first uses AppTheory `Get` / `Terminate` / `Run` / `Get` to prepare one fresh
+runtime on the deployment-pinned current image version and execution role while preserving the Host conversation and
+accepted turn. Preparation never invokes provider work. Host then atomically records the fresh lifecycle identity with
+the TableTheory retry/debit transaction and performs one AppTheory `Invoke`. A failure before that governed dispatch
+transaction does not decrement the retry budget or debit credits. The recorded lifecycle identity is content-free:
+MicroVM id, image ref/version, execution-role ARN, maximum duration, and runtime log-group destination only.
 
 Host also remains the only authority for billing/debit, idempotency conflict decisions, final publication, Soul registry
 mutations, public attestations, and operator/admin actions.

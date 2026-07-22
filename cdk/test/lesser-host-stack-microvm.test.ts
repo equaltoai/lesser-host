@@ -29,6 +29,11 @@ import {
   HOSTED_GENESIS_MICROVM_IDLE_MAX_SECONDS,
   HOSTED_GENESIS_MICROVM_IDLE_SUSPENDED_SECONDS,
   HOSTED_GENESIS_MICROVM_MAXIMUM_DURATION_SECONDS,
+  HOSTED_GENESIS_PROVIDER_CALL_TIMEOUT_SECONDS,
+  HOSTED_GENESIS_PROVIDER_HTTP_TIMEOUT_SECONDS,
+  HOSTED_GENESIS_RUNTIME_CLEANUP_MARGIN_SECONDS,
+  HOSTED_GENESIS_TERMINAL_PERSISTENCE_MARGIN_SECONDS,
+  HOSTED_GENESIS_WORKLOAD_EXECUTION_TIMEOUT_SECONDS,
 } from "../lib/hosted-genesis-microvm";
 
 import assert from "node:assert/strict";
@@ -215,6 +220,32 @@ test("hosted genesis AppTheory MicroVM deployed-stage wiring uses AppTheory cons
       "aws-network-connector:INTERNET_EGRESS",
     ),
     "expected AWS-managed INTERNET_EGRESS egress connector ref",
+  );
+  const imageEnvironment = JSON.stringify(imageProps.EnvironmentVariables ?? []);
+  for (const [key, value] of [
+    ["HOSTED_GENESIS_PROVIDER_HTTP_TIMEOUT_SECONDS", HOSTED_GENESIS_PROVIDER_HTTP_TIMEOUT_SECONDS],
+    ["HOSTED_GENESIS_PROVIDER_CALL_TIMEOUT_SECONDS", HOSTED_GENESIS_PROVIDER_CALL_TIMEOUT_SECONDS],
+    ["HOSTED_GENESIS_WORKLOAD_EXECUTION_TIMEOUT_SECONDS", HOSTED_GENESIS_WORKLOAD_EXECUTION_TIMEOUT_SECONDS],
+    ["HOSTED_GENESIS_MICROVM_MAXIMUM_DURATION_SECONDS", HOSTED_GENESIS_MICROVM_MAXIMUM_DURATION_SECONDS],
+    ["HOSTED_GENESIS_TERMINAL_PERSISTENCE_MARGIN_SECONDS", HOSTED_GENESIS_TERMINAL_PERSISTENCE_MARGIN_SECONDS],
+    ["HOSTED_GENESIS_RUNTIME_CLEANUP_MARGIN_SECONDS", HOSTED_GENESIS_RUNTIME_CLEANUP_MARGIN_SECONDS],
+  ] as const) {
+    assert.ok(
+      imageEnvironment.includes(key) && imageEnvironment.includes(String(value)),
+      `expected MicroVM image environment to carry ${key}=${value}`,
+    );
+  }
+  assert.ok(
+    HOSTED_GENESIS_PROVIDER_CALL_TIMEOUT_SECONDS > 900 &&
+      HOSTED_GENESIS_PROVIDER_HTTP_TIMEOUT_SECONDS >=
+        HOSTED_GENESIS_PROVIDER_CALL_TIMEOUT_SECONDS &&
+      HOSTED_GENESIS_WORKLOAD_EXECUTION_TIMEOUT_SECONDS -
+        HOSTED_GENESIS_PROVIDER_CALL_TIMEOUT_SECONDS >=
+        HOSTED_GENESIS_TERMINAL_PERSISTENCE_MARGIN_SECONDS &&
+      HOSTED_GENESIS_MICROVM_MAXIMUM_DURATION_SECONDS -
+        HOSTED_GENESIS_WORKLOAD_EXECUTION_TIMEOUT_SECONDS >=
+        HOSTED_GENESIS_RUNTIME_CLEANUP_MARGIN_SECONDS,
+    "expected coherent long provider/workload/MicroVM envelope with persistence and cleanup margins",
   );
 
   // AppTheory v1.17.0 is the formal replacement for Host's temporary raw L1
@@ -1263,6 +1294,15 @@ test("P52 H1.5: control-plane Lambda receives HTTP dispatch env + SSM auth-token
     cfnTextIncludesRuntimeFragment(compactConfig, '"HostedGenesisMicrovmImage"') &&
       cfnTextIncludesRuntimeFragment(compactConfig, '"ImageArn"'),
     "expected compact config to carry the AppTheory MicroVM image ref",
+  );
+  assert.ok(
+    cfnTextIncludesRuntimeFragment(compactConfig, '"iv"') &&
+      cfnTextIncludesRuntimeFragment(compactConfig, '"LatestActiveImageVersion"') &&
+      cfnTextIncludesRuntimeFragment(compactConfig, '"er"') &&
+      cfnTextIncludesRuntimeFragment(compactConfig, "HostedGenesisMicrovmExecutionRole") &&
+      cfnTextIncludesRuntimeFragment(compactConfig, '"lg"') &&
+      cfnTextIncludesRuntimeFragment(compactConfig, "/aws/lambda/microvms/lesser-host-lab_hosted_genesis"),
+    "expected compact config to prove current image version, execution role, and runtime log destination",
   );
   assert.ok(
     cfnTextIncludesRuntimeFragment(compactConfig, "aws-network-connector:HTTP_INGRESS"),

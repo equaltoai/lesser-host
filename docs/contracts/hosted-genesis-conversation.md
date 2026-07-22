@@ -263,6 +263,10 @@ Lesser-facing route family above remains unchanged, but the execution contract f
   a missing or invalid checkpoint is an actionable conflict, never a silent success and never a Host-run provider loop;
 - `MaximumDurationSeconds` caps one active in-VM provider/declaration step, while `IdlePolicy` and explicit
   checkpoint/relaunch/replay semantics cover human wait gaps;
+- a `provider_timeout` `retry_same_step` prepares a fresh official AppTheory runtime through `Get` / `Terminate` /
+  `Run` / readiness `Get`, using the deployment-pinned image version and execution role while retaining the same Host
+  conversation, accepted turn, and durable transcript. Host atomically binds that content-free lifecycle identity to
+  the retry/debit write before one `Invoke`; preparation failure consumes neither retry nor debit;
 - until live lab evidence proves process-memory preservation across human-scale suspend/resume, process memory is an
   optimization only, never the recovery source of truth.
 

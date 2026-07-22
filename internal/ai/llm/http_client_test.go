@@ -36,6 +36,12 @@ func TestConfigureProviderHTTPClient_InstallsExplicitTimeout(t *testing.T) {
 	}
 }
 
+func TestConfigureProviderHTTPTimeoutRejectsNonPositiveDuration(t *testing.T) {
+	if err := ConfigureProviderHTTPTimeout(0); !errors.Is(err, ErrInvalidProviderHTTPTimeout) {
+		t.Fatalf("expected ErrInvalidProviderHTTPTimeout, got %v", err)
+	}
+}
+
 // TestStreamMintConversationOpenAI_TimesOutAtConfiguredDeadline proves a hanging
 // provider fails at the configured client deadline, not the surrounding context
 // envelope. A 200ms client timeout must abort a 30s-hanging server well before a

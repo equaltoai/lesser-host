@@ -2,6 +2,7 @@ package controlplane
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -426,10 +427,20 @@ func (s *Server) retryHostedGenesisFailedAssistantTurn(ctx *apptheory.Context, c
 		log.Printf("controlplane: hosted genesis assistant retry binding invalid agent_hash=%s conversation_hash=%s err=%v", soulMintInstanceReadAuditHash(convCtx.agentIDHex), soulMintInstanceReadAuditHash(convCtx.conversationID), err)
 		return nil, nil, newAppTheoryError(appErrCodeMicroVMUnavailable, "MicroVM recovery dispatch binding is invalid")
 	}
+	freshDispatcher, freshErr := s.prepareHostedGenesisProviderTimeoutRuntime(ctx, convCtx, binding, progressedSession)
+	if freshErr != nil {
+		return nil, nil, freshErr
+	}
 	if appErr := s.persistHostedGenesisAssistantRetryPending(ctx.Context(), convCtx.session, progressedSession, progressedConv, now); appErr != nil {
 		return nil, nil, appErr
 	}
 	progressedSession.Version = convCtx.session.Version + 1
+	if invokeErr := invokeHostedGenesisFreshRuntime(ctx, freshDispatcher, binding); invokeErr != nil {
+		return nil, nil, invokeErr
+	}
+	if freshDispatcher != nil {
+		return progressedSession, progressedConv, nil
+	}
 	return s.dispatchHostedGenesisPersistedAssistantRetry(ctx, convCtx, progressedSession, progressedConv)
 }
 
@@ -759,8 +770,13 @@ func (s *Server) retryHostedGenesisFailedDeclarationExtraction(ctx *apptheory.Co
 	if s.hostedGenesisMicroVMDispatcher == nil {
 		return nil, nil, newAppTheoryError(appErrCodeMicroVMUnavailable, "MicroVM extraction dispatch is unavailable")
 	}
-	if err := progressedSession.MicroVMSessionBinding().Validate(); err != nil {
+	binding := progressedSession.MicroVMSessionBinding()
+	if err := binding.Validate(); err != nil {
 		return nil, nil, newAppTheoryError(appErrCodeMicroVMUnavailable, "MicroVM extraction binding is invalid")
+	}
+	freshDispatcher, freshErr := s.prepareHostedGenesisProviderTimeoutRuntime(ctx, convCtx, binding, progressedSession)
+	if freshErr != nil {
+		return nil, nil, freshErr
 	}
 	creditsDebited, appErr := s.debitSoulMintConversationCredits(
 		ctx.Context(),
@@ -793,6 +809,52 @@ func (s *Server) retryHostedGenesisFailedDeclarationExtraction(ctx *apptheory.Co
 	}
 	progressedSession.Version = expectedVersion + 1
 	progressedConv.ChargedCredits += creditsDebited
+	return s.dispatchHostedGenesisRetriedDeclarationExtraction(ctx, convCtx, progressedSession, progressedConv, freshDispatcher, binding, now)
+}
+
+// hostedGenesisFreshRecoveryRequestID is deterministic for one failed Host
+// session version. Concurrent recovery requests therefore present the same
+// AppTheory/AWS Run idempotency token while the TableTheory version guard still
+// permits only one retry/debit transaction. The digest contains only opaque
+// lifecycle identifiers and is safe to log as request correlation.
+func hostedGenesisFreshRecoveryRequestID(binding hostedgenesis.MicroVMSessionBinding, version int64) string {
+	sum := sha256.Sum256([]byte(fmt.Sprintf("provider-timeout-recovery\x00%s\x00%s\x00%d", binding.TenantID(), strings.TrimSpace(binding.ConversationID), version)))
+	return fmt.Sprintf("hg-recover-%x", sum[:16])
+}
+
+func (s *Server) prepareHostedGenesisProviderTimeoutRuntime(ctx *apptheory.Context, convCtx soulInstanceBootstrapConversationContext, binding hostedgenesis.MicroVMSessionBinding, progressed *models.HostedGenesisSession) (hostedgenesis.FreshMicroVMDispatcher, *apptheory.AppTheoryError) {
+	if convCtx.session == nil || convCtx.session.Failure == nil || convCtx.session.Failure.Class != hostedgenesis.FailureClassProviderTimeout {
+		return nil, nil
+	}
+	freshDispatcher, ok := s.hostedGenesisMicroVMDispatcher.(hostedgenesis.FreshMicroVMDispatcher)
+	if !ok || convCtx.session.MicroVMLifecycleRef == nil || progressed == nil {
+		return nil, newAppTheoryError(appErrCodeMicroVMUnavailable, "fresh MicroVM recovery is unavailable")
+	}
+	prepareCtx, cancel := context.WithTimeout(detachedMintConversationContext(ctx.Context()), hostedGenesisAcceptedTurnDispatchTimeout)
+	prepared, err := freshDispatcher.PrepareFreshMicroVMRun(
+		prepareCtx,
+		hostedGenesisFreshRecoveryRequestID(binding, convCtx.session.Version),
+		binding,
+		*convCtx.session.MicroVMLifecycleRef,
+	)
+	cancel()
+	if err != nil {
+		log.Printf("controlplane: hosted genesis provider-timeout fresh runtime preparation failed agent_hash=%s conversation_hash=%s err=%v", soulMintInstanceReadAuditHash(convCtx.agentIDHex), soulMintInstanceReadAuditHash(convCtx.conversationID), err)
+		return nil, newAppTheoryError(appErrCodeMicroVMUnavailable, "fresh MicroVM recovery failed before dispatch")
+	}
+	if err := progressed.ApplyMicroVMLifecycleRef(prepared.LifecycleRef); err != nil {
+		return nil, newAppTheoryError(appErrCodeMicroVMUnavailable, "fresh MicroVM lifecycle identity is invalid")
+	}
+	return freshDispatcher, nil
+}
+
+func (s *Server) dispatchHostedGenesisRetriedDeclarationExtraction(ctx *apptheory.Context, convCtx soulInstanceBootstrapConversationContext, progressedSession *models.HostedGenesisSession, progressedConv *models.SoulAgentMintConversation, freshDispatcher hostedgenesis.FreshMicroVMDispatcher, binding hostedgenesis.MicroVMSessionBinding, now time.Time) (*models.HostedGenesisSession, *models.SoulAgentMintConversation, *apptheory.AppTheoryError) {
+	if invokeErr := invokeHostedGenesisFreshRuntime(ctx, freshDispatcher, binding); invokeErr != nil {
+		return nil, nil, invokeErr
+	}
+	if freshDispatcher != nil {
+		return progressedSession, progressedConv, nil
+	}
 	retryCtx := convCtx
 	retryCtx.session = progressedSession
 	retryCtx.conv = progressedConv
@@ -803,6 +865,19 @@ func (s *Server) retryHostedGenesisFailedDeclarationExtraction(ctx *apptheory.Co
 		return nil, nil, newAppTheoryError("app.internal", "failed to retry declaration extraction")
 	}
 	return retryCtx.session, retryCtx.conv, nil
+}
+
+func invokeHostedGenesisFreshRuntime(ctx *apptheory.Context, dispatcher hostedgenesis.FreshMicroVMDispatcher, binding hostedgenesis.MicroVMSessionBinding) *apptheory.AppTheoryError {
+	if dispatcher == nil {
+		return nil
+	}
+	invokeCtx, cancel := context.WithTimeout(detachedMintConversationContext(ctx.Context()), hostedGenesisAcceptedTurnDispatchTimeout)
+	err := dispatcher.InvokeMicroVMTurn(invokeCtx, strings.TrimSpace(ctx.RequestID), binding)
+	cancel()
+	if err != nil {
+		return newAppTheoryError(appErrCodeMicroVMUnavailable, "fresh MicroVM recovery dispatch failed")
+	}
+	return nil
 }
 
 func addHostedGenesisSessionDeclarationExtractionRetryWrite(tx core.TransactionBuilder, session *models.HostedGenesisSession, expectedVersion int64) error {

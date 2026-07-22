@@ -152,6 +152,9 @@ func TestLoad_HostedGenesisMicroVMLifetimePolicy(t *testing.T) {
 	t.Setenv("APPTHEORY_MICROVM_CONTROLLER_ENDPOINT", " "+testMicroVMControllerEndpoint+" ")
 	t.Setenv("HOSTED_GENESIS_MICROVM_AUTH_TOKEN_SSM_PARAM", " "+testMicroVMAuthTokenParam+" ")
 	t.Setenv("APPTHEORY_MICROVM_IMAGE_REF", " "+testMicroVMImageRef+" ")
+	t.Setenv("APPTHEORY_MICROVM_IMAGE_VERSION", "29")
+	t.Setenv("HOSTED_GENESIS_MICROVM_EXECUTION_ROLE_ARN", "arn:aws:iam::123456789012:role/hosted-genesis-test")
+	t.Setenv("HOSTED_GENESIS_MICROVM_RUNTIME_LOG_GROUP", "/aws/lambda/microvms/hosted-genesis-test")
 	t.Setenv("APPTHEORY_MICROVM_EGRESS_NETWORK_CONNECTOR_REFS", " "+testMicroVMEgressOne+", "+testMicroVMEgressTwo+" ")
 	t.Setenv("APPTHEORY_MICROVM_INGRESS_NETWORK_CONNECTOR_REFS", " "+testMicroVMIngressOne+" ")
 	t.Setenv("HOSTED_GENESIS_MICROVM_MAXIMUM_DURATION_SECONDS", "450")
@@ -184,10 +187,13 @@ func TestLoad_HostedGenesisMicroVMLifetimePolicy(t *testing.T) {
 
 func TestLoad_HostedGenesisMicroVMCompactConfig(t *testing.T) {
 	t.Setenv(HostedGenesisMicroVMConfigJSONEnv, `{
-		"v": 1,
+		"v": 2,
 		"ep": " `+testMicroVMControllerEndpoint+` ",
 		"ap": " `+testMicroVMAuthTokenParam+` ",
 		"img": " `+testMicroVMImageRef+` ",
+		"iv": "29",
+		"er": "arn:aws:iam::123456789012:role/hosted-genesis-test",
+		"lg": "/aws/lambda/microvms/hosted-genesis-test",
 		"in": " `+testMicroVMIngressOne+`, `+testMicroVMIngressTwo+` ",
 		"eg": " `+testMicroVMEgressOne+`, `+testMicroVMEgressTwo+` ",
 		"max": 450,
@@ -208,6 +214,9 @@ func TestLoad_HostedGenesisMicroVMCompactConfig(t *testing.T) {
 	assertEqual(t, "compact controller endpoint", cfg.HostedGenesisMicroVM.ControllerEndpoint, testMicroVMControllerEndpoint)
 	assertEqual(t, "compact auth-token param", cfg.HostedGenesisMicroVM.AuthTokenSSMParam, testMicroVMAuthTokenParam)
 	assertEqual(t, "compact image ref", cfg.HostedGenesisMicroVM.ImageRef, testMicroVMImageRef)
+	assertEqual(t, "compact image version", cfg.HostedGenesisMicroVM.ImageVersion, "29")
+	assertEqual(t, "compact execution role", cfg.HostedGenesisMicroVM.ExecutionRoleARN, "arn:aws:iam::123456789012:role/hosted-genesis-test")
+	assertEqual(t, "compact runtime log group", cfg.HostedGenesisMicroVM.RuntimeLogGroup, "/aws/lambda/microvms/hosted-genesis-test")
 	assertEqual(t, "compact network connector ref", cfg.HostedGenesisMicroVM.NetworkConnectorRef, testMicroVMEgressOne)
 	assertStringSliceEqual(t, "compact ingress refs", cfg.HostedGenesisMicroVM.IngressConnectorRefs, []string{testMicroVMIngressOne, testMicroVMIngressTwo})
 	assertStringSliceEqual(t, "compact egress refs", cfg.HostedGenesisMicroVM.EgressConnectorRefs, []string{testMicroVMEgressOne, testMicroVMEgressTwo})

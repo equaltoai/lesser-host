@@ -1,11 +1,14 @@
 package llm
 
 import (
+	"errors"
 	"net/http"
 	"time"
 
 	"github.com/anthropics/anthropic-sdk-go/option"
 	openaioption "github.com/openai/openai-go/option"
+
+	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
 )
 
 // DefaultProviderHTTPTimeout is the explicit per-request-attempt timeout applied
@@ -18,7 +21,9 @@ import (
 // (streaming assistant response + declaration extraction). It bounds a single
 // HTTP round trip; streaming callers still receive incremental deltas up to the
 // deadline.
-const DefaultProviderHTTPTimeout = 120 * time.Second
+const DefaultProviderHTTPTimeout = hostedgenesis.DefaultProviderHTTPTimeout
+
+var ErrInvalidProviderHTTPTimeout = errors.New("provider HTTP timeout must be positive")
 
 // ConfigureProviderHTTPClient installs an explicit-timeout HTTP client on both
 // the OpenAI and Anthropic provider adapters. Pass a nil client to reset to the
@@ -41,18 +46,38 @@ func ConfigureProviderHTTPClient(c *http.Client) {
 // newDefaultProviderHTTPClient returns an *http.Client with the explicit
 // DefaultProviderHTTPTimeout applied and a default transport. It is the client
 // the hosted-genesis MicroVM workload installs at startup.
-func newDefaultProviderHTTPClient() *http.Client {
-	return &http.Client{
-		Timeout:   DefaultProviderHTTPTimeout,
-		Transport: http.DefaultTransport,
+func newProviderHTTPClient(timeout time.Duration) (*http.Client, error) {
+	if timeout <= 0 {
+		return nil, ErrInvalidProviderHTTPTimeout
 	}
+	return &http.Client{
+		Timeout:   timeout,
+		Transport: http.DefaultTransport,
+	}, nil
 }
 
 // ConfigureDefaultProviderHTTPClient installs the default explicit-timeout
 // provider HTTP client. It is safe to call once at process startup; later
 // calls replace the prior client.
 func ConfigureDefaultProviderHTTPClient() {
-	ConfigureProviderHTTPClient(newDefaultProviderHTTPClient())
+	client, err := newProviderHTTPClient(DefaultProviderHTTPTimeout)
+	if err != nil {
+		panic(err)
+	}
+	ConfigureProviderHTTPClient(client)
+}
+
+// ConfigureProviderHTTPTimeout installs a provider client with an explicit
+// attempt timeout after validating it. Workload startup uses this with the
+// validated execution envelope so transport and whole-call deadlines cannot
+// drift independently.
+func ConfigureProviderHTTPTimeout(timeout time.Duration) error {
+	client, err := newProviderHTTPClient(timeout)
+	if err != nil {
+		return err
+	}
+	ConfigureProviderHTTPClient(client)
+	return nil
 }
 
 // ProviderHTTPClientTimeout reports the configured timeout for the OpenAI

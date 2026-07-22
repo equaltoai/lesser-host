@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
 	runtimemicrovm "github.com/theory-cloud/apptheory/runtime/microvm"
 
 	"github.com/equaltoai/lesser-host/internal/config"
@@ -227,10 +228,13 @@ func TestH1_5_E2E_CompactMicroVMEnvWiresAppTheoryRunRequest(t *testing.T) {
 	t.Cleanup(controllerSrv.Close)
 
 	t.Setenv(config.HostedGenesisMicroVMConfigJSONEnv, `{
-		"v": 1,
+		"v": 2,
 		"ep": "`+controllerSrv.URL+`/microvms",
 		"ap": "/lesser-host/lab/hosted-genesis/microvm/auth-token",
 		"img": "arn:aws:lambda::microvm-image/hosted-genesis:compact",
+		"iv": "29",
+		"er": "arn:aws:iam::123456789012:role/hosted-genesis-test",
+		"lg": "/aws/lambda/microvms/hosted-genesis-test",
 		"in": "arn:aws:lambda::network-connector/http-ingress:compact,arn:aws:lambda::network-connector/shell-ingress:compact",
 		"eg": "arn:aws:lambda::network-connector/internet-egress:compact",
 		"max": 450,
@@ -257,9 +261,8 @@ func TestH1_5_E2E_CompactMicroVMEnvWiresAppTheoryRunRequest(t *testing.T) {
 	}
 
 	payload := stub.payload
-	if payload.ImageRef != "arn:aws:lambda::microvm-image/hosted-genesis:compact" {
-		t.Fatalf("compact config image ref did not reach AppTheory run request: %#v", payload)
-	}
+	require.Equal(t, "arn:aws:lambda::microvm-image/hosted-genesis:compact", payload.ImageRef)
+	require.Equal(t, "29", payload.ImageVersion)
 	if payload.NetworkConnectorRef != "arn:aws:lambda::network-connector/internet-egress:compact" {
 		t.Fatalf("compact config network connector did not reach AppTheory run request: %#v", payload)
 	}
@@ -299,6 +302,7 @@ func newMaxDurationCapturingControllerServer(t *testing.T, token string) *maxDur
 
 type capturedMicroVMRunPayload struct {
 	ImageRef                    string                             `json:"image_ref"`
+	ImageVersion                string                             `json:"image_version"`
 	NetworkConnectorRef         string                             `json:"network_connector_ref"`
 	IngressNetworkConnectorRefs []string                           `json:"ingress_network_connector_refs"`
 	EgressNetworkConnectorRefs  []string                           `json:"egress_network_connector_refs"`

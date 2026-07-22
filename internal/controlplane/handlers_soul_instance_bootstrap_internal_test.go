@@ -1966,7 +1966,7 @@ func expectSoulInstanceMintConversationProgression(t *testing.T, tdb *mintConver
 // handlers_soul_mint_conversation_async_internal_test.go (kept there to stay
 // under the gov-infra MAI-1 Go file budget for this file).
 
-func expectSoulInstanceMintConversationExtractionDebit(t *testing.T, tdb *mintConversationTestDB) {
+func expectSoulInstanceMintConversationExtractionDebit(t *testing.T, tdb *mintConversationTestDB, captures ...func(*models.HostedGenesisSession)) {
 	t.Helper()
 	tb := new(ttmocks.MockTransactionBuilder)
 	tdb.db.TransactWriteBuilder = tb
@@ -1981,7 +1981,11 @@ func expectSoulInstanceMintConversationExtractionDebit(t *testing.T, tdb *mintCo
 			t.Fatalf("unexpected extraction ledger entry: %#v", entry)
 		}
 	})
-	tb.On("UpdateWithBuilder", mock.AnythingOfType("*models.HostedGenesisSession"), mock.Anything, mock.Anything).Return(tb).Once()
+	tb.On("UpdateWithBuilder", mock.AnythingOfType("*models.HostedGenesisSession"), mock.Anything, mock.Anything).Return(tb).Once().Run(func(args mock.Arguments) {
+		if len(captures) > 0 && captures[0] != nil {
+			captures[0](testutil.RequireMockArg[*models.HostedGenesisSession](t, args, 0))
+		}
+	})
 	tb.On("UpdateWithBuilder", mock.AnythingOfType("*models.SoulAgentMintConversation"), mock.Anything, mock.Anything).Return(tb).Once()
 	tb.On("UpdateWithBuilder", mock.AnythingOfType("*models.InstanceBudgetMonth"), mock.Anything, mock.Anything).Return(tb).Once()
 	tb.On("Execute").Return(nil).Once()

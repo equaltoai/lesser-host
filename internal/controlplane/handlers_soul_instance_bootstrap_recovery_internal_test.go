@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/mock"
+	runtimemicrovm "github.com/theory-cloud/apptheory/runtime/microvm"
 	ttmocks "github.com/theory-cloud/tabletheory/v2/pkg/mocks"
 
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
@@ -221,6 +222,114 @@ func TestSoulInstanceRecoverMintConversation_RetriesFailedDeclarationExtraction(
 	assertHostedGenesisResponseNoForbiddenValues(t, resp.Body, hostedGenesisStatusForbiddenValues())
 }
 
+func TestSoulInstanceRecoverMintConversation_ProviderTimeoutPreparesFreshRuntimeBeforeAtomicRetryAndInvoke(t *testing.T) {
+	tdb := newMintConversationTestDB()
+	s := newMintConversationServer(tdb)
+	reg := mintConversationHandleReg()
+	dispatcher := &stubMicroVMDispatcher{t: t}
+	s.hostedGenesisMicroVMDispatcher = dispatcher
+	now := time.Date(2026, 7, 22, 11, 36, 16, 0, time.UTC)
+
+	expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, soulInstanceBootstrapTestInstanceSlug)
+	stubMintConversationRegistration(t, tdb, reg)
+	stubSoulInstanceBootstrapDomainAndInstance(t, tdb, reg.DomainNormalized, soulInstanceBootstrapTestInstanceSlug)
+	stubSoulInstanceRecoveryConversation(t, tdb, models.SoulAgentMintConversation{
+		AgentID: reg.AgentID, ConversationID: mintConversationTestConversationID,
+		Model: "anthropic:claude-sonnet-4-6", Messages: encodeMintConversationBlob(`[{"role":"user","content":"describe the agent"},{"role":"assistant","content":"ready for declaration"}]`),
+		Status: models.SoulMintConversationStatusFailed, StatusReason: hostedGenesisFailureDeclarationExtractionFailed,
+		LatestTurnID: "turn-secret", ChargedCredits: 110, RequestID: "req-failed", CreatedAt: now.Add(-5 * time.Minute), UpdatedAt: now, CompletedAt: now,
+	})
+	session := failedRecoveryHostedGenesisSessionFixture(t, reg, now)
+	session.Version = 50
+	session.Failure.Class = hostedgenesis.FailureClassProviderTimeout
+	session.Failure.Recovery.MaxAttempts = 1
+	applyProviderTimeoutRecoveryLifecycleRef(t, &session, "microvm-predeploy")
+	stubSoulInstanceRecoverySession(t, tdb, session)
+	expectSoulInstanceMintConversationExtractionDebit(t, tdb, func(progressed *models.HostedGenesisSession) {
+		if progressed.Failure == nil || progressed.Failure.Recovery.MaxAttempts != 0 {
+			t.Fatalf("expected exactly one governed retry to be consumed, got %#v", progressed.Failure)
+		}
+		if progressed.MicroVMLifecycleRef == nil || progressed.MicroVMLifecycleRef.MicroVMID != "mv-fresh-"+mintConversationTestConversationID || progressed.MicroVMLifecycleRef.ImageVersion != "29" {
+			t.Fatalf("expected fresh current runtime identity in the atomic retry write, got %#v", progressed.MicroVMLifecycleRef)
+		}
+	})
+
+	resp, err := s.handleSoulInstanceRecoverMintConversation(newSoulInstanceBootstrapContext(
+		map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey}, nil,
+		map[string]string{"id": reg.ID, "conversationId": mintConversationTestConversationID},
+	))
+	if err != nil {
+		t.Fatalf("unexpected provider-timeout recovery error: %v", err)
+	}
+	if resp.Status != http.StatusAccepted {
+		t.Fatalf("expected 202 provider-timeout retry, got %#v", resp)
+	}
+	if dispatcher.prepareFreshCalls != 1 || dispatcher.invokeCalls != 1 || dispatcher.calls != 0 || dispatcher.reconcileCalls != 0 {
+		t.Fatalf("expected prepare fresh -> atomic retry/debit -> one invoke with no legacy run/reconcile, got prepare=%d invoke=%d run=%d reconcile=%d", dispatcher.prepareFreshCalls, dispatcher.invokeCalls, dispatcher.calls, dispatcher.reconcileCalls)
+	}
+	tdb.qBudget.AssertNumberOfCalls(t, "First", 1)
+	assertHostedGenesisResponseNoForbiddenValues(t, resp.Body, append(hostedGenesisStatusForbiddenValues(), "microvm-predeploy", "hosted-genesis-current"))
+}
+
+func TestSoulInstanceRecoverMintConversation_ProviderTimeoutPreparationFailurePreservesRetryAndDebit(t *testing.T) {
+	tdb := newMintConversationTestDB()
+	s := newMintConversationServer(tdb)
+	reg := mintConversationHandleReg()
+	dispatcher := &stubMicroVMDispatcher{t: t, prepareFreshErr: errors.New("controller terminate unavailable")}
+	s.hostedGenesisMicroVMDispatcher = dispatcher
+	now := time.Date(2026, 7, 22, 11, 36, 16, 0, time.UTC)
+
+	expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, soulInstanceBootstrapTestInstanceSlug)
+	stubMintConversationRegistration(t, tdb, reg)
+	stubSoulInstanceBootstrapDomainAndInstance(t, tdb, reg.DomainNormalized, soulInstanceBootstrapTestInstanceSlug)
+	stubSoulInstanceRecoveryConversation(t, tdb, models.SoulAgentMintConversation{
+		AgentID: reg.AgentID, ConversationID: mintConversationTestConversationID,
+		Model: "anthropic:claude-sonnet-4-6", Messages: encodeMintConversationBlob(`[{"role":"user","content":"describe the agent"},{"role":"assistant","content":"ready for declaration"}]`),
+		Status: models.SoulMintConversationStatusFailed, StatusReason: hostedGenesisFailureDeclarationExtractionFailed,
+		LatestTurnID: "turn-secret", ChargedCredits: 110, RequestID: "req-failed", CreatedAt: now.Add(-5 * time.Minute), UpdatedAt: now, CompletedAt: now,
+	})
+	session := failedRecoveryHostedGenesisSessionFixture(t, reg, now)
+	session.Version = 50
+	session.Failure.Class = hostedgenesis.FailureClassProviderTimeout
+	session.Failure.Recovery.MaxAttempts = 1
+	applyProviderTimeoutRecoveryLifecycleRef(t, &session, "microvm-predeploy")
+	stubSoulInstanceRecoverySession(t, tdb, session)
+
+	_, err := s.handleSoulInstanceRecoverMintConversation(newSoulInstanceBootstrapContext(
+		map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey}, nil,
+		map[string]string{"id": reg.ID, "conversationId": mintConversationTestConversationID},
+	))
+	appErr := requireAppTheoryError(t, err)
+	if appErr.StatusCode != http.StatusServiceUnavailable || !strings.Contains(appErr.Code, "microvm_unavailable") {
+		t.Fatalf("expected loud microvm_unavailable before dispatch, got %#v", appErr)
+	}
+	if dispatcher.prepareFreshCalls != 1 || dispatcher.invokeCalls != 0 || dispatcher.calls != 0 {
+		t.Fatalf("preparation failure must not invoke or use legacy dispatch: %#v", dispatcher)
+	}
+	tdb.qBudget.AssertNumberOfCalls(t, "First", 0)
+	tdb.db.AssertNumberOfCalls(t, "TransactWrite", 0)
+	if session.Failure.Recovery.MaxAttempts != 1 || session.Version != 50 {
+		t.Fatalf("test source truth mutated despite preparation failure: %#v", session)
+	}
+}
+
+func applyProviderTimeoutRecoveryLifecycleRef(t *testing.T, session *models.HostedGenesisSession, microVMID string) {
+	t.Helper()
+	binding := session.MicroVMSessionBinding()
+	ref, err := hostedgenesis.MicroVMLifecycleRefFromResponse(binding, runtimemicrovm.ControllerResponse{
+		Command: runtimemicrovm.CommandGet, TenantID: binding.TenantID(), Namespace: hostedgenesis.MicroVMNamespace,
+		SessionID: binding.ConversationID, State: runtimemicrovm.StateRunning, DesiredState: runtimemicrovm.StateRunning,
+		LifecycleState: runtimemicrovm.StateRunning, MicroVMID: microVMID, ProviderMicroVMID: microVMID,
+		LastAction: runtimemicrovm.CommandGet, LastTransition: time.Now().UTC(), RegistryVersion: 7,
+	}, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("build provider-timeout lifecycle ref: %v", err)
+	}
+	if err := session.ApplyMicroVMLifecycleRef(ref); err != nil {
+		t.Fatalf("apply provider-timeout lifecycle ref: %v", err)
+	}
+}
+
 func TestSoulInstanceRecoverMintConversation_RetriesFailedAssistantTurn(t *testing.T) {
 	tdb := newMintConversationTestDB()
 	s := newMintConversationServer(tdb)
@@ -278,6 +387,55 @@ func TestSoulInstanceRecoverMintConversation_RetriesFailedAssistantTurn(t *testi
 		t.Fatalf("expected actionable assistant turn retry projection, got %#v", out.Conversation)
 	}
 	assertHostedGenesisResponseNoForbiddenValues(t, resp.Body, hostedGenesisStatusForbiddenValues())
+	tdb.qBudget.AssertNumberOfCalls(t, "First", 0)
+}
+
+func TestSoulInstanceRecoverMintConversation_AssistantProviderTimeoutUsesFreshRuntimeWithoutSecondDebit(t *testing.T) {
+	tdb := newMintConversationTestDB()
+	s := newMintConversationServer(tdb)
+	reg := mintConversationHandleReg()
+	dispatcher := &stubMicroVMDispatcher{t: t}
+	s.hostedGenesisMicroVMDispatcher = dispatcher
+	now := time.Date(2026, 7, 22, 11, 36, 16, 0, time.UTC)
+
+	expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, soulInstanceBootstrapTestInstanceSlug)
+	stubMintConversationRegistration(t, tdb, reg)
+	stubSoulInstanceBootstrapDomainAndInstance(t, tdb, reg.DomainNormalized, soulInstanceBootstrapTestInstanceSlug)
+	stubSoulInstanceRecoveryConversation(t, tdb, models.SoulAgentMintConversation{
+		AgentID: reg.AgentID, ConversationID: mintConversationTestConversationID,
+		Model: "anthropic:claude-sonnet-4-6", Messages: encodeMintConversationBlob(`[{"role":"user","content":"describe the agent"}]`),
+		Status: models.SoulMintConversationStatusFailed, StatusReason: hostedGenesisFailureAssistantTurnFailed,
+		LatestTurnID: "turn-assistant", ChargedCredits: soulMintConversationStreamBaseCredits,
+		RequestID: "req-failed", CreatedAt: now.Add(-5 * time.Minute), UpdatedAt: now, CompletedAt: now,
+	})
+	session := failedAssistantTurnRecoveryHostedGenesisSessionFixture(t, reg, now)
+	session.Version = 51
+	session.Failure.Class = hostedgenesis.FailureClassProviderTimeout
+	session.Failure.Recovery.MaxAttempts = 1
+	applyProviderTimeoutRecoveryLifecycleRef(t, &session, "microvm-predeploy-assistant")
+	stubSoulInstanceRecoverySession(t, tdb, session)
+	tb := new(ttmocks.MockTransactionBuilder)
+	tdb.db.TransactWriteBuilder = tb
+	tdb.db.On("TransactWrite", mock.Anything, mock.Anything).Return(nil).Once()
+	tb.On("UpdateWithBuilder", mock.AnythingOfType("*models.HostedGenesisSession"), mock.Anything, mock.Anything).Return(tb).Once().Run(func(args mock.Arguments) {
+		progressed := testutil.RequireMockArg[*models.HostedGenesisSession](t, args, 0)
+		if progressed.Failure == nil || progressed.Failure.Recovery.MaxAttempts != 0 || progressed.MicroVMLifecycleRef == nil || progressed.MicroVMLifecycleRef.ImageVersion != "29" {
+			t.Fatalf("expected atomic fresh assistant retry identity with consumed final attempt, got %#v", progressed)
+		}
+	})
+	tb.On("UpdateWithBuilder", mock.AnythingOfType("*models.SoulAgentMintConversation"), mock.Anything, mock.Anything).Return(tb).Once()
+	tb.On("Execute").Return(nil).Once()
+
+	resp, err := s.handleSoulInstanceRecoverMintConversation(newSoulInstanceBootstrapContext(
+		map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey}, nil,
+		map[string]string{"id": reg.ID, "conversationId": mintConversationTestConversationID},
+	))
+	if err != nil || resp.Status != http.StatusAccepted {
+		t.Fatalf("unexpected assistant provider-timeout recovery response=%#v err=%v", resp, err)
+	}
+	if dispatcher.prepareFreshCalls != 1 || dispatcher.invokeCalls != 1 || dispatcher.calls != 0 {
+		t.Fatalf("expected fresh prepare and one invoke without legacy run: %#v", dispatcher)
+	}
 	tdb.qBudget.AssertNumberOfCalls(t, "First", 0)
 }
 

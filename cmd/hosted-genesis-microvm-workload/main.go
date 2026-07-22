@@ -104,13 +104,23 @@ func newMicroVMTurnStore(ctx context.Context) (turnStore, *completion.Completion
 }
 
 func run() error {
+	envelope, err := loadExecutionEnvelope()
+	if err != nil {
+		return err
+	}
 	// Install the explicit-timeout provider HTTP client before any provider call
 	// so every llm.StreamMintConversation* / MintConversationDeclarations* call
 	// fails at the configured HTTP deadline, not the Lambda/MicroVM envelope
 	// (kills G8).
-	llm.ConfigureDefaultProviderHTTPClient()
+	if configureErr := llm.ConfigureProviderHTTPTimeout(envelope.ProviderHTTPTimeout); configureErr != nil {
+		return configureErr
+	}
 
-	runner := &turnRunner{storeFactory: newMicroVMTurnStore}
+	runner := &turnRunner{
+		storeFactory:             newMicroVMTurnStore,
+		providerCallTimeout:      envelope.ProviderCallTimeout,
+		workloadExecutionTimeout: envelope.WorkloadExecutionTimeout,
+	}
 
 	server, err := newHookServer(runner, hostedgenesis.MicroVMNamespace)
 	if err != nil {

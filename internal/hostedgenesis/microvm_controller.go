@@ -201,19 +201,23 @@ func (r *MicroVMControllerRuntime) Command(ctx context.Context, command runtimem
 // tokens, raw lifecycle payloads, raw transcripts, provider credentials, and AWS
 // credentials. It is reconstructible execution state, not business truth.
 type MicroVMLifecycleRef struct {
-	SourceOfTruth       string                        `json:"source_of_truth"`
-	TenantID            string                        `json:"tenant_id"`
-	Namespace           string                        `json:"namespace"`
-	SessionID           string                        `json:"session_id"`
-	LifecycleState      runtimemicrovm.LifecycleState `json:"lifecycle_state"`
-	DesiredState        runtimemicrovm.LifecycleState `json:"desired_state,omitempty"`
-	MicroVMID           string                        `json:"microvm_id,omitempty"`
-	ImageRef            string                        `json:"image_ref,omitempty"`
-	NetworkConnectorRef string                        `json:"network_connector_ref,omitempty"`
-	LastAction          runtimemicrovm.Command        `json:"last_action"`
-	LastTransition      time.Time                     `json:"last_transition,omitempty"`
-	RegistryVersion     int64                         `json:"registry_version,omitempty"`
-	UpdatedAt           time.Time                     `json:"updated_at"`
+	SourceOfTruth          string                        `json:"source_of_truth"`
+	TenantID               string                        `json:"tenant_id"`
+	Namespace              string                        `json:"namespace"`
+	SessionID              string                        `json:"session_id"`
+	LifecycleState         runtimemicrovm.LifecycleState `json:"lifecycle_state"`
+	DesiredState           runtimemicrovm.LifecycleState `json:"desired_state,omitempty"`
+	MicroVMID              string                        `json:"microvm_id,omitempty"`
+	ImageRef               string                        `json:"image_ref,omitempty"`
+	ImageVersion           string                        `json:"image_version,omitempty"`
+	ExecutionRoleARN       string                        `json:"execution_role_arn,omitempty"`
+	MaximumDurationSeconds int32                         `json:"maximum_duration_seconds,omitempty"`
+	RuntimeLogGroup        string                        `json:"runtime_log_group,omitempty"`
+	NetworkConnectorRef    string                        `json:"network_connector_ref,omitempty"`
+	LastAction             runtimemicrovm.Command        `json:"last_action"`
+	LastTransition         time.Time                     `json:"last_transition,omitempty"`
+	RegistryVersion        int64                         `json:"registry_version,omitempty"`
+	UpdatedAt              time.Time                     `json:"updated_at"`
 }
 
 // Validate proves the ref still maps to the Host session binding and AppTheory
@@ -332,6 +336,9 @@ func normalizeMicroVMLifecycleRef(ref MicroVMLifecycleRef) MicroVMLifecycleRef {
 	ref.DesiredState = runtimemicrovm.LifecycleState(strings.TrimSpace(string(ref.DesiredState)))
 	ref.MicroVMID = strings.TrimSpace(ref.MicroVMID)
 	ref.ImageRef = strings.TrimSpace(ref.ImageRef)
+	ref.ImageVersion = strings.TrimSpace(ref.ImageVersion)
+	ref.ExecutionRoleARN = strings.TrimSpace(ref.ExecutionRoleARN)
+	ref.RuntimeLogGroup = strings.TrimSpace(ref.RuntimeLogGroup)
 	ref.NetworkConnectorRef = strings.TrimSpace(ref.NetworkConnectorRef)
 	ref.LastAction = runtimemicrovm.Command(strings.TrimSpace(string(ref.LastAction)))
 	if !ref.LastTransition.IsZero() {

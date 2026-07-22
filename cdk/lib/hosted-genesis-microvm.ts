@@ -18,7 +18,12 @@ import type { Construct } from "constructs";
 export const HOSTED_GENESIS_MICROVM_NAMESPACE = "hosted-genesis" as const;
 export const HOSTED_GENESIS_MICROVM_SOURCE_OF_TRUTH =
   "host-dynamodb-hosted-genesis-session" as const;
-export const HOSTED_GENESIS_MICROVM_MAXIMUM_DURATION_SECONDS = 300 as const;
+export const HOSTED_GENESIS_MICROVM_MAXIMUM_DURATION_SECONDS = 28800 as const;
+export const HOSTED_GENESIS_PROVIDER_HTTP_TIMEOUT_SECONDS = 27900 as const;
+export const HOSTED_GENESIS_PROVIDER_CALL_TIMEOUT_SECONDS = 27900 as const;
+export const HOSTED_GENESIS_WORKLOAD_EXECUTION_TIMEOUT_SECONDS = 28200 as const;
+export const HOSTED_GENESIS_TERMINAL_PERSISTENCE_MARGIN_SECONDS = 300 as const;
+export const HOSTED_GENESIS_RUNTIME_CLEANUP_MARGIN_SECONDS = 600 as const;
 export const HOSTED_GENESIS_MICROVM_IDLE_MAX_SECONDS = 300 as const;
 export const HOSTED_GENESIS_MICROVM_IDLE_SUSPENDED_SECONDS = 1800 as const;
 export const HOSTED_GENESIS_MICROVM_IDLE_AUTO_RESUME_ENABLED = false as const;
@@ -341,6 +346,30 @@ export function configureHostedGenesisMicrovm(
           key: HOSTED_GENESIS_GUIDANCE_VERSION_ENV,
           value: HOSTED_GENESIS_GUIDANCE_VERSION_V2,
         },
+        {
+          key: "HOSTED_GENESIS_PROVIDER_HTTP_TIMEOUT_SECONDS",
+          value: String(HOSTED_GENESIS_PROVIDER_HTTP_TIMEOUT_SECONDS),
+        },
+        {
+          key: "HOSTED_GENESIS_PROVIDER_CALL_TIMEOUT_SECONDS",
+          value: String(HOSTED_GENESIS_PROVIDER_CALL_TIMEOUT_SECONDS),
+        },
+        {
+          key: "HOSTED_GENESIS_WORKLOAD_EXECUTION_TIMEOUT_SECONDS",
+          value: String(HOSTED_GENESIS_WORKLOAD_EXECUTION_TIMEOUT_SECONDS),
+        },
+        {
+          key: "HOSTED_GENESIS_MICROVM_MAXIMUM_DURATION_SECONDS",
+          value: String(HOSTED_GENESIS_MICROVM_MAXIMUM_DURATION_SECONDS),
+        },
+        {
+          key: "HOSTED_GENESIS_TERMINAL_PERSISTENCE_MARGIN_SECONDS",
+          value: String(HOSTED_GENESIS_TERMINAL_PERSISTENCE_MARGIN_SECONDS),
+        },
+        {
+          key: "HOSTED_GENESIS_RUNTIME_CLEANUP_MARGIN_SECONDS",
+          value: String(HOSTED_GENESIS_RUNTIME_CLEANUP_MARGIN_SECONDS),
+        },
       ],
       hooks: {},
       logging: {
@@ -518,6 +547,9 @@ export function configureHostedGenesisMicrovm(
       dispatchFn,
       controller.endpoint,
       microvmImage.microvmImageArn,
+      microvmImage.latestActiveImageVersion,
+      executionRole.roleArn,
+      `/aws/lambda/microvms/${props.namePrefix}_hosted_genesis`,
       [
         ingressConnector.networkConnectorArn,
         shellIngressConnector.networkConnectorArn,
@@ -598,6 +630,9 @@ function grantFunctionMicroVMDispatch(
   fn: lambda.Function,
   controllerEndpoint: string,
   imageArn: string,
+  imageVersion: string,
+  executionRoleArn: string,
+  runtimeLogGroup: string,
   ingressConnectorArns: string[],
   egressConnectorArns: string[],
   authTokenSSMParamName: string,
@@ -640,6 +675,9 @@ function grantFunctionMicroVMDispatch(
       controllerEndpoint,
       authTokenSSMParamName,
       imageArn,
+      imageVersion,
+      executionRoleArn,
+      runtimeLogGroup,
       ingressConnectorArns,
       egressConnectorArns,
     ),
@@ -650,16 +688,25 @@ function hostedGenesisMicroVMDispatchConfigJSON(
   controllerEndpoint: string,
   authTokenSSMParamName: string,
   imageArn: string,
+  imageVersion: string,
+  executionRoleArn: string,
+  runtimeLogGroup: string,
   ingressConnectorArns: string[],
   egressConnectorArns: string[],
 ): string {
   return cdk.Fn.join("", [
-    '{"v":1,"ep":"',
+    '{"v":2,"ep":"',
     controllerEndpoint,
     '","ap":"',
     authTokenSSMParamName,
     '","img":"',
     imageArn,
+    '","iv":"',
+    imageVersion,
+    '","er":"',
+    executionRoleArn,
+    '","lg":"',
+    runtimeLogGroup,
     '","in":"',
     ingressConnectorArns.join(","),
     '","eg":"',

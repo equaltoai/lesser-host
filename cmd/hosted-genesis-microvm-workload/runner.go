@@ -50,6 +50,7 @@ type turnRunner struct {
 	storeFactory              turnStoreFactory
 	nowFunc                   func() time.Time
 	providerCallTimeout       time.Duration
+	workloadExecutionTimeout  time.Duration
 	providerHeartbeatInterval time.Duration
 }
 
@@ -595,6 +596,13 @@ func (r *turnRunner) providerTimeout() time.Duration {
 		return r.providerCallTimeout
 	}
 	return llm.DefaultProviderHTTPTimeout
+}
+
+func (r *turnRunner) workloadTimeout() time.Duration {
+	if r != nil && r.workloadExecutionTimeout > 0 {
+		return r.workloadExecutionTimeout
+	}
+	return hostedgenesis.DefaultWorkloadExecutionTimeout
 }
 
 func (r *turnRunner) providerHeartbeat() time.Duration {

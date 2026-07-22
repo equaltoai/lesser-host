@@ -239,14 +239,18 @@ func stubHostedGenesisMicroVMDispatcher(t *testing.T, s *Server) *stubMicroVMDis
 }
 
 type stubMicroVMDispatcher struct {
-	t              *testing.T
-	calls          int
-	reconcileCalls int
-	lastBinding    hostedgenesis.MicroVMSessionBinding
-	dispatchErr    error
-	reconcileErr   error
-	queueCalls     int
-	lastQueue      hostedgenesis.QueueMessage
+	t                 *testing.T
+	calls             int
+	reconcileCalls    int
+	prepareFreshCalls int
+	invokeCalls       int
+	lastBinding       hostedgenesis.MicroVMSessionBinding
+	dispatchErr       error
+	reconcileErr      error
+	prepareFreshErr   error
+	invokeErr         error
+	queueCalls        int
+	lastQueue         hostedgenesis.QueueMessage
 	// observedState is the lifecycle state the stub reports from a controller
 	// get reconciliation (defaults to running/non-terminal).
 	observedState runtimemicrovm.LifecycleState
@@ -255,6 +259,53 @@ type stubMicroVMDispatcher struct {
 	// production seam's ExpiresAt-in-the-past mapping. H1.4 covers dead/expired
 	// VM sessions, not only terminated/failed lifecycle states.
 	expired bool
+}
+
+func (d *stubMicroVMDispatcher) PrepareFreshMicroVMRun(ctx context.Context, requestID string, binding hostedgenesis.MicroVMSessionBinding, previous hostedgenesis.MicroVMLifecycleRef) (hostedgenesis.MicroVMDispatchResult, error) {
+	d.t.Helper()
+	d.prepareFreshCalls++
+	d.lastBinding = binding
+	if d.prepareFreshErr != nil {
+		return hostedgenesis.MicroVMDispatchResult{}, d.prepareFreshErr
+	}
+	if strings.TrimSpace(requestID) == "" || previous.MicroVMID == "" {
+		d.t.Fatalf("fresh preparation requires request id and previous MicroVM id")
+	}
+	resp := runtimemicrovm.ControllerResponse{
+		Command:           runtimemicrovm.CommandGet,
+		RequestID:         requestID,
+		TenantID:          binding.TenantID(),
+		Namespace:         hostedgenesis.MicroVMNamespace,
+		SessionID:         strings.TrimSpace(binding.ConversationID),
+		State:             runtimemicrovm.StateRunning,
+		DesiredState:      runtimemicrovm.StateRunning,
+		LifecycleState:    runtimemicrovm.StateRunning,
+		MicroVMID:         "mv-fresh-" + strings.TrimSpace(binding.ConversationID),
+		ProviderMicroVMID: "mv-fresh-" + strings.TrimSpace(binding.ConversationID),
+		LastAction:        runtimemicrovm.CommandGet,
+		LastTransition:    time.Now().UTC(),
+		RegistryVersion:   previous.RegistryVersion + 1,
+	}
+	ref, err := hostedgenesis.MicroVMLifecycleRefFromResponse(binding, resp, time.Now().UTC())
+	if err != nil {
+		d.t.Fatalf("stub fresh dispatcher failed to build lifecycle ref: %v", err)
+	}
+	ref.ImageRef = "arn:aws:lambda:us-east-1:123456789012:microvm-image/hosted-genesis"
+	ref.ImageVersion = "29"
+	ref.ExecutionRoleARN = "arn:aws:iam::123456789012:role/hosted-genesis-current"
+	ref.MaximumDurationSeconds = 28800
+	ref.RuntimeLogGroup = "/aws/lambda/microvms/hosted-genesis-current"
+	return hostedgenesis.MicroVMDispatchResult{LifecycleRef: ref, SessionID: resp.SessionID}, nil
+}
+
+func (d *stubMicroVMDispatcher) InvokeMicroVMTurn(_ context.Context, requestID string, binding hostedgenesis.MicroVMSessionBinding) error {
+	d.t.Helper()
+	d.invokeCalls++
+	d.lastBinding = binding
+	if strings.TrimSpace(requestID) == "" {
+		d.t.Fatalf("stub fresh invoke received empty request id")
+	}
+	return d.invokeErr
 }
 
 func (d *stubMicroVMDispatcher) DispatchMicroVMRun(ctx context.Context, requestID string, binding hostedgenesis.MicroVMSessionBinding) (hostedgenesis.MicroVMDispatchResult, error) {
