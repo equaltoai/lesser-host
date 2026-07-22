@@ -2,6 +2,7 @@ package completion
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -338,6 +339,7 @@ func TestRecordFailure_AppliesTypedFailure(t *testing.T) {
 
 	got, err := w.RecordFailure(context.Background(), CompletionTurn{InstanceSlug: "acme", ConversationID: "conv-1", TurnID: "turn-1", RequestID: "req-1"}, CompletionFailure{
 		Code:      hostedgenesis.FailureCodeAssistantTurnFailed,
+		Class:     hostedgenesis.FailureClassProviderTimeout,
 		Message:   "provider timed out",
 		Retryable: true,
 		Recovery:  hostedgenesis.Recovery{Action: hostedgenesis.RecoveryActionRetrySameStep, MaxAttempts: 3, RetryAfterSeconds: 5, Reason: "provider timed out"},
@@ -348,11 +350,44 @@ func TestRecordFailure_AppliesTypedFailure(t *testing.T) {
 	if got.Status != string(hostedgenesis.StatusFailed) {
 		t.Fatalf("expected failed, got %q", got.Status)
 	}
-	if got.Failure == nil || got.Failure.Code != hostedgenesis.FailureCodeAssistantTurnFailed {
+	if got.Failure == nil || got.Failure.Code != hostedgenesis.FailureCodeAssistantTurnFailed || got.Failure.Class != hostedgenesis.FailureClassProviderTimeout {
 		t.Fatalf("expected typed failure persisted, got %+v", got.Failure)
 	}
 	if !got.Failure.Retryable {
 		t.Fatalf("expected retryable failure")
+	}
+}
+
+func TestRecordFailurePersistsOnlyCanonicalContentFreeDeclarationClasses(t *testing.T) {
+	for _, class := range []hostedgenesis.FailureClass{
+		hostedgenesis.FailureClassProviderTimeout,
+		hostedgenesis.FailureClassProviderAPIFailure,
+		hostedgenesis.FailureClassInvalidProviderOutput,
+		hostedgenesis.FailureClassParseValidation,
+	} {
+		t.Run(string(class), func(t *testing.T) {
+			store := &fakeCompletionStore{session: newFakeSession("acme", "conv-1", "turn-1", hostedgenesis.StatusDeclarationExtractionPending, 3)}
+			got, err := NewCompletionWriter(store, nil).RecordFailure(context.Background(), CompletionTurn{
+				InstanceSlug: "acme", ConversationID: "conv-1", TurnID: "turn-1", RequestID: "req-1",
+			}, CompletionFailure{
+				Code: hostedgenesis.FailureCodeDeclarationExtractionFailed, Class: class,
+				Message: "private provider response must not persist", Retryable: true,
+				Recovery: hostedgenesis.Recovery{Action: hostedgenesis.RecoveryActionRetrySameStep, MaxAttempts: 2, RetryAfterSeconds: 5, Reason: "private provider response must not persist"},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Failure == nil || got.Failure.Class != class || got.Failure.Message != hostedgenesis.FailureMessage(hostedgenesis.FailureCodeDeclarationExtractionFailed) || got.Failure.Recovery.Reason != string(hostedgenesis.FailureCodeDeclarationExtractionFailed) {
+				t.Fatalf("unexpected canonical failure persistence: %#v", got.Failure)
+			}
+			raw, marshalErr := json.Marshal(got.Failure)
+			if marshalErr != nil {
+				t.Fatal(marshalErr)
+			}
+			if strings.Contains(string(raw), "private provider response") {
+				t.Fatalf("durable failure leaked provider error detail: %s", raw)
+			}
+		})
 	}
 }
 

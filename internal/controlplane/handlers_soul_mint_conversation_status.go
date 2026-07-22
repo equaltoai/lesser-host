@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -21,6 +22,7 @@ const (
 	hostedGenesisTranscriptMaxContentRunes = 8192
 	hostedGenesisTranscriptRoleUser        = "user"
 	hostedGenesisTranscriptRoleAssistant   = "assistant"
+	hostedGenesisTranscriptRedactedContent = "[redacted: sensitive content]"
 )
 
 const (
@@ -55,6 +57,7 @@ type hostedGenesisConversationProjection struct {
 	MessageCount         int                                `json:"message_count"`
 	Messages             []hostedGenesisConversationMessage `json:"messages,omitempty"`
 	MessagesTruncated    bool                               `json:"messages_truncated,omitempty"`
+	MessagesRedacted     bool                               `json:"messages_redacted,omitempty"`
 	ProducedDeclarations *hostedGenesisProducedDeclarations `json:"produced_declarations,omitempty"`
 	Failure              *hostedGenesisFailure              `json:"failure,omitempty"`
 	RequestID            string                             `json:"request_id"`
@@ -72,6 +75,7 @@ type hostedGenesisConversationMessage struct {
 	Order     int        `json:"order"`
 	CreatedAt *time.Time `json:"created_at,omitempty"`
 	Truncated bool       `json:"truncated,omitempty"`
+	Redacted  bool       `json:"redacted,omitempty"`
 }
 
 type hostedGenesisProducedDeclarations struct {
@@ -94,6 +98,7 @@ type hostedGenesisDeclarationEvidence struct {
 
 type hostedGenesisFailure struct {
 	Code      string                       `json:"code"`
+	Class     string                       `json:"class,omitempty"`
 	Message   string                       `json:"message"`
 	Retryable bool                         `json:"retryable"`
 	Recovery  hostedGenesisFailureRecovery `json:"recovery"`
@@ -235,18 +240,18 @@ func buildHostedGenesisConversationResponse(conv *models.SoulAgentMintConversati
 	}
 }
 
-func buildHostedGenesisConversationMessages(session *models.HostedGenesisSession, conv *models.SoulAgentMintConversation) ([]hostedGenesisConversationMessage, bool) {
+func buildHostedGenesisConversationMessages(session *models.HostedGenesisSession, conv *models.SoulAgentMintConversation) ([]hostedGenesisConversationMessage, bool, bool) {
 	if session == nil || conv == nil || !hostedGenesisConversationMatchesSession(session, conv) {
-		return nil, false
+		return nil, false, false
 	}
 	raw := strings.TrimSpace(models.DecodeSoulMintConversationBlob(conv.Messages))
 	if raw == "" {
-		return nil, false
+		return nil, false, false
 	}
 
 	var messages []soulMintConversationMessage
 	if err := json.Unmarshal([]byte(raw), &messages); err != nil || len(messages) == 0 {
-		return nil, false
+		return nil, false, false
 	}
 
 	start := 0
@@ -256,14 +261,17 @@ func buildHostedGenesisConversationMessages(session *models.HostedGenesisSession
 		bounded = true
 	}
 	out := make([]hostedGenesisConversationMessage, 0, len(messages)-start)
+	redacted := false
 	for i := start; i < len(messages); i++ {
 		role := hostedGenesisTranscriptRole(messages[i].Role)
 		content := strings.TrimSpace(messages[i].Content)
 		if role == "" || content == "" {
 			continue
 		}
-		if hostedGenesisTranscriptContentUnsafe(content) {
-			return nil, true
+		messageRedacted := hostedGenesisTranscriptContentUnsafe(content)
+		if messageRedacted {
+			content = hostedGenesisTranscriptRedactedContent
+			redacted = true
 		}
 		content, truncated := hostedGenesisTranscriptBoundContent(content)
 		if truncated {
@@ -277,12 +285,13 @@ func buildHostedGenesisConversationMessages(session *models.HostedGenesisSession
 			Order:     order,
 			CreatedAt: hostedGenesisTranscriptMessageCreatedAt(session, role, order),
 			Truncated: truncated,
+			Redacted:  messageRedacted,
 		})
 	}
 	if len(out) == 0 {
-		return nil, bounded
+		return nil, bounded, redacted
 	}
-	return out, bounded
+	return out, bounded, redacted
 }
 
 func hostedGenesisConversationMatchesSession(session *models.HostedGenesisSession, conv *models.SoulAgentMintConversation) bool {
@@ -330,36 +339,30 @@ func hostedGenesisTranscriptMessageCreatedAt(session *models.HostedGenesisSessio
 	return nil
 }
 
+var (
+	hostedGenesisTranscriptPEMPrivateKey = regexp.MustCompile(`(?i)-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----`)
+	hostedGenesisTranscriptBearerValue   = regexp.MustCompile(`(?i)(?:authorization\s*:\s*)?bearer\s+[a-z0-9._~+/=-]{20,}`)
+	hostedGenesisTranscriptAWSAccessKey  = regexp.MustCompile(`\b(?:AKIA|ASIA)[A-Z0-9]{16}\b`)
+	hostedGenesisTranscriptProviderKey   = regexp.MustCompile(`(?i)\b(?:sk-(?:ant-)?[a-z0-9_-]{20,}|gh[pousr]_[a-z0-9]{20,})\b`)
+	hostedGenesisTranscriptJWT           = regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b`)
+	hostedGenesisTranscriptSecretValue   = regexp.MustCompile(`(?i)\b(?:aws[_ -]?secret[_ -]?access[_ -]?key|aws[_ -]?access[_ -]?key[_ -]?id|aws[_ -]?session[_ -]?token|x-amz-security-token|secretaccesskey|microvm[_ -]?endpoint[_ -]?token|instance[_ -]?api[_ -]?key|raw[_ -]?instance[_ -]?key|private[_ -]?key|seed[_ -]?phrase|signing[_ -]?material|api[_ -]?key)\b\s*(?::|=|\bis\b)\s*["']?\S{8,}`)
+	hostedGenesisTranscriptSensitiveARN  = regexp.MustCompile(`(?i)\barn:aws:(?:iam|sts)::[0-9]{12}:[^\s]+`)
+	hostedGenesisTranscriptSSMPath       = regexp.MustCompile(`(?i)(?:^|\s)/lesser-host/[a-z0-9_./-]+`)
+)
+
+// hostedGenesisTranscriptContentUnsafe detects secret-shaped values, not mere
+// discussion of security vocabulary. A sentence such as "never share a private
+// key or bearer token" is safe to project; a PEM key, token-shaped bearer value,
+// credential assignment, account IAM/STS ARN, or Host SSM path is not.
 func hostedGenesisTranscriptContentUnsafe(content string) bool {
-	lower := strings.ToLower(content)
-	for _, marker := range []string{
-		"aws_secret_access_key",
-		"aws_access_key_id",
-		"aws_session_token",
-		"x-amz-security-token",
-		"secretaccesskey",
-		"organizationaccountaccessrole",
-		"arn:aws:iam",
-		"arn:aws:sts",
-		"microvm endpoint token",
-		"microvm_endpoint_token",
-		"instance api key",
-		"raw instance key",
-		"bearer ",
-		"ssm parameter",
-		"parameter store",
-		"/lesser-host/",
-		"mint-signer",
-		"governance-signer",
-		"seed phrase",
-		"private key",
-		"signing material",
-	} {
-		if strings.Contains(lower, marker) {
-			return true
-		}
-	}
-	return false
+	return hostedGenesisTranscriptPEMPrivateKey.MatchString(content) ||
+		hostedGenesisTranscriptBearerValue.MatchString(content) ||
+		hostedGenesisTranscriptAWSAccessKey.MatchString(content) ||
+		hostedGenesisTranscriptProviderKey.MatchString(content) ||
+		hostedGenesisTranscriptJWT.MatchString(content) ||
+		hostedGenesisTranscriptSecretValue.MatchString(content) ||
+		hostedGenesisTranscriptSensitiveARN.MatchString(content) ||
+		hostedGenesisTranscriptSSMPath.MatchString(content)
 }
 
 func hostedGenesisStatusIncludesMessages(status string) bool {
@@ -367,7 +370,8 @@ func hostedGenesisStatusIncludesMessages(status string) bool {
 	case models.SoulMintConversationStatusCreated,
 		models.SoulMintConversationStatusInProgress,
 		models.SoulMintConversationStatusAssistantTurnReady,
-		models.SoulMintConversationStatusDeclarationExtractionPending:
+		models.SoulMintConversationStatusDeclarationExtractionPending,
+		models.SoulMintConversationStatusFailed:
 		return true
 	default:
 		return false

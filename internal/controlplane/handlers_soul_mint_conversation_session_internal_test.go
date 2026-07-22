@@ -16,6 +16,8 @@ import (
 	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
 )
 
+const hostedGenesisBenignCredentialSafetyProse = "Never expose a private key or bearer token."
+
 func TestHostedGenesisSessionProjectionFallbackAndTraceNil(t *testing.T) {
 	t.Parallel()
 
@@ -80,6 +82,7 @@ func TestHostedGenesisSessionProjectionUsesTerminalFailureOverStaleConversation(
 	session.CompletedAt = time.Date(2026, 3, 7, 12, 10, 0, 0, time.UTC)
 	session.Failure = &hostedgenesis.Failure{
 		Code:      hostedgenesis.FailureCodeDeclarationExtractionFailed,
+		Class:     hostedgenesis.FailureClassProviderTimeout,
 		Message:   hostedgenesis.FailureMessage(hostedgenesis.FailureCodeDeclarationExtractionFailed),
 		Retryable: true,
 		Recovery: hostedgenesis.Recovery{
@@ -94,19 +97,22 @@ func TestHostedGenesisSessionProjectionUsesTerminalFailureOverStaleConversation(
 		ConversationID: session.ConversationID,
 		Status:         models.SoulMintConversationStatusDeclarationExtractionPending,
 		StatusReason:   "provider returned partial private JSON that must not leak",
-		Messages:       models.EncodeSoulMintConversationBlob(`[{"role":"user","content":"private transcript"},{"role":"assistant","content":"private draft"}]`),
+		Messages:       models.EncodeSoulMintConversationBlob(`[{"role":"user","content":"safe transcript"},{"role":"assistant","content":"Authorization: Bearer abcdefghijklmnopqrstuvwxyz012345"}]`),
 	}
 
 	resp := buildHostedGenesisConversationResponseFromSession(session, conv, hostedGenesisProjectionOptions{RequestID: "req-terminal"})
 	if resp.Conversation.Status != string(hostedgenesis.StatusFailed) || resp.Conversation.PollAfterSeconds != 0 || resp.Conversation.Failure == nil {
 		t.Fatalf("terminal session truth must project failed over stale conversation status: %#v", resp.Conversation)
 	}
-	if resp.Conversation.Failure.Code != string(hostedgenesis.FailureCodeDeclarationExtractionFailed) || resp.Conversation.Failure.Recovery.Reason != string(hostedgenesis.FailureCodeDeclarationExtractionFailed) {
+	if resp.Conversation.Failure.Code != string(hostedgenesis.FailureCodeDeclarationExtractionFailed) || resp.Conversation.Failure.Class != string(hostedgenesis.FailureClassProviderTimeout) || resp.Conversation.Failure.Recovery.Reason != string(hostedgenesis.FailureCodeDeclarationExtractionFailed) {
 		t.Fatalf("expected sanitized declaration extraction failure, got %#v", resp.Conversation.Failure)
 	}
 	payload := string(mustMarshalJSON(t, resp))
-	if strings.Contains(payload, "partial private JSON") || strings.Contains(payload, "private transcript") || strings.Contains(payload, string(hostedgenesis.StatusDeclarationExtractionPending)) {
+	if strings.Contains(payload, "partial private JSON") || strings.Contains(payload, "abcdefghijklmnopqrstuvwxyz012345") || strings.Contains(payload, string(hostedgenesis.StatusDeclarationExtractionPending)) || !strings.Contains(payload, `"messages_redacted":true`) {
 		t.Fatalf("terminal projection leaked stale/private compatibility state: %s", payload)
+	}
+	if len(resp.Conversation.Messages) != 2 || resp.Conversation.Messages[0].Content != "safe transcript" || !resp.Conversation.Messages[1].Redacted {
+		t.Fatalf("terminal projection must keep safe messages and redact only the secret-shaped entry: %#v", resp.Conversation.Messages)
 	}
 }
 
@@ -242,7 +248,7 @@ func TestHostedGenesisSessionProjectionIncludesAssistantReadyMessages(t *testing
 	}
 }
 
-func TestHostedGenesisSessionProjectionBoundsAndOmitsUnsafeMessages(t *testing.T) {
+func TestHostedGenesisSessionProjectionBoundsMessagesAndContent(t *testing.T) {
 	t.Parallel()
 
 	session := testHostedGenesisSessionProjectionBase()
@@ -257,9 +263,9 @@ func TestHostedGenesisSessionProjectionBoundsAndOmitsUnsafeMessages(t *testing.T
 		Messages:       models.EncodeSoulMintConversationBlob(string(mustMarshalJSON(t, messages))),
 	}
 
-	projected, bounded := buildHostedGenesisConversationMessages(session, conv)
-	if len(projected) != hostedGenesisTranscriptMaxMessages || !bounded {
-		t.Fatalf("expected bounded transcript projection, len=%d bounded=%v", len(projected), bounded)
+	projected, bounded, redacted := buildHostedGenesisConversationMessages(session, conv)
+	if len(projected) != hostedGenesisTranscriptMaxMessages || !bounded || redacted {
+		t.Fatalf("expected bounded unredacted transcript projection, len=%d bounded=%v redacted=%v", len(projected), bounded, redacted)
 	}
 	if projected[0].Order != 3 || projected[len(projected)-1].Order != hostedGenesisTranscriptMaxMessages+2 || !projected[len(projected)-1].Truncated {
 		t.Fatalf("unexpected bounded transcript entries: first=%#v last=%#v", projected[0], projected[len(projected)-1])
@@ -267,21 +273,48 @@ func TestHostedGenesisSessionProjectionBoundsAndOmitsUnsafeMessages(t *testing.T
 	if len([]rune(projected[len(projected)-1].Content)) != hostedGenesisTranscriptMaxContentRunes {
 		t.Fatalf("expected assistant content cap, got %d", len([]rune(projected[len(projected)-1].Content)))
 	}
+}
 
-	unsafe := *conv
-	unsafe.Messages = models.EncodeSoulMintConversationBlob(`[{"role":"assistant","content":"AWS_SECRET_ACCESS_KEY=do-not-project"}]`)
-	if projected, _ := buildHostedGenesisConversationMessages(session, &unsafe); len(projected) != 0 {
-		t.Fatalf("unsafe credential-like transcript must be omitted, got %#v", projected)
+func TestHostedGenesisSessionProjectionRedactsOnlySecretShapedMessages(t *testing.T) {
+	t.Parallel()
+
+	session := testHostedGenesisSessionProjectionBase()
+	conv := &models.SoulAgentMintConversation{
+		AgentID:        session.AgentID,
+		ConversationID: session.ConversationID,
+	}
+	benign := *conv
+	benign.Messages = models.EncodeSoulMintConversationBlob(`[{"role":"user","content":"` + hostedGenesisBenignCredentialSafetyProse + `"},{"role":"assistant","content":"Correct: defensive prose must remain visible."}]`)
+	projected, bounded, redacted := buildHostedGenesisConversationMessages(session, &benign)
+	if len(projected) != 2 || bounded || redacted || projected[0].Content != hostedGenesisBenignCredentialSafetyProse {
+		t.Fatalf("benign credential-safety prose must remain visible, got %#v bounded=%v redacted=%v", projected, bounded, redacted)
 	}
 
-	mismatched := *conv
+	unsafe := *conv
+	unsafe.Messages = models.EncodeSoulMintConversationBlob(`[{"role":"user","content":"Keep the prior safe message."},{"role":"assistant","content":"AWS_SECRET_ACCESS_KEY=do-not-project"},{"role":"assistant","content":"Authorization: Bearer abcdefghijklmnopqrstuvwxyz012345"},{"role":"assistant","content":"sk-ant-abcdefghijklmnopqrstuvwxyz012345"}]`)
+	projected, bounded, redacted = buildHostedGenesisConversationMessages(session, &unsafe)
+	if len(projected) != 4 || bounded || !redacted || projected[0].Content != "Keep the prior safe message." {
+		t.Fatalf("secret-shaped entries must not erase safe transcript entries, got %#v bounded=%v redacted=%v", projected, bounded, redacted)
+	}
+	for _, index := range []int{1, 2, 3} {
+		if projected[index].Content != hostedGenesisTranscriptRedactedContent || !projected[index].Redacted {
+			t.Fatalf("secret-shaped transcript entry must be explicitly redacted: %#v", projected[index])
+		}
+	}
+}
+
+func TestHostedGenesisSessionProjectionRejectsMismatchedCompatibilityIdentity(t *testing.T) {
+	t.Parallel()
+
+	session := testHostedGenesisSessionProjectionBase()
+	mismatched := models.SoulAgentMintConversation{ConversationID: session.ConversationID}
 	mismatched.AgentID = "0x" + strings.Repeat("99", 32)
-	if projected, _ := buildHostedGenesisConversationMessages(session, &mismatched); len(projected) != 0 {
+	if projected, _, _ := buildHostedGenesisConversationMessages(session, &mismatched); len(projected) != 0 {
 		t.Fatalf("mismatched compatibility row must not project transcript, got %#v", projected)
 	}
 }
 
-func TestHostedGenesisSessionProjectionOmitsTerminalMessages(t *testing.T) {
+func TestHostedGenesisSessionProjectionIncludesSafeFailedTranscriptWithSignals(t *testing.T) {
 	t.Parallel()
 
 	session := testHostedGenesisSessionProjectionBase()
@@ -290,12 +323,22 @@ func TestHostedGenesisSessionProjectionOmitsTerminalMessages(t *testing.T) {
 	conv := &models.SoulAgentMintConversation{
 		AgentID:        session.AgentID,
 		ConversationID: session.ConversationID,
-		Messages:       models.EncodeSoulMintConversationBlob(`[{"role":"user","content":"do not include terminal transcript"}]`),
+		Messages:       models.EncodeSoulMintConversationBlob(`[{"role":"user","content":"Never share a private key or bearer token."},{"role":"assistant","content":"private_key=abcdefghijklmnopqrstuvwxyz012345"}]`),
 	}
 
 	resp := buildHostedGenesisConversationResponseFromSession(session, conv, hostedGenesisProjectionOptions{RequestID: "req-terminal"})
-	if len(resp.Conversation.Messages) != 0 || strings.Contains(string(mustMarshalJSON(t, resp)), "do not include terminal transcript") {
-		t.Fatalf("terminal status should omit transcript messages, got %#v", resp.Conversation)
+	if len(resp.Conversation.Messages) != 2 || resp.Conversation.MessagesTruncated || !resp.Conversation.MessagesRedacted {
+		t.Fatalf("failed status should retain safe transcript and signal redaction, got %#v", resp.Conversation)
+	}
+	if resp.Conversation.Messages[0].Content != "Never share a private key or bearer token." || resp.Conversation.Messages[0].Redacted {
+		t.Fatalf("benign defensive prose was not preserved: %#v", resp.Conversation.Messages[0])
+	}
+	if resp.Conversation.Messages[1].Content != hostedGenesisTranscriptRedactedContent || !resp.Conversation.Messages[1].Redacted {
+		t.Fatalf("secret-shaped content was not redacted: %#v", resp.Conversation.Messages[1])
+	}
+	raw := string(mustMarshalJSON(t, resp))
+	if strings.Contains(raw, "abcdefghijklmnopqrstuvwxyz012345") || !strings.Contains(raw, `"messages_redacted":true`) {
+		t.Fatalf("failed transcript projection leaked a secret or omitted the redaction signal: %s", raw)
 	}
 }
 

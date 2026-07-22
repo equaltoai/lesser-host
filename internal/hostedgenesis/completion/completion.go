@@ -78,6 +78,7 @@ type AssistantTurnCompletion struct {
 // recovery guidance authored by Host (clients never author recovery).
 type CompletionFailure struct {
 	Code      hostedgenesis.FailureCode
+	Class     hostedgenesis.FailureClass
 	Message   string
 	Retryable bool
 	Recovery  hostedgenesis.Recovery
@@ -244,6 +245,7 @@ func (w *CompletionWriter) RecordFailure(ctx context.Context, turn CompletionTur
 	}
 	f := hostedgenesis.Failure{
 		Code:      failure.Code,
+		Class:     failure.Class,
 		Message:   hostedgenesis.FailureMessage(failure.Code),
 		Retryable: failure.Retryable,
 		Recovery:  failure.Recovery,

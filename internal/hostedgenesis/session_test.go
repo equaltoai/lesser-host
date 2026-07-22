@@ -106,6 +106,7 @@ func TestFailedRecoveryActionsAreServerAuthoredAndBounded(t *testing.T) {
 
 	failure := Failure{
 		Code:      FailureCodeLLMUnavailable,
+		Class:     FailureClassProviderAPIFailure,
 		Message:   "assistant turn failed before declaration extraction",
 		Retryable: true,
 		Recovery: Recovery{
@@ -116,8 +117,13 @@ func TestFailedRecoveryActionsAreServerAuthoredAndBounded(t *testing.T) {
 		},
 	}
 	require.NoError(t, failure.Validate())
+	require.Equal(t, FailureClassProviderTimeout, NormalizeFailureClass(" provider_timeout "))
+	require.Equal(t, FailureClassProviderAPIFailure, NormalizeFailureClass("private arbitrary detail"))
 
 	failure.Recovery.Action = RecoveryAction("caller_supplied_shell_command")
+	require.ErrorIs(t, failure.Validate(), ErrInvalidFailureRecovery)
+	failure.Recovery.Action = RecoveryActionRetrySameStep
+	failure.Class = FailureClass("private_detail")
 	require.ErrorIs(t, failure.Validate(), ErrInvalidFailureRecovery)
 }
 

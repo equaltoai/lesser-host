@@ -727,6 +727,9 @@ func TestSoulInstanceGetRegistrationMintConversation_ReturnsRecoveryWithoutQueue
 		t.Fatalf("unmarshal: %v", err)
 	}
 	assertHostedGenesisFailedRecoveryProjection(t, out.Conversation)
+	if len(out.Conversation.Messages) != 2 || out.Conversation.Messages[0].Content != hostedGenesisBenignCredentialSafetyProse || out.Conversation.Messages[0].Redacted || out.Conversation.Messages[1].Content != hostedGenesisTranscriptRedactedContent || !out.Conversation.Messages[1].Redacted || !out.Conversation.MessagesRedacted {
+		t.Fatalf("failed recovery projection must preserve safe operator context and redact the secret-shaped entry: %#v", out.Conversation)
+	}
 	assertHostedGenesisResponseNoForbiddenValues(t, resp.Body, hostedGenesisStatusForbiddenValues())
 	assertHostedGenesisStatusAuditNoLeaks(t, tdb, append(hostedGenesisStatusForbiddenValues(), soulInstanceBootstrapTestInstanceSlug, reg.AgentID, mintConversationTestConversationID))
 }
@@ -788,7 +791,7 @@ func stubFailedRecoveryLegacyMintConversation(t *testing.T, tdb *mintConversatio
 		AgentID:        reg.AgentID,
 		ConversationID: mintConversationTestConversationID,
 		Model:          "anthropic:claude-sonnet-4-6",
-		Messages:       encodeMintConversationBlob(`[{"role":"user","content":"raw transcript secret"},{"role":"assistant","content":"private answer"}]`),
+		Messages:       encodeMintConversationBlob(`[{"role":"user","content":"` + hostedGenesisBenignCredentialSafetyProse + `"},{"role":"assistant","content":"Authorization: Bearer abcdefghijklmnopqrstuvwxyz012345"}]`),
 		Status:         models.SoulMintConversationStatusFailed,
 		LatestTurnID:   "turn-secret",
 		RequestID:      "req-failed",
@@ -1130,8 +1133,7 @@ func assertHostedGenesisFailedRecoveryProjection(t *testing.T, conversation host
 
 func hostedGenesisStatusForbiddenValues() []string {
 	return []string{
-		"raw transcript secret",
-		"private answer",
+		"abcdefghijklmnopqrstuvwxyz012345",
 		mintConversationInstanceReadTestRawKey,
 		"Bearer ",
 		"provider_secret",
@@ -1167,7 +1169,7 @@ func assertHostedGenesisStatusAuditNoLeaks(t *testing.T, tdb *mintConversationTe
 
 func assertHostedGenesisAuditNoForbiddenValues(t *testing.T, auditText string, forbiddenValues []string) {
 	t.Helper()
-	for _, forbidden := range append(forbiddenValues, "raw transcript secret", "private answer") {
+	for _, forbidden := range append(forbiddenValues, hostedGenesisBenignCredentialSafetyProse) {
 		if strings.Contains(auditText, forbidden) {
 			t.Fatalf("audit event leaked forbidden value %q: %s", forbidden, auditText)
 		}

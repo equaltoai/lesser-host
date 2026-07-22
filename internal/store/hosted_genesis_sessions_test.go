@@ -159,6 +159,8 @@ func TestStore_FailHostedGenesisSessionAndConversationUsesOneGuardedTransaction(
 			hasStatusCondition(conditions, hostedgenesis.StatusInProgress) &&
 			hasFieldCondition(conditions, "LatestTurnID", "turn_123")
 	})).Return(tx).Once()
+	tx.On("UpdateWithBuilder", mock.MatchedBy(matchesFailedHostedGenesisIdempotency), mock.Anything,
+		mock.MatchedBy(hasFailedHostedGenesisIdempotencyConditions)).Return(tx).Once()
 
 	session, conversation := validStoreHostedGenesisFailure()
 	st := New(db)
@@ -166,6 +168,18 @@ func TestStore_FailHostedGenesisSessionAndConversationUsesOneGuardedTransaction(
 
 	db.AssertExpectations(t)
 	tx.AssertExpectations(t)
+}
+
+func TestStore_FailHostedGenesisSessionRejectsUnboundIdempotencyBeforeWrite(t *testing.T) {
+	t.Parallel()
+
+	db := ttmocks.NewMockExtendedDBStrict()
+	session, conversation := validStoreHostedGenesisFailure()
+	session.TraceIDs.IdempotencyKey = "idem_other"
+
+	err := New(db).FailHostedGenesisSessionAndConversation(context.Background(), session, 7, hostedgenesis.StatusInProgress, conversation)
+	require.ErrorContains(t, err, "idempotency binding is absent")
+	db.AssertExpectations(t)
 }
 
 func TestStore_FailHostedGenesisSessionAndConversationPropagatesTransactionFailure(t *testing.T) {
@@ -310,6 +324,22 @@ func hasFieldCondition(conditions []core.TransactCondition, field string, value 
 		}
 	}
 	return false
+}
+
+func matchesFailedHostedGenesisIdempotency(item any) bool {
+	idempotency, ok := item.(*models.SoulMintConversationIdempotency)
+	return ok && idempotency.PK == models.SoulMintConversationIdempotencyPK("demo", "reg_123", "idem_123") &&
+		idempotency.SK == "STATE" && idempotency.Status == models.SoulMintConversationIdempotencyStatusFailed
+}
+
+func hasFailedHostedGenesisIdempotencyConditions(conditions []core.TransactCondition) bool {
+	return hasConditionKind(conditions, core.TransactConditionKindPrimaryKeyExists) &&
+		hasFieldCondition(conditions, "Status", models.SoulMintConversationIdempotencyStatusProcessing) &&
+		hasFieldCondition(conditions, "RegistrationID", "reg_123") &&
+		hasFieldCondition(conditions, "ConversationID", "conv_123") &&
+		hasFieldCondition(conditions, "TurnID", "turn_123") &&
+		hasFieldCondition(conditions, "IdempotencyKey", "idem_123") &&
+		hasFieldCondition(conditions, "RequestHash", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
 }
 
 type captureHostedGenesisUpdateBuilder struct {

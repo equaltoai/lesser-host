@@ -916,7 +916,12 @@ function createHostedGenesisMicrovmImageBuildRole(
     // docs specify lambda.amazonaws.com as the trust principal; the
     // microvms.lambda.amazonaws.com form is rejected by IAM as an invalid
     // principal (CREATE fails with "IAM Invalid principal in policy").
-    assumedBy: new iam.ServicePrincipal("lambda.amazonaws.com"),
+    // AWS Lambda MicroVMs require both sts:AssumeRole and sts:TagSession on
+    // build/execution role trust. withSessionTags() adds the latter without
+    // broadening the service principal.
+    assumedBy: new iam.ServicePrincipal(
+      "lambda.amazonaws.com",
+    ).withSessionTags(),
   });
 
   // Fetch the workload code artifact tarball from the CDK asset staging bucket.
@@ -1032,7 +1037,13 @@ function createHostedGenesisMicrovmExecutionRole(
     // AWS Lambda MicroVMs assume this role via lambda.amazonaws.com trust
     // (microvms.lambda.amazonaws.com is rejected by IAM as an invalid
     // principal — see the build role comment above).
-    assumedBy: new iam.ServicePrincipal("lambda.amazonaws.com"),
+    // AWS Lambda MicroVMs require both sts:AssumeRole and sts:TagSession on
+    // build/execution role trust. The live role previously allowed only
+    // AssumeRole, which prevented the service's tagged runtime session from
+    // delivering stdout/stderr even though the role had Logs permissions.
+    assumedBy: new iam.ServicePrincipal(
+      "lambda.amazonaws.com",
+    ).withSessionTags(),
   });
 
   // DynamoDB read/write on the Host state table only. The workload reads
@@ -1072,13 +1083,31 @@ function createHostedGenesisMicrovmExecutionRole(
     }),
   );
 
-  // X-Ray trace emission + CloudWatch Logs for the in-VM process observability
-  // (the workload wires apptheory observability hooks). Scoped managed policies
-  // only — no administrative actions.
-  role.addManagedPolicy(
-    iam.ManagedPolicy.fromAwsManagedPolicyName(
-      "service-role/AWSLambdaBasicExecutionRole",
-    ),
+  // Runtime stdout/stderr delivery uses this role, not the controller Lambda's
+  // role. Grant exactly the AWS-documented actions. CreateLogGroup cannot be
+  // resource-scoped; stream creation and writes are limited to the canonical
+  // hosted-genesis MicroVM log group. AppTheory remains the only RunMicrovm
+  // lifecycle path and propagates this role through executionRole.
+  role.addToPolicy(
+    new iam.PolicyStatement({
+      sid: "CreateMicrovmRuntimeLogGroup",
+      actions: ["logs:CreateLogGroup"],
+      resources: ["*"],
+    }),
+  );
+  role.addToPolicy(
+    new iam.PolicyStatement({
+      sid: "WriteMicrovmRuntimeLogs",
+      actions: ["logs:CreateLogStream", "logs:PutLogEvents"],
+      resources: [
+        cdk.Stack.of(scope).formatArn({
+          service: "logs",
+          resource: "log-group",
+          resourceName: `/aws/lambda/microvms/${namePrefix}_hosted_genesis:*`,
+          arnFormat: cdk.ArnFormat.COLON_RESOURCE_NAME,
+        }),
+      ],
+    }),
   );
 
   cdk.Tags.of(role).add("Service", "lesser-host");

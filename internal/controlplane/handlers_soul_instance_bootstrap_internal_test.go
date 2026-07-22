@@ -14,6 +14,7 @@ import (
 	"github.com/ethereum/go-ethereum/accounts"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 	apptheory "github.com/theory-cloud/apptheory/runtime"
 	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
 	ttmocks "github.com/theory-cloud/tabletheory/v2/pkg/mocks"
@@ -930,7 +931,7 @@ func TestSoulInstanceMintConversation_ContinueUsesStoredModelAndMessages(t *test
 	}
 }
 
-func TestSoulInstanceGetRegistrationMintConversation_ReturnsStatusEnvelopeWithoutRawTranscript(t *testing.T) {
+func TestSoulInstanceGetRegistrationMintConversation_ReturnsStatusEnvelopeWithSafeRedactedTranscript(t *testing.T) {
 	t.Parallel()
 
 	tdb := newMintConversationTestDB()
@@ -943,7 +944,7 @@ func TestSoulInstanceGetRegistrationMintConversation_ReturnsStatusEnvelopeWithou
 		AgentID:              reg.AgentID,
 		ConversationID:       mintConversationTestConversationID,
 		Model:                "anthropic:claude-sonnet-4-6",
-		Messages:             encodeMintConversationBlob(`[{"role":"user","content":"private transcript"}]`),
+		Messages:             encodeMintConversationBlob(`[{"role":"user","content":"` + hostedGenesisBenignCredentialSafetyProse + `"},{"role":"assistant","content":"private_key=abcdefghijklmnopqrstuvwxyz012345"}]`),
 		ProducedDeclarations: encodeMintConversationBlob(`{"private":true}`),
 		Status:               models.SoulMintConversationStatusCompleted,
 		CreatedAt:            time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC),
@@ -964,13 +965,20 @@ func TestSoulInstanceGetRegistrationMintConversation_ReturnsStatusEnvelopeWithou
 	if err := json.Unmarshal(resp.Body, &out); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if out.Version != "1" || out.Conversation.ConversationID != mintConversationTestConversationID || out.Conversation.Status != models.SoulMintConversationStatusFailed || out.Conversation.Failure == nil || out.Conversation.Failure.Code != hostedGenesisFailureInvalidProducedDeclarations {
-		t.Fatalf("expected compact failed status for invalid legacy declarations, got %#v", out)
-	}
+	require.Equal(t, "1", out.Version)
+	require.Equal(t, mintConversationTestConversationID, out.Conversation.ConversationID)
+	require.Equal(t, models.SoulMintConversationStatusFailed, out.Conversation.Status)
+	require.NotNil(t, out.Conversation.Failure)
+	require.Equal(t, hostedGenesisFailureInvalidProducedDeclarations, out.Conversation.Failure.Code)
 	body := string(resp.Body)
-	if strings.Contains(body, "private transcript") || strings.Contains(body, `"private":true`) || strings.Contains(body, mintConversationInstanceReadTestRawKey) {
+	if strings.Contains(body, "abcdefghijklmnopqrstuvwxyz012345") || strings.Contains(body, `"private":true`) || strings.Contains(body, mintConversationInstanceReadTestRawKey) {
 		t.Fatalf("status envelope leaked private transcript/declarations/credential: %s", body)
 	}
+	require.Len(t, out.Conversation.Messages, 2)
+	require.Equal(t, hostedGenesisBenignCredentialSafetyProse, out.Conversation.Messages[0].Content)
+	require.False(t, out.Conversation.Messages[0].Redacted)
+	require.True(t, out.Conversation.Messages[1].Redacted)
+	require.True(t, out.Conversation.MessagesRedacted)
 }
 
 func TestSoulInstanceGetRegistrationMintConversation_RejectsInvalidConversationID(t *testing.T) {

@@ -71,9 +71,11 @@ func (s *Store) UpdateHostedGenesisSession(ctx context.Context, item *models.Hos
 
 // FailHostedGenesisSessionAndConversation atomically projects a terminal
 // hosted-genesis failure into the Host-owned session truth and its legacy
-// conversation-list compatibility row. The session's version and current
-// status guard the entire transaction so a late valid completion cannot be
-// overwritten by a stale worker failure.
+// conversation-list compatibility row. When the accepted turn carried an
+// idempotency key, the same guarded transaction also closes that exact
+// processing reservation as failed; the row retains its existing seven-day TTL.
+// The session's version and current status guard the entire transaction so a
+// late valid completion cannot be overwritten by a stale worker failure.
 func (s *Store) FailHostedGenesisSessionAndConversation(ctx context.Context, session *models.HostedGenesisSession, expectedVersion int64, expectedStatus hostedgenesis.Status, conversation *models.SoulAgentMintConversation) error {
 	if s == nil || s.DB == nil || session == nil || conversation == nil {
 		return theoryErrors.ErrItemNotFound
@@ -90,7 +92,11 @@ func (s *Store) FailHostedGenesisSessionAndConversation(ctx context.Context, ses
 	if err != nil {
 		return err
 	}
-	if err := conversation.BeforeUpdate(); err != nil {
+	if conversationErr := conversation.BeforeUpdate(); conversationErr != nil {
+		return conversationErr
+	}
+	idempotency, err := hostedGenesisFailureIdempotency(session)
+	if err != nil {
 		return err
 	}
 	return s.DB.TransactWrite(ctx, func(tx core.TransactionBuilder) error {
@@ -107,8 +113,63 @@ func (s *Store) FailHostedGenesisSessionAndConversation(ctx context.Context, ses
 		}, tabletheory.IfExists(),
 			tabletheory.Condition("Status", "=", string(expectedStatus)),
 			tabletheory.Condition("LatestTurnID", "=", strings.TrimSpace(conversation.LatestTurnID)))
+		if idempotency != nil {
+			tx.UpdateWithBuilder(idempotency, func(ub core.UpdateBuilder) error {
+				ub.Set("Status", models.SoulMintConversationIdempotencyStatusFailed)
+				ub.Set("RequestID", idempotency.RequestID)
+				ub.Set("UpdatedAt", idempotency.UpdatedAt)
+				return nil
+			}, tabletheory.IfExists(),
+				tabletheory.Condition("Status", "=", models.SoulMintConversationIdempotencyStatusProcessing),
+				tabletheory.Condition("RegistrationID", "=", idempotency.RegistrationID),
+				tabletheory.Condition("AgentID", "=", idempotency.AgentID),
+				tabletheory.Condition("ConversationID", "=", idempotency.ConversationID),
+				tabletheory.Condition("TurnID", "=", idempotency.TurnID),
+				tabletheory.Condition("IdempotencyKey", "=", idempotency.IdempotencyKey),
+				tabletheory.Condition("RequestHash", "=", idempotency.RequestHash))
+		}
 		return nil
 	})
+}
+
+func hostedGenesisFailureIdempotency(session *models.HostedGenesisSession) (*models.SoulMintConversationIdempotency, error) {
+	if session == nil || session.TraceIDs == nil || strings.TrimSpace(session.TraceIDs.IdempotencyKey) == "" {
+		return nil, nil
+	}
+	idempotencyKey := strings.TrimSpace(session.TraceIDs.IdempotencyKey)
+	latestTurnID := strings.TrimSpace(session.LatestTurnID)
+	var accepted hostedgenesis.TurnLedgerEntry
+	found := false
+	for i := len(session.TurnLedger) - 1; i >= 0; i-- {
+		entry := session.TurnLedger[i].Normalize()
+		if entry.TurnID == latestTurnID && entry.IdempotencyKey == idempotencyKey {
+			accepted = entry
+			found = true
+			break
+		}
+	}
+	if !found {
+		return nil, fmt.Errorf("hosted genesis failure idempotency binding is absent from the accepted turn ledger")
+	}
+	item := &models.SoulMintConversationIdempotency{
+		InstanceSlug:   session.InstanceSlug,
+		RegistrationID: session.RegistrationID,
+		AgentID:        session.AgentID,
+		ConversationID: session.ConversationID,
+		TurnID:         accepted.TurnID,
+		IdempotencyKey: accepted.IdempotencyKey,
+		RequestHash:    accepted.RequestHash,
+		RequestID:      session.RequestID,
+		Status:         models.SoulMintConversationIdempotencyStatusFailed,
+		UpdatedAt:      session.UpdatedAt.UTC(),
+	}
+	// UpdateKeys is sufficient here: the existing row's CreatedAt/TTL must not be
+	// rewritten by a terminal-status projection. The transaction conditions bind
+	// this key-only update to the exact accepted turn/hash.
+	if err := item.UpdateKeys(); err != nil {
+		return nil, err
+	}
+	return item, nil
 }
 
 func validateHostedGenesisSessionUpdate(item *models.HostedGenesisSession, expectedVersion int64, expectedStatus hostedgenesis.Status) (hostedgenesis.Status, error) {

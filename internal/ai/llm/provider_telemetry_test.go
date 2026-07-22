@@ -2,6 +2,7 @@ package llm
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -15,6 +16,72 @@ import (
 )
 
 const providerTelemetryDeclarationSchemaName = "soul_five_body_declarations"
+
+func TestProviderFailureClassesAreCanonicalAndDoNotCarryErrorText(t *testing.T) {
+	privateDetail := "private-provider-response-body"
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{name: "timeout", err: fmt.Errorf("%s: %w", privateDetail, context.DeadlineExceeded), want: string(hostedgenesis.FailureClassProviderTimeout)},
+		{name: "provider api", err: fmt.Errorf("%s", privateDetail), want: string(hostedgenesis.FailureClassProviderAPIFailure)},
+		{name: "invalid provider output", err: withProviderFailureClass(fmt.Errorf("%s", privateDetail), string(hostedgenesis.FailureClassInvalidProviderOutput)), want: string(hostedgenesis.FailureClassInvalidProviderOutput)},
+		{name: "parse validation", err: withProviderFailureClass(fmt.Errorf("%s", privateDetail), string(hostedgenesis.FailureClassParseValidation)), want: string(hostedgenesis.FailureClassParseValidation)},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			class := ProviderFailureClass(test.err)
+			if class != test.want {
+				t.Fatalf("class=%q want=%q", class, test.want)
+			}
+			raw, err := json.Marshal(ProviderTelemetryEvent{EventType: "provider_call_failed", LastEvent: true, FailureClass: class})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if bytes.Contains(raw, []byte(privateDetail)) {
+				t.Fatalf("canonical failure telemetry leaked error text: %s", raw)
+			}
+		})
+	}
+}
+
+func TestAnthropicMissingToolResultIsInvalidProviderOutputAndContentFree(t *testing.T) {
+	const privateValue = "private-missing-tool-response"
+	response := mustProviderTelemetryJSON(map[string]any{
+		"id": "msg_missing", "type": "message", "role": "assistant", "model": mintConversationTestAnthropicModel,
+		"stop_reason": "tool_use", "content": []any{map[string]any{"type": "text", "text": privateValue}},
+		"usage": map[string]any{"input_tokens": 1, "output_tokens": 1},
+	})
+	oldBase := os.Getenv("ANTHROPIC_BASE_URL")
+	t.Cleanup(func() { _ = os.Setenv("ANTHROPIC_BASE_URL", oldBase); anthropicHTTPClient = nil })
+	_ = os.Setenv("ANTHROPIC_BASE_URL", "https://anthropic.example.test")
+	anthropicHTTPClient = &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		return providerTelemetryHTTPResponse(r, "application/json", []byte(response)), nil
+	})}
+	contract := hostedgenesis.FiveBodyDeclarationContract()
+	var events []ProviderTelemetryEvent
+	_, _, err := MintConversationDeclarationsAnthropicWithTelemetry(t.Context(), "private-key", "anthropic:"+mintConversationTestAnthropicModel, MintConversationDeclarationsInput{
+		SchemaVersion: contract.SchemaVersion, GuidanceVersion: contract.GuidanceVersion,
+	}, func(event ProviderTelemetryEvent) { events = append(events, event) })
+	if err == nil || ProviderFailureClass(err) != string(hostedgenesis.FailureClassInvalidProviderOutput) {
+		t.Fatalf("missing tool result must have invalid-provider-output class: class=%q err=%v", ProviderFailureClass(err), err)
+	}
+	terminal := events[len(events)-1]
+	if !terminal.LastEvent || terminal.FailureClass != string(hostedgenesis.FailureClassInvalidProviderOutput) {
+		t.Fatalf("missing tool terminal event mismatch: %#v", terminal)
+	}
+	raw, marshalErr := json.Marshal(events)
+	if marshalErr != nil {
+		t.Fatal(marshalErr)
+	}
+	for _, forbidden := range []string{privateValue, "private-key"} {
+		if bytes.Contains(raw, []byte(forbidden)) {
+			t.Fatalf("missing-tool telemetry leaked %q: %s", forbidden, raw)
+		}
+	}
+}
 
 func TestProviderStreamTelemetryOpenAIAndAnthropicIsPerEventAndRedacted(t *testing.T) {
 	const (

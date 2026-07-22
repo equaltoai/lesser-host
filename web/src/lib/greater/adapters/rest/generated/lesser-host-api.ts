@@ -2086,6 +2086,7 @@ export interface components {
             /** Format: date-time */
             created_at?: string;
             truncated?: boolean;
+            redacted?: boolean;
         };
         produced_declarations: {
             declaration_id: string;
@@ -2106,7 +2107,9 @@ export interface components {
         };
         failure: {
             /** @enum {string} */
-            code: "llm_unavailable" | "assistant_turn_failed" | "declaration_extraction_failed" | "invalid_completion_state" | "missing_produced_declarations" | "invalid_produced_declarations" | "tenant_boundary_violation" | "operator_action_required";
+            code: "llm_unavailable" | "assistant_turn_failed" | "declaration_extraction_failed" | "invalid_completion_state" | "missing_produced_declarations" | "invalid_produced_declarations" | "tenant_boundary_violation" | "operator_action_required" | "microvm_unavailable";
+            /** @enum {string} */
+            class?: "provider_timeout" | "provider_canceled" | "provider_api_failure" | "invalid_provider_output" | "parse_validation_failure";
             message: string;
             retryable: boolean;
             recovery: {
@@ -2132,6 +2135,7 @@ export interface components {
             message_count: number;
             messages?: components["schemas"]["conversation_message"][];
             messages_truncated?: boolean;
+            messages_redacted?: boolean;
             produced_declarations?: components["schemas"]["produced_declarations"];
             failure?: components["schemas"]["failure"];
             request_id: string;
@@ -2168,6 +2172,7 @@ export interface components {
                     /** Format: date-time */
                     created_at?: string;
                     truncated?: boolean;
+                    redacted?: boolean;
                 };
                 declarations: {
                     selfDescription: {
@@ -2202,7 +2207,9 @@ export interface components {
                 };
                 failure: {
                     /** @enum {string} */
-                    code: "llm_unavailable" | "assistant_turn_failed" | "declaration_extraction_failed" | "invalid_completion_state" | "missing_produced_declarations" | "invalid_produced_declarations" | "tenant_boundary_violation" | "operator_action_required";
+                    code: "llm_unavailable" | "assistant_turn_failed" | "declaration_extraction_failed" | "invalid_completion_state" | "missing_produced_declarations" | "invalid_produced_declarations" | "tenant_boundary_violation" | "operator_action_required" | "microvm_unavailable";
+                    /** @enum {string} */
+                    class?: "provider_timeout" | "provider_canceled" | "provider_api_failure" | "invalid_provider_output" | "parse_validation_failure";
                     message: string;
                     retryable: boolean;
                     recovery: {
@@ -2222,6 +2229,7 @@ export interface components {
                     message_count: number;
                     messages?: components["schemas"]["conversation_message"][];
                     messages_truncated?: boolean;
+                    messages_redacted?: boolean;
                     produced_declarations?: components["schemas"]["produced_declarations"];
                     failure?: components["schemas"]["failure"];
                     request_id: string;

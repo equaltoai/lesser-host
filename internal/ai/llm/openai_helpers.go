@@ -11,6 +11,7 @@ import (
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
 
+	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
@@ -175,6 +176,7 @@ func openAIJSONSchemaBatch[Prompt any, Parsed any, Out any](
 
 	raw, err := openAIContentFromChat(chat)
 	if err != nil {
+		err = withProviderFailureClass(err, string(hostedgenesis.FailureClassInvalidProviderOutput))
 		recorder.emit(ProviderTelemetryEvent{EventType: "provider_call_failed", LastEvent: true, FailureClass: ProviderFailureClass(err)})
 		return zero, models.AIUsage{}, err
 	}
@@ -184,7 +186,8 @@ func openAIJSONSchemaBatch[Prompt any, Parsed any, Out any](
 
 	parsed, err := parse(raw)
 	if err != nil {
-		recorder.emit(ProviderTelemetryEvent{EventType: "provider_call_failed", LastEvent: true, FailureClass: "parse_error", OutputBytes: rawBytes, OutputRunes: rawRunes, OutputSHA256: rawHash, SchemaName: cfg.SchemaName})
+		err = withProviderFailureClass(err, string(hostedgenesis.FailureClassParseValidation))
+		recorder.emit(ProviderTelemetryEvent{EventType: "provider_call_failed", LastEvent: true, FailureClass: ProviderFailureClass(err), OutputBytes: rawBytes, OutputRunes: rawRunes, OutputSHA256: rawHash, SchemaName: cfg.SchemaName})
 		return zero, models.AIUsage{}, err
 	}
 	recorder.emit(ProviderTelemetryEvent{EventType: "parse_completed", OutputBytes: rawBytes, OutputRunes: rawRunes, OutputSHA256: rawHash, SchemaName: cfg.SchemaName})

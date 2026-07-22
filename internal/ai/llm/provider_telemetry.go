@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
 )
 
 // ProviderTelemetryEvent is the content-free observation emitted at provider
@@ -55,6 +57,21 @@ type providerTelemetryRecorder struct {
 	last      time.Time
 	sequence  int64
 	sdkEvents int64
+}
+
+type providerClassifiedError struct {
+	class string
+	err   error
+}
+
+func (e *providerClassifiedError) Error() string { return e.err.Error() }
+func (e *providerClassifiedError) Unwrap() error { return e.err }
+
+func withProviderFailureClass(err error, class string) error {
+	if err == nil {
+		return nil
+	}
+	return &providerClassifiedError{class: string(hostedgenesis.NormalizeFailureClass(class)), err: err}
 }
 
 func (r *providerTelemetryRecorder) emitSDK(event ProviderTelemetryEvent) {
@@ -111,14 +128,17 @@ func providerPayloadMetadata(raw []byte) (bytes int, digest string) {
 // error strings are intentionally not exposed because SDK errors can echo
 // request or response material.
 func ProviderFailureClass(err error) string {
+	var classified *providerClassifiedError
 	switch {
 	case err == nil:
 		return ""
+	case errors.As(err, &classified):
+		return classified.class
 	case errors.Is(err, context.DeadlineExceeded):
-		return "timeout"
+		return string(hostedgenesis.FailureClassProviderTimeout)
 	case errors.Is(err, context.Canceled):
-		return "canceled"
+		return string(hostedgenesis.FailureClassProviderCanceled)
 	default:
-		return "provider_error"
+		return string(hostedgenesis.FailureClassProviderAPIFailure)
 	}
 }

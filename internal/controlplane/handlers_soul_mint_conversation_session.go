@@ -62,10 +62,12 @@ func buildHostedGenesisConversationResponseFromSession(session *models.HostedGen
 		CompletedAt:      timePtrIfSet(projection.CompletedAt),
 	}
 	if hostedGenesisStatusIncludesMessages(string(projection.Status)) {
-		if messages, bounded := buildHostedGenesisConversationMessages(session, conv); len(messages) > 0 {
+		messages, bounded, redacted := buildHostedGenesisConversationMessages(session, conv)
+		if len(messages) > 0 {
 			responseProjection.Messages = messages
-			responseProjection.MessagesTruncated = bounded
 		}
+		responseProjection.MessagesTruncated = bounded
+		responseProjection.MessagesRedacted = redacted
 	}
 	if projection.Status == hostedgenesis.StatusDeclarationReady {
 		responseProjection.ProducedDeclarations = buildHostedGenesisProducedDeclarationsFromSession(session, conv, requestID)
@@ -113,6 +115,7 @@ func hostedGenesisFailureFromSessionForSession(session *models.HostedGenesisSess
 	reason := hostedgenesis.SanitizeFailureReason(code, failure.Recovery.Reason)
 	return &hostedGenesisFailure{
 		Code:      string(code),
+		Class:     string(failure.Class),
 		Message:   hostedgenesis.FailureMessage(code),
 		Retryable: failure.Retryable,
 		Recovery: hostedGenesisFailureRecovery{

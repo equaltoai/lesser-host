@@ -14,6 +14,7 @@ import (
 	"github.com/anthropics/anthropic-sdk-go/option"
 	anthropicconstant "github.com/anthropics/anthropic-sdk-go/shared/constant"
 
+	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
@@ -363,12 +364,14 @@ func anthropicToolBatch[Prompt any, Parsed any, Out any](
 	stopReason := strings.TrimSpace(string(message.StopReason))
 	recorder.emit(ProviderTelemetryEvent{EventType: "response_received", InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens, TotalTokens: usage.TotalTokens, ToolCalls: 1, OutputCount: int64(len(message.Content)), StopReason: stopReason, ToolName: toolName})
 	if stopErr := anthropicValidateStopReason(message, anthropic.StopReasonToolUse); stopErr != nil {
-		recorder.emit(ProviderTelemetryEvent{EventType: "provider_call_failed", LastEvent: true, FailureClass: "stop_reason", StopReason: stopReason, ToolName: toolName})
+		stopErr = withProviderFailureClass(stopErr, string(hostedgenesis.FailureClassInvalidProviderOutput))
+		recorder.emit(ProviderTelemetryEvent{EventType: "provider_call_failed", LastEvent: true, FailureClass: ProviderFailureClass(stopErr), StopReason: stopReason, ToolName: toolName})
 		return zero, models.AIUsage{}, stopErr
 	}
 
 	raw, err := anthropicToolUseInput(message, toolName)
 	if err != nil {
+		err = withProviderFailureClass(err, string(hostedgenesis.FailureClassInvalidProviderOutput))
 		recorder.emit(ProviderTelemetryEvent{EventType: "provider_call_failed", LastEvent: true, FailureClass: ProviderFailureClass(err), ToolName: toolName})
 		return zero, models.AIUsage{}, err
 	}
@@ -379,7 +382,8 @@ func anthropicToolBatch[Prompt any, Parsed any, Out any](
 
 	parsed, err := parse(string(raw))
 	if err != nil {
-		recorder.emit(ProviderTelemetryEvent{EventType: "provider_call_failed", LastEvent: true, FailureClass: "parse_error", OutputBytes: rawBytes, OutputRunes: rawRunes, OutputSHA256: rawHash, ToolName: toolName})
+		err = withProviderFailureClass(err, string(hostedgenesis.FailureClassParseValidation))
+		recorder.emit(ProviderTelemetryEvent{EventType: "provider_call_failed", LastEvent: true, FailureClass: ProviderFailureClass(err), OutputBytes: rawBytes, OutputRunes: rawRunes, OutputSHA256: rawHash, ToolName: toolName})
 		return zero, models.AIUsage{}, err
 	}
 	recorder.emit(ProviderTelemetryEvent{EventType: "parse_completed", OutputBytes: rawBytes, OutputRunes: rawRunes, OutputSHA256: rawHash, ToolName: toolName})

@@ -265,11 +265,13 @@ func (r *turnRunner) runAssistantTurnAndPersist(ctx context.Context, turn comple
 	assistantContent, assistantUsage, err := r.runAssistantTurn(ctx, turn, in)
 	if err != nil || strings.TrimSpace(assistantContent) == "" {
 		msg := "assistant turn failed"
+		failureClass := hostedgenesis.FailureClassInvalidProviderOutput
 		if err != nil {
 			msg = providerFailureMessage("assistant_stream", err)
+			failureClass = hostedgenesis.NormalizeFailureClass(llm.ProviderFailureClass(err))
 		}
-		telemetry.emit("assistant_stream", "provider_call_failed", string(decision.action), llm.ProviderFailureClass(err))
-		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeAssistantTurnFailed, msg, telemetry)
+		telemetry.emit("assistant_stream", "provider_call_failed", string(decision.action), string(failureClass))
+		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeAssistantTurnFailed, msg, telemetry, failureClass)
 	}
 
 	postTurnMessageCount := len(in.messages) + 1
@@ -306,8 +308,9 @@ func (r *turnRunner) runDeclarationExtractionAndPersist(ctx context.Context, tur
 	}
 	draft, declarationUsage, err := r.runDeclarationExtraction(ctx, turn, in, in.messages)
 	if err != nil {
-		telemetry.emit("declaration_extraction", "provider_call_failed", string(decision.action), llm.ProviderFailureClass(err))
-		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeDeclarationExtractionFailed, providerFailureMessage("declaration_extraction", err), telemetry)
+		failureClass := hostedgenesis.NormalizeFailureClass(llm.ProviderFailureClass(err))
+		telemetry.emit("declaration_extraction", "provider_call_failed", string(decision.action), string(failureClass))
+		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeDeclarationExtractionFailed, providerFailureMessage("declaration_extraction", err), telemetry, failureClass)
 	}
 	telemetry.emit("declaration_validation", "validation_started", string(decision.action), "")
 	declarationsJSON, err := r.buildProducedDeclarationsJSON(draft, in.modelSet, in.contract)
@@ -316,7 +319,7 @@ func (r *turnRunner) runDeclarationExtractionAndPersist(ctx context.Context, tur
 		if errors.Is(err, hostedgenesis.ErrDeclarationContractUnconfigured) {
 			return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeOperatorActionRequired, err.Error(), telemetry)
 		}
-		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeInvalidProducedDeclarations, string(hostedgenesis.DeclarationValidationCodeFromError(err)), telemetry)
+		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeInvalidProducedDeclarations, string(hostedgenesis.DeclarationValidationCodeFromError(err)), telemetry, hostedgenesis.FailureClassParseValidation)
 	}
 	telemetry.emit("declaration_validation", "validation_completed", string(decision.action), "")
 	telemetry.emit("persist", "persist_started", string(decision.action), "")
@@ -543,10 +546,15 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
-func (r *turnRunner) recordFailure(ctx context.Context, turn completion.CompletionTurn, code hostedgenesis.FailureCode, message string, telemetry *turnLifecycleTelemetry) error {
+func (r *turnRunner) recordFailure(ctx context.Context, turn completion.CompletionTurn, code hostedgenesis.FailureCode, message string, telemetry *turnLifecycleTelemetry, classes ...hostedgenesis.FailureClass) error {
+	var failureClass hostedgenesis.FailureClass
+	if len(classes) > 0 {
+		failureClass = classes[0]
+	}
 	telemetry.emit("failure_persist", "failure_persist_started", "", string(code))
 	_, err := r.writer.RecordFailure(ctx, turn, completion.CompletionFailure{
 		Code:      code,
+		Class:     failureClass,
 		Message:   message,
 		Retryable: isRetryableFailureCode(code),
 		Recovery: hostedgenesis.Recovery{
@@ -597,14 +605,21 @@ func (r *turnRunner) providerHeartbeat() time.Duration {
 }
 
 // providerFailureMessage deliberately excludes SDK error text. Provider errors
-// may echo request/response bodies or headers, so durable Host truth stores only
-// the phase and stable content-free class already used by telemetry.
+// may echo request/response bodies or headers, so this detail remains the
+// established content-free phase/kind message while Failure.Class carries the
+// canonical durable provider taxonomy.
 func providerFailureMessage(phase string, err error) string {
 	failureClass := llm.ProviderFailureClass(err)
-	if failureClass == "" {
-		failureClass = "provider_error"
+	failureKind := "provider_error"
+	switch failureClass {
+	case string(hostedgenesis.FailureClassProviderTimeout):
+		failureKind = "timeout"
+	case string(hostedgenesis.FailureClassProviderCanceled):
+		failureKind = "canceled"
+	case string(hostedgenesis.FailureClassInvalidProviderOutput), string(hostedgenesis.FailureClassParseValidation):
+		failureKind = failureClass
 	}
-	return strings.TrimSpace(phase) + " " + failureClass
+	return strings.TrimSpace(phase) + " " + failureKind
 }
 
 func isRetryableFailureCode(code hostedgenesis.FailureCode) bool {

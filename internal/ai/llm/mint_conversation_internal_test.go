@@ -445,6 +445,9 @@ func TestMintConversationDeclarationsAnthropicRejectsTruncatedStopReason(t *test
 	if err == nil || !strings.Contains(err.Error(), "response truncated") || strings.Contains(err.Error(), "invalid json output") || strings.Contains(err.Error(), "capabilities") {
 		t.Fatalf("expected stable truncation failure before JSON/declaration validation, got %v", err)
 	}
+	if got := ProviderFailureClass(err); got != string(hostedgenesis.FailureClassInvalidProviderOutput) {
+		t.Fatalf("invalid stop reason must classify as invalid provider output, got %q", got)
+	}
 }
 
 func anthropicDeclarationToolResponse(t *testing.T, fixture map[string]any, stopReason string) []byte {

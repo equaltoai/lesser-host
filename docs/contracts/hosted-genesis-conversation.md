@@ -144,8 +144,9 @@ Field names locked for M1.1:
 | `status` | yes | One of the locked status names below. |
 | `latest_turn_id` | no | Opaque Host id for the most recent durable turn. |
 | `message_count` | yes | Count of durable turns/messages Host has accepted into this conversation. |
-| `messages` | no | Bounded private hosted-genesis transcript projection for Lesser same-origin relay. Entries expose only `id`, `role`, `content`, `order`, and `created_at` when Host has a safe timestamp. |
+| `messages` | no | Bounded private hosted-genesis transcript projection for Lesser same-origin relay, including a failed extraction so an operator can recover from the final safe turn. Entries expose only `id`, `role`, bounded/redacted `content`, `order`, and `created_at` when Host has a safe timestamp. |
 | `messages_truncated` | no | `true` when Host bounded the projected transcript by entry count or content length. |
+| `messages_redacted` | no | `true` when one or more secret-shaped message bodies were replaced with the fixed redaction marker. |
 | `produced_declarations` | only `declaration_ready` | Terminal declaration evidence. Publish is forbidden without it. |
 | `failure` | only `failed` | Typed bounded recovery instructions. |
 | `request_id` | yes | Host request id for the snapshot; safe for correlation/log lookup. |
@@ -167,12 +168,13 @@ only when valid `produced_declarations` are present. Downstream M1.2/M1.3 consum
 
 ### Bounded private transcript projection
 
-When `conversation.status=assistant_turn_ready`, the Lesser instance-key route family may include `conversation.messages`
+While a conversation is active, and when `conversation.status=failed`, the Lesser instance-key route family may include `conversation.messages`
 so Lesser can relay the hosted genesis dialogue through its same-origin UI without giving the browser Host credentials.
 This is a private server-to-server projection, not a new source of truth: `HostedGenesisSession` remains authoritative for
 ids, status, retry, billing, recovery, and declaration readiness. Host sources the transcript from decoded
 `SoulAgentMintConversation.Messages` only after the conversation id and agent id match the session, and omits the field
-when the compatibility row is absent, malformed, mismatched, or contains credential/infrastructure-shaped material.
+when the compatibility row is absent, malformed, or mismatched. Credential-shaped material is redacted per entry so one
+unsafe historical message cannot erase otherwise safe operator recovery context.
 
 Transcript bounds are part of the contract: at most 64 entries are projected, each entry has at most 8192 characters of
 `content`, and `messages_truncated=true` indicates that Host bounded the projection. Entries contain only:
@@ -185,10 +187,21 @@ Transcript bounds are part of the contract: at most 64 entries are projected, ea
 | `order` | yes | 1-based absolute order in the stored hosted-genesis transcript. |
 | `created_at` | no | Present only when Host has a safe durable timestamp, currently user turn acceptance time from the session turn ledger. |
 | `truncated` | no | Present and true only when this entry's content was bounded. |
+| `redacted` | no | Present and true only when `content` is the fixed `[redacted: sensitive content]` marker. |
 
-`messages` never carries provider secrets, Instance API keys, bearer tokens, wallet/signing material, SSM/AWS details,
-MicroVM endpoint tokens, target-account IAM details, or raw infrastructure state. If such material is detected in the
-stored compatibility transcript, Host omits the transcript projection rather than redacting in place.
+`messages` never carries provider secrets, Instance API keys, bearer-token values, wallet/signing material, SSM/AWS
+details, MicroVM endpoint tokens, target-account IAM details, or raw infrastructure state. Host detects value-shaped
+credentials (rather than broad words such as "private key" or "bearer") and replaces only the affected message with a
+fixed marker. `messages_redacted=true` makes that loss explicit; `messages_truncated=true` independently signals count or
+length bounding.
+
+### Content-free failure class
+
+`failure.class` is optional for legacy/non-provider failures and is written by the official Hosted Genesis MicroVM actor
+for provider-backed failures. It is metadata-only and one of `provider_timeout`, `provider_canceled`,
+`provider_api_failure`, `invalid_provider_output`, or `parse_validation_failure`. Provider error text, response bodies,
+tool arguments/results, transcript text, and declarations never enter this field. `failure.code` continues to own
+recovery semantics; the class only locates the safe failure boundary for operators when runtime log delivery is absent.
 
 ### `created` projection decision for Lesser
 

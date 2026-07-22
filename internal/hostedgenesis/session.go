@@ -211,6 +211,21 @@ const (
 	FailureCodeMicroVMUnavailable          FailureCode = "microvm_unavailable"
 )
 
+// FailureClass is a content-free, bounded explanation of where a provider-backed
+// declaration extraction failed. It is deliberately separate from FailureCode:
+// the code drives recovery while the class lets operators distinguish timeout,
+// provider API, provider-output, and parse/validation boundaries without ever
+// persisting SDK error text, prompts, transcripts, tool arguments, or output.
+type FailureClass string
+
+const (
+	FailureClassProviderTimeout       FailureClass = "provider_timeout"
+	FailureClassProviderCanceled      FailureClass = "provider_canceled"
+	FailureClassProviderAPIFailure    FailureClass = "provider_api_failure"
+	FailureClassInvalidProviderOutput FailureClass = "invalid_provider_output"
+	FailureClassParseValidation       FailureClass = "parse_validation_failure"
+)
+
 // Recovery is the typed recovery envelope exposed on failed compact projections.
 type Recovery struct {
 	Action            RecoveryAction `json:"action"`
@@ -221,10 +236,11 @@ type Recovery struct {
 
 // Failure is the durable failed-state evidence for HostedGenesisSession.
 type Failure struct {
-	Code      FailureCode `json:"code"`
-	Message   string      `json:"message"`
-	Retryable bool        `json:"retryable"`
-	Recovery  Recovery    `json:"recovery"`
+	Code      FailureCode  `json:"code"`
+	Class     FailureClass `json:"class,omitempty"`
+	Message   string       `json:"message"`
+	Retryable bool         `json:"retryable"`
+	Recovery  Recovery     `json:"recovery"`
 }
 
 // FailureMessage returns the fixed public message for a failure code. Provider
@@ -269,6 +285,9 @@ func (f Failure) Validate() error {
 	if !isAllowedFailureCode(f.Code) || strings.TrimSpace(f.Message) == "" {
 		return ErrInvalidFailureRecovery
 	}
+	if f.Class != "" && !isAllowedFailureClass(f.Class) {
+		return ErrInvalidFailureRecovery
+	}
 	if !isAllowedRecoveryAction(f.Recovery.Action) {
 		return ErrInvalidFailureRecovery
 	}
@@ -279,6 +298,30 @@ func (f Failure) Validate() error {
 		return ErrInvalidFailureRecovery
 	}
 	return nil
+}
+
+// NormalizeFailureClass accepts only the locked content-free class vocabulary.
+// Unknown strings collapse to the provider API boundary rather than becoming
+// arbitrary durable/error-detail text.
+func NormalizeFailureClass(value string) FailureClass {
+	class := FailureClass(strings.ToLower(strings.TrimSpace(value)))
+	if isAllowedFailureClass(class) {
+		return class
+	}
+	return FailureClassProviderAPIFailure
+}
+
+func isAllowedFailureClass(class FailureClass) bool {
+	switch class {
+	case FailureClassProviderTimeout,
+		FailureClassProviderCanceled,
+		FailureClassProviderAPIFailure,
+		FailureClassInvalidProviderOutput,
+		FailureClassParseValidation:
+		return true
+	default:
+		return false
+	}
 }
 
 func isAllowedFailureCode(code FailureCode) bool {

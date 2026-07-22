@@ -745,6 +745,21 @@ test("P52 H1.5 corrective: host-owned MicroVM execution role propagates to RunMi
   const execAssumePolicyJson = JSON.stringify(
     executionRole[1].Properties?.AssumeRolePolicyDocument ?? {},
   );
+  for (const action of ["sts:AssumeRole", "sts:TagSession"]) {
+    assert.ok(
+      execAssumePolicyJson.includes(action),
+      `expected MicroVM execution role trust to allow ${action}`,
+    );
+  }
+  const buildAssumePolicyJson = JSON.stringify(
+    buildRole[1].Properties?.AssumeRolePolicyDocument ?? {},
+  );
+  for (const action of ["sts:AssumeRole", "sts:TagSession"]) {
+    assert.ok(
+      buildAssumePolicyJson.includes(action),
+      `expected MicroVM image build role trust to allow ${action}`,
+    );
+  }
   assert.ok(
     !execAssumePolicyJson.includes(buildRoleLogicalId),
     "execution role trust must not allow the image build role to assume runtime authority",
@@ -849,7 +864,7 @@ test("P52 H1.5 corrective: host-owned MicroVM execution role propagates to RunMi
 
   // Execution role is least-privilege: DynamoDB R/W on the Host state table,
   // ssm:GetParameter on the two provider-key params only, kms:Decrypt scoped
-  // via SSM, and the basic execution managed policy. No PassRole, no wildcard
+  // via SSM, and exact CloudWatch runtime log actions. No PassRole, no wildcard
   // DynamoDB, no wildcard SSM, no IAM mutation, no Secrets Manager.
   const execRolePolicies = findResourceEntries(
     template,
@@ -877,6 +892,9 @@ test("P52 H1.5 corrective: host-owned MicroVM execution role propagates to RunMi
     "dynamodb:Query",
     "ssm:GetParameter",
     "kms:Decrypt",
+    "logs:CreateLogGroup",
+    "logs:CreateLogStream",
+    "logs:PutLogEvents",
   ]) {
     assert.ok(
       execRolePolicyJson.includes(action),
@@ -913,9 +931,17 @@ test("P52 H1.5 corrective: host-owned MicroVM execution role propagates to RunMi
     "execution role ssm:GetParameter must not be wildcard",
   );
   assert.ok(
-    !execRolePolicyJson.includes('"Resource":["*"]') ||
-      execRolePolicyJson.includes('"kms:ViaService"'),
-    "wildcard resource only allowed for kms:Decrypt via SSM",
+    execRolePolicyJson.includes(
+      "/aws/lambda/microvms/lesser-host-lab_hosted_genesis:*",
+    ),
+    "runtime CreateLogStream/PutLogEvents must be scoped to the canonical hosted-genesis MicroVM log group",
+  );
+  const execManagedPolicies = JSON.stringify(
+    executionRole[1].Properties?.ManagedPolicyArns ?? [],
+  );
+  assert.ok(
+    !execManagedPolicies.includes("AWSLambdaBasicExecutionRole"),
+    "MicroVM runtime logging must use the explicit exact-action policy, not a Lambda-function managed policy",
   );
 
   // STAGE and STATE_TABLE_NAME reach the in-VM MicroVM image env (the workload

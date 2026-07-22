@@ -37,7 +37,8 @@
         "content": { "type": "string", "minLength": 1, "maxLength": 8192 },
         "order": { "type": "integer", "minimum": 1 },
         "created_at": { "type": "string", "format": "date-time" },
-        "truncated": { "type": "boolean" }
+        "truncated": { "type": "boolean" },
+        "redacted": { "type": "boolean" }
       }
     },
     "declarations": {
@@ -110,7 +111,18 @@
             "missing_produced_declarations",
             "invalid_produced_declarations",
             "tenant_boundary_violation",
-            "operator_action_required"
+            "operator_action_required",
+            "microvm_unavailable"
+          ]
+        },
+        "class": {
+          "type": "string",
+          "enum": [
+            "provider_timeout",
+            "provider_canceled",
+            "provider_api_failure",
+            "invalid_provider_output",
+            "parse_validation_failure"
           ]
         },
         "message": { "type": "string", "minLength": 1, "maxLength": 512 },
@@ -148,6 +160,7 @@
           "items": { "$ref": "#/$defs/conversation_message" }
         },
         "messages_truncated": { "type": "boolean" },
+        "messages_redacted": { "type": "boolean" },
         "produced_declarations": { "$ref": "#/$defs/produced_declarations" },
         "failure": { "$ref": "#/$defs/failure" },
         "request_id": { "type": "string", "minLength": 1, "maxLength": 128 },

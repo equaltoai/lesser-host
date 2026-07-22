@@ -27,6 +27,48 @@ func (providerBlockingTransport) RoundTrip(r *http.Request) (*http.Response, err
 	return nil, fmt.Errorf("private-provider-key private response: %w", r.Context().Err())
 }
 
+func TestRuntimeTelemetryEmitsRequestHeartbeatResponseToolAndTerminalEventsContentFree(t *testing.T) {
+	const privateContent = "private transcript and provider body"
+	var logs bytes.Buffer
+	priorLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(priorLogger) })
+
+	turn := completion.CompletionTurn{InstanceSlug: "demo", ConversationID: "conv-safe", TurnID: "turn-safe", RequestID: "req-safe"}
+	in := turnInput{
+		modelSet: "anthropic:claude-test",
+		session:  &models.HostedGenesisSession{RegistrationID: "reg-safe", TraceIDs: &hostedgenesis.TraceIDs{CorrelationID: "corr-safe"}},
+		messages: []llm.MintConversationMessage{{Role: "user", Content: privateContent}},
+	}
+	lifecycle := newTurnLifecycleTelemetry(turn)
+	lifecycle.bind(in)
+	lifecycle.emit("turn", "turn_accepted", "extract_declarations", "")
+	provider := newProviderCallTelemetry(turn, in, "declaration_extraction")
+	provider.observe(llm.ProviderTelemetryEvent{Provider: "anthropic", Model: "claude-test", Phase: "declaration_extraction", EventType: "request_start", Sequence: 1, FirstEvent: true, ToolName: "soul_five_body_declarations"})
+	provider.heartbeat()
+	provider.observe(llm.ProviderTelemetryEvent{Provider: "anthropic", Model: "claude-test", Phase: "declaration_extraction", EventType: "response_received", Sequence: 2, StopReason: "tool_use", ToolCalls: 1, ToolName: "soul_five_body_declarations"})
+	provider.observe(llm.ProviderTelemetryEvent{Provider: "anthropic", Model: "claude-test", Phase: "declaration_extraction", EventType: "tool_input_received", Sequence: 3, StopReason: "tool_use", ToolCalls: 1, ToolName: "soul_five_body_declarations"})
+	provider.observe(llm.ProviderTelemetryEvent{Provider: "anthropic", Model: "claude-test", Phase: "declaration_extraction", EventType: "provider_call_completed", Sequence: 4, LastEvent: true, StopReason: "tool_use", ToolCalls: 1, ToolName: "soul_five_body_declarations"})
+
+	text := logs.String()
+	for _, want := range []string{
+		"hosted-genesis-microvm-workload: turn lifecycle",
+		"hosted-genesis-microvm-workload: provider_sdk_event",
+		"hosted-genesis-microvm-workload: provider_call_heartbeat",
+		`"event_type":"request_start"`, `"event_type":"heartbeat"`,
+		`"event_type":"response_received"`, `"stop_reason":"tool_use"`,
+		`"event_type":"tool_input_received"`, `"tool_name":"soul_five_body_declarations"`,
+		`"event_type":"provider_call_completed"`, `"last_event":true`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("runtime telemetry missing %q: %s", want, text)
+		}
+	}
+	if strings.Contains(text, privateContent) {
+		t.Fatalf("runtime telemetry leaked private content: %s", text)
+	}
+}
+
 func TestHungProviderHeartbeatsThenPersistsTypedFailureBeforeMicroVMEnvelope(t *testing.T) {
 	setFiveBodyContractEnv(t)
 	oldBase := os.Getenv("OPENAI_BASE_URL")
@@ -72,6 +114,9 @@ func assertHungProviderDurableFailure(t *testing.T, compStore *fakeCompletionSto
 	if got := compStore.session.Failure.Message; got != hostedgenesis.FailureMessage(hostedgenesis.FailureCodeAssistantTurnFailed) {
 		t.Fatalf("durable provider failure must use the canonical typed message, got %q", got)
 	}
+	if got := compStore.session.Failure.Class; got != hostedgenesis.FailureClassProviderTimeout {
+		t.Fatalf("durable provider timeout class mismatch: %q", got)
+	}
 	if got := providerFailureMessage("assistant_stream", fmt.Errorf("private-provider-key private response: %w", context.DeadlineExceeded)); got != "assistant_stream timeout" {
 		t.Fatalf("provider failure detail must be content-free, got %q", got)
 	}
@@ -89,7 +134,7 @@ func assertHungProviderDurableFailure(t *testing.T, compStore *fakeCompletionSto
 
 func assertHungProviderLogs(t *testing.T, text string) {
 	t.Helper()
-	for _, want := range []string{`"event_type":"turn_accepted"`, `"event_type":"store_preflight_completed"`, `"event_type":"actor_decision_completed"`, `"event_type":"heartbeat"`, `"last_sdk_event_at":`, `"event_type":"provider_call_failed"`, `"failure_class":"timeout"`, `"event_type":"failure_persist_completed"`, `"correlation_id":"corr-timeout-test"`} {
+	for _, want := range []string{`"event_type":"turn_accepted"`, `"event_type":"store_preflight_completed"`, `"event_type":"actor_decision_completed"`, `"event_type":"heartbeat"`, `"last_sdk_event_at":`, `"event_type":"provider_call_failed"`, `"failure_class":"provider_timeout"`, `"event_type":"failure_persist_completed"`, `"correlation_id":"corr-timeout-test"`} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("missing safe hung-provider telemetry %s: %s", want, text)
 		}
@@ -148,8 +193,11 @@ func TestDeclarationParseFailureTelemetryIsCorrelatedRedactedAndDurable(t *testi
 	if compStore.session.Failure == nil || compStore.session.Failure.Code != hostedgenesis.FailureCodeDeclarationExtractionFailed {
 		t.Fatalf("expected typed declaration extraction failure, got %#v", compStore.session)
 	}
+	if compStore.session.Failure.Class != hostedgenesis.FailureClassParseValidation {
+		t.Fatalf("expected durable parse/validation class, got %#v", compStore.session.Failure)
+	}
 	text := logs.String()
-	for _, want := range []string{`"phase":"declaration_extraction"`, `"failure_class":"parse_error"`, `"schema_name":"soul_five_body_declarations"`, `"correlation_id":"corr-declaration-test"`, `"event_type":"failure_persist_completed"`} {
+	for _, want := range []string{`"phase":"declaration_extraction"`, `"failure_class":"parse_validation_failure"`, `"schema_name":"soul_five_body_declarations"`, `"correlation_id":"corr-declaration-test"`, `"event_type":"failure_persist_completed"`} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("missing declaration failure telemetry %s: %s", want, text)
 		}
