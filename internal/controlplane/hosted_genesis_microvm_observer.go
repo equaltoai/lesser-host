@@ -129,11 +129,9 @@ func hostedGenesisObservationConflictClassification(expected *models.HostedGenes
 		actual.Version > expected.Version &&
 		strings.TrimSpace(actual.LatestTurnID) == strings.TrimSpace(expected.LatestTurnID) {
 		actualStatus := hostedgenesis.NormalizeStatus(actual.Status)
-		expectedStatus := hostedgenesis.NormalizeStatus(expected.Status)
 		if actualStatus == hostedgenesis.StatusAssistantTurnReady ||
 			actualStatus == hostedgenesis.StatusDeclarationReady ||
-			actualStatus == hostedgenesis.StatusFailed ||
-			(expectedStatus == hostedgenesis.StatusInProgress && actualStatus == hostedgenesis.StatusDeclarationExtractionPending) {
+			actualStatus == hostedgenesis.StatusFailed {
 			return hostedGenesisObservationConflictWorkloadWon
 		}
 	}

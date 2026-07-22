@@ -42,7 +42,7 @@ func openAIModelFromSet(modelSet string) (string, error) {
 
 func openAIClientForKey(apiKey string) openai.Client {
 	apiKey = strings.TrimSpace(apiKey)
-	opts := []option.RequestOption{}
+	opts := []option.RequestOption{option.WithMaxRetries(DefaultProviderSDKRetryBudget)}
 	if apiKey != "" {
 		opts = append(opts, option.WithAPIKey(apiKey))
 	}
@@ -143,7 +143,7 @@ func openAIJSONSchemaBatch[Prompt any, Parsed any, Out any](
 	if err != nil {
 		return zero, models.AIUsage{}, err
 	}
-	recorder := newProviderTelemetryRecorder("openai", model, "declaration_extraction", cfg.Telemetry)
+	recorder := newProviderTelemetryRecorder("openai", model, "json_text_batch", cfg.Telemetry)
 
 	payload, err := json.Marshal(prompt)
 	if err != nil {

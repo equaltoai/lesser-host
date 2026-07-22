@@ -90,6 +90,20 @@ func TestHostedGenesisSessionRejectsInvalidTurnLedger(t *testing.T) {
 	require.ErrorIs(t, session.BeforeCreate(), hostedgenesis.ErrDuplicateTurnID)
 }
 
+func TestHostedGenesisSessionRejectsCandidateFromAnotherTurn(t *testing.T) {
+	t.Parallel()
+
+	session := validHostedGenesisSessionModel()
+	session.Model = "openai:gpt-5.4"
+	candidate, err := hostedgenesis.NewDeclarationCandidate(hostedgenesis.DeclarationCandidateBinding{
+		InstanceSlug: session.InstanceSlug, RegistrationID: session.RegistrationID, AgentID: session.AgentID,
+		ConversationID: session.ConversationID, SourceTurnID: "turn_other", Model: session.Model,
+	}, session.CreatedAt)
+	require.NoError(t, err)
+	session.DeclarationCandidate = candidate
+	require.ErrorContains(t, session.BeforeCreate(), "declaration candidate binding does not match hosted genesis session")
+}
+
 func TestHostedGenesisSessionModelHasNoSecretBearingFields(t *testing.T) {
 	t.Parallel()
 

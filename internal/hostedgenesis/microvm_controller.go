@@ -36,8 +36,8 @@ type MicroVMControllerRuntime struct {
 	ingressNetworkConnectorRefs []string
 	egressNetworkConnectorRefs  []string
 	// maximumDurationSeconds caps each dispatched MicroVM run session duration
-	// (decision 7: sized for the longest LLM turn plus in-VM declaration
-	// extraction). Zero/positive-only; a non-positive value lets the AppTheory
+	// (decision 7: sized for the longest LLM turn plus in-VM phase tool and
+	// validation work). Zero/positive-only; a non-positive value lets AppTheory's
 	// provider default apply. It is set on the run request envelope only.
 	maximumDurationSeconds int32
 }
@@ -60,8 +60,8 @@ type MicroVMControllerRuntimeConfig struct {
 	SessionTTL                  time.Duration
 	ReconstructionStaleAfter    time.Duration
 	// MaximumDurationSeconds caps each dispatched MicroVM run session duration,
-	// sized for the longest LLM turn plus in-VM declaration extraction (P52 H1.5
-	// decision 7). Non-positive leaves the AppTheory provider default in place.
+	// sized for the longest provider-backed typed-section phase. Non-positive
+	// leaves the AppTheory provider default in place.
 	MaximumDurationSeconds int32
 }
 
@@ -148,7 +148,7 @@ func (r *MicroVMControllerRuntime) Handle(ctx context.Context, req runtimemicrov
 			req.EgressNetworkConnectorRefs = append([]string(nil), r.egressNetworkConnectorRefs...)
 		}
 		// P52 H1.5 decision 7: cap the dispatched run session duration for the
-		// longest LLM turn plus in-VM extraction. A caller-provided positive value
+		// longest LLM turn plus in-VM phase-tool validation. A caller-provided positive value
 		// wins; otherwise the runtime-configured cap applies. A non-positive cap
 		// leaves the AppTheory provider default in place.
 		if req.MaximumDurationSeconds <= 0 && r.maximumDurationSeconds > 0 {

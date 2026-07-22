@@ -136,6 +136,94 @@ func TestStore_UpdateHostedGenesisSessionRejectsIllegalTransitionBeforeWrite(t *
 	db.AssertExpectations(t)
 }
 
+func TestStore_TypedCandidateCheckpointAndProjectionAreGuardedAtomically(t *testing.T) {
+	ctx := t.Context()
+	st, db := newFakeHostedGenesisStore(t)
+	session, conversation := typedCandidateStoreFixture(t, false)
+	require.NoError(t, db.Model(session).Create())
+	require.NoError(t, db.Model(conversation).Create())
+	current, err := st.GetHostedGenesisSession(ctx, session.InstanceSlug, session.ConversationID)
+	require.NoError(t, err)
+
+	nextCandidate := applyStoreCandidateTool(t, current.DeclarationCandidate, hostedgenesis.DeclarationToolIdentityPut, "identity-call", `{"section":{"summary":"I am the tenant-bound Hosted Genesis conversation actor.","notes":[]}}`)
+	checkpoint := *current
+	checkpoint.DeclarationCandidate = nextCandidate
+	checkpoint.UpdatedAt = checkpoint.UpdatedAt.Add(time.Second)
+	require.NoError(t, st.CheckpointHostedGenesisCandidate(ctx, &checkpoint, current.Version, hostedgenesis.StatusInProgress, current.LatestTurnID, current.CandidateRevision, current.CandidateHash))
+
+	checkpointed, err := st.GetHostedGenesisSession(ctx, session.InstanceSlug, session.ConversationID)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), checkpointed.CandidateRevision)
+	require.Equal(t, hostedgenesis.DeclarationSectionPhilosophy, checkpointed.DeclarationCandidate.CurrentSection)
+
+	assistant := *checkpointed
+	assistant.Status = string(hostedgenesis.StatusAssistantTurnReady)
+	assistant.AssistantCheckpointRef = "checkpoint://hosted-genesis/assistant-turn-123"
+	assistantConversation := *conversation
+	assistantConversation.Status = models.SoulMintConversationStatusAssistantTurnReady
+	assistantConversation.Messages = models.EncodeSoulMintConversationBlob(`[{"role":"user","content":"identity"},{"role":"assistant","content":"philosophy next"}]`)
+	assistantConversation.LatestTurnID = checkpointed.LatestTurnID
+	assistantConversation.UpdatedAt = checkpointed.UpdatedAt.Add(time.Second)
+	require.NoError(t, st.RecordHostedGenesisAssistantTurnAndConversation(ctx, &assistant, checkpointed.Version, hostedgenesis.StatusInProgress, checkpointed.LatestTurnID, checkpointed.CandidateRevision, checkpointed.CandidateHash, &assistantConversation))
+
+	storedSession, err := st.GetHostedGenesisSession(ctx, session.InstanceSlug, session.ConversationID)
+	require.NoError(t, err)
+	storedConversation, err := st.GetSoulAgentMintConversation(ctx, session.AgentID, session.ConversationID)
+	require.NoError(t, err)
+	require.Equal(t, string(hostedgenesis.StatusAssistantTurnReady), storedSession.Status)
+	require.Equal(t, models.SoulMintConversationStatusAssistantTurnReady, storedConversation.Status)
+	require.Contains(t, models.DecodeSoulMintConversationBlob(storedConversation.Messages), "philosophy next")
+
+	stale := assistant
+	stale.RequestID = "stale-request"
+	staleConversation := assistantConversation
+	staleConversation.RequestID = "stale-request"
+	require.Error(t, st.RecordHostedGenesisAssistantTurnAndConversation(ctx, &stale, checkpointed.Version, hostedgenesis.StatusInProgress, checkpointed.LatestTurnID, checkpointed.CandidateRevision, checkpointed.CandidateHash, &staleConversation))
+	reloaded, err := st.GetSoulAgentMintConversation(ctx, session.AgentID, session.ConversationID)
+	require.NoError(t, err)
+	require.NotEqual(t, "stale-request", reloaded.RequestID)
+}
+
+func TestStore_TypedCandidateFinalizationPublishesExactBytesOnce(t *testing.T) {
+	ctx := t.Context()
+	st, db := newFakeHostedGenesisStore(t)
+	session, conversation := typedCandidateStoreFixture(t, true)
+	require.NoError(t, db.Model(session).Create())
+	require.NoError(t, db.Model(conversation).Create())
+	current, err := st.GetHostedGenesisSession(ctx, session.InstanceSlug, session.ConversationID)
+	require.NoError(t, err)
+	canonicalJSON, canonicalHash := current.DeclarationCandidate.CanonicalJSON, current.DeclarationCandidate.CandidateHash
+	finalized, err := hostedgenesis.FinalizeDeclarationCandidate(current.DeclarationCandidate, current.LatestTurnID, current.DeclarationCandidate.Affirmation.AffirmedAt)
+	require.NoError(t, err)
+	progressed := *current
+	progressed.Status = string(hostedgenesis.StatusDeclarationReady)
+	progressed.DeclarationCandidate = finalized
+	progressed.DeclarationCheckpoint = &hostedgenesis.DeclarationCheckpoint{
+		DeclarationID: "decl-typed", DeclarationHash: canonicalHash, CheckpointRef: "checkpoint://hosted-genesis/declaration-typed",
+		ProducedAt: finalized.Affirmation.AffirmedAt, RegistrationID: progressed.RegistrationID, ConversationID: progressed.ConversationID,
+		AgentID: progressed.AgentID, MessageCount: progressed.MessageCount, Model: progressed.Model,
+		SchemaVersion: finalized.SchemaVersion, GuidanceVersion: finalized.GuidanceVersion, RequestID: progressed.RequestID,
+	}
+	projected := *conversation
+	projected.Status = models.SoulMintConversationStatusDeclarationReady
+	projected.ProducedDeclarations = models.EncodeSoulMintConversationBlob(canonicalJSON)
+	projected.LatestTurnID = current.LatestTurnID
+	projected.CompletedAt = finalized.Affirmation.AffirmedAt
+	projected.UpdatedAt = finalized.Affirmation.AffirmedAt
+	require.NoError(t, st.FinalizeHostedGenesisCandidateAndConversation(ctx, &progressed, current.Version, hostedgenesis.StatusInProgress, current.LatestTurnID, current.CandidateRevision, current.CandidateHash, &projected))
+
+	storedSession, err := st.GetHostedGenesisSession(ctx, session.InstanceSlug, session.ConversationID)
+	require.NoError(t, err)
+	storedConversation, err := st.GetSoulAgentMintConversation(ctx, session.AgentID, session.ConversationID)
+	require.NoError(t, err)
+	require.Equal(t, canonicalHash, storedSession.CandidateHash)
+	require.Equal(t, canonicalJSON, models.DecodeSoulMintConversationBlob(storedConversation.ProducedDeclarations))
+	require.Error(t, st.FinalizeHostedGenesisCandidateAndConversation(ctx, &progressed, current.Version, hostedgenesis.StatusInProgress, current.LatestTurnID, current.CandidateRevision, current.CandidateHash, &projected))
+	replayed, err := st.GetSoulAgentMintConversation(ctx, session.AgentID, session.ConversationID)
+	require.NoError(t, err)
+	require.Equal(t, canonicalJSON, models.DecodeSoulMintConversationBlob(replayed.ProducedDeclarations))
+}
+
 func TestStore_FailHostedGenesisSessionAndConversationUsesOneGuardedTransaction(t *testing.T) {
 	t.Parallel()
 
@@ -246,15 +334,15 @@ func recoveredTurnAlreadyFailedIdempotencyFixture(t *testing.T) (*models.HostedG
 	updatedAt := time.Date(2026, 7, 22, 13, 27, 52, 62_432_003, time.UTC)
 	current := validStoreHostedGenesisSession()
 	current.Version = 51
-	current.Status = string(hostedgenesis.StatusDeclarationExtractionPending)
+	current.Status = string(hostedgenesis.StatusInProgress)
 	current.Failure = &hostedgenesis.Failure{
-		Code:      hostedgenesis.FailureCodeDeclarationExtractionFailed,
-		Message:   hostedgenesis.FailureMessage(hostedgenesis.FailureCodeDeclarationExtractionFailed),
+		Code:      hostedgenesis.FailureCodeAssistantTurnFailed,
+		Message:   hostedgenesis.FailureMessage(hostedgenesis.FailureCodeAssistantTurnFailed),
 		Retryable: false,
 		Recovery: hostedgenesis.Recovery{
 			Action:            hostedgenesis.RecoveryActionRetrySameStep,
 			RetryAfterSeconds: 5,
-			Reason:            string(hostedgenesis.FailureCodeDeclarationExtractionFailed),
+			Reason:            string(hostedgenesis.FailureCodeAssistantTurnFailed),
 		},
 	}
 	current.RequestID = "req-recovered-turn"
@@ -267,7 +355,7 @@ func recoveredTurnAlreadyFailedIdempotencyFixture(t *testing.T) (*models.HostedG
 		AgentID:        current.AgentID,
 		ConversationID: current.ConversationID,
 		Model:          current.Model,
-		Status:         models.SoulMintConversationStatusDeclarationExtractionPending,
+		Status:         models.SoulMintConversationStatusInProgress,
 		LatestTurnID:   current.LatestTurnID,
 		RequestID:      current.RequestID,
 		CreatedAt:      current.CreatedAt,
@@ -447,6 +535,66 @@ func validStoreHostedGenesisSession() *models.HostedGenesisSession {
 	}
 	_ = session.BeforeCreate()
 	return session
+}
+
+func newFakeHostedGenesisStore(t *testing.T) (*Store, DB) {
+	t.Helper()
+	fake := fakedb.New()
+	rawDB, err := tabletheory.NewWithClient(session.Config{Region: "us-east-1"}, fake)
+	require.NoError(t, err)
+	require.NoError(t, rawDB.CreateTable(&models.HostedGenesisSession{}))
+	db, ok := rawDB.(DB)
+	require.True(t, ok)
+	return New(db), db
+}
+
+func typedCandidateStoreFixture(t *testing.T, complete bool) (*models.HostedGenesisSession, *models.SoulAgentMintConversation) {
+	t.Helper()
+	session := validStoreHostedGenesisSession()
+	session.Model = "openai:gpt-5"
+	candidate, err := hostedgenesis.NewDeclarationCandidate(hostedgenesis.DeclarationCandidateBinding{
+		InstanceSlug: session.InstanceSlug, RegistrationID: session.RegistrationID, AgentID: session.AgentID,
+		ConversationID: session.ConversationID, SourceTurnID: session.LatestTurnID, Model: session.Model,
+	}, session.CreatedAt)
+	require.NoError(t, err)
+	if complete {
+		candidate = applyStoreCandidateTool(t, candidate, hostedgenesis.DeclarationToolIdentityPut, "identity", `{"section":{"summary":"I am the tenant-bound Hosted Genesis conversation actor.","notes":[]}}`)
+		candidate = applyStoreCandidateTool(t, candidate, hostedgenesis.DeclarationToolPhilosophyPut, "philosophy", `{"section":{"summary":"I prefer auditable narrow authority over implicit convenience.","notes":[]}}`)
+		candidate = applyStoreCandidateTool(t, candidate, hostedgenesis.DeclarationToolDisciplinePut, "discipline", `{"section":{"summary":"I checkpoint each accepted section before proceeding.","notes":[]}}`)
+		candidate = applyStoreCandidateTool(t, candidate, hostedgenesis.DeclarationToolBoundariesPut, "boundaries", `{"section":{"summary":"I remain inside tenant and owner authority boundaries.","notes":[]}}`)
+		candidate = applyStoreCandidateTool(t, candidate, hostedgenesis.DeclarationToolSoulPut, "soul", `{"section":{"summary":"My commitments bind review and publication to exact durable truth.","notes":[],"refusals":[{"bypass":"skip hash validation","invariant":"reviewed bytes remain exact","closestSafePath":"submit matching hashes"},{"bypass":"cross tenant state","invariant":"tenant guards remain absolute","closestSafePath":"restart in the correct tenant"},{"bypass":"call a provider after affirmation","invariant":"finalization is deterministic","closestSafePath":"publish affirmed bytes"}]},"selfDescription":{"purpose":"I am the tenant-bound Hosted Genesis conversation actor.","constraints":"I remain inside tenant and owner authority boundaries.","commitments":"I prefer auditable narrow authority over implicit convenience.","limitations":"My commitments bind review and publication to exact durable truth.","authoredBy":"agent","mintingModel":"openai:gpt-5"},"capabilities":[],"transparency":{"modelProviderUncertainty":"Provider evidence is self-declared.","operationalNotes":"Host validates each section.","selfDeclaredNotice":"This candidate is self-declared until publication."}}`)
+		candidate, err = hostedgenesis.ApplyDeclarationCandidateAction(candidate, hostedgenesis.DeclarationCandidateAction{
+			Action: "affirm", CandidateRevision: candidate.Revision, CandidateHash: candidate.CandidateHash, ReviewHash: candidate.Review.ReviewHash,
+		}, session.LatestTurnID, session.CreatedAt.Add(time.Minute))
+		require.NoError(t, err)
+	}
+	session.DeclarationCandidate = candidate
+	require.NoError(t, session.BeforeCreate())
+	conversation := &models.SoulAgentMintConversation{
+		AgentID: session.AgentID, ConversationID: session.ConversationID, Model: session.Model,
+		Status: models.SoulMintConversationStatusInProgress, LatestTurnID: session.LatestTurnID,
+		Messages:  models.EncodeSoulMintConversationBlob(`[{"role":"user","content":"begin"}]`),
+		RequestID: session.RequestID, CreatedAt: session.CreatedAt, UpdatedAt: session.UpdatedAt,
+	}
+	require.NoError(t, conversation.BeforeCreate())
+	return session, conversation
+}
+
+func applyStoreCandidateTool(t *testing.T, candidate *hostedgenesis.DeclarationCandidate, toolName string, callID string, payload string) *hostedgenesis.DeclarationCandidate {
+	t.Helper()
+	var bound map[string]any
+	require.NoError(t, json.Unmarshal([]byte(payload), &bound))
+	bound["candidateRevision"] = candidate.Revision
+	bound["candidateHash"] = candidate.CandidateHash
+	payloadBytes, err := json.Marshal(bound)
+	require.NoError(t, err)
+	next, result, err := hostedgenesis.ApplyDeclarationTool(candidate, hostedgenesis.DeclarationToolRequest{
+		ToolName: toolName, ToolCallID: callID, ExpectedRevision: candidate.Revision, ExpectedHash: candidate.CandidateHash,
+		SourceTurnID: candidate.SourceTurnID, Payload: payloadBytes,
+	}, candidate.UpdatedAt.Add(time.Second))
+	require.NoError(t, err)
+	require.True(t, result.Accepted, "tool result: %#v", result)
+	return next
 }
 
 func validStoreDeclarationCheckpoint() hostedgenesis.DeclarationCheckpoint {

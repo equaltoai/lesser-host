@@ -12,6 +12,13 @@ import (
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
+// MintConversationMessage is the provider-neutral bounded transcript element
+// consumed by the phase-local Hosted Genesis tool loop.
+type MintConversationMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
 const mintConversationOpenAIMaxCompletionTokens int64 = 4096
 
 // StreamMintConversationOpenAI streams a chat completion from OpenAI, calling onDelta

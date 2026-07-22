@@ -12,13 +12,12 @@ import (
 type Status string
 
 const (
-	StatusCreated                      Status = "created"
-	StatusInProgress                   Status = "in_progress"
-	StatusAssistantTurnReady           Status = "assistant_turn_ready"
-	StatusDeclarationExtractionPending Status = "declaration_extraction_pending"
-	StatusDeclarationReady             Status = "declaration_ready"
-	StatusPublished                    Status = "published"
-	StatusFailed                       Status = "failed"
+	StatusCreated            Status = "created"
+	StatusInProgress         Status = "in_progress"
+	StatusAssistantTurnReady Status = "assistant_turn_ready"
+	StatusDeclarationReady   Status = "declaration_ready"
+	StatusPublished          Status = "published"
+	StatusFailed             Status = "failed"
 )
 
 var (
@@ -34,7 +33,6 @@ func AllowedStatuses() []Status {
 		StatusCreated,
 		StatusInProgress,
 		StatusAssistantTurnReady,
-		StatusDeclarationExtractionPending,
 		StatusDeclarationReady,
 		StatusPublished,
 		StatusFailed,
@@ -85,15 +83,10 @@ func ValidateTransition(from Status, to Status) error {
 		},
 		StatusInProgress: {
 			StatusAssistantTurnReady,
-			StatusDeclarationExtractionPending,
 			StatusDeclarationReady,
 		},
 		StatusAssistantTurnReady: {
 			StatusInProgress,
-			StatusDeclarationExtractionPending,
-			StatusDeclarationReady,
-		},
-		StatusDeclarationExtractionPending: {
 			StatusDeclarationReady,
 		},
 		StatusDeclarationReady: {
@@ -261,7 +254,6 @@ type FailureCode string
 const (
 	FailureCodeLLMUnavailable              FailureCode = "llm_unavailable"
 	FailureCodeAssistantTurnFailed         FailureCode = "assistant_turn_failed"
-	FailureCodeDeclarationExtractionFailed FailureCode = "declaration_extraction_failed"
 	FailureCodeInvalidCompletionState      FailureCode = "invalid_completion_state"
 	FailureCodeMissingProducedDeclarations FailureCode = "missing_produced_declarations"
 	FailureCodeInvalidProducedDeclarations FailureCode = "invalid_produced_declarations"
@@ -271,7 +263,7 @@ const (
 )
 
 // FailureClass is a content-free, bounded explanation of where a provider-backed
-// declaration extraction failed. It is deliberately separate from FailureCode:
+// declaration phase failed. It is deliberately separate from FailureCode:
 // the code drives recovery while the class lets operators distinguish timeout,
 // provider API, provider-output, and parse/validation boundaries without ever
 // persisting SDK error text, prompts, transcripts, tool arguments, or output.
@@ -307,11 +299,9 @@ type Failure struct {
 func FailureMessage(code FailureCode) string {
 	switch code {
 	case FailureCodeLLMUnavailable:
-		return "Assistant turn failed before declaration extraction."
+		return "Assistant declaration phase could not start."
 	case FailureCodeAssistantTurnFailed:
-		return "Assistant turn failed before declaration extraction."
-	case FailureCodeDeclarationExtractionFailed:
-		return "Declaration extraction failed."
+		return "Assistant declaration phase failed."
 	case FailureCodeMissingProducedDeclarations:
 		return "Produced declarations are missing."
 	case FailureCodeInvalidProducedDeclarations:
@@ -387,7 +377,6 @@ func isAllowedFailureCode(code FailureCode) bool {
 	switch code {
 	case FailureCodeLLMUnavailable,
 		FailureCodeAssistantTurnFailed,
-		FailureCodeDeclarationExtractionFailed,
 		FailureCodeInvalidCompletionState,
 		FailureCodeMissingProducedDeclarations,
 		FailureCodeInvalidProducedDeclarations,

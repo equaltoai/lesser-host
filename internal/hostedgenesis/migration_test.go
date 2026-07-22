@@ -37,12 +37,28 @@ func TestPlanLegacySessionMigrationActiveRowsBecomeDeterministicRecovery(t *test
 	plan, err := PlanLegacySessionMigration(input)
 	require.NoError(t, err)
 	require.Equal(t, StatusFailed, plan.Seed.Status)
-	require.Equal(t, RecoveryActionRetrySameStep, plan.RecoveryAction)
+	require.Equal(t, RecoveryActionRestartSoulBootstrap, plan.RecoveryAction)
 	require.NotNil(t, plan.Seed.Failure)
-	require.Equal(t, FailureCodeAssistantTurnFailed, plan.Seed.Failure.Code)
+	require.Equal(t, FailureCodeInvalidCompletionState, plan.Seed.Failure.Code)
 	require.Equal(t, "conv_legacy_progress", plan.Seed.ConversationID)
 	require.Len(t, plan.Seed.TurnLedger, 1)
 	require.Equal(t, "turn_legacy_user", plan.Seed.TurnLedger[0].TurnID)
+}
+
+func TestPlanLegacySessionMigrationFailedRetryLaneRestartsWithoutCandidate(t *testing.T) {
+	t.Parallel()
+
+	input := loadLegacyMigrationFixture(t, "legacy-in-progress.json")
+	input.Status = string(StatusFailed)
+	input.StatusReason = string(FailureCodeAssistantTurnFailed)
+	plan, err := PlanLegacySessionMigration(input)
+	require.NoError(t, err)
+	require.Equal(t, StatusFailed, plan.Seed.Status)
+	require.Equal(t, RecoveryActionRestartSoulBootstrap, plan.RecoveryAction)
+	require.NotNil(t, plan.Seed.Failure)
+	require.Equal(t, FailureCodeAssistantTurnFailed, plan.Seed.Failure.Code)
+	require.False(t, plan.Seed.Failure.Retryable)
+	require.Equal(t, RecoveryActionRestartSoulBootstrap, plan.Seed.Failure.Recovery.Action)
 }
 
 func TestPlanLegacySessionMigrationInvalidDeclarationsRestartBootstrap(t *testing.T) {

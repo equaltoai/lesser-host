@@ -58,7 +58,7 @@ type MicroVMReconcileResult struct {
 
 // MicroVMDispatcher is the governed HTTP dispatch boundary for the hosted
 // genesis MicroVM execution path. The AI-worker accept-turn handoff, control-
-// plane recovery path, and declaration-extraction path call through this seam
+// plane recovery path, and typed candidate phase continuation call through this seam
 // after HostedGenesisSession truth is durably committed. DispatchMicroVMRun
 // invokes the AppTheory controller run command through the governed
 // AppTheoryMicrovmController HTTP API (POST /microvms) and returns the

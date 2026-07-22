@@ -46,43 +46,6 @@ func TestProviderFailureClassesAreCanonicalAndDoNotCarryErrorText(t *testing.T) 
 	}
 }
 
-func TestAnthropicMissingToolResultIsInvalidProviderOutputAndContentFree(t *testing.T) {
-	const privateValue = "private-missing-tool-response"
-	response := mustProviderTelemetryJSON(map[string]any{
-		"id": "msg_missing", "type": "message", "role": "assistant", "model": mintConversationTestAnthropicModel,
-		"stop_reason": "tool_use", "content": []any{map[string]any{"type": "text", "text": privateValue}},
-		"usage": map[string]any{"input_tokens": 1, "output_tokens": 1},
-	})
-	oldBase := os.Getenv("ANTHROPIC_BASE_URL")
-	t.Cleanup(func() { _ = os.Setenv("ANTHROPIC_BASE_URL", oldBase); anthropicHTTPClient = nil })
-	_ = os.Setenv("ANTHROPIC_BASE_URL", "https://anthropic.example.test")
-	anthropicHTTPClient = &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
-		_, _ = io.Copy(io.Discard, r.Body)
-		return providerTelemetryHTTPResponse(r, "application/json", []byte(response)), nil
-	})}
-	contract := hostedgenesis.FiveBodyDeclarationContract()
-	var events []ProviderTelemetryEvent
-	_, _, err := MintConversationDeclarationsAnthropicWithTelemetry(t.Context(), "private-key", "anthropic:"+mintConversationTestAnthropicModel, MintConversationDeclarationsInput{
-		SchemaVersion: contract.SchemaVersion, GuidanceVersion: contract.GuidanceVersion,
-	}, func(event ProviderTelemetryEvent) { events = append(events, event) })
-	if err == nil || ProviderFailureClass(err) != string(hostedgenesis.FailureClassInvalidProviderOutput) {
-		t.Fatalf("missing tool result must have invalid-provider-output class: class=%q err=%v", ProviderFailureClass(err), err)
-	}
-	terminal := events[len(events)-1]
-	if !terminal.LastEvent || terminal.FailureClass != string(hostedgenesis.FailureClassInvalidProviderOutput) {
-		t.Fatalf("missing tool terminal event mismatch: %#v", terminal)
-	}
-	raw, marshalErr := json.Marshal(events)
-	if marshalErr != nil {
-		t.Fatal(marshalErr)
-	}
-	for _, forbidden := range []string{privateValue, "private-key"} {
-		if bytes.Contains(raw, []byte(forbidden)) {
-			t.Fatalf("missing-tool telemetry leaked %q: %s", forbidden, raw)
-		}
-	}
-}
-
 func TestProviderStreamTelemetryOpenAIAndAnthropicIsPerEventAndRedacted(t *testing.T) {
 	const (
 		privatePrompt = "private prompt must never be telemetry"
@@ -150,78 +113,6 @@ func TestProviderStreamTelemetryOpenAIAndAnthropicIsPerEventAndRedacted(t *testi
 	}
 	assertDeterministicProviderTelemetry(t, openAIEvents, privateOutput)
 	assertDeterministicProviderTelemetry(t, anthropicEvents, privateOutput)
-}
-
-func TestDeclarationExtractionTelemetryHasPhaseBoundariesAndNoRawPayload(t *testing.T) {
-	const privateValue = "private declaration transcript and output"
-	fixture := mintConversationDeclarationDraftFixture()
-	transparency, ok := fixture["transparency"].(map[string]any)
-	if !ok {
-		t.Fatalf("declaration fixture transparency has unexpected shape: %#v", fixture["transparency"])
-	}
-	transparency["operationalNotes"] = privateValue
-	content, err := json.Marshal(fixture)
-	if err != nil {
-		t.Fatal(err)
-	}
-	openAIResponse := mustProviderTelemetryJSON(map[string]any{
-		"id": "completion_1", "object": "chat.completion", "created": 1, "model": "gpt-test",
-		"choices": []any{map[string]any{"index": 0, "finish_reason": "stop", "message": map[string]any{"role": "assistant", "content": string(content)}}},
-		"usage":   map[string]any{"prompt_tokens": 4, "completion_tokens": 5, "total_tokens": 9},
-	})
-	oldBase := os.Getenv("OPENAI_BASE_URL")
-	t.Cleanup(func() { _ = os.Setenv("OPENAI_BASE_URL", oldBase); openAIHTTPClient = nil })
-	_ = os.Setenv("OPENAI_BASE_URL", "https://openai.example.test")
-	openAIHTTPClient = &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
-		_, _ = io.Copy(io.Discard, r.Body)
-		return providerTelemetryHTTPResponse(r, "application/json", []byte(openAIResponse)), nil
-	})}
-	contract := hostedgenesis.FiveBodyDeclarationContract()
-	input := MintConversationDeclarationsInput{
-		SchemaVersion: contract.SchemaVersion, GuidanceVersion: contract.GuidanceVersion,
-		Messages: []MintConversationMessage{{Role: "user", Content: privateValue}},
-	}
-	payload, err := json.Marshal(input)
-	if err != nil {
-		t.Fatal(err)
-	}
-	payloadHash := fmt.Sprintf("%x", sha256.Sum256(payload))
-	var events []ProviderTelemetryEvent
-	if _, _, err := MintConversationDeclarationsOpenAIWithTelemetry(t.Context(), "private-key", "openai:gpt-test", input, func(event ProviderTelemetryEvent) { events = append(events, event) }); err != nil {
-		t.Fatalf("declaration extraction: %v", err)
-	}
-	for _, eventType := range []string{"request_start", "response_received", "parse_start", "parse_completed", "validation_start", "validation_completed", "provider_call_completed"} {
-		if !hasProviderTelemetryEvent(events, eventType) {
-			t.Fatalf("missing declaration phase %q: %#v", eventType, events)
-		}
-	}
-	if events[0].SchemaName != providerTelemetryDeclarationSchemaName {
-		t.Fatalf("OpenAI request telemetry must identify the strict schema: %#v", events[0])
-	}
-	assertProviderRequestPayloadMetadata(t, events[0], len(payload), payloadHash)
-	assertProviderTelemetryEventsRedacted(t, events, privateValue, "private-key")
-
-	oldAnthropicBase := os.Getenv("ANTHROPIC_BASE_URL")
-	t.Cleanup(func() { _ = os.Setenv("ANTHROPIC_BASE_URL", oldAnthropicBase); anthropicHTTPClient = nil })
-	_ = os.Setenv("ANTHROPIC_BASE_URL", "https://anthropic.example.test")
-	anthropicHTTPClient = &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
-		_, _ = io.Copy(io.Discard, r.Body)
-		return providerTelemetryHTTPResponse(r, "application/json", anthropicDeclarationToolResponse(t, fixture, "tool_use")), nil
-	})}
-	events = nil
-	if _, _, err := MintConversationDeclarationsAnthropicWithTelemetry(t.Context(), "private-key", "anthropic:"+mintConversationTestAnthropicModel, input, func(event ProviderTelemetryEvent) { events = append(events, event) }); err != nil {
-		t.Fatalf("Anthropic declaration extraction: %v", err)
-	}
-	for _, eventType := range []string{"request_start", "response_received", "tool_input_received", "parse_start", "parse_completed", "validation_start", "validation_completed", "provider_call_completed"} {
-		if !hasProviderTelemetryEvent(events, eventType) {
-			t.Fatalf("missing Anthropic declaration phase %q: %#v", eventType, events)
-		}
-	}
-	if events[0].ToolName != providerTelemetryDeclarationSchemaName {
-		t.Fatalf("Anthropic request telemetry must identify the strict tool: %#v", events[0])
-	}
-	assertProviderRequestPayloadMetadata(t, events[0], len(payload), payloadHash)
-	assertProviderTelemetryEventsRedacted(t, events, privateValue, "private-key")
 }
 
 func assertProviderRequestPayloadMetadata(t *testing.T, event ProviderTelemetryEvent, bytes int, hash string) {

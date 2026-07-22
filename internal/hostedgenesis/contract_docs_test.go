@@ -18,17 +18,17 @@ func TestFiveBodyContractDocsPinSchemaGuidanceVersions(t *testing.T) {
 	assertFiveBodyContractMarkdown(t)
 }
 
-func TestHostedGenesisConversationContractCodifiesM11ActorPathBilling(t *testing.T) {
+func TestHostedGenesisConversationContractCodifiesM11TypedCandidateCutover(t *testing.T) {
 	contractBody, readErr := os.ReadFile(filepath.Join("..", "..", "docs", "contracts", "hosted-genesis-conversation.md"))
 	if readErr != nil {
 		t.Fatalf("read hosted-genesis conversation contract: %v", readErr)
 	}
 	contract := string(contractBody)
 	for _, want := range []string{
-		"M11 billing policy for actor-path declaration extraction",
-		"does **not** create a second Host extraction debit",
-		"Active M11 actor-path traffic",
-		"finalization/publish",
+		"typed declaration candidate",
+		"candidate_action",
+		"No provider request occurs after affirmation",
+		"hard cutover",
 	} {
 		if !strings.Contains(contract, want) {
 			t.Fatalf("hosted-genesis conversation contract missing M11 billing policy phrase %q", want)
@@ -40,17 +40,54 @@ func TestHostedGenesisConversationContractCodifiesM11ActorPathBilling(t *testing
 		t.Fatalf("read async mint conversation source: %v", readErr)
 	}
 	asyncSrc := string(asyncBody)
-	progressBody, ok := between(asyncSrc, "func (s *Server) progressHostedGenesisAcceptedTurn", "func (s *Server) progressHostedGenesisAcceptedTurnSync")
-	if !ok {
-		t.Fatalf("could not locate progressHostedGenesisAcceptedTurn body")
+	for _, forbidden := range []string{"startHostedGenesisDeclarationExtraction", "soulMintConversationExtractModule", "hostedGenesisSyncAssistantFallbackEnabled"} {
+		if strings.Contains(asyncSrc, forbidden) {
+			t.Fatalf("active M11 accepted-turn path retains removed compatibility symbol %q", forbidden)
+		}
 	}
-	if strings.Contains(progressBody, "startHostedGenesisDeclarationExtraction") ||
-		strings.Contains(progressBody, "soulMintConversationExtractModule") {
-		t.Fatalf("active M11 accepted-turn path must not call Host-owned extraction/debit machinery")
+	for _, required := range []string{"NewDeclarationCandidate", "ApplyDeclarationCandidateAction"} {
+		if !strings.Contains(asyncSrc, required) {
+			t.Fatalf("active M11 accepted-turn path missing structural candidate operation %q", required)
+		}
 	}
-	if !strings.Contains(asyncSrc, "startHostedGenesisDeclarationExtraction") ||
-		!strings.Contains(asyncSrc, "compatibility/recovery seam") {
-		t.Fatalf("legacy extraction seam must remain explicit and documented as compatibility/recovery only")
+
+	if _, statErr := os.Stat(filepath.Join("..", "ai", "llm", "mint_conversation_declarations.go")); !os.IsNotExist(statErr) {
+		t.Fatalf("whole-transcript declaration extractor must be deleted, stat err=%v", statErr)
+	}
+
+	responseSchemaBody, readErr := os.ReadFile(filepath.Join("..", "..", "docs", "spec", "v3", "schemas", "hosted-genesis.conversation.response.schema.json"))
+	if readErr != nil {
+		t.Fatalf("read hosted-genesis response schema: %v", readErr)
+	}
+	var responseSchema map[string]any
+	if err := json.Unmarshal(responseSchemaBody, &responseSchema); err != nil {
+		t.Fatalf("parse hosted-genesis response schema: %v", err)
+	}
+	defs := requireJSONMap(t, responseSchema, "$defs")
+	candidate := requireJSONMap(t, defs, "declaration_candidate")
+	candidateProps := requireJSONMap(t, candidate, "properties")
+	for _, field := range []string{"phase", "current_section", "completed_sections", "revision", "candidate_hash", "review"} {
+		if _, ok := candidateProps[field]; !ok {
+			t.Fatalf("typed candidate response schema missing %s", field)
+		}
+	}
+
+	openAPIBody, readErr := os.ReadFile(filepath.Join("..", "..", "docs", "contracts", "openapi.yaml"))
+	if readErr != nil {
+		t.Fatalf("read Host OpenAPI: %v", readErr)
+	}
+	openAPI := string(openAPIBody)
+	requestStart := strings.Index(openAPI, "    SoulHostedGenesisMintConversationRequest:")
+	requestEnd := strings.Index(openAPI, "    SoulHostedGenesisConversationResponse:")
+	if requestStart < 0 || requestEnd <= requestStart {
+		t.Fatal("Host OpenAPI missing bounded Hosted Genesis request component")
+	}
+	requestComponent := openAPI[requestStart:requestEnd]
+	if !strings.Contains(requestComponent, "candidate_action:") || !strings.Contains(requestComponent, "candidate_revision:") || !strings.Contains(requestComponent, "review_hash:") {
+		t.Fatal("Host OpenAPI request does not expose structural candidate_action bindings")
+	}
+	if strings.Contains(requestComponent, "declarations:") {
+		t.Fatal("Host OpenAPI request still permits client-authored declarations")
 	}
 }
 

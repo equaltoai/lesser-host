@@ -1005,51 +1005,6 @@ func TestSoulInstanceGetRegistrationMintConversation_RejectsInvalidConversationI
 	}
 }
 
-func TestSoulInstanceCompleteMintConversation_PersistsDeclarationsAndFinalizeReady(t *testing.T) {
-	t.Parallel()
-
-	tdb := newMintConversationTestDB()
-	s := newMintConversationServer(tdb)
-	reg := mintConversationHandleReg()
-	expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, soulInstanceBootstrapTestInstanceSlug)
-	stubMintConversationRegistration(t, tdb, reg)
-	stubSoulInstanceBootstrapDomainAndInstance(t, tdb, reg.DomainNormalized, soulInstanceBootstrapTestInstanceSlug)
-	stubMintConversationConversation(t, tdb, models.SoulAgentMintConversation{
-		AgentID:        reg.AgentID,
-		ConversationID: mintConversationTestConversationID,
-		Model:          "anthropic:claude-sonnet-4-6",
-		Messages:       encodeMintConversationBlob(`[{"role":"user","content":"describe yourself"},{"role":"assistant","content":"done"}]`),
-		Status:         models.SoulMintConversationStatusAssistantTurnReady,
-		CreatedAt:      time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC),
-	})
-	stubMintConversationIdentity(t, tdb, nil, theoryErrors.ErrItemNotFound)
-	expectSoulInstanceMintConversationCompletionWrite(t, tdb)
-
-	resp, err := s.handleSoulInstanceCompleteMintConversation(newSoulInstanceBootstrapContext(
-		map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
-		mustMarshalJSON(t, map[string]any{"declarations": testMintConversationDecl()}),
-		map[string]string{"id": reg.ID, "conversationId": mintConversationTestConversationID},
-	))
-	if err != nil {
-		t.Fatalf("unexpected err: %v", err)
-	}
-	if resp.Status != http.StatusOK {
-		t.Fatalf("expected 200, got %d body=%q", resp.Status, string(resp.Body))
-	}
-	var out hostedGenesisConversationResponse
-	if err := json.Unmarshal(resp.Body, &out); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if out.Conversation.Status != models.SoulMintConversationStatusDeclarationReady || out.Conversation.ProducedDeclarations == nil {
-		t.Fatalf("expected completed conversation with declarations, got %#v", out)
-	}
-	body := string(resp.Body)
-	if strings.Contains(body, "describe yourself") || strings.Contains(body, "done") || strings.Contains(body, mintConversationInstanceReadTestRawKey) {
-		t.Fatalf("instance completion leaked transcript or credential material: %s", body)
-	}
-	tdb.qLifecycle.AssertCalled(t, "Create")
-}
-
 func TestSoulInstanceCompleteMintConversation_ReturnsCompletedConversationReplay(t *testing.T) {
 	t.Parallel()
 
@@ -1280,53 +1235,6 @@ func TestSoulInstanceFinalizeMintConversation_BeginAndPreflightReturnCanonicalSi
 			}
 			assertSoulInstanceFinalizeSigningMaterial(t, out)
 		})
-	}
-}
-
-func TestSoulInstanceHostedInstanceTrustCompleteAcceptsDeclarations(t *testing.T) {
-	t.Parallel()
-
-	reg, identity, _ := soulInstanceHostedInstanceTrustFixture(t)
-	decl := testMintConversationDecl()
-	decl.Capabilities = []soul.CapabilityV2{}
-	tdb := newMintConversationTestDB()
-	s := newMintConversationServer(tdb)
-	expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, soulInstanceBootstrapTestInstanceSlug)
-	stubMintConversationRegistration(t, tdb, reg)
-	stubSoulInstanceBootstrapDomainAndInstance(t, tdb, reg.DomainNormalized, soulInstanceBootstrapTestInstanceSlug)
-	stubMintConversationConversation(t, tdb, models.SoulAgentMintConversation{
-		AgentID:        reg.AgentID,
-		ConversationID: mintConversationTestConversationID,
-		Status:         models.SoulMintConversationStatusAssistantTurnReady,
-		Messages:       encodeMintConversationBlob(mintConversationDurableAssistantMessagesJSON()),
-		CreatedAt:      time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC),
-	})
-	stubMintConversationIdentity(t, tdb, identity, nil)
-	expectSoulInstanceMintConversationCompletionWrite(t, tdb)
-
-	resp, err := s.handleSoulInstanceCompleteMintConversation(newSoulInstanceBootstrapContext(
-		map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
-		mustMarshalJSON(t, map[string]any{"declarations": decl}),
-		map[string]string{"id": reg.ID, "conversationId": mintConversationTestConversationID},
-	))
-	if err != nil {
-		t.Fatalf("unexpected err: %v", err)
-	}
-	if resp.Status != http.StatusOK {
-		t.Fatalf("expected 200, got %d body=%q", resp.Status, string(resp.Body))
-	}
-	var out hostedGenesisConversationResponse
-	if err := json.Unmarshal(resp.Body, &out); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if out.Conversation.Status != models.SoulMintConversationStatusDeclarationReady || out.Conversation.ProducedDeclarations == nil {
-		t.Fatalf("expected completed hosted conversation, got %#v", out)
-	}
-	if len(out.Conversation.ProducedDeclarations.Declarations.Capabilities) != 0 {
-		t.Fatalf("expected empty hosted capabilities to remain empty, got %#v", out.Conversation.ProducedDeclarations.Declarations.Capabilities)
-	}
-	if strings.Contains(string(resp.Body), `"messages"`) || strings.Contains(string(resp.Body), "describe yourself") || strings.Contains(string(resp.Body), "done") || strings.Contains(string(resp.Body), mintConversationInstanceReadTestRawKey) {
-		t.Fatalf("hosted instance-trust complete leaked private fields: %s", string(resp.Body))
 	}
 }
 
@@ -1965,41 +1873,6 @@ func expectSoulInstanceMintConversationProgression(t *testing.T, tdb *mintConver
 // assertHostedGenesisProgressedSession is in
 // handlers_soul_mint_conversation_async_internal_test.go (kept there to stay
 // under the gov-infra MAI-1 Go file budget for this file).
-
-func expectSoulInstanceMintConversationExtractionDebit(t *testing.T, tdb *mintConversationTestDB, captures ...func(*models.HostedGenesisSession)) {
-	t.Helper()
-	tb := new(ttmocks.MockTransactionBuilder)
-	tdb.db.TransactWriteBuilder = tb
-	tdb.qBudget.On("First", mock.AnythingOfType("*models.InstanceBudgetMonth")).Return(nil).Run(func(args mock.Arguments) {
-		dest := testutil.RequireMockArg[*models.InstanceBudgetMonth](t, args, 0)
-		*dest = models.InstanceBudgetMonth{InstanceSlug: soulInstanceBootstrapTestInstanceSlug, Month: time.Now().UTC().Format("2006-01"), IncludedCredits: 100, UsedCredits: 0}
-	}).Once()
-	tdb.db.On("TransactWrite", mock.Anything, mock.Anything).Return(nil).Once()
-	tb.On("Put", mock.AnythingOfType("*models.UsageLedgerEntry"), mock.Anything).Return(tb).Once().Run(func(args mock.Arguments) {
-		entry := testutil.RequireMockArg[*models.UsageLedgerEntry](t, args, 0)
-		if entry.Module != soulMintConversationExtractModule || entry.RequestedCredits != soulMintConversationExtractBaseCredits {
-			t.Fatalf("unexpected extraction ledger entry: %#v", entry)
-		}
-	})
-	tb.On("UpdateWithBuilder", mock.AnythingOfType("*models.HostedGenesisSession"), mock.Anything, mock.Anything).Return(tb).Once().Run(func(args mock.Arguments) {
-		if len(captures) > 0 && captures[0] != nil {
-			captures[0](testutil.RequireMockArg[*models.HostedGenesisSession](t, args, 0))
-		}
-	})
-	tb.On("UpdateWithBuilder", mock.AnythingOfType("*models.SoulAgentMintConversation"), mock.Anything, mock.Anything).Return(tb).Once()
-	tb.On("UpdateWithBuilder", mock.AnythingOfType("*models.InstanceBudgetMonth"), mock.Anything, mock.Anything).Return(tb).Once()
-	tb.On("Execute").Return(nil).Once()
-}
-
-func expectSoulInstanceMintConversationCompletionWrite(t *testing.T, tdb *mintConversationTestDB) {
-	t.Helper()
-	tb := new(ttmocks.MockTransactionBuilder)
-	tdb.db.TransactWriteBuilder = tb
-	tdb.db.On("TransactWrite", mock.Anything, mock.Anything).Return(nil).Once()
-	tb.On("UpdateWithBuilder", mock.AnythingOfType("*models.HostedGenesisSession"), mock.Anything, mock.Anything).Return(tb).Once()
-	tb.On("UpdateWithBuilder", mock.AnythingOfType("*models.SoulAgentMintConversation"), mock.Anything, mock.Anything).Return(tb).Once()
-	tb.On("Execute").Return(nil).Once()
-}
 
 func soulInstanceHostedInstanceTrustFixture(t *testing.T) (models.SoulAgentRegistration, *models.SoulAgentIdentity, models.SoulAgentPromotion) {
 	t.Helper()

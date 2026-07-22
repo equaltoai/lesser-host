@@ -69,14 +69,14 @@ func TestHostedGenesisFailureProjectionHelpers(t *testing.T) {
 		message  string
 		maxTries int
 	}{
-		{reason: hostedGenesisFailureLLMUnavailable, action: hostedGenesisRecoveryRetrySameStep, retry: true, message: "Assistant turn failed before declaration extraction.", maxTries: 3},
-		{reason: hostedGenesisFailureDeclarationExtractionFailed, action: hostedGenesisRecoveryRetrySameStep, retry: true, message: "Declaration extraction failed.", maxTries: 3},
+		{reason: hostedGenesisFailureLLMUnavailable, action: hostedGenesisRecoveryRetrySameStep, retry: true, message: "Assistant declaration phase could not start.", maxTries: 3},
+		{reason: hostedGenesisFailureAssistantTurnFailed, action: hostedGenesisRecoveryRetrySameStep, retry: true, message: "Assistant declaration phase failed.", maxTries: 3},
 		{reason: hostedGenesisFailureInvalidCompletionState, action: hostedGenesisRecoveryRefreshState, message: "Conversation cannot be completed from the current state."},
 		{reason: hostedGenesisFailureMissingProducedDeclarations, action: hostedGenesisRecoveryRestartSoulBootstrap, message: "Produced declarations are missing."},
 		{reason: hostedGenesisFailureInvalidProducedDeclarations, action: hostedGenesisRecoveryRestartSoulBootstrap, message: "Produced declarations are invalid."},
 		{reason: hostedGenesisFailureTenantBoundaryViolation, action: hostedGenesisRecoveryOperatorAction, message: "Conversation failed instance boundary validation."},
 		{reason: hostedGenesisFailureOperatorActionRequired, action: hostedGenesisRecoveryOperatorAction, message: "Operator action is required."},
-		{reason: "unknown", action: hostedGenesisRecoveryRetrySameStep, retry: true, message: "Assistant turn failed before declaration extraction.", maxTries: 3},
+		{reason: "unknown", action: hostedGenesisRecoveryRetrySameStep, retry: true, message: "Assistant declaration phase failed.", maxTries: 3},
 	} {
 		tc := tc
 		t.Run(tc.reason, func(t *testing.T) {
@@ -143,7 +143,6 @@ func TestMintConversationStatusProjection_ProgressAndFailedStates(t *testing.T) 
 	for _, status := range []string{
 		models.SoulMintConversationStatusInProgress,
 		models.SoulMintConversationStatusAssistantTurnReady,
-		models.SoulMintConversationStatusDeclarationExtractionPending,
 	} {
 		status := status
 		t.Run(status, func(t *testing.T) {

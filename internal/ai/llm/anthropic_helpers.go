@@ -53,7 +53,7 @@ func anthropicModelFromSet(modelSet string) (anthropic.Model, error) {
 
 func anthropicClientForKey(apiKey string) anthropic.Client {
 	apiKey = strings.TrimSpace(apiKey)
-	opts := []option.RequestOption{}
+	opts := []option.RequestOption{option.WithMaxRetries(DefaultProviderSDKRetryBudget)}
 	if apiKey != "" {
 		opts = append(opts, option.WithAPIKey(apiKey))
 	}
@@ -119,7 +119,7 @@ const anthropicSchemaTypeObject = "object"
 // keywords Anthropic strict custom tools reject with a 400 (e.g. "For 'array'
 // type, property 'maxItems' is not supported"). Stripping them only relaxes
 // provider-side validation: Host re-enforces these limits locally after the
-// provider responds (normalizeMintConversationDeclarationsDraft, hostedgenesis
+// provider responds (the caller-supplied parser, hostedgenesis
 // five-body normalization/validation).
 var anthropicUnsupportedSchemaKeywords = map[string][]string{
 	"array":   {"minItems", "maxItems", "uniqueItems", "contains", "minContains", "maxContains"},
@@ -315,7 +315,7 @@ func anthropicToolBatch[Prompt any, Parsed any, Out any](
 	if err != nil {
 		return zero, models.AIUsage{}, err
 	}
-	recorder := newProviderTelemetryRecorder("anthropic", string(model), "declaration_extraction", cfg.Telemetry)
+	recorder := newProviderTelemetryRecorder("anthropic", string(model), "json_text_batch", cfg.Telemetry)
 
 	payload, err := json.Marshal(prompt)
 	if err != nil {

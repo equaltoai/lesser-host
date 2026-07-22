@@ -44,8 +44,7 @@ func hostedGenesisSessionCompletionReplayReady(session *models.HostedGenesisSess
 		return false, soulMintConversationCompleteReasonInvalidState
 	case hostedgenesis.StatusCreated,
 		hostedgenesis.StatusInProgress,
-		hostedgenesis.StatusAssistantTurnReady,
-		hostedgenesis.StatusDeclarationExtractionPending:
+		hostedgenesis.StatusAssistantTurnReady:
 		return false, ""
 	default:
 		return false, soulMintConversationCompleteReasonInvalidState

@@ -176,7 +176,7 @@ const (
 
 	// HostedGenesisMicroVMDefaultMaximumDurationSeconds caps one active
 	// AppTheory MicroVM run for the longest provider turn plus in-VM
-	// declaration extraction. Hosted Genesis intentionally omits an idle policy:
+	// phase-tool validation. Hosted Genesis intentionally omits an idle policy:
 	// AWS defines idleness by inbound endpoint traffic, which cannot represent
 	// the long-running provider work continuing inside the MicroVM.
 	HostedGenesisMicroVMDefaultMaximumDurationSeconds int32 = 28800

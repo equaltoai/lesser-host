@@ -234,7 +234,7 @@ func (g stubSSMGetter) GetParameter(_ context.Context, name string) (string, err
 // TestH1_5_NewServerWiresHTTPControllerDispatcherForDeployedStages proves
 // NewServer constructs a real HTTPControllerDispatcher against the governed
 // AppTheoryMicrovmController HTTP API when the MicroVM config is enabled and
-// complete, and sets it on the Server for recovery/extraction dispatch (no
+// complete, and sets it on the Server for actor continuation/recovery (no
 // sync LLM). The httptest stub controller + stub SSM getter prove the wiring
 // without calling AWS or SSM.
 func TestH1_5_NewServerWiresHTTPControllerDispatcherForDeployedStages(t *testing.T) {

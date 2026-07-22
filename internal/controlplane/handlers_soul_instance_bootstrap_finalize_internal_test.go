@@ -27,7 +27,7 @@ func TestSoulInstanceGetRegistrationMintConversation_RepairsPublishedPendingHost
 	stubSoulInstanceFinalizeReadContext(t, tdb, reg, identity, completedConv)
 	publishedAt := time.Date(2026, 3, 7, 12, 10, 0, 0, time.UTC)
 	// Pre-correction prototype rows recorded completed in the promotion while
-	// leaving authoritative session and compatibility truth declaration_ready.
+	// leaving authoritative session and public projection truth declaration_ready.
 	promotion := updateSoulAgentPromotionForConversation(buildSoulAgentPromotionFromRegistration(&reg, publishedAt), mintConversationTestConversationID, models.SoulMintConversationStatusCompleted, publishedAt)
 	promotion = updateSoulAgentPromotionForGraduation(promotion, 1, publishedAt)
 	tdb.qPromotion.ExpectedCalls = nil

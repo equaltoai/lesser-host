@@ -1,7 +1,6 @@
 package controlplane
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"testing"
@@ -177,17 +176,17 @@ func TestWaitObservationReloadsTrueWorkloadWonRace(t *testing.T) {
 	advancedSession.Version++
 	advancedSession.Status = string(hostedgenesis.StatusFailed)
 	advancedSession.Failure = &hostedgenesis.Failure{
-		Code:      hostedgenesis.FailureCodeDeclarationExtractionFailed,
-		Message:   hostedgenesis.FailureMessage(hostedgenesis.FailureCodeDeclarationExtractionFailed),
+		Code:      hostedgenesis.FailureCodeAssistantTurnFailed,
+		Message:   hostedgenesis.FailureMessage(hostedgenesis.FailureCodeAssistantTurnFailed),
 		Retryable: false,
 		Recovery: hostedgenesis.Recovery{
 			Action: hostedgenesis.RecoveryActionRestartSoulBootstrap,
-			Reason: string(hostedgenesis.FailureCodeDeclarationExtractionFailed),
+			Reason: string(hostedgenesis.FailureCodeAssistantTurnFailed),
 		},
 	}
 	advancedConversation := conversation
 	advancedConversation.Status = models.SoulMintConversationStatusFailed
-	advancedConversation.StatusReason = string(hostedgenesis.FailureCodeDeclarationExtractionFailed)
+	advancedConversation.StatusReason = string(hostedgenesis.FailureCodeAssistantTurnFailed)
 
 	// The workload wins between the observer's stale input and CompletionWriter's
 	// guarded preflight, so the writer rejects the already-terminal row. The
@@ -216,7 +215,7 @@ func TestWaitObservationReloadsTrueWorkloadWonRace(t *testing.T) {
 func recoveredTerminalObservationConflictFixture(t *testing.T) (models.HostedGenesisSession, models.SoulAgentMintConversation) {
 	t.Helper()
 	reg := mintConversationHandleReg()
-	session := hostedGenesisH1D3RecoverySessionFixture(t, reg, hostedgenesis.StatusDeclarationExtractionPending)
+	session := hostedGenesisH1D3RecoverySessionFixture(t, reg, hostedgenesis.StatusInProgress)
 	session.Version = 51
 	session.LatestTurnID = "turn_bMLVA5B9Sb-J4U8AgzYNWA"
 	session.RequestID = "req-recovered-turn"
@@ -235,15 +234,16 @@ func recoveredTerminalObservationConflictFixture(t *testing.T) (models.HostedGen
 		AcceptedAt:       time.Date(2026, 7, 22, 11, 35, 0, 0, time.UTC),
 	}}
 	session.Failure = &hostedgenesis.Failure{
-		Code:      hostedgenesis.FailureCodeDeclarationExtractionFailed,
-		Message:   hostedgenesis.FailureMessage(hostedgenesis.FailureCodeDeclarationExtractionFailed),
+		Code:      hostedgenesis.FailureCodeAssistantTurnFailed,
+		Message:   hostedgenesis.FailureMessage(hostedgenesis.FailureCodeAssistantTurnFailed),
 		Retryable: false,
 		Recovery: hostedgenesis.Recovery{
 			Action:            hostedgenesis.RecoveryActionRetrySameStep,
 			RetryAfterSeconds: 5,
-			Reason:            string(hostedgenesis.FailureCodeDeclarationExtractionFailed),
+			Reason:            string(hostedgenesis.FailureCodeAssistantTurnFailed),
 		},
 	}
+	setHostedGenesisRecoveryCandidate(t, &session)
 	if err := session.BeforeCreate(); err != nil {
 		t.Fatalf("recovered terminal observation session: %v", err)
 	}
@@ -251,7 +251,7 @@ func recoveredTerminalObservationConflictFixture(t *testing.T) (models.HostedGen
 		AgentID:        session.AgentID,
 		ConversationID: session.ConversationID,
 		Model:          session.Model,
-		Status:         models.SoulMintConversationStatusDeclarationExtractionPending,
+		Status:         models.SoulMintConversationStatusInProgress,
 		LatestTurnID:   session.LatestTurnID,
 		RequestID:      session.RequestID,
 		CreatedAt:      session.CreatedAt,
@@ -285,11 +285,6 @@ func TestRegistrationObservationThenRecoveryReplaysAcceptedTurnFromPriorActorChe
 		expectedRemainingAttempts: 2,
 	}
 	s.hostedGenesisMicroVMDispatcher = dispatcher
-	s.hostedGenesisAssistantRunner = func(_ context.Context, in hostedGenesisAssistantRunInput) (hostedGenesisAssistantRunResult, error) {
-		t.Fatalf("microvm_unavailable recovery must not use the synchronous assistant fallback: %#v", in)
-		return hostedGenesisAssistantRunResult{}, nil
-	}
-
 	// Registration handler rows, observer guarded preflight rows, and observer
 	// reload rows.
 	expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, soulInstanceBootstrapTestInstanceSlug)
@@ -505,7 +500,7 @@ func registrationWaitObservationFixtures(t *testing.T, reg models.SoulAgentRegis
 // TestWaitOnlyReadObservesTerminalMicroVMAndConvergesGuardedHostTruth proves
 // ordinary client polling remains wait-only: it issues AppTheory's canonical
 // controller GET reconciliation, never dispatches/nudges a turn, and atomically
-// converges a stale in_progress session plus compatibility projection to the
+// converges a stale in_progress session plus public projection to the
 // typed microvm_unavailable failure under exact status/version/turn guards.
 func TestWaitOnlyReadObservesTerminalMicroVMAndConvergesGuardedHostTruth(t *testing.T) {
 	for _, tc := range []struct {

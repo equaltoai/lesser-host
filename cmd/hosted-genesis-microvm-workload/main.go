@@ -7,15 +7,13 @@
 // 8080 (matching the AppTheoryMicrovmImage hooks.port CDK configuration). Each
 // hook drives the AppTheory runtime/microvm lifecycle vocabulary with the real
 // M16 contract (validate/run/ready/suspend/resume/terminate/failure). The run
-// hook executes the assistant turn AND declaration extraction through the
-// existing internal/ai/llm clients — which carry an explicit per-provider HTTP
-// timeout configured at startup — and durably records completion to
-// HostedGenesisSession truth through the existing store layer, reusing
-// persistHostedGenesisAcceptedAssistantTurn semantics via the completion writer.
+// hook executes one typed declaration section through the provider SDK tools,
+// or performs provider-free deterministic finalization after structural
+// affirmation, and records the result through guarded TableTheory state.
 //
 // Fail-closed posture: there is no degraded/non-MicroVM fallback. Missing
 // session/conversation/registration, missing provider keys, empty assistant
-// responses, declaration-extraction failures, and idempotency conflicts all
+// responses, typed validation failures, and idempotency conflicts all
 // surface as typed completion failures or non-2xx hook responses — never as a
 // silent HTTP 200 or a swallowed error.
 //
@@ -109,7 +107,7 @@ func run() error {
 		return err
 	}
 	// Install the explicit-timeout provider HTTP client before any provider call
-	// so every llm.StreamMintConversation* / MintConversationDeclarations* call
+	// so every provider SDK call
 	// fails at the configured HTTP deadline, not the Lambda/MicroVM envelope
 	// (kills G8).
 	if configureErr := llm.ConfigureProviderHTTPTimeout(envelope.ProviderHTTPTimeout); configureErr != nil {

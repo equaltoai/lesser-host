@@ -148,7 +148,7 @@ func IsDeclarationValidationCode(reason string) bool {
 }
 
 // ValidateAndNormalizeProducedCapabilities validates and deduplicates
-// model-extracted capabilities without adding registration-declared fallbacks.
+// model-submitted capabilities without adding registration-declared fallbacks.
 // An empty result is meaningful for instance-trust hosted/off-chain
 // registration files. Deprecated placeholder rows are filtered before
 // validation because they are retired metadata, not a produced capability.
@@ -304,7 +304,7 @@ func isASCIILowerOrDigit(ch byte) bool {
 }
 
 // NormalizeProducedCapabilities is the compatibility helper for callers that
-// intentionally discard invalid extracted rows while merging legacy wallet
+// intentionally discard invalid candidate rows while merging legacy wallet
 // registration context. Hosted instance-trust builders use
 // ValidateAndNormalizeProducedCapabilities so a malformed model field becomes
 // a stable capabilities.invalid failure instead of being silently omitted.
@@ -315,7 +315,7 @@ func NormalizeProducedCapabilities(capabilities []soul.CapabilityV2) []soul.Capa
 
 // FilterDeclaredCapabilitiesForPrompt keeps registration-declared capability
 // labels as model context only. Deprecated placeholders never enter prompts or
-// extraction input, so the model cannot echo them into produced declarations.
+// phase-tool input, so the model cannot echo them into produced declarations.
 func FilterDeclaredCapabilitiesForPrompt(declared []string) []string {
 	seen := map[string]struct{}{}
 	out := make([]string, 0, len(declared))

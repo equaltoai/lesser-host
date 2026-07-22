@@ -55,8 +55,8 @@ func (s *Server) handleSoulInstanceRecoverMintConversation(ctx *apptheory.Contex
 		return resp, nil
 	}
 
-	// H1.3: when the session already carries a populated MicroVM lifecycle ref
-	// (set by the H1.2 accept-path dispatch or the H1.3 extraction dispatch),
+	// When the session already carries a populated MicroVM lifecycle ref
+	// (set by the accepted-turn dispatch),
 	// the recover path reaches production reconstruction by querying real VM
 	// state through the M16 controller get command via the MicroVMDispatcher
 	// seam. A dead/expired VM maps to a loud typed failure, never the silent
@@ -88,11 +88,9 @@ func (s *Server) handleSoulInstanceRecoverMintConversation(ctx *apptheory.Contex
 	// No MicroVM lifecycle ref is populated: the session predates the H1.2
 	// dispatch wiring (or the dispatch never landed). Re-dispatch the accepted
 	// turn through the MicroVM path rather than silently stranding the turn.
-	// H1.4: recovery is dispatch-only — it never re-runs a turn synchronously.
-	// The retained sync assistant runner (hostedGenesisSyncAssistantFallbackEnabled)
-	// is reachable only from the accept path's non-production guard, never from
-	// recovery; an unwired dispatcher is a loud retryable failure, never a sync
-	// LLM call and never a silent 200.
+	// Recovery is dispatch-only — it never runs a provider call in the Control
+	// plane; an unwired dispatcher is a loud retryable failure, never a
+	// provider call and never a silent 200.
 	turnSession, acceptedMessages, buildErr := hostedGenesisRecoveryTurnSession(convCtx)
 	if buildErr != nil {
 		return nil, soulInstanceBootstrapConversationErrorFromAppError(buildErr)
@@ -131,10 +129,6 @@ func (s *Server) handleSoulInstanceRetryableMintConversationRecovery(ctx *appthe
 			},
 		)
 	}
-	if hostedGenesisSessionCanRetryDeclarationExtraction(convCtx.session) {
-		resp, err := s.handleSoulInstanceDeclarationExtractionRetry(ctx, convCtx, started)
-		return resp, true, err
-	}
 	if hostedGenesisSessionCanRetryAssistantTurn(convCtx.session) ||
 		hostedGenesisSessionHasPendingAssistantRetryFailure(convCtx.session) {
 		resp, err := s.handleSoulInstanceAssistantTurnRetry(ctx, convCtx, started)
@@ -151,23 +145,6 @@ func (s *Server) handleSoulInstanceRetryableMintConversationRecovery(ctx *appthe
 		return resp, true, err
 	}
 	return nil, false, nil
-}
-
-func (s *Server) handleSoulInstanceDeclarationExtractionRetry(ctx *apptheory.Context, convCtx soulInstanceBootstrapConversationContext, started time.Time) (*apptheory.Response, error) {
-	progressedSession, progressedConv, progressErr := s.retryHostedGenesisFailedDeclarationExtraction(ctx, convCtx)
-	if progressErr != nil {
-		return nil, soulInstanceBootstrapConversationErrorFromAppError(progressErr)
-	}
-	resp, err := hostedGenesisConversationJSONFromSession(http.StatusAccepted, progressedSession, progressedConv, hostedGenesisProjectionOptions{
-		RegistrationID:  convCtx.reg.ID,
-		RequestID:       strings.TrimSpace(ctx.RequestID),
-		CollapseCreated: true,
-	})
-	if err != nil {
-		return nil, err
-	}
-	s.recordSoulMintInstanceReadAudit(ctx, convCtx.key, convCtx.agentIDHex, convCtx.conversationID, soulMintInstanceReadRouteRecover, "retry_declaration_extraction", resp.Status, len(resp.Body), started)
-	return resp, nil
 }
 
 func (s *Server) handleSoulInstanceAssistantTurnRetry(ctx *apptheory.Context, convCtx soulInstanceBootstrapConversationContext, started time.Time) (*apptheory.Response, error) {
@@ -217,32 +194,9 @@ func hostedGenesisSessionRequiresRestart(session *models.HostedGenesisSession) b
 	if session == nil || hostedgenesis.NormalizeStatus(session.Status) != hostedgenesis.StatusFailed || session.Failure == nil {
 		return false
 	}
-	return session.Failure.Recovery.Action == hostedgenesis.RecoveryActionRestartSoulBootstrap ||
-		hostedGenesisDeclarationExtractionRetriesExhausted(session) ||
+	return !hostedGenesisSessionHasBoundTypedCandidate(session) ||
+		session.Failure.Recovery.Action == hostedgenesis.RecoveryActionRestartSoulBootstrap ||
 		hostedGenesisAssistantTurnRetriesExhausted(session)
-}
-
-func hostedGenesisSessionCanRetryDeclarationExtraction(session *models.HostedGenesisSession) bool {
-	return hostedGenesisSessionHasRetryableDeclarationExtractionFailure(session) &&
-		session.Failure.Recovery.MaxAttempts > 0
-}
-
-func hostedGenesisDeclarationExtractionRetriesExhausted(session *models.HostedGenesisSession) bool {
-	return hostedGenesisSessionHasDeclarationExtractionRetryFailure(session) &&
-		(!session.Failure.Retryable || session.Failure.Recovery.MaxAttempts <= 0)
-}
-
-func hostedGenesisSessionHasRetryableDeclarationExtractionFailure(session *models.HostedGenesisSession) bool {
-	return hostedGenesisSessionHasDeclarationExtractionRetryFailure(session) &&
-		session.Failure.Retryable
-}
-
-func hostedGenesisSessionHasDeclarationExtractionRetryFailure(session *models.HostedGenesisSession) bool {
-	if session == nil || hostedgenesis.NormalizeStatus(session.Status) != hostedgenesis.StatusFailed || session.Failure == nil {
-		return false
-	}
-	return session.Failure.Code == hostedgenesis.FailureCodeDeclarationExtractionFailed &&
-		session.Failure.Recovery.Action == hostedgenesis.RecoveryActionRetrySameStep
 }
 
 func hostedGenesisSessionCanRetryAssistantTurn(session *models.HostedGenesisSession) bool {
@@ -261,7 +215,7 @@ func hostedGenesisSessionHasRetryableAssistantTurnFailure(session *models.Hosted
 }
 
 func hostedGenesisSessionHasAssistantTurnRetryFailure(session *models.HostedGenesisSession) bool {
-	if session == nil || hostedgenesis.NormalizeStatus(session.Status) != hostedgenesis.StatusFailed || session.Failure == nil {
+	if !hostedGenesisSessionHasBoundTypedCandidate(session) || hostedgenesis.NormalizeStatus(session.Status) != hostedgenesis.StatusFailed || session.Failure == nil {
 		return false
 	}
 	return session.Failure.Code == hostedgenesis.FailureCodeAssistantTurnFailed &&
@@ -269,7 +223,7 @@ func hostedGenesisSessionHasAssistantTurnRetryFailure(session *models.HostedGene
 }
 
 func hostedGenesisSessionHasMicroVMUnavailableRetryFailure(session *models.HostedGenesisSession) bool {
-	if session == nil || hostedgenesis.NormalizeStatus(session.Status) != hostedgenesis.StatusFailed || session.Failure == nil {
+	if !hostedGenesisSessionHasBoundTypedCandidate(session) || hostedgenesis.NormalizeStatus(session.Status) != hostedgenesis.StatusFailed || session.Failure == nil {
 		return false
 	}
 	return session.Failure.Code == hostedgenesis.FailureCodeMicroVMUnavailable &&
@@ -355,7 +309,7 @@ func hostedGenesisTurnLedgerIndex(ledger []hostedgenesis.TurnLedgerEntry, turnID
 }
 
 func hostedGenesisSessionHasPendingAssistantRetryFailure(session *models.HostedGenesisSession) bool {
-	if session == nil ||
+	if !hostedGenesisSessionHasBoundTypedCandidate(session) ||
 		hostedgenesis.NormalizeStatus(session.Status) != hostedgenesis.StatusInProgress ||
 		session.Failure == nil ||
 		strings.TrimSpace(session.AssistantCheckpointRef) != "" {
@@ -365,8 +319,20 @@ func hostedGenesisSessionHasPendingAssistantRetryFailure(session *models.HostedG
 		session.Failure.Recovery.Action == hostedgenesis.RecoveryActionRetrySameStep
 }
 
-func hostedGenesisDeclarationExtractionRetryCarryForward(failure *hostedgenesis.Failure) *hostedgenesis.Failure {
-	return hostedGenesisRetryCarryForward(failure)
+func hostedGenesisSessionHasBoundTypedCandidate(session *models.HostedGenesisSession) bool {
+	if session == nil || session.DeclarationCandidate == nil || session.DeclarationCandidate.Validate() != nil {
+		return false
+	}
+	candidate := session.DeclarationCandidate
+	return candidate.InstanceSlug == strings.ToLower(strings.TrimSpace(session.InstanceSlug)) &&
+		candidate.RegistrationID == strings.TrimSpace(session.RegistrationID) &&
+		strings.EqualFold(candidate.AgentID, session.AgentID) &&
+		candidate.ConversationID == strings.TrimSpace(session.ConversationID) &&
+		candidate.SourceTurnID == strings.TrimSpace(session.LatestTurnID) &&
+		candidate.Model == strings.TrimSpace(session.Model) &&
+		candidate.Revision == session.CandidateRevision &&
+		candidate.CandidateHash == strings.TrimSpace(session.CandidateHash) &&
+		string(candidate.Phase) == strings.TrimSpace(session.CandidatePhase)
 }
 
 func hostedGenesisAssistantTurnRetryCarryForward(failure *hostedgenesis.Failure) *hostedgenesis.Failure {
@@ -748,73 +714,6 @@ func addHostedGenesisSessionRecoveryRetryWrite(tx core.TransactionBuilder, sessi
 	)
 }
 
-func (s *Server) retryHostedGenesisFailedDeclarationExtraction(ctx *apptheory.Context, convCtx soulInstanceBootstrapConversationContext) (*models.HostedGenesisSession, *models.SoulAgentMintConversation, *apptheory.AppTheoryError) {
-	if s == nil || s.store == nil || s.store.DB == nil || convCtx.session == nil || convCtx.conv == nil {
-		return nil, nil, newAppTheoryError("app.internal", "internal error")
-	}
-	if !hostedGenesisSessionCanRetryDeclarationExtraction(convCtx.session) {
-		return nil, nil, newAppTheoryError(appErrCodeConflict, "conversation recovery requires a fresh soul bootstrap")
-	}
-	now := time.Now().UTC()
-	expectedVersion := convCtx.session.Version
-	progressedSession := cloneHostedGenesisSession(convCtx.session)
-	progressedConv := cloneSoulAgentMintConversation(convCtx.conv)
-	progressedSession.Status = string(hostedgenesis.StatusDeclarationExtractionPending)
-	progressedSession.Failure = hostedGenesisDeclarationExtractionRetryCarryForward(convCtx.session.Failure)
-	progressedSession.DeclarationCheckpoint = nil
-	progressedSession.RequestID = strings.TrimSpace(ctx.RequestID)
-	progressedSession.UpdatedAt = now
-	progressedSession.CompletedAt = time.Time{}
-	progressedConv.Status = models.SoulMintConversationStatusDeclarationExtractionPending
-	progressedConv.StatusReason = ""
-	progressedConv.RequestID = strings.TrimSpace(ctx.RequestID)
-	progressedConv.UpdatedAt = now
-	progressedConv.CompletedAt = time.Time{}
-	if s.hostedGenesisMicroVMDispatcher == nil {
-		return nil, nil, newAppTheoryError(appErrCodeMicroVMUnavailable, "MicroVM extraction dispatch is unavailable")
-	}
-	binding := progressedSession.MicroVMSessionBinding()
-	if err := binding.Validate(); err != nil {
-		return nil, nil, newAppTheoryError(appErrCodeMicroVMUnavailable, "MicroVM extraction binding is invalid")
-	}
-	freshDispatcher, freshErr := s.prepareHostedGenesisProviderTimeoutRuntime(ctx, convCtx, binding, progressedSession)
-	if freshErr != nil {
-		return nil, nil, freshErr
-	}
-	creditsDebited, appErr := s.debitSoulMintConversationCredits(
-		ctx.Context(),
-		convCtx.inst,
-		soulMintConversationExtractModule,
-		convCtx.conversationID,
-		firstNonEmpty(progressedConv.IdempotencyKey, ctx.RequestID),
-		soulMintConversationExtractBaseCredits,
-		now,
-		func(tx core.TransactionBuilder, creditsRequested int64) error {
-			if err := addHostedGenesisSessionDeclarationExtractionRetryWrite(tx, progressedSession, expectedVersion); err != nil {
-				return err
-			}
-			update := &models.SoulAgentMintConversation{AgentID: convCtx.agentIDHex, ConversationID: convCtx.conversationID}
-			_ = update.UpdateKeys()
-			tx.UpdateWithBuilder(update, func(ub core.UpdateBuilder) error {
-				ub.Add("ChargedCredits", creditsRequested)
-				ub.Set("Status", models.SoulMintConversationStatusDeclarationExtractionPending)
-				ub.Set("StatusReason", "")
-				ub.Set("RequestID", strings.TrimSpace(ctx.RequestID))
-				ub.Set("UpdatedAt", now)
-				ub.Set("CompletedAt", time.Time{})
-				return nil
-			}, tabletheory.IfExists(), tabletheory.Condition("Status", "=", models.SoulMintConversationStatusFailed))
-			return nil
-		},
-	)
-	if appErr != nil {
-		return nil, nil, appErr
-	}
-	progressedSession.Version = expectedVersion + 1
-	progressedConv.ChargedCredits += creditsDebited
-	return s.dispatchHostedGenesisRetriedDeclarationExtraction(ctx, convCtx, progressedSession, progressedConv, freshDispatcher, binding, now)
-}
-
 // hostedGenesisFreshRecoveryRequestID is deterministic for one failed Host
 // session version. Concurrent recovery requests therefore present the same
 // AppTheory/AWS Run idempotency token while the TableTheory version guard still
@@ -851,25 +750,6 @@ func (s *Server) prepareHostedGenesisProviderTimeoutRuntime(ctx *apptheory.Conte
 	return freshDispatcher, nil
 }
 
-func (s *Server) dispatchHostedGenesisRetriedDeclarationExtraction(ctx *apptheory.Context, convCtx soulInstanceBootstrapConversationContext, progressedSession *models.HostedGenesisSession, progressedConv *models.SoulAgentMintConversation, freshDispatcher hostedgenesis.FreshMicroVMDispatcher, binding hostedgenesis.MicroVMSessionBinding, now time.Time) (*models.HostedGenesisSession, *models.SoulAgentMintConversation, *apptheory.AppTheoryError) {
-	if invokeErr := invokeHostedGenesisFreshRuntime(ctx, freshDispatcher, binding); invokeErr != nil {
-		return nil, nil, invokeErr
-	}
-	if freshDispatcher != nil {
-		return progressedSession, progressedConv, nil
-	}
-	retryCtx := convCtx
-	retryCtx.session = progressedSession
-	retryCtx.conv = progressedConv
-	if err := s.dispatchHostedGenesisDeclarationExtraction(ctx, retryCtx, now); err != nil {
-		if appErr, ok := err.(*apptheory.AppTheoryError); ok {
-			return nil, nil, appErr
-		}
-		return nil, nil, newAppTheoryError("app.internal", "failed to retry declaration extraction")
-	}
-	return retryCtx.session, retryCtx.conv, nil
-}
-
 func invokeHostedGenesisFreshRuntime(ctx *apptheory.Context, dispatcher hostedgenesis.FreshMicroVMDispatcher, binding hostedgenesis.MicroVMSessionBinding) *apptheory.AppTheoryError {
 	if dispatcher == nil {
 		return nil
@@ -881,18 +761,6 @@ func invokeHostedGenesisFreshRuntime(ctx *apptheory.Context, dispatcher hostedge
 		return newAppTheoryError(appErrCodeMicroVMUnavailable, "fresh MicroVM recovery dispatch failed")
 	}
 	return nil
-}
-
-func addHostedGenesisSessionDeclarationExtractionRetryWrite(tx core.TransactionBuilder, session *models.HostedGenesisSession, expectedVersion int64) error {
-	return addHostedGenesisSessionFailedRetryWrite(
-		tx,
-		session,
-		expectedVersion,
-		hostedgenesis.StatusDeclarationExtractionPending,
-		hostedgenesis.FailureCodeDeclarationExtractionFailed,
-		"hosted genesis declaration extraction retry write is invalid",
-		"hosted genesis declaration extraction retry write requires pending declaration extraction",
-	)
 }
 
 func addHostedGenesisSessionFailedRetryWrite(tx core.TransactionBuilder, session *models.HostedGenesisSession, expectedVersion int64, targetStatus hostedgenesis.Status, failureCode hostedgenesis.FailureCode, invalidMessage string, requirementMessage string) error {
@@ -911,7 +779,7 @@ func addHostedGenesisSessionFailedRetryWrite(tx core.TransactionBuilder, session
 		return err
 	}
 	tx.UpdateWithBuilder(session, func(ub core.UpdateBuilder) error {
-		for _, field := range hostedGenesisDeclarationExtractionRetrySessionFields(session) {
+		for _, field := range hostedGenesisRetrySessionFields(session) {
 			ub.Set(field.name, field.value)
 		}
 		ub.Add("Version", int64(1))
@@ -925,7 +793,7 @@ type hostedGenesisSessionUpdateValue struct {
 	value any
 }
 
-func hostedGenesisDeclarationExtractionRetrySessionFields(session *models.HostedGenesisSession) []hostedGenesisSessionUpdateValue {
+func hostedGenesisRetrySessionFields(session *models.HostedGenesisSession) []hostedGenesisSessionUpdateValue {
 	return []hostedGenesisSessionUpdateValue{
 		{name: "InstanceSlug", value: session.InstanceSlug},
 		{name: "RegistrationID", value: session.RegistrationID},
@@ -945,6 +813,10 @@ func hostedGenesisDeclarationExtractionRetrySessionFields(session *models.Hosted
 		{name: "ExecutionStateRef", value: session.ExecutionStateRef},
 		{name: "MicroVMExecutionID", value: session.MicroVMExecutionID},
 		{name: "MicroVMLifecycleRef", value: session.MicroVMLifecycleRef},
+		{name: "DeclarationCandidate", value: session.DeclarationCandidate},
+		{name: "CandidateRevision", value: session.CandidateRevision},
+		{name: "CandidateHash", value: session.CandidateHash},
+		{name: "CandidatePhase", value: session.CandidatePhase},
 		{name: "DeclarationCheckpoint", value: session.DeclarationCheckpoint},
 		{name: "Failure", value: session.Failure},
 		{name: "TraceIDs", value: session.TraceIDs},
@@ -959,8 +831,8 @@ func hostedGenesisDeclarationExtractionRetrySessionFields(session *models.Hosted
 // the MicroVM controller run command on the production recover path. It is the
 // dispatch-only recovery site for sessions that predate the H1.2 lifecycle-ref
 // wiring (no MicroVMLifecycleRef). H1.4 makes recovery never re-run a turn
-// synchronously: the retained sync assistant runner is never consulted here, so
-// production recovery cannot fall back to a control-plane LLM call. An unwired
+// synchronously, so production recovery cannot make a Control plane provider
+// call. An unwired
 // dispatcher, an invalid binding, or a rejected dispatch is a loud retryable
 // microvm_unavailable failed session — never a silent 200 and never a sync LLM.
 // A successful dispatch persists the durable in_progress session with the
@@ -1018,17 +890,15 @@ type hostedGenesisMicroVMRecoveryResult struct {
 
 // hostedGenesisSessionNeedsMicroVMReconciliation reports whether the recover
 // path should reach production reconstruction via the M16 controller get
-// command. A session needs reconstruction when it sits in a MicroVM-serviced
-// pending state (in_progress assistant turn, or declaration_extraction_pending)
-// and already carries the populated lifecycle ref the H1.2 accept path (or H1.3
-// extraction dispatch) recorded. Sessions without a lifecycle ref fall through
-// to the re-dispatch path.
+// command. A session needs reconstruction when it sits in the MicroVM-serviced
+// in_progress state and already carries the populated lifecycle ref the accept
+// path recorded. Sessions without a lifecycle ref fall through to re-dispatch.
 func hostedGenesisSessionNeedsMicroVMReconciliation(session *models.HostedGenesisSession) bool {
 	if session == nil || session.MicroVMLifecycleRef == nil {
 		return false
 	}
 	status := hostedgenesis.NormalizeStatus(session.Status)
-	if status != hostedgenesis.StatusInProgress && status != hostedgenesis.StatusDeclarationExtractionPending {
+	if status != hostedgenesis.StatusInProgress {
 		return false
 	}
 	return strings.TrimSpace(session.ExecutionStateRef) != "" && strings.TrimSpace(session.MicroVMExecutionID) != ""
@@ -1095,7 +965,7 @@ func (s *Server) reconcileHostedGenesisMicroVMRecovery(ctx *apptheory.Context, c
 // persistHostedGenesisMicroVMRecoveryFailure records a loud retryable failed
 // session when production reconstruction observes a terminal (dead/expired)
 // MicroVM. Unlike the accept-path failure helper, the expected status is the
-// session's actual pending status (in_progress or declaration_extraction_pending)
+// session's actual pending status (in_progress)
 // so the TableTheory status condition matches the authoritative row and the
 // transition to failed is validated against the real prior state. The stored
 // transcript is preserved (no re-run of the assistant); only the failure and
@@ -1148,13 +1018,6 @@ func hostedGenesisSessionNeedsAssistantRecovery(session *models.HostedGenesisSes
 		return false
 	}
 	status := hostedgenesis.NormalizeStatus(session.Status)
-	// H1.3: the recover path covers declaration_extraction_pending as well as
-	// in_progress assistant turns. Both are MicroVM-serviced pending states;
-	// routing them through the recover path kills the permanent trap where
-	// declaration_extraction_pending could never be serviced or failed loudly.
-	if status == hostedgenesis.StatusDeclarationExtractionPending {
-		return true
-	}
 	return status == hostedgenesis.StatusInProgress &&
 		strings.TrimSpace(session.AssistantCheckpointRef) == ""
 }

@@ -64,6 +64,7 @@ func buildHostedGenesisConversationResponseFromSession(session *models.HostedGen
 		PublishedVersion: projection.PublishedVersion,
 		PublishedAt:      timePtrIfSet(projection.PublishedAt),
 	}
+	responseProjection.DeclarationCandidate = buildHostedGenesisCandidateProjection(session.DeclarationCandidate)
 	if hostedGenesisStatusIncludesMessages(string(projection.Status)) {
 		messages, bounded, redacted := buildHostedGenesisConversationMessages(session, conv)
 		if len(messages) > 0 {
@@ -85,6 +86,24 @@ func buildHostedGenesisConversationResponseFromSession(session *models.HostedGen
 	}
 }
 
+func buildHostedGenesisCandidateProjection(candidate *hostedgenesis.DeclarationCandidate) *hostedGenesisCandidateProjection {
+	if candidate == nil {
+		return nil
+	}
+	out := &hostedGenesisCandidateProjection{
+		Version: candidate.Version, Phase: candidate.Phase, CurrentSection: candidate.CurrentSection,
+		CompletedSections: append([]hostedgenesis.DeclarationSection(nil), candidate.CompletedSections...),
+		Revision:          candidate.Revision, CandidateHash: candidate.CandidateHash,
+	}
+	if candidate.Review != nil {
+		out.Review = &hostedGenesisCandidateReview{
+			RendererVersion: candidate.Review.RendererVersion, CandidateRevision: candidate.Review.CandidateRevision,
+			CandidateHash: candidate.Review.CandidateHash, ReviewHash: candidate.Review.ReviewHash, ReviewText: candidate.Review.ReviewText,
+		}
+	}
+	return out
+}
+
 func hostedGenesisInvalidProjectionFailure() *hostedgenesis.Failure {
 	return &hostedgenesis.Failure{
 		Code:      hostedgenesis.FailureCodeInvalidCompletionState,
@@ -104,9 +123,6 @@ func hostedGenesisFailureFromSession(failure *hostedgenesis.Failure) *hostedGene
 func hostedGenesisFailureFromSessionForSession(session *models.HostedGenesisSession, failure *hostedgenesis.Failure) *hostedGenesisFailure {
 	if failure == nil {
 		return hostedGenesisFailureFromReason(hostedGenesisFailureInvalidCompletionState)
-	}
-	if hostedGenesisDeclarationExtractionRetriesExhausted(session) {
-		failure = hostedGenesisExhaustedRetryFailure(failure, hostedGenesisFailureDeclarationExtractionFailed)
 	}
 	if hostedGenesisAssistantTurnRetriesExhausted(session) {
 		failure = hostedGenesisExhaustedRetryFailure(failure, hostedGenesisFailureAssistantTurnFailed)

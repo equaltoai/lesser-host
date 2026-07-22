@@ -5,10 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
@@ -48,13 +46,13 @@ func TestRuntimeTelemetryEmitsRequestHeartbeatResponseToolAndTerminalEventsConte
 	}
 	lifecycle := newTurnLifecycleTelemetry(turn)
 	lifecycle.bind(in)
-	lifecycle.emit("turn", "turn_accepted", "extract_declarations", "")
-	provider := newProviderCallTelemetry(turn, in, "declaration_extraction")
-	provider.observe(llm.ProviderTelemetryEvent{Provider: "anthropic", Model: "claude-test", Phase: "declaration_extraction", EventType: "request_start", Sequence: 1, FirstEvent: true, ToolName: "soul_five_body_declarations"})
+	lifecycle.emit("turn", "turn_accepted", "construct_section", "")
+	provider := newProviderCallTelemetry(turn, in, "declaration_phase")
+	provider.observe(llm.ProviderTelemetryEvent{Provider: "anthropic", Model: "claude-test", Phase: "declaration_phase", EventType: "request_start", Sequence: 1, FirstEvent: true, ToolName: "declaration_identity_put"})
 	provider.heartbeat()
-	provider.observe(llm.ProviderTelemetryEvent{Provider: "anthropic", Model: "claude-test", Phase: "declaration_extraction", EventType: "response_received", Sequence: 2, StopReason: "tool_use", ToolCalls: 1, ToolName: "soul_five_body_declarations"})
-	provider.observe(llm.ProviderTelemetryEvent{Provider: "anthropic", Model: "claude-test", Phase: "declaration_extraction", EventType: "tool_input_received", Sequence: 3, StopReason: "tool_use", ToolCalls: 1, ToolName: "soul_five_body_declarations"})
-	provider.observe(llm.ProviderTelemetryEvent{Provider: "anthropic", Model: "claude-test", Phase: "declaration_extraction", EventType: "provider_call_completed", Sequence: 4, LastEvent: true, StopReason: "tool_use", ToolCalls: 1, ToolName: "soul_five_body_declarations"})
+	provider.observe(llm.ProviderTelemetryEvent{Provider: "anthropic", Model: "claude-test", Phase: "declaration_phase", EventType: "response_received", Sequence: 2, StopReason: "tool_use", ToolCalls: 1, ToolName: "declaration_identity_put"})
+	provider.observe(llm.ProviderTelemetryEvent{Provider: "anthropic", Model: "claude-test", Phase: "declaration_phase", EventType: "tool_input_received", Sequence: 3, StopReason: "tool_use", ToolCalls: 1, ToolName: "declaration_identity_put"})
+	provider.observe(llm.ProviderTelemetryEvent{Provider: "anthropic", Model: "claude-test", Phase: "declaration_phase", EventType: "provider_call_completed", Sequence: 4, LastEvent: true, StopReason: "tool_use", ToolCalls: 1, ToolName: "declaration_identity_put"})
 
 	text := logs.String()
 	for _, want := range []string{
@@ -63,7 +61,7 @@ func TestRuntimeTelemetryEmitsRequestHeartbeatResponseToolAndTerminalEventsConte
 		"hosted-genesis-microvm-workload: provider_call_heartbeat",
 		`"event_type":"request_start"`, `"event_type":"heartbeat"`,
 		`"event_type":"response_received"`, `"stop_reason":"tool_use"`,
-		`"event_type":"tool_input_received"`, `"tool_name":"soul_five_body_declarations"`,
+		`"event_type":"tool_input_received"`, `"tool_name":"declaration_identity_put"`,
 		`"event_type":"provider_call_completed"`, `"last_event":true`,
 	} {
 		if !strings.Contains(text, want) {
@@ -123,7 +121,7 @@ func assertHungProviderDurableFailure(t *testing.T, compStore *fakeCompletionSto
 	if got := compStore.session.Failure.Class; got != hostedgenesis.FailureClassProviderTimeout {
 		t.Fatalf("durable provider timeout class mismatch: %q", got)
 	}
-	if got := providerFailureMessage("assistant_stream", fmt.Errorf("private-provider-key private response: %w", context.DeadlineExceeded)); got != "assistant_stream timeout" {
+	if got := providerFailureMessage("declaration_phase", fmt.Errorf("private-provider-key private response: %w", context.DeadlineExceeded)); got != "declaration_phase timeout" {
 		t.Fatalf("provider failure detail must be content-free, got %q", got)
 	}
 	persistedFailure, err := json.Marshal(compStore.session.Failure)
@@ -150,76 +148,4 @@ func assertHungProviderLogs(t *testing.T, text string) {
 			t.Fatalf("hung-provider telemetry leaked %q: %s", forbidden, text)
 		}
 	}
-}
-
-func TestDeclarationParseFailureTelemetryIsCorrelatedRedactedAndDurable(t *testing.T) {
-	setFiveBodyContractEnv(t)
-	response, err := json.Marshal(map[string]any{
-		"id": "chatcmpl_private", "object": "chat.completion", "created": 1, "model": "gpt-test",
-		"choices": []any{map[string]any{"index": 0, "finish_reason": "stop", "message": map[string]any{"role": "assistant", "content": `{`}}},
-		"usage":   map[string]any{"prompt_tokens": 5, "completion_tokens": 1, "total_tokens": 6},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = io.Copy(io.Discard, r.Body)
-		_ = r.Body.Close()
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write(response)
-	}))
-	t.Cleanup(srv.Close)
-	oldBase := os.Getenv("OPENAI_BASE_URL")
-	oldKey := os.Getenv("OPENAI_API_KEY")
-	t.Cleanup(func() {
-		_ = os.Setenv("OPENAI_BASE_URL", oldBase)
-		_ = os.Setenv("OPENAI_API_KEY", oldKey)
-		llm.ConfigureProviderHTTPClient(nil)
-	})
-	_ = os.Setenv("OPENAI_BASE_URL", srv.URL)
-	_ = os.Setenv("OPENAI_API_KEY", "private-declaration-key")
-	llm.ConfigureProviderHTTPClient(&http.Client{Timeout: time.Second})
-
-	var logs bytes.Buffer
-	priorLogger := slog.Default()
-	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
-	t.Cleanup(func() { slog.SetDefault(priorLogger) })
-
-	turnStore, compStore, turn := baseTurnInput()
-	turnStore.session.Status = string(hostedgenesis.StatusDeclarationExtractionPending)
-	turnStore.session.TraceIDs = &hostedgenesis.TraceIDs{CorrelationID: "corr-declaration-test"}
-	turnStore.conv.Status = "declaration_extraction_pending"
-	turnStore.conv.Messages = encodeTestConversation(t, []llm.MintConversationMessage{{Role: "user", Content: "private declaration transcript"}, {Role: "assistant", Content: "ready"}})
-	compStore.session.Status = string(hostedgenesis.StatusDeclarationExtractionPending)
-	compStore.conversation.Status = "declaration_extraction_pending"
-	runner := &turnRunner{store: turnStore, writer: completion.NewCompletionWriter(compStore, func() time.Time { return time.Unix(3000, 0).UTC() }), providerCallTimeout: time.Second}
-	if err := runner.runTurnAndPersist(context.Background(), turn); err != nil {
-		t.Fatalf("parse failure should be durably recorded: %v", err)
-	}
-	if compStore.session.Failure == nil || compStore.session.Failure.Code != hostedgenesis.FailureCodeDeclarationExtractionFailed {
-		t.Fatalf("expected typed declaration extraction failure, got %#v", compStore.session)
-	}
-	if compStore.session.Failure.Class != hostedgenesis.FailureClassParseValidation {
-		t.Fatalf("expected durable parse/validation class, got %#v", compStore.session.Failure)
-	}
-	text := logs.String()
-	for _, want := range []string{`"phase":"declaration_extraction"`, `"failure_class":"parse_validation_failure"`, `"schema_name":"soul_five_body_declarations"`, `"correlation_id":"corr-declaration-test"`, `"event_type":"failure_persist_completed"`} {
-		if !strings.Contains(text, want) {
-			t.Fatalf("missing declaration failure telemetry %s: %s", want, text)
-		}
-	}
-	for _, forbidden := range []string{"private declaration transcript", "private-declaration-key"} {
-		if strings.Contains(text, forbidden) {
-			t.Fatalf("declaration failure telemetry leaked %q: %s", forbidden, text)
-		}
-	}
-}
-
-func encodeTestConversation(t *testing.T, messages []llm.MintConversationMessage) string {
-	t.Helper()
-	raw, err := json.Marshal(messages)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return models.EncodeSoulMintConversationBlob(string(raw))
 }

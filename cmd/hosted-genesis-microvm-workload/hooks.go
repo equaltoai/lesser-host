@@ -31,9 +31,9 @@ const (
 // hookServer serves the AppTheory M16 MicroVM image lifecycle hooks on the
 // configured port. Each hook path receives a sanitized microvm.LifecycleEvent
 // JSON body and drives it through AppTheory's real lifecycle adapter
-// (DefaultRealLifecycleContract + NewLifecycleAdapter). The run hook
-// additionally executes the assistant turn + declaration extraction and durably
-// records completion to HostedGenesisSession truth.
+// (DefaultRealLifecycleContract + NewLifecycleAdapter). The run hook executes
+// one typed candidate phase or provider-free finalization and durably records
+// it to HostedGenesisSession truth.
 //
 // The server is fail-closed: unknown hooks, malformed events, unsupported
 // transitions, and execution failures surface as a failed LifecycleResult with a
@@ -86,7 +86,7 @@ func (b hookBinding) completionTurn() completion.CompletionTurn {
 // newHookServer builds the workload's hook dispatcher over the framework's M16
 // real lifecycle adapter. It fails closed at startup if the contract or handler
 // set is invalid. Handlers are the workload's per-hook behavior; the run handler
-// executes the assistant turn + declaration extraction.
+// executes one typed candidate phase.
 func newHookServer(runner *turnRunner, namespace string) (*hookServer, error) {
 	contract := runtimemicrovm.DefaultRealLifecycleContract()
 	adapter, err := runtimemicrovm.NewLifecycleAdapter(
@@ -446,8 +446,8 @@ func validateHook(_ context.Context, _ runtimemicrovm.LifecycleEvent) error {
 	return nil
 }
 
-// runHook returns the run lifecycle handler that executes the assistant turn +
-// declaration extraction and durably records completion.
+// runHook returns the lifecycle handler that executes one typed candidate phase
+// or deterministic finalization and records it durably.
 func runHook(runner *turnRunner) runtimemicrovm.LifecycleHandler {
 	return func(ctx context.Context, event runtimemicrovm.LifecycleEvent) error {
 		if runner == nil {

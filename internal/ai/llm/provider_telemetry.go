@@ -17,32 +17,41 @@ import (
 // bounded metadata: raw prompts, transcripts, deltas, model output, declaration
 // bodies, provider keys, and request headers never cross this seam.
 type ProviderTelemetryEvent struct {
-	Provider      string `json:"provider"`
-	Model         string `json:"model"`
-	Phase         string `json:"phase"`
-	EventType     string `json:"event_type"`
-	Sequence      int64  `json:"sequence"`
-	FirstEvent    bool   `json:"first_event"`
-	FirstSDKEvent bool   `json:"first_sdk_event"`
-	LastEvent     bool   `json:"last_event"`
-	ElapsedMS     int64  `json:"elapsed_ms"`
-	IdleMS        int64  `json:"idle_ms"`
-	DeltaBytes    int    `json:"delta_bytes,omitempty"`
-	DeltaRunes    int    `json:"delta_runes,omitempty"`
-	OutputBytes   int    `json:"output_bytes,omitempty"`
-	OutputRunes   int    `json:"output_runes,omitempty"`
-	OutputSHA256  string `json:"output_sha256,omitempty"`
-	PayloadBytes  int    `json:"payload_bytes,omitempty"`
-	PayloadSHA256 string `json:"payload_sha256,omitempty"`
-	InputTokens   int64  `json:"input_tokens,omitempty"`
-	OutputTokens  int64  `json:"output_tokens,omitempty"`
-	TotalTokens   int64  `json:"total_tokens,omitempty"`
-	ToolCalls     int64  `json:"tool_calls,omitempty"`
-	OutputCount   int64  `json:"output_count,omitempty"`
-	StopReason    string `json:"stop_reason,omitempty"`
-	FailureClass  string `json:"failure_class,omitempty"`
-	SchemaName    string `json:"schema_name,omitempty"`
-	ToolName      string `json:"tool_name,omitempty"`
+	Provider          string   `json:"provider"`
+	Model             string   `json:"model"`
+	Phase             string   `json:"phase"`
+	EventType         string   `json:"event_type"`
+	Sequence          int64    `json:"sequence"`
+	FirstEvent        bool     `json:"first_event"`
+	FirstSDKEvent     bool     `json:"first_sdk_event"`
+	LastEvent         bool     `json:"last_event"`
+	ElapsedMS         int64    `json:"elapsed_ms"`
+	IdleMS            int64    `json:"idle_ms"`
+	DeltaBytes        int      `json:"delta_bytes,omitempty"`
+	DeltaRunes        int      `json:"delta_runes,omitempty"`
+	OutputBytes       int      `json:"output_bytes,omitempty"`
+	OutputRunes       int      `json:"output_runes,omitempty"`
+	OutputSHA256      string   `json:"output_sha256,omitempty"`
+	PayloadBytes      int      `json:"payload_bytes,omitempty"`
+	PayloadSHA256     string   `json:"payload_sha256,omitempty"`
+	InputTokens       int64    `json:"input_tokens,omitempty"`
+	OutputTokens      int64    `json:"output_tokens,omitempty"`
+	TotalTokens       int64    `json:"total_tokens,omitempty"`
+	ToolCalls         int64    `json:"tool_calls,omitempty"`
+	OutputCount       int64    `json:"output_count,omitempty"`
+	StopReason        string   `json:"stop_reason,omitempty"`
+	FailureClass      string   `json:"failure_class,omitempty"`
+	SchemaName        string   `json:"schema_name,omitempty"`
+	ToolName          string   `json:"tool_name,omitempty"`
+	ToolCallHash      string   `json:"tool_call_hash,omitempty"`
+	Accepted          bool     `json:"accepted,omitempty"`
+	SDKAttemptOrdinal int64    `json:"sdk_attempt_ordinal,omitempty"`
+	SDKRetryBudget    int      `json:"sdk_retry_budget,omitempty"`
+	HTTPStatus        int      `json:"http_status,omitempty"`
+	ProviderRequestID string   `json:"provider_request_id,omitempty"`
+	DurationMS        int64    `json:"duration_ms,omitempty"`
+	ValidationCodes   []string `json:"validation_codes,omitempty"`
+	ValidationPaths   []string `json:"validation_paths,omitempty"`
 }
 
 // ProviderTelemetrySink receives content-free provider observations.

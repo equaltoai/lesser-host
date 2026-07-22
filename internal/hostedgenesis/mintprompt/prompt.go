@@ -1,8 +1,5 @@
 // Package mintprompt holds the shared Soul minting-conversation system prompt
-// builder used by both the control-plane assistant runner and the in-VM
-// hosted-genesis MicroVM workload. Centralizing it prevents drift between the
-// synchronous control-plane path and the MicroVM execution path: both must
-// prompt the provider identically for a given registration.
+// builder used by the in-VM hosted-genesis MicroVM workload.
 package mintprompt
 
 import (
@@ -17,7 +14,7 @@ import (
 
 const (
 	// CanonicalFinalAffirmationQuestion is the exact hosted-genesis review question
-	// the interviewer must ask before Host advances to declaration extraction.
+	// the interviewer asks before the owner submits a structural candidate action.
 	CanonicalFinalAffirmationQuestion = "Do you affirm this declaration as the foundation of your minted soul? If there is anything here you would correct, qualify, or strike before it is inscribed, name it now."
 
 	// InjectionHardeningLine mirrors auxiliary LLM prompts: registration context

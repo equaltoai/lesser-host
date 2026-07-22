@@ -69,9 +69,148 @@ func (s *Store) UpdateHostedGenesisSession(ctx context.Context, item *models.Hos
 	})
 }
 
+// CheckpointHostedGenesisCandidate writes one accepted phase-local tool result
+// under tenant/session/turn/version/revision/hash guards. The candidate is part
+// of the authoritative HostedGenesisSession row, so the candidate checkpoint
+// and session version advance in the same TableTheory transaction.
+func (s *Store) CheckpointHostedGenesisCandidate(ctx context.Context, item *models.HostedGenesisSession, expectedVersion int64, expectedStatus hostedgenesis.Status, expectedTurnID string, expectedCandidateRevision int64, expectedCandidateHash string) error {
+	if s == nil || s.DB == nil || item == nil || item.DeclarationCandidate == nil {
+		return theoryErrors.ErrItemNotFound
+	}
+	expectedTurnID = strings.TrimSpace(expectedTurnID)
+	expectedCandidateHash = strings.TrimSpace(expectedCandidateHash)
+	if expectedTurnID == "" || expectedCandidateRevision < 0 || expectedCandidateHash == "" || strings.TrimSpace(item.LatestTurnID) != expectedTurnID {
+		return fmt.Errorf("hosted genesis candidate checkpoint guard is invalid")
+	}
+	expectedStatus, err := validateHostedGenesisSessionUpdate(item, expectedVersion, expectedStatus)
+	if err != nil {
+		return err
+	}
+	return s.DB.TransactWrite(ctx, func(tx core.TransactionBuilder) error {
+		addHostedGenesisSessionUpdate(tx, item, expectedVersion, expectedStatus,
+			tabletheory.Condition("LatestTurnID", "=", expectedTurnID),
+			tabletheory.Condition("CandidateRevision", "=", expectedCandidateRevision),
+			tabletheory.Condition("CandidateHash", "=", expectedCandidateHash))
+		return nil
+	})
+}
+
+// RecordHostedGenesisAssistantTurnAndConversation atomically advances the
+// authoritative session and its conversation projection after a phase-local
+// provider run. The candidate revision/hash/phase are conditions on the same
+// transaction, so a stale provider completion cannot publish a transcript over
+// a newer accepted section or another turn.
+func (s *Store) RecordHostedGenesisAssistantTurnAndConversation(ctx context.Context, session *models.HostedGenesisSession, expectedVersion int64, expectedStatus hostedgenesis.Status, expectedTurnID string, expectedCandidateRevision int64, expectedCandidateHash string, conversation *models.SoulAgentMintConversation) error {
+	if s == nil || s.DB == nil || session == nil || session.DeclarationCandidate == nil || conversation == nil {
+		return theoryErrors.ErrItemNotFound
+	}
+	expectedTurnID = strings.TrimSpace(expectedTurnID)
+	expectedCandidateHash = strings.TrimSpace(expectedCandidateHash)
+	candidate := session.DeclarationCandidate
+	if hostedgenesis.NormalizeStatus(session.Status) != hostedgenesis.StatusAssistantTurnReady ||
+		expectedTurnID == "" || strings.TrimSpace(session.LatestTurnID) != expectedTurnID ||
+		expectedCandidateRevision != candidate.Revision || expectedCandidateHash != candidate.CandidateHash ||
+		session.CandidateRevision != candidate.Revision || session.CandidateHash != candidate.CandidateHash || session.CandidatePhase != string(candidate.Phase) {
+		return fmt.Errorf("hosted genesis assistant candidate guard is invalid")
+	}
+	if !strings.EqualFold(strings.TrimSpace(session.AgentID), strings.TrimSpace(conversation.AgentID)) ||
+		strings.TrimSpace(session.ConversationID) != strings.TrimSpace(conversation.ConversationID) ||
+		strings.TrimSpace(conversation.LatestTurnID) != expectedTurnID ||
+		strings.TrimSpace(conversation.Status) != models.SoulMintConversationStatusAssistantTurnReady {
+		return fmt.Errorf("hosted genesis assistant projection is invalid")
+	}
+	expectedStatus, err := validateHostedGenesisSessionUpdate(session, expectedVersion, expectedStatus)
+	if err != nil {
+		return err
+	}
+	if err := conversation.BeforeUpdate(); err != nil {
+		return err
+	}
+	return s.DB.TransactWrite(ctx, func(tx core.TransactionBuilder) error {
+		addHostedGenesisSessionUpdate(tx, session, expectedVersion, expectedStatus,
+			tabletheory.Condition("LatestTurnID", "=", expectedTurnID),
+			tabletheory.Condition("CandidateRevision", "=", expectedCandidateRevision),
+			tabletheory.Condition("CandidateHash", "=", expectedCandidateHash),
+			tabletheory.Condition("CandidatePhase", "=", string(candidate.Phase)))
+		tx.UpdateWithBuilder(conversation, func(ub core.UpdateBuilder) error {
+			ub.Set("Messages", conversation.Messages)
+			ub.Set("Usage", conversation.Usage)
+			ub.Set("Status", conversation.Status)
+			ub.Set("StatusReason", conversation.StatusReason)
+			ub.Set("LatestTurnID", conversation.LatestTurnID)
+			ub.Set("RequestID", conversation.RequestID)
+			ub.Set("UpdatedAt", conversation.UpdatedAt)
+			ub.Set("CompletedAt", conversation.CompletedAt)
+			return nil
+		}, tabletheory.IfExists(),
+			tabletheory.Condition("Status", "=", string(expectedStatus)),
+			tabletheory.Condition("LatestTurnID", "=", expectedTurnID))
+		return nil
+	})
+}
+
+// FinalizeHostedGenesisCandidateAndConversation atomically transitions an
+// affirmed typed candidate to declaration_ready and projects its exact
+// canonical bytes to the public conversation projection row. No provider output,
+// transcript extraction, or time-dependent rendering participates in this
+// transaction.
+func (s *Store) FinalizeHostedGenesisCandidateAndConversation(ctx context.Context, session *models.HostedGenesisSession, expectedVersion int64, expectedStatus hostedgenesis.Status, expectedTurnID string, expectedCandidateRevision int64, expectedCandidateHash string, conversation *models.SoulAgentMintConversation) error {
+	if s == nil || s.DB == nil || session == nil || session.DeclarationCandidate == nil || conversation == nil {
+		return theoryErrors.ErrItemNotFound
+	}
+	expectedTurnID = strings.TrimSpace(expectedTurnID)
+	expectedCandidateHash = strings.TrimSpace(expectedCandidateHash)
+	candidate := session.DeclarationCandidate
+	if candidate.Phase != hostedgenesis.DeclarationCandidatePhaseFinalized ||
+		session.CandidateRevision != candidate.Revision || session.CandidateHash != candidate.CandidateHash ||
+		expectedTurnID == "" || strings.TrimSpace(session.LatestTurnID) != expectedTurnID ||
+		expectedCandidateRevision != candidate.Revision || expectedCandidateHash != candidate.CandidateHash {
+		return fmt.Errorf("hosted genesis candidate finalization guard is invalid")
+	}
+	if hostedgenesis.NormalizeStatus(session.Status) != hostedgenesis.StatusDeclarationReady || session.DeclarationCheckpoint == nil ||
+		strings.TrimSpace(session.DeclarationCheckpoint.DeclarationHash) != candidate.CandidateHash {
+		return fmt.Errorf("hosted genesis candidate finalization checkpoint is invalid")
+	}
+	if !strings.EqualFold(strings.TrimSpace(session.AgentID), strings.TrimSpace(conversation.AgentID)) ||
+		strings.TrimSpace(session.ConversationID) != strings.TrimSpace(conversation.ConversationID) ||
+		strings.TrimSpace(conversation.LatestTurnID) != expectedTurnID ||
+		strings.TrimSpace(models.DecodeSoulMintConversationBlob(conversation.ProducedDeclarations)) != candidate.CanonicalJSON ||
+		strings.TrimSpace(conversation.Status) != models.SoulMintConversationStatusDeclarationReady {
+		return fmt.Errorf("hosted genesis candidate finalization projection is invalid")
+	}
+	expectedStatus, err := validateHostedGenesisSessionUpdate(session, expectedVersion, expectedStatus)
+	if err != nil {
+		return err
+	}
+	if err := conversation.BeforeUpdate(); err != nil {
+		return err
+	}
+	return s.DB.TransactWrite(ctx, func(tx core.TransactionBuilder) error {
+		addHostedGenesisSessionUpdate(tx, session, expectedVersion, expectedStatus,
+			tabletheory.Condition("LatestTurnID", "=", expectedTurnID),
+			tabletheory.Condition("CandidateRevision", "=", expectedCandidateRevision),
+			tabletheory.Condition("CandidateHash", "=", expectedCandidateHash),
+			tabletheory.Condition("CandidatePhase", "=", string(hostedgenesis.DeclarationCandidatePhaseAffirmed)))
+		tx.UpdateWithBuilder(conversation, func(ub core.UpdateBuilder) error {
+			ub.Set("ProducedDeclarations", conversation.ProducedDeclarations)
+			ub.Set("Usage", conversation.Usage)
+			ub.Set("Status", conversation.Status)
+			ub.Set("StatusReason", conversation.StatusReason)
+			ub.Set("LatestTurnID", conversation.LatestTurnID)
+			ub.Set("RequestID", conversation.RequestID)
+			ub.Set("UpdatedAt", conversation.UpdatedAt)
+			ub.Set("CompletedAt", conversation.CompletedAt)
+			return nil
+		}, tabletheory.IfExists(),
+			tabletheory.Condition("Status", "=", string(expectedStatus)),
+			tabletheory.Condition("LatestTurnID", "=", expectedTurnID))
+		return nil
+	})
+}
+
 // FailHostedGenesisSessionAndConversation atomically projects a terminal
-// hosted-genesis failure into the Host-owned session truth and its legacy
-// conversation-list compatibility row. When the accepted turn carried an
+// hosted-genesis failure into the Host-owned session truth and its bounded
+// public conversation-list projection row. When the accepted turn carried an
 // idempotency key, the same guarded transaction also closes that exact
 // reservation as failed; an exact already-failed reservation is accepted so a
 // recovered turn can converge without reopening or replacing its accepted-turn
@@ -179,7 +318,7 @@ func hostedGenesisFailureIdempotency(session *models.HostedGenesisSession) (*mod
 }
 
 // PublishHostedGenesisSessionAndConversation atomically records terminal
-// publication truth in HostedGenesisSession and its compatibility conversation
+// publication truth in HostedGenesisSession and its public conversation
 // row. Both writes are guarded by the same declaration_ready expectation, and
 // the authoritative session additionally uses TableTheory's version guard.
 func (s *Store) PublishHostedGenesisSessionAndConversation(ctx context.Context, session *models.HostedGenesisSession, expectedVersion int64, expectedStatus hostedgenesis.Status, conversation *models.SoulAgentMintConversation) error {
@@ -251,6 +390,10 @@ func addHostedGenesisSessionUpdate(tx core.TransactionBuilder, item *models.Host
 		ub.Set("MicroVMExecutionID", item.MicroVMExecutionID)
 		ub.Set("MicroVMLifecycleRef", item.MicroVMLifecycleRef)
 		ub.Set("DeclarationCheckpoint", item.DeclarationCheckpoint)
+		ub.Set("DeclarationCandidate", item.DeclarationCandidate)
+		ub.Set("CandidateRevision", item.CandidateRevision)
+		ub.Set("CandidateHash", item.CandidateHash)
+		ub.Set("CandidatePhase", item.CandidatePhase)
 		ub.Set("Publication", item.Publication)
 		ub.Set("Failure", item.Failure)
 		ub.Set("TraceIDs", item.TraceIDs)

@@ -28,7 +28,6 @@ const (
 const (
 	hostedGenesisFailureLLMUnavailable              = "llm_unavailable"
 	hostedGenesisFailureAssistantTurnFailed         = "assistant_turn_failed"
-	hostedGenesisFailureDeclarationExtractionFailed = "declaration_extraction_failed"
 	hostedGenesisFailureInvalidCompletionState      = "invalid_completion_state"
 	hostedGenesisFailureMissingProducedDeclarations = "missing_produced_declarations"
 	hostedGenesisFailureInvalidProducedDeclarations = "invalid_produced_declarations"
@@ -59,6 +58,7 @@ type hostedGenesisConversationProjection struct {
 	MessagesTruncated    bool                               `json:"messages_truncated,omitempty"`
 	MessagesRedacted     bool                               `json:"messages_redacted,omitempty"`
 	ProducedDeclarations *hostedGenesisProducedDeclarations `json:"produced_declarations,omitempty"`
+	DeclarationCandidate *hostedGenesisCandidateProjection  `json:"declaration_candidate,omitempty"`
 	Failure              *hostedGenesisFailure              `json:"failure,omitempty"`
 	PublishedVersion     int                                `json:"published_version,omitempty"`
 	PublishedAt          *time.Time                         `json:"published_at,omitempty"`
@@ -68,6 +68,24 @@ type hostedGenesisConversationProjection struct {
 	CreatedAt            *time.Time                         `json:"created_at,omitempty"`
 	UpdatedAt            *time.Time                         `json:"updated_at,omitempty"`
 	CompletedAt          *time.Time                         `json:"completed_at,omitempty"`
+}
+
+type hostedGenesisCandidateProjection struct {
+	Version           string                                  `json:"version"`
+	Phase             hostedgenesis.DeclarationCandidatePhase `json:"phase"`
+	CurrentSection    hostedgenesis.DeclarationSection        `json:"current_section,omitempty"`
+	CompletedSections []hostedgenesis.DeclarationSection      `json:"completed_sections,omitempty"`
+	Revision          int64                                   `json:"revision"`
+	CandidateHash     string                                  `json:"candidate_hash"`
+	Review            *hostedGenesisCandidateReview           `json:"review,omitempty"`
+}
+
+type hostedGenesisCandidateReview struct {
+	RendererVersion   string `json:"renderer_version"`
+	CandidateRevision int64  `json:"candidate_revision"`
+	CandidateHash     string `json:"candidate_hash"`
+	ReviewHash        string `json:"review_hash"`
+	ReviewText        string `json:"review_text"`
 }
 
 type hostedGenesisConversationMessage struct {
@@ -174,7 +192,6 @@ func mintConversationStatusProjectionFromModel(conv *models.SoulAgentMintConvers
 		}
 	case models.SoulMintConversationStatusInProgress,
 		models.SoulMintConversationStatusAssistantTurnReady,
-		models.SoulMintConversationStatusDeclarationExtractionPending,
 		models.SoulMintConversationStatusFailed:
 		// locked status; no rewrite.
 	default:
@@ -372,7 +389,6 @@ func hostedGenesisStatusIncludesMessages(status string) bool {
 	case models.SoulMintConversationStatusCreated,
 		models.SoulMintConversationStatusInProgress,
 		models.SoulMintConversationStatusAssistantTurnReady,
-		models.SoulMintConversationStatusDeclarationExtractionPending,
 		models.SoulMintConversationStatusFailed:
 		return true
 	default:
@@ -384,8 +400,7 @@ func isHostedGenesisProgressStatus(status string) bool {
 	switch strings.TrimSpace(status) {
 	case models.SoulMintConversationStatusCreated,
 		models.SoulMintConversationStatusInProgress,
-		models.SoulMintConversationStatusAssistantTurnReady,
-		models.SoulMintConversationStatusDeclarationExtractionPending:
+		models.SoulMintConversationStatusAssistantTurnReady:
 		return true
 	default:
 		return false
@@ -429,7 +444,7 @@ func buildHostedGenesisProducedDeclarations(conv *models.SoulAgentMintConversati
 
 func hostedGenesisFailureFromReason(reason string) *hostedGenesisFailure {
 	code := normalizeHostedGenesisFailureCode(reason)
-	retryable := code == hostedGenesisFailureLLMUnavailable || code == hostedGenesisFailureAssistantTurnFailed || code == hostedGenesisFailureDeclarationExtractionFailed || code == hostedGenesisFailureMicroVMUnavailable
+	retryable := code == hostedGenesisFailureLLMUnavailable || code == hostedGenesisFailureAssistantTurnFailed || code == hostedGenesisFailureMicroVMUnavailable
 	recovery := hostedGenesisFailureRecovery{Action: hostedGenesisRecoveryRefreshState, Reason: code}
 	if hostedgenesis.IsDeclarationValidationCode(reason) {
 		recovery.Reason = strings.TrimSpace(reason)
@@ -460,7 +475,6 @@ func normalizeHostedGenesisFailureCode(reason string) string {
 	switch strings.TrimSpace(reason) {
 	case hostedGenesisFailureLLMUnavailable,
 		hostedGenesisFailureAssistantTurnFailed,
-		hostedGenesisFailureDeclarationExtractionFailed,
 		hostedGenesisFailureInvalidCompletionState,
 		hostedGenesisFailureMissingProducedDeclarations,
 		hostedGenesisFailureInvalidProducedDeclarations,
@@ -476,9 +490,7 @@ func normalizeHostedGenesisFailureCode(reason string) string {
 func hostedGenesisFailureMessage(code string) string {
 	switch code {
 	case hostedGenesisFailureLLMUnavailable:
-		return "Assistant turn failed before declaration extraction."
-	case hostedGenesisFailureDeclarationExtractionFailed:
-		return "Declaration extraction failed."
+		return "Assistant declaration phase could not start."
 	case hostedGenesisFailureInvalidCompletionState:
 		return "Conversation cannot be completed from the current state."
 	case hostedGenesisFailureMissingProducedDeclarations:
@@ -492,7 +504,7 @@ func hostedGenesisFailureMessage(code string) string {
 	case hostedGenesisFailureMicroVMUnavailable:
 		return "MicroVM execution dispatch is unavailable."
 	default:
-		return "Assistant turn failed before declaration extraction."
+		return "Assistant declaration phase failed."
 	}
 }
 
@@ -535,12 +547,15 @@ func nilIfEmptyTrace(trace hostedGenesisTraceIDs) *hostedGenesisTraceIDs {
 	return &trace
 }
 
-func hostedGenesisRequestHash(registrationID string, conversationID string, model string, message string) string {
-	payload := map[string]string{
+func hostedGenesisRequestHash(registrationID string, conversationID string, model string, message string, candidateActions ...*hostedgenesis.DeclarationCandidateAction) string {
+	payload := map[string]any{
 		"registration_id": strings.TrimSpace(registrationID),
 		"conversation_id": strings.TrimSpace(conversationID),
 		"model":           strings.TrimSpace(model),
 		"message_hash":    sha256HexTrimmed(message),
+	}
+	if len(candidateActions) > 0 && candidateActions[0] != nil {
+		payload["candidate_action"] = candidateActions[0]
 	}
 	b, _ := json.Marshal(payload)
 	sum := sha256.Sum256(b)

@@ -20,7 +20,7 @@ const hostedGenesisMicroVMDispatcherInitTimeout = 5 * time.Second
 // hostedGenesisMicroVMHTTPTimeout bounds each HTTP call the dispatcher makes to
 // the governed AppTheoryMicrovmController API. The accept path must return 202
 // well under 2s; the controller Lambda's own timeout (30s) is the outer bound.
-// A non-2xx or timed-out call fails closed and loudly (no sync LLM fallback).
+// A non-2xx or timed-out call fails closed and loudly.
 const hostedGenesisMicroVMHTTPTimeout = 10 * time.Second
 
 // hostedGenesisMicroVMDispatcherBuilder is the seam NewServer uses to construct
@@ -73,9 +73,8 @@ type hostedGenesisMicroVMDispatcherOptions struct {
 // SSM auth-token fetch fails or returns an empty token, or the HTTP client /
 // dispatcher construction fails, the dispatcher is NOT wired — the returned
 // dispatcher is nil and the accept path fails closed and loudly with a typed
-// 503 microvm_unavailable. NewServer never falls back to a synchronous
-// control-plane LLM call; the retained sync assistant runner stays behind its
-// defaulted-false non-production guard (H2.1 deletes it). A nil return is the
+// 503 microvm_unavailable. NewServer never makes a Control plane provider call.
+// A nil return is the
 // explicit fail-closed outcome — the caller sets hostedGenesisMicroVMDispatcher
 // = nil and the accept path's existing nil-check surfaces the loud 503.
 func newHostedGenesisMicroVMDispatcher(ctx context.Context, cfg config.Config, ssmGetParameter func(ctx context.Context, name string) (string, error), opts hostedGenesisMicroVMDispatcherOptions) hostedgenesis.MicroVMDispatcher {

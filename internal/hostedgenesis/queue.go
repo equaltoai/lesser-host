@@ -27,7 +27,6 @@ const (
 	// through the AppTheory MicroVM controller. It is non-authoritative transport:
 	// the worker must reload HostedGenesisSession and drop the message unless the
 	// session/turn/idempotency still match.
-	StepMicroVMDispatch       = "microvm_dispatch"
-	StepAssistantTurn         = "assistant_turn"
-	StepDeclarationExtraction = "declaration_extraction"
+	StepMicroVMDispatch = "microvm_dispatch"
+	StepAssistantTurn   = "assistant_turn"
 )

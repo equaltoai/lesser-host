@@ -32,12 +32,10 @@ import (
 // control-plane Server handle.
 //
 // GetHostedGenesisSession loads authoritative truth by tenant slug +
-// conversation id. UpdateHostedGenesisSession performs an expected-version +
-// expected-status conditional write; a stale version or status must fail as a
-// transaction condition error rather than silently overwriting state.
+// conversation id. Failure convergence uses one guarded transaction across the
+// authoritative session and its public projection.
 type CompletionStore interface {
 	GetHostedGenesisSession(ctx context.Context, instanceSlug string, conversationID string) (*models.HostedGenesisSession, error)
-	UpdateHostedGenesisSession(ctx context.Context, item *models.HostedGenesisSession, expectedVersion int64, expectedStatus hostedgenesis.Status) error
 	GetSoulAgentMintConversation(ctx context.Context, agentID string, conversationID string) (*models.SoulAgentMintConversation, error)
 	FailHostedGenesisSessionAndConversation(ctx context.Context, session *models.HostedGenesisSession, expectedVersion int64, expectedStatus hostedgenesis.Status, conversation *models.SoulAgentMintConversation) error
 }
@@ -63,18 +61,8 @@ func (t CompletionTurn) Validate() error {
 	return nil
 }
 
-// AssistantTurnCompletion is the durable outcome of a successful assistant turn
-// run inside the MicroVM. AssistantContent is the full trimmed assistant
-// response; MessageCount is the post-turn message count (accepted user turn +
-// produced assistant message). Usage is the provider usage for this turn.
-type AssistantTurnCompletion struct {
-	AssistantContent string
-	MessageCount     int
-	Usage            models.AIUsage
-}
-
 // CompletionFailure is the typed failure the workload records when a turn or
-// declaration extraction fails. It maps to hostedgenesis.Failure with bounded
+// declaration phase fails. It maps to hostedgenesis.Failure with bounded
 // recovery guidance authored by Host (clients never author recovery).
 type CompletionFailure struct {
 	Code      hostedgenesis.FailureCode
@@ -109,128 +97,6 @@ func NewCompletionWriter(store CompletionStore, clock func() time.Time) *Complet
 		clock = func() time.Time { return time.Now().UTC() }
 	}
 	return &CompletionWriter{store: store, clock: clock}
-}
-
-// RecordAssistantTurnReady transitions an in_progress session to
-// assistant_turn_ready for the named turn, persisting the assistant checkpoint
-// reference and message count. It is idempotent per turn ID: a replay against a
-// session already at assistant_turn_ready (or beyond) returns
-// ErrCompletionConflict.
-//
-// The expected-status precondition is in_progress (the state the accept path
-// leaves the session in). The expected-version precondition is the loaded
-// session's current Version; the store's conditional update increments it.
-func (w *CompletionWriter) RecordAssistantTurnReady(ctx context.Context, turn CompletionTurn, completion AssistantTurnCompletion) (*models.HostedGenesisSession, error) {
-	return w.RecordAssistantTurnReadyWithCheckpoint(ctx, turn, completion, nil)
-}
-
-// RecordAssistantTurnReadyWithCheckpoint records an assistant turn plus the
-// in-VM actor's safe checkpoint metadata. The checkpoint is optional for
-// legacy callers; MicroVM actor callers supply it so relaunch/replay has a
-// bounded Host-visible progress marker.
-func (w *CompletionWriter) RecordAssistantTurnReadyWithCheckpoint(ctx context.Context, turn CompletionTurn, completion AssistantTurnCompletion, checkpoint *hostedgenesis.VMCheckpointMetadata) (*models.HostedGenesisSession, error) {
-	if w == nil || w.store == nil {
-		return nil, ErrCompletionSessionMissing
-	}
-	if err := turn.Validate(); err != nil {
-		return nil, err
-	}
-	if strings.TrimSpace(completion.AssistantContent) == "" {
-		return nil, fmt.Errorf("hosted genesis completion requires non-empty assistant content")
-	}
-
-	session, err := w.store.GetHostedGenesisSession(ctx, turn.InstanceSlug, turn.ConversationID)
-	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrCompletionSessionMissing, err)
-	}
-	if err := assertTurnMatch(session, turn, hostedgenesis.StatusInProgress); err != nil {
-		return nil, err
-	}
-
-	now := w.clock()
-	progressed := cloneSessionForCompletion(session)
-	progressed.Status = string(hostedgenesis.StatusAssistantTurnReady)
-	progressed.MessageCount = maxInt(progressed.MessageCount, completion.MessageCount)
-	progressed.AssistantCheckpointRef = hostedgenesis.CheckpointRef("assistant", progressed.ConversationID, turn.TurnID)
-	if checkpoint != nil {
-		vmCheckpoint := checkpoint.Normalize()
-		if err := validateCompletionVMCheckpoint(session, vmCheckpoint, turn, hostedgenesis.StatusInProgress, hostedgenesis.StatusAssistantTurnReady); err != nil {
-			return nil, err
-		}
-		progressed.VMCheckpoint = &vmCheckpoint
-	}
-	progressed.Failure = nil
-	progressed.RequestID = strings.TrimSpace(turn.RequestID)
-	progressed.UpdatedAt = now
-	progressed.CompletedAt = time.Time{}
-
-	if err := w.store.UpdateHostedGenesisSession(ctx, progressed, session.Version, hostedgenesis.StatusInProgress); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrCompletionConflict, err)
-	}
-	return progressed, nil
-}
-
-// RecordDeclarationReady transitions an in_progress, declaration_extraction_pending,
-// or assistant_turn_ready session to declaration_ready with a publish-ready
-// DeclarationCheckpoint. The in_progress path is the M11 MicroVM actor gateway:
-// Host has already accepted/debited the user turn and the actor owns the final
-// extract/finalize decision under Host status/version/checkpoint guards. The
-// checkpoint must pass its Validate and the session's CanPublish gate (enforced
-// by the store model's BeforeUpdate).
-//
-// Idempotent per turn ID against the expected status precondition.
-func (w *CompletionWriter) RecordDeclarationReady(ctx context.Context, turn CompletionTurn, checkpoint hostedgenesis.DeclarationCheckpoint) (*models.HostedGenesisSession, error) {
-	return w.RecordDeclarationReadyWithCheckpoint(ctx, turn, checkpoint, nil)
-}
-
-// RecordDeclarationReadyWithCheckpoint records declaration readiness plus the
-// in-VM actor's safe checkpoint metadata. The declaration checkpoint remains
-// the publish gate; VMCheckpoint is replay/relaunch metadata only.
-func (w *CompletionWriter) RecordDeclarationReadyWithCheckpoint(ctx context.Context, turn CompletionTurn, checkpoint hostedgenesis.DeclarationCheckpoint, vmCheckpoint *hostedgenesis.VMCheckpointMetadata) (*models.HostedGenesisSession, error) {
-	if w == nil || w.store == nil {
-		return nil, ErrCompletionSessionMissing
-	}
-	if err := turn.Validate(); err != nil {
-		return nil, err
-	}
-	if err := checkpoint.Validate(); err != nil {
-		return nil, err
-	}
-
-	session, err := w.store.GetHostedGenesisSession(ctx, turn.InstanceSlug, turn.ConversationID)
-	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrCompletionSessionMissing, err)
-	}
-	expectedStatus := hostedgenesis.NormalizeStatus(session.Status)
-	if expectedStatus != hostedgenesis.StatusInProgress &&
-		expectedStatus != hostedgenesis.StatusDeclarationExtractionPending &&
-		expectedStatus != hostedgenesis.StatusAssistantTurnReady {
-		return nil, fmt.Errorf("%w: session status %q is not declaration-extractable", ErrCompletionConflict, session.Status)
-	}
-	if err := assertTurnMatch(session, turn, expectedStatus); err != nil {
-		return nil, err
-	}
-
-	now := w.clock()
-	progressed := cloneSessionForCompletion(session)
-	progressed.Status = string(hostedgenesis.StatusDeclarationReady)
-	progressed.DeclarationCheckpoint = &checkpoint
-	if vmCheckpoint != nil {
-		safeCheckpoint := vmCheckpoint.Normalize()
-		if err := validateCompletionVMCheckpoint(session, safeCheckpoint, turn, expectedStatus, hostedgenesis.StatusDeclarationReady); err != nil {
-			return nil, err
-		}
-		progressed.VMCheckpoint = &safeCheckpoint
-	}
-	progressed.Failure = nil
-	progressed.RequestID = strings.TrimSpace(turn.RequestID)
-	progressed.UpdatedAt = now
-	progressed.CompletedAt = now
-
-	if err := w.store.UpdateHostedGenesisSession(ctx, progressed, session.Version, expectedStatus); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrCompletionConflict, err)
-	}
-	return progressed, nil
 }
 
 // RecordFailure transitions a non-terminal session to failed with a typed
@@ -338,8 +204,7 @@ func applyPriorRecoveryBudget(next hostedgenesis.Failure, prior *hostedgenesis.F
 
 func isBoundedRecoveryFailure(code hostedgenesis.FailureCode) bool {
 	switch code {
-	case hostedgenesis.FailureCodeDeclarationExtractionFailed,
-		hostedgenesis.FailureCodeAssistantTurnFailed,
+	case hostedgenesis.FailureCodeAssistantTurnFailed,
 		hostedgenesis.FailureCodeMicroVMUnavailable:
 		return true
 	default:
@@ -368,53 +233,6 @@ func assertTurnMatch(session *models.HostedGenesisSession, turn CompletionTurn, 
 	return nil
 }
 
-func validateCompletionVMCheckpoint(session *models.HostedGenesisSession, checkpoint hostedgenesis.VMCheckpointMetadata, turn CompletionTurn, expectedStatus hostedgenesis.Status, targetStatus hostedgenesis.Status) error {
-	if err := checkpoint.Validate(); err != nil {
-		return fmt.Errorf("%w: invalid vm checkpoint: %v", ErrCompletionConflict, err)
-	}
-	if strings.TrimSpace(checkpoint.LatestTurnID) != strings.TrimSpace(turn.TurnID) {
-		return fmt.Errorf("%w: checkpoint turn %q does not match completion turn %q", ErrCompletionConflict, checkpoint.LatestTurnID, turn.TurnID)
-	}
-	if session != nil {
-		expectedRef := hostedgenesis.CheckpointRef(
-			"vm-actor",
-			session.ConversationID,
-			fmt.Sprintf("%s-%d-%s", firstNonEmptyCompletion(strings.TrimSpace(checkpoint.Step), strings.TrimSpace(checkpoint.Action), "step"), checkpoint.Sequence, checkpoint.LatestTurnID),
-		)
-		if strings.TrimSpace(checkpoint.Ref) != expectedRef {
-			return fmt.Errorf("%w: checkpoint ref does not match completion conversation", ErrCompletionConflict)
-		}
-	}
-	if hostedgenesis.NormalizeStatus(checkpoint.StatusFrom) != expectedStatus ||
-		hostedgenesis.NormalizeStatus(checkpoint.StatusTo) != targetStatus {
-		return fmt.Errorf("%w: checkpoint status %q -> %q does not match expected %q -> %q", ErrCompletionConflict, checkpoint.StatusFrom, checkpoint.StatusTo, expectedStatus, targetStatus)
-	}
-	if session.VMCheckpoint == nil {
-		return nil
-	}
-	prior := session.VMCheckpoint.Normalize()
-	if err := prior.Validate(); err != nil {
-		return fmt.Errorf("%w: prior vm checkpoint is invalid: %v", ErrCompletionConflict, err)
-	}
-	if checkpoint.Sequence <= prior.Sequence {
-		return fmt.Errorf("%w: checkpoint sequence %d does not advance prior sequence %d", ErrCompletionConflict, checkpoint.Sequence, prior.Sequence)
-	}
-	if strings.TrimSpace(checkpoint.Ref) == strings.TrimSpace(prior.Ref) ||
-		strings.TrimSpace(checkpoint.Hash) == strings.TrimSpace(prior.Hash) {
-		return fmt.Errorf("%w: checkpoint ref/hash did not advance", ErrCompletionConflict)
-	}
-	return nil
-}
-
-func firstNonEmptyCompletion(values ...string) string {
-	for _, value := range values {
-		if trimmed := strings.TrimSpace(value); trimmed != "" {
-			return trimmed
-		}
-	}
-	return ""
-}
-
 // cloneSessionForCompletion copies the loaded session for a progression write,
 // deep-copying nested pointer fields. Mirrors control-plane
 // cloneHostedGenesisSession.
@@ -432,6 +250,7 @@ func cloneSessionForCompletion(session *models.HostedGenesisSession) *models.Hos
 		cp := *session.DeclarationCheckpoint
 		copy.DeclarationCheckpoint = &cp
 	}
+	copy.DeclarationCandidate = session.DeclarationCandidate.Clone()
 	if session.Failure != nil {
 		failure := *session.Failure
 		copy.Failure = &failure
@@ -445,11 +264,4 @@ func cloneSessionForCompletion(session *models.HostedGenesisSession) *models.Hos
 		copy.VMCheckpoint = &checkpoint
 	}
 	return &copy
-}
-
-func maxInt(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
 }

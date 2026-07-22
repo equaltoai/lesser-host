@@ -197,6 +197,15 @@ func (t *providerCallTelemetry) log(message string, event llm.ProviderTelemetryE
 		slog.String("failure_class", strings.TrimSpace(event.FailureClass)),
 		slog.String("schema_name", strings.TrimSpace(event.SchemaName)),
 		slog.String("tool_name", strings.TrimSpace(event.ToolName)),
+		slog.String("tool_call_hash", strings.TrimSpace(event.ToolCallHash)),
+		slog.Bool("accepted", event.Accepted),
+		slog.Int64("sdk_attempt_ordinal", event.SDKAttemptOrdinal),
+		slog.Int("sdk_retry_budget", event.SDKRetryBudget),
+		slog.Int("http_status", event.HTTPStatus),
+		slog.String("provider_request_id", strings.TrimSpace(event.ProviderRequestID)),
+		slog.Int64("duration_ms", event.DurationMS),
+		slog.Any("validation_codes", event.ValidationCodes),
+		slog.Any("validation_paths", event.ValidationPaths),
 	}
 	slog.Info(serviceName+": "+message, attrs...) //nolint:gosec // fixed message plus content-free structured metadata only.
 }

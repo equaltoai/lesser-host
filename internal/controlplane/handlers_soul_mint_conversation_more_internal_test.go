@@ -22,7 +22,6 @@ import (
 
 	"github.com/stretchr/testify/mock"
 
-	"github.com/equaltoai/lesser-host/internal/ai/llm"
 	"github.com/equaltoai/lesser-host/internal/config"
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
 	"github.com/equaltoai/lesser-host/internal/soul"
@@ -197,25 +196,6 @@ func newMintConversationServer(tdb *mintConversationTestDB) *Server {
 	}
 }
 
-func stubHostedGenesisAssistantRunner(t *testing.T, s *Server, response string, runErr error) {
-	t.Helper()
-	s.hostedGenesisAssistantRunner = func(_ context.Context, in hostedGenesisAssistantRunInput) (hostedGenesisAssistantRunResult, error) {
-		if strings.TrimSpace(in.apiKey) == "" || strings.TrimSpace(in.modelSet) == "" || strings.TrimSpace(in.systemPrompt) == "" {
-			t.Fatalf("hosted genesis assistant runner received incomplete safe input: %#v", in)
-		}
-		if len(in.messages) == 0 || strings.TrimSpace(in.messages[len(in.messages)-1].Content) == "" {
-			t.Fatalf("hosted genesis assistant runner received no accepted user turn: %#v", in.messages)
-		}
-		if strings.Contains(in.systemPrompt, mintConversationInstanceReadTestRawKey) {
-			t.Fatalf("hosted genesis assistant prompt leaked instance key")
-		}
-		return hostedGenesisAssistantRunResult{
-			fullResponse: response,
-			usage:        models.AIUsage{Provider: "test", Model: in.modelSet, InputTokens: 1, OutputTokens: 1, TotalTokens: 2},
-		}, runErr
-	}
-}
-
 // stubHostedGenesisMicroVMDispatcher wires a stub MicroVMDispatcher that records
 // a valid MicroVM dispatcher plus queue enqueue seam. It asserts the sync
 // assistant runner is NOT invoked so the accept path is proven
@@ -231,10 +211,6 @@ func stubHostedGenesisMicroVMDispatcher(t *testing.T, s *Server) *stubMicroVMDis
 	}
 	// Guard the synchronous runner seam: H1.2 makes the production accept path
 	// queue-handoff-only, so the sync assistant runner must never be reached.
-	s.hostedGenesisAssistantRunner = func(_ context.Context, _ hostedGenesisAssistantRunInput) (hostedGenesisAssistantRunResult, error) {
-		t.Fatalf("synchronous assistant runner must not be invoked on the dispatch-only accept path")
-		return hostedGenesisAssistantRunResult{}, nil
-	}
 	return dispatcher
 }
 
@@ -510,10 +486,6 @@ func TestRequireMintConversationFinalizeActiveIdentityAllowsPendingHosted(t *tes
 func TestMintConversationHelperCoverage(t *testing.T) {
 	now := time.Date(2026, 3, 5, 12, 0, 0, 0, time.UTC)
 
-	t.Run("build produced declarations errors and defaults", func(t *testing.T) {
-		testMintConversationProducedDeclarationsBranches(t, now)
-	})
-
 	t.Run("parse declarations branches", func(t *testing.T) {
 		testMintConversationParseDeclarationsBranches(t)
 	})
@@ -524,10 +496,6 @@ func TestMintConversationHelperCoverage(t *testing.T) {
 
 	t.Run("system prompt and api key selection", func(t *testing.T) {
 		testMintConversationPromptAndAPIKeys(t)
-	})
-
-	t.Run("extract declarations guard rails", func(t *testing.T) {
-		testMintConversationExtractDeclarationsGuards(t, now)
 	})
 
 	t.Run("finalize registration helper", func(t *testing.T) {
@@ -545,57 +513,6 @@ func TestMintConversationHelperCoverage(t *testing.T) {
 	t.Run("emit event never blocks when stream is unavailable", func(t *testing.T) {
 		testMintConversationEmitEvent(t)
 	})
-}
-
-func testMintConversationProducedDeclarationsBranches(t *testing.T, now time.Time) {
-	t.Helper()
-
-	if _, appErr := buildMintConversationProducedDeclarationsWithOptions(llm.MintConversationDeclarationsDraft{
-		SelfDescription: soul.SelfDescriptionV2{Purpose: "short", AuthoredBy: "agent"},
-	}, now, "openai:gpt-5.4", nil, false); appErr == nil || appErr.Message != string(hostedgenesis.DeclarationCodeSelfDescription) {
-		t.Fatalf("expected selfDescription error, got %#v", appErr)
-	}
-	decl, appErr := buildMintConversationProducedDeclarationsWithOptions(llm.MintConversationDeclarationsDraft{
-		SelfDescription: soul.SelfDescriptionV2{Purpose: "A sufficiently long purpose string.", AuthoredBy: "agent"},
-		Capabilities:    []soul.CapabilityV2{{Capability: "", Scope: "skip"}},
-		Boundaries:      []llm.MintConversationBoundaryDraft{{Category: "refusal", Statement: "I will not impersonate humans."}},
-	}, now, "openai:gpt-5.4", []string{"travel_planning"}, false)
-	if appErr != nil {
-		t.Fatalf("expected declared capabilities to fill empty extracted capabilities, got %#v", appErr)
-	}
-	if len(decl.Capabilities) != 1 || decl.Capabilities[0].Capability != "travel_planning" || len(decl.Boundaries) != 1 {
-		t.Fatalf("expected declared capability with retained valid boundary, got %#v", decl)
-	}
-
-	_, appErr = buildMintConversationProducedDeclarationsWithOptions(llm.MintConversationDeclarationsDraft{
-		SelfDescription: soul.SelfDescriptionV2{Purpose: "A sufficiently long purpose string.", AuthoredBy: "agent"},
-		Capabilities:    []soul.CapabilityV2{{Capability: "", Scope: "skip"}},
-		Boundaries:      []llm.MintConversationBoundaryDraft{{Category: "refusal", Statement: "I will not impersonate humans."}},
-	}, now, "openai:gpt-5.4", nil, false)
-	if appErr == nil || appErr.Message != string(hostedgenesis.DeclarationCodeCapabilities) {
-		t.Fatalf("expected required capabilities error, got %#v", appErr)
-	}
-
-	_, appErr = buildMintConversationProducedDeclarationsWithOptions(llm.MintConversationDeclarationsDraft{
-		SelfDescription: soul.SelfDescriptionV2{Purpose: "A sufficiently long purpose string.", AuthoredBy: "agent"},
-		Capabilities:    []soul.CapabilityV2{{Capability: "travel_planning", Scope: "Draft itineraries."}},
-		Boundaries:      []llm.MintConversationBoundaryDraft{{Category: "", Statement: "skip"}},
-	}, now, "openai:gpt-5.4", nil, false)
-	if appErr == nil || appErr.Message != string(hostedgenesis.DeclarationCodeBoundariesBad) {
-		t.Fatalf("expected invalid boundaries error, got %#v", appErr)
-	}
-
-	decl, appErr = buildMintConversationProducedDeclarationsWithOptions(llm.MintConversationDeclarationsDraft{
-		SelfDescription: soul.SelfDescriptionV2{Purpose: "A sufficiently long purpose string.", AuthoredBy: "agent"},
-		Capabilities:    []soul.CapabilityV2{{Capability: "travel_planning", Scope: "Draft itineraries."}},
-		Boundaries:      []llm.MintConversationBoundaryDraft{{Category: "refusal", Statement: "I will not impersonate humans."}},
-	}, now, "openai:gpt-5.4", nil, false)
-	if appErr != nil {
-		t.Fatalf("unexpected error: %v", appErr)
-	}
-	if decl.Transparency == nil || len(decl.Transparency) != 0 {
-		t.Fatalf("expected default transparency map, got %#v", decl.Transparency)
-	}
 }
 
 func testMintConversationParseDeclarationsBranches(t *testing.T) {
@@ -679,35 +596,6 @@ func testMintConversationPromptAndAPIKeys(t *testing.T) {
 		t.Fatalf("unexpected claude api key: %q %#v", got, appErr)
 	}
 	if _, appErr := s.apiKeyForMintConversationModel(t.Context(), "other:model"); appErr == nil || appErr.Code != appErrCodeBadRequest {
-		t.Fatalf("expected unsupported model error, got %#v", appErr)
-	}
-}
-
-func testMintConversationExtractDeclarationsGuards(t *testing.T, now time.Time) {
-	t.Helper()
-
-	s := &Server{}
-	reg := &models.SoulAgentRegistration{DomainNormalized: "example.com", LocalID: "agent-bot", AgentID: testMintConversationIdentity().AgentID}
-	conv := &models.SoulAgentMintConversation{}
-
-	if _, _, appErr := s.extractMintConversationDeclarations(t.Context(), nil, conv, now); appErr == nil || appErr.Message != provisionPhoneInternalError {
-		t.Fatalf("expected nil reg error, got %#v", appErr)
-	}
-	if _, _, appErr := s.extractMintConversationDeclarations(t.Context(), reg, nil, now); appErr == nil || appErr.Message != provisionPhoneInternalError {
-		t.Fatalf("expected nil conv error, got %#v", appErr)
-	}
-	if _, _, appErr := s.extractMintConversationDeclarations(t.Context(), reg, conv, now); appErr == nil || appErr.Message != "conversation model is missing" {
-		t.Fatalf("expected missing model error, got %#v", appErr)
-	}
-
-	conv.Model = "openai:gpt-5.4"
-	if _, _, appErr := s.extractMintConversationDeclarations(t.Context(), reg, conv, now); appErr == nil || appErr.Message != "conversation has no messages" {
-		t.Fatalf("expected missing messages error, got %#v", appErr)
-	}
-
-	conv.Model = "other:model"
-	conv.Messages = `[{"role":"user","content":"hello"}]`
-	if _, _, appErr := s.extractMintConversationDeclarations(t.Context(), reg, conv, now); appErr == nil || appErr.Code != appErrCodeBadRequest {
 		t.Fatalf("expected unsupported model error, got %#v", appErr)
 	}
 }
@@ -854,9 +742,7 @@ func TestMintConversationGetCompleteAndFinalizeGuards(t *testing.T) {
 	testMintConversationCompleteRejectsFailedConversationState(t)
 	testMintConversationCompleteReturnsCompletedConversationReplay(t)
 	testMintConversationCompleteRejectsPublishedRegistration(t)
-	testMintConversationCompleteRejectsMissingAssistantTurn(t)
-	testMintConversationCompleteAcceptsStringDeclarations(t)
-	testMintConversationCompleteAcceptsObjectDeclarations(t)
+	testMintConversationCompleteRejectsCallerDeclarations(t)
 	testMintConversationBeginFinalizeRequiresBucketConfiguration(t)
 	testMintConversationFinalizeRequiresRegistrationIDWithBucketConfigured(t)
 }
@@ -1204,7 +1090,7 @@ func testMintConversationCompleteRejectsPublishedRegistration(t *testing.T) {
 	}
 }
 
-func testMintConversationCompleteRejectsMissingAssistantTurn(t *testing.T) {
+func testMintConversationCompleteRejectsCallerDeclarations(t *testing.T) {
 	t.Helper()
 	reg := mintConversationGuardReg()
 	tdb := newMintConversationTestDB()
@@ -1230,87 +1116,10 @@ func testMintConversationCompleteRejectsMissingAssistantTurn(t *testing.T) {
 	ctx.Request.Body = body
 	_, err := s.handleSoulCompleteMintConversation(ctx)
 	appErr, ok := err.(*apptheory.AppTheoryError)
-	if !ok || appErr.Code != appErrCodeConflict || appErr.Message != "conversation has no completed assistant turn" {
-		t.Fatalf("expected durable assistant-turn conflict, got %#v", err)
+	if !ok || appErr.Code != appErrCodeConflict || appErr.Message != "typed declaration candidate must be finalized by the Hosted Genesis MicroVM" {
+		t.Fatalf("expected typed-candidate-only conflict, got %#v", err)
 	}
 	tdb.qConv.AssertNumberOfCalls(t, "Update", 0)
-}
-
-func testMintConversationCompleteAcceptsStringDeclarations(t *testing.T) {
-	t.Helper()
-	reg := mintConversationGuardReg()
-	tdb := newMintConversationTestDB()
-	s := newMintConversationServer(tdb)
-	stubMintConversationRegistration(t, tdb, reg)
-	stubMintConversationDomainAccess(t, tdb, reg.DomainNormalized)
-	stubMintConversationIdentity(t, tdb, nil, theoryErrors.ErrItemNotFound)
-	tdb.qConv.On("First", mock.AnythingOfType("*models.SoulAgentMintConversation")).Return(nil).Run(func(args mock.Arguments) {
-		dest, ok := args.Get(0).(*models.SoulAgentMintConversation)
-		if !ok || dest == nil {
-			t.Fatalf("expected *models.SoulAgentMintConversation, got %#v", args.Get(0))
-		}
-		*dest = models.SoulAgentMintConversation{
-			AgentID:        reg.AgentID,
-			ConversationID: mintConversationTestConversationID,
-			Status:         models.SoulMintConversationStatusInProgress,
-			Messages:       encodeMintConversationBlob(mintConversationDurableAssistantMessagesJSON()),
-		}
-	}).Once()
-	tdb.qConv.On("Update", []string{"Status", "ProducedDeclarations", "CompletedAt", "Usage"}).Return(nil).Once()
-	declBytes := mustMarshalJSON(t, testMintConversationDecl())
-	body := mustMarshalJSON(t, map[string]string{"declarations": string(declBytes)})
-	ctx := adminCtx()
-	ctx.Params = map[string]string{"id": reg.ID, "conversationId": mintConversationTestConversationID}
-	ctx.Request.Body = body
-	resp, err := s.handleSoulCompleteMintConversation(ctx)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	var out models.SoulAgentMintConversation
-	if err := json.Unmarshal(resp.Body, &out); err != nil {
-		t.Fatalf("unmarshal response: %v", err)
-	}
-	if out.Status != models.SoulMintConversationStatusCompleted || out.ProducedDeclarations != string(declBytes) {
-		t.Fatalf("unexpected completed conversation: %#v", out)
-	}
-}
-
-func testMintConversationCompleteAcceptsObjectDeclarations(t *testing.T) {
-	t.Helper()
-	reg := mintConversationGuardReg()
-	tdb := newMintConversationTestDB()
-	s := newMintConversationServer(tdb)
-	stubMintConversationRegistration(t, tdb, reg)
-	stubMintConversationDomainAccess(t, tdb, reg.DomainNormalized)
-	stubMintConversationIdentity(t, tdb, nil, theoryErrors.ErrItemNotFound)
-	tdb.qConv.On("First", mock.AnythingOfType("*models.SoulAgentMintConversation")).Return(nil).Run(func(args mock.Arguments) {
-		dest, ok := args.Get(0).(*models.SoulAgentMintConversation)
-		if !ok || dest == nil {
-			t.Fatalf("expected *models.SoulAgentMintConversation, got %#v", args.Get(0))
-		}
-		*dest = models.SoulAgentMintConversation{
-			AgentID:        reg.AgentID,
-			ConversationID: "conv-2",
-			Status:         models.SoulMintConversationStatusInProgress,
-			Messages:       encodeMintConversationBlob(mintConversationDurableAssistantMessagesJSON()),
-		}
-	}).Once()
-	tdb.qConv.On("Update", []string{"Status", "ProducedDeclarations", "CompletedAt", "Usage"}).Return(nil).Once()
-	body := mustMarshalJSON(t, map[string]any{"declarations": testMintConversationDecl()})
-	ctx := adminCtx()
-	ctx.Params = map[string]string{"id": reg.ID, "conversationId": "conv-2"}
-	ctx.Request.Body = body
-	resp, err := s.handleSoulCompleteMintConversation(ctx)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	var out models.SoulAgentMintConversation
-	if err := json.Unmarshal(resp.Body, &out); err != nil {
-		t.Fatalf("unmarshal response: %v", err)
-	}
-	if out.Status != models.SoulMintConversationStatusCompleted || !strings.Contains(out.ProducedDeclarations, `"selfDescription"`) {
-		t.Fatalf("unexpected completed conversation: %#v", out)
-	}
 }
 
 func testMintConversationBeginFinalizeRequiresBucketConfiguration(t *testing.T) {

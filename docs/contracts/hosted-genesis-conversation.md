@@ -1,6 +1,8 @@
-# Hosted genesis durable conversation contract
+# Hosted Genesis typed-candidate conversation contract
 
-Project 50 Milestone A extends the Project 49 contract by adding the Host-owned `HostedGenesisSession` DynamoDB source of truth. Project 49 locked the Host-owned durable async contract for Lesser-driven hosted/off-chain soul genesis. The observed
+Project 48 M11 supersedes the earlier transcript-completion design with a typed five-body candidate constructed inside
+the AppTheory MicroVM. The Host-owned `HostedGenesisSession` DynamoDB row remains the source of truth. Earlier projects
+locked the durable async contract for Lesser-driven hosted/off-chain Soul genesis. The observed
 failure this contract fixes was a transport-success response (`HTTP 200` plus a request id) while Host persisted the
 conversation as `in_progress` with no declarations and Lesser could not persist a `host_conversation_id`.
 
@@ -8,8 +10,8 @@ This document is a contract artifact for Host, Lesser, Greater, and Sim. Project
 Project 50 Milestone A implements the Host-owned source-of-truth model/repository foundation. Project 51 M2 routes
 the Lesser instance-key runtime through `HostedGenesisSession` first: POST commits the session and idempotency/debit
 ledger before transport execution, GET/status projects from the session, completion/finalize gates read declaration
-checkpoint readiness and terminal publication truth from the session, and `SoulAgentMintConversation` is
-compatibility/projection input only.
+checkpoint readiness and terminal publication truth from the session, and `SoulAgentMintConversation` is a bounded
+public projection only.
 
 ## Authoritative Lesser route family
 
@@ -19,6 +21,8 @@ control-plane session tokens.
 - `POST /api/v1/soul/instance/agents/register/{id}/mint-conversation`
   - JSON-authoritative for Lesser.
   - Creates or appends a hosted-genesis turn and returns the current durable status envelope.
+  - During owner review, the request carries a structural `candidate_action` (`affirm` or `edit`) bound to the exact
+    candidate revision, candidate hash, and review hash. Free-form affirmation phrases have no authority.
   - `HTTP 200` or `HTTP 202` is **transport success only**. It is not terminal completion.
   - Lesser must persist `conversation.conversation_id` as soon as it appears, even when `conversation.status` is
     `in_progress`.
@@ -26,9 +30,8 @@ control-plane session tokens.
   - Durable status read.
   - Source of truth for polling, resume, declaration readiness, and typed failure recovery.
 - `POST /api/v1/soul/instance/agents/register/{id}/mint-conversation/{conversationId}/complete`
-  - Progress-safe completion/extraction handoff for Lesser.
-  - `HTTP 202` returns the compact HostConversation progress envelope while assistant or declaration extraction work is
-    still running.
+  - Progress-safe read/convergence gate for Lesser; it does not start provider or extraction work.
+  - `HTTP 202` returns the compact HostConversation progress envelope while MicroVM phase work is still running.
   - `HTTP 200` returns the same compact HostConversation envelope with `status=declaration_ready` only when valid
     produced declarations exist; it never returns raw transcript fields.
 
@@ -66,7 +69,7 @@ Successful publication advances the authoritative session from `declaration_read
 state `published`. Before the irreversible publication path starts, Host reserves a bounded publication checkpoint on
 the session: registration/conversation/agent ids, the exact registration SHA256, version, and issued timestamp. After
 the publication and graduation side effects succeed, Host atomically writes `status=published` plus `published_at` to
-the session and writes `status=published` to the `SoulAgentMintConversation` compatibility row under the session's
+the session and writes `status=published` to the `SoulAgentMintConversation` public projection under the session's
 expected `version` and `status=declaration_ready` conditions. `published` and `failed` are terminal; only
 `declaration_ready -> published` is legal from the publish-ready state.
 
@@ -79,10 +82,19 @@ published version. The promotion conversation state must be the prototype's prio
 agent lists apply this bounded convergence; no Body override, status alias, or indefinite compatibility fallback is
 part of the contract.
 
-For the production Lesser instance-key path, the final minted-soul affirmation is an ordinary accepted user turn delivered
-to the AppTheory MicroVM conversation actor. Host persists that turn, applies idempotency/debit policy, leaves the durable
-session in `in_progress`, and dispatches the accepted turn through the MicroVM gateway. The VM actor, not Host-side
-keyword heuristics or a Host follow-on extraction job, decides whether to ask, wait, revise, extract/finalize, or fail.
+For the production Lesser instance-key path, Host stores a versioned, hashed typed declaration candidate as the source
+of truth. The AppTheory MicroVM exposes exactly one section-specific provider tool at a time for identity, philosophy,
+discipline, boundaries, and soul. Accepted tool submissions are normalized and validated immediately, then checkpointed
+under tenant/session/turn/candidate guards through TableTheory. Invalid submissions return machine-readable
+section/path/code errors and retry only the current section. Every tool payload must repeat the exact current
+`candidateRevision` and `candidateHash`; missing, stale, mismatched, or unknown payload fields fail closed before any
+candidate mutation. The VM actor never rebuilds the candidate from a transcript.
+
+The owner review is rendered deterministically from the exact canonical candidate. Structural affirmation binds the
+candidate revision/hash and review hash; any edit invalidates the prior review and affirmation. Finalization revalidates
+and publishes the exact canonical candidate bytes. **No provider request occurs after affirmation.**
+The fifth accepted tool also needs no provider-generated review prose: Host projects the stored deterministic review
+directly, including after process/VM recovery from the accepted review checkpoint.
 When the actor finalizes, it advances the same durable conversation to `declaration_ready` with `produced_declarations`
 under Host status/version/checkpoint guards; the registration-scoped instance-key status read projects that terminal
 declaration evidence without publishing as a read side effect. Lesser polls Host status until `declaration_ready`, then
@@ -104,18 +116,13 @@ execution details. They do not determine user-visible progress, retry, finalize 
 delivery or MicroVM cache is missing or stale, status remains the compact `HostedGenesisSession` projection and
 retry/finalize decisions continue to fail closed from that Host row.
 
-### M11 billing policy for actor-path declaration extraction
+### M11 typed-candidate billing and hard cutover
 
-Project 48 M11 keeps billing at the Host accepted-turn boundary. The Lesser instance-key path's final affirmation is
-charged as the ordinary paid accepted user turn described above. If the AppTheory MicroVM actor then decides that this
-accepted turn should extract/finalize declarations, that in-VM extraction rides the same accepted-turn ledger entry and
-does **not** create a second Host extraction debit, second idempotency row, or Host-owned extraction step machine.
-
-The retained `declaration_extraction_pending` compatibility/recovery seam is only for historical or explicitly routed
-legacy lanes that had already entered the pre-M11 extraction state. Active M11 actor-path traffic must remain:
-persist/debit/idempotency on accepted turn → MicroVM actor decides ask/wait/revise/extract/finalize/fail → Host guarded
-finalization/publish. Host may record safe provider usage/telemetry metadata, but it must not bill another credit debit
-for the actor's declaration extraction work unless a future ADR explicitly changes this policy.
+Project 48 M11 keeps billing at the Host accepted-turn boundary. Phase-local provider work and deterministic finalization
+ride the same accepted-turn ledger entry and do not create a second debit or idempotency row. This is a hard cutover:
+production whole-transcript extraction, extraction target states, phrase-only affirmation, and compatibility fallback
+paths do not exist. Existing lanes without typed candidate state fail closed with `restart_soul_bootstrap`; Host does not
+reconstruct or migrate them through an extractor.
 
 ### Hosted instance-trust declarations and restart recovery
 
@@ -136,7 +143,7 @@ malformed rows are not silently dropped. A terminal failure's public message is 
 `Produced declarations are invalid.`; the optional recovery reason is limited to a single stable field code.
 
 When produced declarations are missing or invalid, Host writes the terminal `HostedGenesisSession` and the
-`SoulAgentMintConversation` compatibility projection together. `restart_soul_bootstrap` is not a successful no-op:
+`SoulAgentMintConversation` public projection together. `restart_soul_bootstrap` is not a successful no-op:
 the recover endpoint returns an actionable `409` conflict with `recovery_action=restart_soul_bootstrap` and the
 restart path `/api/v1/soul/instance/agents/register/begin`. Re-beginning the same domain/local id after that failure
 creates a fresh registration/conversation lane; a stale failed registration is not replayed.
@@ -165,9 +172,10 @@ Field names locked for M1.1:
 | `status` | yes | One of the locked status names below. |
 | `latest_turn_id` | no | Opaque Host id for the most recent durable turn. |
 | `message_count` | yes | Count of durable turns/messages Host has accepted into this conversation. |
-| `messages` | no | Bounded private hosted-genesis transcript projection for Lesser same-origin relay, including a failed extraction so an operator can recover from the final safe turn. Entries expose only `id`, `role`, bounded/redacted `content`, `order`, and `created_at` when Host has a safe timestamp. |
+| `messages` | no | Bounded private hosted-genesis transcript projection for Lesser same-origin relay and current-section recovery. Entries expose only `id`, `role`, bounded/redacted `content`, `order`, and `created_at` when Host has a safe timestamp. |
 | `messages_truncated` | no | `true` when Host bounded the projected transcript by entry count or content length. |
 | `messages_redacted` | no | `true` when one or more secret-shaped message bodies were replaced with the fixed redaction marker. |
+| `declaration_candidate` | active typed lanes | Bounded candidate progress: version, phase, current/completed sections, revision, canonical hash, and deterministic review checkpoint when present. Canonical declaration bodies and provider-attempt records are not projected. |
 | `produced_declarations` | only `declaration_ready` | Terminal declaration evidence. Publish is forbidden without it. |
 | `failure` | only `failed` | Typed bounded recovery instructions. |
 | `published_version` | only `published` | Exact durable Soul registration version produced by this session. |
@@ -180,7 +188,6 @@ Locked status enum:
 - `created`
 - `in_progress`
 - `assistant_turn_ready`
-- `declaration_extraction_pending`
 - `declaration_ready`
 - `published`
 - `failed`
@@ -197,7 +204,7 @@ so Lesser can relay the hosted genesis dialogue through its same-origin UI witho
 This is a private server-to-server projection, not a new source of truth: `HostedGenesisSession` remains authoritative for
 ids, status, retry, billing, recovery, and declaration readiness. Host sources the transcript from decoded
 `SoulAgentMintConversation.Messages` only after the conversation id and agent id match the session, and omits the field
-when the compatibility row is absent, malformed, or mismatched. Credential-shaped material is redacted per entry so one
+when the public projection row is absent, malformed, or mismatched. Credential-shaped material is redacted per entry so one
 unsafe historical message cannot erase otherwise safe operator recovery context.
 
 Transcript bounds are part of the contract: at most 64 entries are projected, each entry has at most 8192 characters of
@@ -254,9 +261,10 @@ should not wait for an explicit local `created` projection before persisting `ho
 7. Finalized-but-stale prototype convergence is deterministic. Only exact tenant/session-bound promotion and version
    evidence can advance an existing row to `published`; ambiguous rows remain fail-closed and actionable rather than
    being hidden by a client override.
-8. `SoulAgentMintConversation` is compatibility/projection input after Project 51 M2. It may supply legacy declaration
-   JSON, safe migration hints, and the bounded private transcript projection for Lesser display, but it no longer defines
-   user-visible status, retry, billing, recovery, or finalize authority for the Lesser instance-key route family.
+8. `SoulAgentMintConversation` is a public projection after Project 51 M2. It may supply the bounded private
+   transcript projection for Lesser display and receives the exact finalized candidate bytes in the same guarded
+   transaction as `HostedGenesisSession`; it does not reconstruct typed candidate state or define user-visible status,
+   retry, billing, recovery, or finalize authority for the Lesser instance-key route family.
 9. Human-visible evidence is compact. Responses carry ids, status, typed recovery, optional bounded `messages`, and
    declaration summary/evidence; they do not expose raw Host credentials, raw Instance API keys, provider secrets,
    signing material, SSM/AWS details, MicroVM endpoint tokens, target-account details, or raw infrastructure state.
@@ -268,8 +276,8 @@ Lesser-facing route family above remains unchanged, but the execution contract f
 
 - first accepted user turn launches or resumes an AppTheory MicroVM session with `session_id=conversation_id`;
 - Host remains control/gateway/observer and durable `HostedGenesisSession` source of truth;
-- the in-VM runtime owns provider SDK session/trace, turn sequencing, ask/wait/revise/extract/finalize/fail decisions,
-  and safe checkpoint metadata;
+- the in-VM runtime owns provider SDK session/trace, turn sequencing, phase-local typed construction,
+  ask/wait/revise/finalize/fail decisions, and safe checkpoint metadata;
 - Host uses only AppTheory MicroVM controller/provider/session operations (`Run`, `Get`, `Invoke`, `Suspend`, `Resume`,
   `Terminate`, and safe registry/reconstruction) for MicroVM lifecycle; no raw AWS MicroVM SDK path or local framework
   substitute is allowed;
@@ -285,8 +293,9 @@ Lesser-facing route family above remains unchanged, but the execution contract f
   turn, preserves its ledger/input/charge, decrements the retry budget, clears stale execution refs, and remains
   conditional on the failed Host status/version;
   a missing or invalid checkpoint is an actionable conflict, never a silent success and never a Host-run provider loop;
-- `MaximumDurationSeconds` caps one active in-VM provider/declaration step, while `IdlePolicy` and explicit
-  checkpoint/relaunch/replay semantics cover human wait gaps;
+- `MaximumDurationSeconds` caps one active in-VM provider/declaration step. The actor deliberately has no
+  `ProviderIdlePolicy`: AppTheory/AWS endpoint-idle traffic is not a guest-work signal. Durable typed checkpoints and
+  explicit relaunch/replay semantics cover human wait gaps;
 - a `provider_timeout` `retry_same_step` prepares a fresh official AppTheory runtime through `Get` / `Terminate` /
   `Run` / readiness `Get`, using the deployment-pinned image version and execution role while retaining the same Host
   conversation, accepted turn, and durable transcript. Host atomically binds that content-free lifecycle identity to

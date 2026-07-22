@@ -30,9 +30,8 @@ import (
 //     /microvms/{session_id}) -> live VM preserves the pending ref
 //     (assistant_turn_ready is reached by the in-VM workload writing session
 //     truth out-of-band, modeled here by the stub controller keeping the
-//     session running); a follow-on extraction run dispatches on the same
-//     session (declaration_extraction_pending -> declaration_ready is the
-//     workload completing in-VM).
+//     session running); a follow-on actor turn dispatches on the same session,
+//     preserving the conversation-lifetime MicroVM identity.
 //  2. Kill-VM recovery: dispatch run -> in_progress; the stub controller
 //     reports the session terminated (the VM was killed mid-turn); reconcile
 //     get surfaces Terminal=true -> the recover path maps it to a loud
@@ -100,18 +99,18 @@ func TestH1_5_E2E_HappyPathAndKillVMRecovery(t *testing.T) {
 		t.Fatalf("happy path: expected running observed state on live VM, got %q", reconcile.LifecycleRef.LifecycleState)
 	}
 
-	// In-VM extraction: a follow-on run dispatch on the same session (the
-	// declaration_extraction_pending -> declaration_ready transition is serviced
-	// by the VM). The dispatcher allocates the same session id (binding-bound).
-	extraction, err := dispatcher.DispatchMicroVMRun(context.Background(), "req_e2e_extract", binding)
+	// A follow-on actor turn dispatches on the same binding. Typed section tools
+	// execute inside that conversation-lifetime MicroVM; Host only proves the
+	// AppTheory controller preserves the same bound session id here.
+	continuation, err := dispatcher.DispatchMicroVMRun(context.Background(), "req_e2e_continue", binding)
 	if err != nil {
-		t.Fatalf("happy path: extraction dispatch failed: %v", err)
+		t.Fatalf("happy path: actor continuation dispatch failed: %v", err)
 	}
-	if extraction.LifecycleRef.SessionID != binding.ConversationID {
-		t.Fatalf("happy path: extraction dispatch ref bound to wrong session: %#v", extraction.LifecycleRef)
+	if continuation.LifecycleRef.SessionID != binding.ConversationID {
+		t.Fatalf("happy path: continuation dispatch ref bound to wrong session: %#v", continuation.LifecycleRef)
 	}
-	if extraction.LifecycleRef.LifecycleState != runtimemicrovm.StateRunning {
-		t.Fatalf("happy path: extraction expected running state, got %q", extraction.LifecycleRef.LifecycleState)
+	if continuation.LifecycleRef.LifecycleState != runtimemicrovm.StateRunning {
+		t.Fatalf("happy path: continuation expected running state, got %q", continuation.LifecycleRef.LifecycleState)
 	}
 
 	// --- Kill-VM recovery arc (extracted to keep the happy-path test under the
