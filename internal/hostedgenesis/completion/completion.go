@@ -302,10 +302,9 @@ func (w *CompletionWriter) RecordFailure(ctx context.Context, turn CompletionTur
 
 func applyPriorRecoveryBudget(next hostedgenesis.Failure, prior *hostedgenesis.Failure) hostedgenesis.Failure {
 	if prior == nil ||
-		next.Code != prior.Code ||
-		(next.Code != hostedgenesis.FailureCodeDeclarationExtractionFailed &&
-			next.Code != hostedgenesis.FailureCodeAssistantTurnFailed &&
-			next.Code != hostedgenesis.FailureCodeMicroVMUnavailable) {
+		!isBoundedRecoveryFailure(next.Code) ||
+		!isBoundedRecoveryFailure(prior.Code) ||
+		(next.Code != prior.Code && next.Code != hostedgenesis.FailureCodeMicroVMUnavailable) {
 		return next
 	}
 	switch prior.Recovery.Action {
@@ -326,6 +325,17 @@ func applyPriorRecoveryBudget(next hostedgenesis.Failure, prior *hostedgenesis.F
 		}
 	}
 	return next
+}
+
+func isBoundedRecoveryFailure(code hostedgenesis.FailureCode) bool {
+	switch code {
+	case hostedgenesis.FailureCodeDeclarationExtractionFailed,
+		hostedgenesis.FailureCodeAssistantTurnFailed,
+		hostedgenesis.FailureCodeMicroVMUnavailable:
+		return true
+	default:
+		return false
+	}
 }
 
 // assertTurnMatch enforces the per-turn idempotency precondition. The loaded

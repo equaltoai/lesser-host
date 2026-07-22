@@ -465,6 +465,47 @@ func TestRecordFailure_ExhaustedMicroVMUnavailableRetryBecomesRestart(t *testing
 	assertExhaustedRetryBecomesRestart(t, hostedgenesis.FailureCodeMicroVMUnavailable, 51)
 }
 
+func TestRecordFailure_SuspendedVMOnExhaustedDeclarationRetryStaysExhausted(t *testing.T) {
+	prior := &hostedgenesis.Failure{
+		Code:      hostedgenesis.FailureCodeDeclarationExtractionFailed,
+		Message:   hostedgenesis.FailureMessage(hostedgenesis.FailureCodeDeclarationExtractionFailed),
+		Retryable: false,
+		Recovery: hostedgenesis.Recovery{
+			Action:            hostedgenesis.RecoveryActionRetrySameStep,
+			RetryAfterSeconds: 5,
+			Reason:            string(hostedgenesis.FailureCodeDeclarationExtractionFailed),
+		},
+	}
+	session := newFakeSession("trenchcoat", "K-JYArykVuog3gq-2lHBJw", "turn_bMLVA5B9Sb-J4U8AgzYNWA", hostedgenesis.StatusDeclarationExtractionPending, 51)
+	session.Failure = prior
+	store := &fakeCompletionStore{session: session}
+	w := NewCompletionWriter(store, nil)
+
+	got, err := w.RecordFailure(context.Background(), CompletionTurn{
+		InstanceSlug: "trenchcoat", ConversationID: "K-JYArykVuog3gq-2lHBJw", TurnID: "turn_bMLVA5B9Sb-J4U8AgzYNWA", RequestID: "req-observe-suspended",
+	}, CompletionFailure{
+		Code:      hostedgenesis.FailureCodeMicroVMUnavailable,
+		Retryable: true,
+		Recovery: hostedgenesis.Recovery{
+			Action:            hostedgenesis.RecoveryActionRetrySameStep,
+			MaxAttempts:       3,
+			RetryAfterSeconds: 5,
+			Reason:            string(hostedgenesis.FailureCodeMicroVMUnavailable),
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Failure == nil ||
+		got.Failure.Code != hostedgenesis.FailureCodeMicroVMUnavailable ||
+		got.Failure.Retryable ||
+		got.Failure.Recovery.Action != hostedgenesis.RecoveryActionRestartSoulBootstrap ||
+		got.Failure.Recovery.MaxAttempts != 0 ||
+		got.Failure.Recovery.RetryAfterSeconds != 0 {
+		t.Fatalf("suspended observation must not resurrect exhausted declaration recovery, got %#v", got.Failure)
+	}
+}
+
 func assertExhaustedRetryBecomesRestart(t *testing.T, code hostedgenesis.FailureCode, version int64) {
 	t.Helper()
 	prior := &hostedgenesis.Failure{
