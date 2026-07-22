@@ -25,9 +25,6 @@ import {
   HOSTED_GENESIS_GUIDANCE_VERSION_V2,
   HOSTED_GENESIS_MICROVM_BASE_IMAGE_ARN,
   HOSTED_GENESIS_MICROVM_CONFIG_JSON_ENV,
-  HOSTED_GENESIS_MICROVM_IDLE_AUTO_RESUME_ENABLED,
-  HOSTED_GENESIS_MICROVM_IDLE_MAX_SECONDS,
-  HOSTED_GENESIS_MICROVM_IDLE_SUSPENDED_SECONDS,
   HOSTED_GENESIS_MICROVM_MAXIMUM_DURATION_SECONDS,
   HOSTED_GENESIS_PROVIDER_CALL_TIMEOUT_SECONDS,
   HOSTED_GENESIS_PROVIDER_HTTP_TIMEOUT_SECONDS,
@@ -319,8 +316,8 @@ test("hosted genesis AppTheory MicroVM deployed-stage wiring uses AppTheory cons
   );
   assert.equal(
     logging?.CloudWatch?.LogStream,
-    "build",
-    'expected MicroVM image CloudWatch LogStream "build"',
+    undefined,
+    "expected AppTheory/AWS to choose a per-operation log stream instead of pinning runtime output to a misleading build stream",
   );
   assert.ok(
     typeof logging?.CloudWatch?.LogGroup === "string" &&
@@ -498,21 +495,17 @@ test("hosted genesis AppTheory MicroVM deployed-stage wiring uses AppTheory cons
     String(HOSTED_GENESIS_MICROVM_MAXIMUM_DURATION_SECONDS),
     "expected controller runtime to carry the AppTheory run maximum duration",
   );
-  assert.equal(
-    controllerEnv.HOSTED_GENESIS_MICROVM_IDLE_MAX_SECONDS,
-    String(HOSTED_GENESIS_MICROVM_IDLE_MAX_SECONDS),
-    "expected controller runtime to carry the AppTheory idle max duration",
-  );
-  assert.equal(
-    controllerEnv.HOSTED_GENESIS_MICROVM_IDLE_SUSPENDED_SECONDS,
-    String(HOSTED_GENESIS_MICROVM_IDLE_SUSPENDED_SECONDS),
-    "expected controller runtime to carry the AppTheory suspended duration",
-  );
-  assert.equal(
-    controllerEnv.HOSTED_GENESIS_MICROVM_IDLE_AUTO_RESUME_ENABLED,
-    String(HOSTED_GENESIS_MICROVM_IDLE_AUTO_RESUME_ENABLED),
-    "expected controller runtime to keep provider auto-resume explicit",
-  );
+  for (const key of [
+    "HOSTED_GENESIS_MICROVM_IDLE_MAX_SECONDS",
+    "HOSTED_GENESIS_MICROVM_IDLE_SUSPENDED_SECONDS",
+    "HOSTED_GENESIS_MICROVM_IDLE_AUTO_RESUME_ENABLED",
+  ]) {
+    assert.equal(
+      controllerEnv[key],
+      undefined,
+      `${key} must be absent because endpoint-idle suspension cannot model asynchronous provider work`,
+    );
+  }
   assert.ok(
     String(controllerEnv.APPTHEORY_MICROVM_CONTROLLER_ROUTES ?? "").includes(
       "POST /microvms/{session_id}/auth-token",
@@ -1278,8 +1271,8 @@ test("P52 H1.5: control-plane Lambda receives HTTP dispatch env + SSM auth-token
   // these AppTheory run inputs in one compact env value so ControlPlaneApi
   // stays under Lambda's 4KB environment limit: controller endpoint,
   // auth-token SSM param name, image ref, ingress/egress refs,
-  // MaximumDurationSeconds, and IdlePolicy. The raw auth token is fetched from
-  // SSM at runtime, never committed.
+  // MaximumDurationSeconds, with ProviderIdlePolicy deliberately absent. The
+  // raw auth token is fetched from SSM at runtime, never committed.
   const compactConfig = compactMicroVMConfigText(controlPlaneEnv);
   assert.ok(
     cfnTextIncludesRuntimeFragment(compactConfig, '"v"') &&
@@ -1325,10 +1318,8 @@ test("P52 H1.5: control-plane Lambda receives HTTP dispatch env + SSM auth-token
     "expected compact config to thread the AppTheory maximum duration onto POST /microvms",
   );
   assert.ok(
-    cfnTextIncludesRuntimeFragment(compactConfig, `"ar":${HOSTED_GENESIS_MICROVM_IDLE_AUTO_RESUME_ENABLED}`) &&
-      cfnTextIncludesRuntimeFragment(compactConfig, `"max":${HOSTED_GENESIS_MICROVM_IDLE_MAX_SECONDS}`) &&
-      cfnTextIncludesRuntimeFragment(compactConfig, `"sus":${HOSTED_GENESIS_MICROVM_IDLE_SUSPENDED_SECONDS}`),
-    "expected compact config to carry the AppTheory idle policy",
+    !cfnTextIncludesRuntimeFragment(compactConfig, '"idle"'),
+    "compact config must omit AppTheory ProviderIdlePolicy so detached provider work remains runnable",
   );
   assert.ok(
     JSON.stringify(controllerEnv.APPTHEORY_MICROVM_INGRESS_NETWORK_CONNECTOR_REFS).includes(

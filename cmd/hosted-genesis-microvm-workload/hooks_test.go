@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -149,17 +150,24 @@ func TestRecoverMiddleware_RecoversPanic(t *testing.T) {
 	}
 }
 
-// TestReadBodyPreview_Capped proves readBodyPreview reads at most n bytes and
-// restores the body for downstream readers.
-func TestReadBodyPreview_Capped(t *testing.T) {
-	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("hello world body"))
-	preview := readBodyPreview(req, 5)
-	if preview != "hello" {
-		t.Fatalf("expected first 5 bytes, got %q", preview)
+// TestHookServer_CatchAllNeverLogsRequestBody proves even an unmatched route
+// cannot put prompts, transcripts, provider output, or secrets into telemetry.
+func TestHookServer_CatchAllNeverLogsRequestBody(t *testing.T) {
+	const privateBody = `{"prompt":"private-prompt","api_key":"private-key"}`
+	var logs bytes.Buffer
+	priorLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(priorLogger) })
+
+	srv := newTestHookServer(t, nil)
+	req := httptest.NewRequest(http.MethodPost, "/unmatched", strings.NewReader(privateBody))
+	rec := httptest.NewRecorder()
+	srv.routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected catch-all 200, got %d", rec.Code)
 	}
-	rest, _ := io.ReadAll(req.Body)
-	if string(rest) != "hello" {
-		t.Fatalf("expected restored body to be the previewed bytes, got %q", string(rest))
+	if strings.Contains(logs.String(), "private-prompt") || strings.Contains(logs.String(), "private-key") || strings.Contains(logs.String(), "body_preview") {
+		t.Fatalf("catch-all telemetry leaked request body: %s", logs.String())
 	}
 }
 
@@ -355,6 +363,100 @@ func TestHookServer_TurnEndpointExecutesTurn(t *testing.T) {
 		t.Fatalf("expected run/running result, got hook=%q state=%q err=%v", result.Hook, result.State, result.Error)
 	}
 	waitForHostedGenesisStatus(t, compStore, hostedgenesis.StatusAssistantTurnReady)
+}
+
+// TestHookServer_TurnEndpointDetachedProviderOutlivesFormerIdleBoundary proves
+// the endpoint acknowledgement does not cancel the in-VM provider goroutine.
+// The provider is deliberately held beyond a short stand-in for the removed
+// 300-second endpoint-idle boundary; the same goroutine then completes the
+// TableTheory-backed persistence path after the ingress response has returned.
+// Deployment tests separately prove Host omits ProviderIdlePolicy entirely, so
+// AWS has no traffic-based boundary at which to freeze this runnable work.
+func TestHookServer_TurnEndpointDetachedProviderOutlivesFormerIdleBoundary(t *testing.T) {
+	setFiveBodyContractEnv(t)
+	var logs bytes.Buffer
+	priorLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(priorLogger) })
+	assistantChunk := "data: " + mustMarshal(map[string]any{
+		"id": "chatcmpl_test", "object": "chat.completion.chunk", "created": 1, "model": "gpt-test",
+		"choices": []any{map[string]any{"index": 0, "delta": map[string]any{"role": "assistant", "content": "I am acme."}, "finish_reason": nil}},
+	}) + "\n\ndata: [DONE]\n\n"
+	declBody := mustMarshal(map[string]any{
+		"id": "chatcmpl_test", "object": "chat.completion", "created": 1, "model": "gpt-test",
+		"choices": []any{map[string]any{"index": 0, "message": map[string]any{"role": "assistant", "content": mustMarshal(validDeclarationDraft())}}},
+		"usage":   map[string]any{"prompt_tokens": 5, "completion_tokens": 7, "total_tokens": 12},
+	})
+	providerStarted := make(chan struct{}, 1)
+	releaseProvider := make(chan struct{})
+	llmSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		bodyBytes, _ := io.ReadAll(r.Body)
+		_ = r.Body.Close()
+		if strings.Contains(string(bodyBytes), `"stream":true`) {
+			select {
+			case providerStarted <- struct{}{}:
+			default:
+			}
+			<-releaseProvider
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte(assistantChunk))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(declBody))
+	}))
+	t.Cleanup(llmSrv.Close)
+	withOpenAIBaseURL(t, llmSrv.URL, "sk-test")
+	llm.ConfigureProviderHTTPClient(&http.Client{Timeout: 5 * time.Second})
+	t.Cleanup(func() { llm.ConfigureProviderHTTPClient(nil) })
+
+	turnStore, compStore, _ := baseTurnInput()
+	runner := &turnRunner{
+		store:                     turnStore,
+		writer:                    completion.NewCompletionWriter(compStore, func() time.Time { return time.Unix(3200, 0).UTC() }),
+		nowFunc:                   func() time.Time { return time.Unix(3200, 0).UTC() },
+		providerCallTimeout:       2 * time.Second,
+		workloadExecutionTimeout:  3 * time.Second,
+		providerHeartbeatInterval: 10 * time.Millisecond,
+	}
+	srv := newTestHookServer(t, runner)
+	event := validEvent(runtimemicrovm.HookRun, runtimemicrovm.StateRunning)
+	body, _ := json.Marshal(event)
+	rec := httptest.NewRecorder()
+	srv.routes().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, hostedgenesis.MicroVMTurnEndpointPath, bytes.NewReader(body)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected immediate controller acknowledgement, got %d: %s", rec.Code, rec.Body.String())
+	}
+	select {
+	case <-providerStarted:
+	case <-time.After(time.Second):
+		t.Fatal("detached provider goroutine did not start after ingress acknowledgement")
+	}
+	const formerIdleBoundary = 40 * time.Millisecond
+	time.Sleep(2 * formerIdleBoundary)
+	if got := hostedgenesis.NormalizeStatus(compStore.session.Status); got != hostedgenesis.StatusInProgress {
+		t.Fatalf("provider should still be pending beyond the former idle boundary, got %q", got)
+	}
+	close(releaseProvider)
+	waitForHostedGenesisStatus(t, compStore, hostedgenesis.StatusAssistantTurnReady)
+	logText := logs.String()
+	for _, want := range []string{
+		"hosted-genesis-microvm-workload: turn execution started",
+		"hosted-genesis-microvm-workload: provider_sdk_event",
+		"hosted-genesis-microvm-workload: provider_call_heartbeat",
+		`"event_type":"persist_started"`,
+		`"event_type":"persist_completed"`,
+		"hosted-genesis-microvm-workload: turn execution completed",
+	} {
+		if !strings.Contains(logText, want) {
+			t.Fatalf("runtime logging missed %q: %s", want, logText)
+		}
+	}
+	for _, forbidden := range []string{"sk-test", "I am acme.", `"prompt"`, `"messages"`} {
+		if strings.Contains(logText, forbidden) {
+			t.Fatalf("runtime logging leaked %q: %s", forbidden, logText)
+		}
+	}
 }
 
 // TestHookServer_TurnEndpointStorePreflightFailureIsControllerVisible proves a

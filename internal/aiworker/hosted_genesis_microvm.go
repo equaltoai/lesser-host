@@ -9,8 +9,6 @@ import (
 	"strings"
 	"time"
 
-	runtimemicrovm "github.com/theory-cloud/apptheory/runtime/microvm"
-
 	"github.com/equaltoai/lesser-host/internal/config"
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
 	"github.com/equaltoai/lesser-host/internal/secrets"
@@ -89,28 +87,15 @@ func newHostedGenesisWorkerMicroVMDispatcher(ctx context.Context, cfg config.Con
 		IngressConnectorRefs: append([]string(nil), microvmCfg.IngressConnectorRefs...),
 		EgressConnectorRefs:  append([]string(nil), microvmCfg.EgressConnectorRefs...),
 		MaxDurationSeconds:   microvmCfg.MaximumDurationSeconds,
-		IdlePolicy:           workerMicroVMIdlePolicyFromConfig(microvmCfg.IdlePolicy),
 		HTTPClient:           httpClient,
 	})
 	if err != nil {
 		log.Printf("aiworker: hosted genesis microvm dispatcher unavailable (http dispatcher construction failed) err=%v", err)
 		return nil
 	}
-	log.Printf("aiworker: hosted genesis microvm dispatcher wired stage=%s endpoint=%s image_ref=%s max_duration_seconds=%d idle_max_seconds=%d idle_suspended_seconds=%d idle_auto_resume=%t",
-		strings.TrimSpace(cfg.Stage), microvmCfg.ControllerEndpoint, microvmCfg.ImageRef, microvmCfg.MaximumDurationSeconds,
-		microvmCfg.IdlePolicy.MaxIdleDurationSeconds, microvmCfg.IdlePolicy.SuspendedDurationSeconds, microvmCfg.IdlePolicy.AutoResumeEnabled)
+	log.Printf("aiworker: hosted genesis microvm dispatcher wired stage=%s endpoint=%s image_ref=%s max_duration_seconds=%d idle_policy=disabled",
+		strings.TrimSpace(cfg.Stage), microvmCfg.ControllerEndpoint, microvmCfg.ImageRef, microvmCfg.MaximumDurationSeconds)
 	return dispatcher
-}
-
-func workerMicroVMIdlePolicyFromConfig(policy config.HostedGenesisMicroVMIdlePolicyConfig) *runtimemicrovm.ProviderIdlePolicy {
-	if !policy.Complete() {
-		return nil
-	}
-	return &runtimemicrovm.ProviderIdlePolicy{
-		AutoResumeEnabled:        policy.AutoResumeEnabled,
-		MaxIdleDurationSeconds:   policy.MaxIdleDurationSeconds,
-		SuspendedDurationSeconds: policy.SuspendedDurationSeconds,
-	}
 }
 
 func (s *Server) processHostedGenesisMicroVMDispatch(ctx context.Context, workerRequestID string, msg hostedgenesis.QueueMessage) error {

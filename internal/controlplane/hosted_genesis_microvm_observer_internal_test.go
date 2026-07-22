@@ -31,6 +31,7 @@ func TestRegistrationWaitOnlyReadObservesTerminalMicroVMAndConvergesGuardedHostT
 	}{
 		{name: "terminated", state: runtimemicrovm.StateTerminated},
 		{name: "failed", state: runtimemicrovm.StateFailed},
+		{name: "suspended", state: runtimemicrovm.StateSuspended},
 		{name: "maximum duration expired", state: runtimemicrovm.StateStopped, expired: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

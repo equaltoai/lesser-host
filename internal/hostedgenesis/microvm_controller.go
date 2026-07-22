@@ -40,9 +40,6 @@ type MicroVMControllerRuntime struct {
 	// extraction). Zero/positive-only; a non-positive value lets the AppTheory
 	// provider default apply. It is set on the run request envelope only.
 	maximumDurationSeconds int32
-	// idlePolicy is the AppTheory ProviderIdlePolicy applied to run requests
-	// when the caller omitted an explicit idle policy.
-	idlePolicy *runtimemicrovm.ProviderIdlePolicy
 }
 
 // MicroVMControllerRuntimeConfig configures the AppTheory M16 controller
@@ -66,11 +63,6 @@ type MicroVMControllerRuntimeConfig struct {
 	// sized for the longest LLM turn plus in-VM declaration extraction (P52 H1.5
 	// decision 7). Non-positive leaves the AppTheory provider default in place.
 	MaximumDurationSeconds int32
-	// IdlePolicy is the AppTheory ProviderIdlePolicy Host passes on run
-	// commands for human-gap ready/suspended lifetime. It is execution/cache
-	// policy only; Host checkpoints/relaunches from HostedGenesisSession truth
-	// when the provider cannot preserve process memory.
-	IdlePolicy *runtimemicrovm.ProviderIdlePolicy
 }
 
 // NewMicroVMControllerRuntime creates the AppTheory M16 real controller Host
@@ -106,10 +98,6 @@ func NewMicroVMControllerRuntime(cfg MicroVMControllerRuntimeConfig) (*MicroVMCo
 	if cfg.SessionTTL > 0 {
 		opts = append(opts, runtimemicrovm.WithControllerSessionTTL(cfg.SessionTTL))
 	}
-	idlePolicy, idleErr := cloneAndValidateProviderIdlePolicy(cfg.IdlePolicy)
-	if idleErr != nil {
-		return nil, ErrMicroVMControllerIncomplete
-	}
 	opts = append(opts, runtimemicrovm.WithControllerDeploymentDefaults(runtimemicrovm.ControllerDeploymentDefaults{
 		ImageRef:                    imageRef,
 		NetworkConnectorRef:         networkConnectorRef,
@@ -127,7 +115,6 @@ func NewMicroVMControllerRuntime(cfg MicroVMControllerRuntimeConfig) (*MicroVMCo
 		ingressNetworkConnectorRefs: normalizeStringSlice(cfg.IngressNetworkConnectorRefs),
 		egressNetworkConnectorRefs:  normalizeStringSlice(cfg.EgressNetworkConnectorRefs),
 		maximumDurationSeconds:      cfg.MaximumDurationSeconds,
-		idlePolicy:                  idlePolicy,
 	}, nil
 }
 
@@ -166,9 +153,6 @@ func (r *MicroVMControllerRuntime) Handle(ctx context.Context, req runtimemicrov
 		// leaves the AppTheory provider default in place.
 		if req.MaximumDurationSeconds <= 0 && r.maximumDurationSeconds > 0 {
 			req.MaximumDurationSeconds = r.maximumDurationSeconds
-		}
-		if req.IdlePolicy == nil && r.idlePolicy != nil {
-			req.IdlePolicy = cloneProviderIdlePolicy(r.idlePolicy)
 		}
 	}
 	if req.Command == runtimemicrovm.CommandAuthToken && len(req.AllowedPortScope) == 0 {

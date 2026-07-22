@@ -27,6 +27,12 @@ func (providerBlockingTransport) RoundTrip(r *http.Request) (*http.Response, err
 	return nil, fmt.Errorf("private-provider-key private response: %w", r.Context().Err())
 }
 
+func TestDefaultProviderHeartbeatIntervalIsTenSeconds(t *testing.T) {
+	if defaultProviderHeartbeatInterval != 10*time.Second {
+		t.Fatalf("provider heartbeat interval = %s, want 10s", defaultProviderHeartbeatInterval)
+	}
+}
+
 func TestRuntimeTelemetryEmitsRequestHeartbeatResponseToolAndTerminalEventsContentFree(t *testing.T) {
 	const privateContent = "private transcript and provider body"
 	var logs bytes.Buffer

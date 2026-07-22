@@ -93,7 +93,7 @@ func TestH1_5_E2E_HappyPathAndKillVMRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("happy path: poll reconcile failed: %v", err)
 	}
-	if reconcile.Terminal {
+	if reconcile.CannotCompletePendingTurn {
 		t.Fatalf("happy path: a live VM must not be Terminal; expected pending preserved, got terminal reconcile %#v", reconcile)
 	}
 	if reconcile.LifecycleRef.LifecycleState != runtimemicrovm.StateRunning {
@@ -147,7 +147,7 @@ func h1_5KillVMRecoveryArc(t *testing.T, dispatcher hostedgenesis.MicroVMDispatc
 	if err != nil {
 		t.Fatalf("kill-vm: recover reconcile failed: %v", err)
 	}
-	if !killedReconcile.Terminal {
+	if !killedReconcile.CannotCompletePendingTurn {
 		t.Fatalf("kill-vm: a terminated VM must be Terminal so recover maps to loud failed, got non-terminal %#v", killedReconcile)
 	}
 	if killedReconcile.LifecycleRef.LifecycleState != runtimemicrovm.StateTerminated {
@@ -170,19 +170,14 @@ func h1_5KillVMRecoveryArc(t *testing.T, dispatcher hostedgenesis.MicroVMDispatc
 }
 
 // TestH1_5_E2E_MaximumDurationSecondsWired proves the H1.5/M11 timeout-budget
-// wiring: the dispatcher-sized MaximumDurationSeconds and AppTheory
-// ProviderIdlePolicy are set on the dispatched POST /microvms run body so the
-// active provider step and human-gap behavior stay in the AppTheory substrate
-// instead of a Host-owned step machine. The stub controller records the values
-// it received on the run body.
+// wiring: the dispatcher-sized MaximumDurationSeconds is set on the dispatched
+// POST /microvms run body while ProviderIdlePolicy is omitted. AWS measures
+// idleness using inbound endpoint traffic, so applying it to detached provider
+// work would suspend a still-running actor.
 func TestH1_5_E2E_MaximumDurationSecondsWired(t *testing.T) {
 	cfg := microVMWiringTestConfig()
 	const wantMaxDuration = int32(300)
-	const wantIdleMax = int32(300)
-	const wantIdleSuspended = int32(1800)
 	cfg.HostedGenesisMicroVM.MaximumDurationSeconds = wantMaxDuration
-	cfg.HostedGenesisMicroVM.IdlePolicy.MaxIdleDurationSeconds = wantIdleMax
-	cfg.HostedGenesisMicroVM.IdlePolicy.SuspendedDurationSeconds = wantIdleSuspended
 
 	stub := newMaxDurationCapturingControllerServer(t, "stub-bearer")
 	controllerSrv := httptest.NewServer(stub.handler())
@@ -209,16 +204,8 @@ func TestH1_5_E2E_MaximumDurationSecondsWired(t *testing.T) {
 	if got := stub.capturedMaxDuration(); got != wantMaxDuration {
 		t.Fatalf("expected MaximumDurationSeconds=%d on the run request, got %d", wantMaxDuration, got)
 	}
-	idle := stub.capturedIdlePolicy()
-	if idle == nil {
-		t.Fatalf("expected AppTheory IdlePolicy on the run request")
-		return
-	}
-	if idle.AutoResumeEnabled {
-		t.Fatalf("expected Host default auto-resume disabled until lab proof, got %#v", idle)
-	}
-	if idle.MaxIdleDurationSeconds != wantIdleMax || idle.SuspendedDurationSeconds != wantIdleSuspended {
-		t.Fatalf("unexpected idle policy on run request: %#v", idle)
+	if idle := stub.capturedIdlePolicy(); idle != nil {
+		t.Fatalf("asynchronous hosted-genesis run must omit ProviderIdlePolicy, got %#v", idle)
 	}
 }
 
@@ -237,8 +224,7 @@ func TestH1_5_E2E_CompactMicroVMEnvWiresAppTheoryRunRequest(t *testing.T) {
 		"lg": "/aws/lambda/microvms/hosted-genesis-test",
 		"in": "arn:aws:lambda::network-connector/http-ingress:compact,arn:aws:lambda::network-connector/shell-ingress:compact",
 		"eg": "arn:aws:lambda::network-connector/internet-egress:compact",
-		"max": 450,
-		"idle": {"ar": true, "max": 240, "sus": 1200}
+		"max": 450
 	}`)
 	cfg := config.Load()
 
@@ -278,11 +264,8 @@ func TestH1_5_E2E_CompactMicroVMEnvWiresAppTheoryRunRequest(t *testing.T) {
 	if payload.MaximumDurationSeconds != 450 {
 		t.Fatalf("compact config maximum duration did not reach AppTheory run request: %#v", payload)
 	}
-	if payload.IdlePolicy == nil ||
-		!payload.IdlePolicy.AutoResumeEnabled ||
-		payload.IdlePolicy.MaxIdleDurationSeconds != 240 ||
-		payload.IdlePolicy.SuspendedDurationSeconds != 1200 {
-		t.Fatalf("compact config idle policy did not reach AppTheory run request: %#v", payload.IdlePolicy)
+	if payload.IdlePolicy != nil {
+		t.Fatalf("compact config must not inject AppTheory idle suspension: %#v", payload.IdlePolicy)
 	}
 }
 
@@ -343,7 +326,7 @@ func (s *maxDurationCapturingControllerServer) capturedIdlePolicy() *runtimemicr
 func TestH1_5_E2E_HarnessConfigCompleteGuard(t *testing.T) {
 	cfg := microVMWiringTestConfig()
 	if !cfg.HostedGenesisMicroVM.Complete() {
-		t.Fatalf("E2E harness config must be Complete (enabled + endpoint + auth token + image + egress + idle policy), got %#v", cfg.HostedGenesisMicroVM)
+		t.Fatalf("E2E harness config must be Complete (enabled + endpoint + auth token + image + egress + maximum duration), got %#v", cfg.HostedGenesisMicroVM)
 	}
 	if !strings.HasPrefix(cfg.HostedGenesisMicroVM.ImageRef, "arn:") {
 		t.Fatalf("E2E harness config image ref drifted: %q", cfg.HostedGenesisMicroVM.ImageRef)

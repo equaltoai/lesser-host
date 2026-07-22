@@ -104,10 +104,11 @@ func TestRuntimeControllerUsesHostOwnedMicroVMRegistry(t *testing.T) {
 	if !strings.Contains(src, "HostedGenesisMicroVMReconstructionHook") {
 		t.Fatalf("expected missing/stale MicroVM registry cache to reconstruct from Host HostedGenesisSession truth")
 	}
-	if !strings.Contains(src, "HOSTED_GENESIS_MICROVM_IDLE_MAX_SECONDS") ||
-		!strings.Contains(src, "HOSTED_GENESIS_MICROVM_IDLE_SUSPENDED_SECONDS") ||
-		!strings.Contains(src, "HOSTED_GENESIS_MICROVM_MAXIMUM_DURATION_SECONDS") {
-		t.Fatalf("expected controller runtime to read Host-configured AppTheory MicroVM lifetime policy env")
+	if !strings.Contains(src, "HOSTED_GENESIS_MICROVM_MAXIMUM_DURATION_SECONDS") {
+		t.Fatalf("expected controller runtime to read Host-configured AppTheory MicroVM maximum duration")
+	}
+	if strings.Contains(src, "HOSTED_GENESIS_MICROVM_IDLE_") {
+		t.Fatalf("hosted genesis controller must not configure endpoint-idle suspension for asynchronous provider work")
 	}
 }
 
@@ -286,33 +287,19 @@ func TestControllerCSVAndFirstStringNormalize(t *testing.T) {
 	}
 }
 
-func TestControllerLifetimePolicyEnvParsesAppTheoryRunPolicy(t *testing.T) {
+func TestControllerMaximumDurationEnvParsesAppTheoryRunPolicy(t *testing.T) {
 	t.Parallel()
 
 	getenv := func(key string) string {
 		switch key {
 		case "HOSTED_GENESIS_MICROVM_MAXIMUM_DURATION_SECONDS":
 			return "450"
-		case "HOSTED_GENESIS_MICROVM_IDLE_MAX_SECONDS":
-			return "240"
-		case "HOSTED_GENESIS_MICROVM_IDLE_SUSPENDED_SECONDS":
-			return "1200"
-		case "HOSTED_GENESIS_MICROVM_IDLE_AUTO_RESUME_ENABLED":
-			return controllerTestTrue
 		default:
 			return ""
 		}
 	}
-	if got := microVMInt32Env(getenv, "HOSTED_GENESIS_MICROVM_MAXIMUM_DURATION_SECONDS", config.HostedGenesisMicroVMDefaultMaximumDurationSeconds, 0, 3600); got != 450 {
+	if got := microVMInt32Env(getenv, "HOSTED_GENESIS_MICROVM_MAXIMUM_DURATION_SECONDS", config.HostedGenesisMicroVMDefaultMaximumDurationSeconds, 0, config.HostedGenesisMicroVMDefaultMaximumDurationSeconds); got != 450 {
 		t.Fatalf("maximum duration parse = %d, want 450", got)
-	}
-	policy := microVMIdlePolicyFromEnv(getenv)
-	if policy == nil {
-		t.Fatalf("expected idle policy")
-		return
-	}
-	if !policy.AutoResumeEnabled || policy.MaxIdleDurationSeconds != 240 || policy.SuspendedDurationSeconds != 1200 {
-		t.Fatalf("unexpected idle policy: %#v", policy)
 	}
 	if err := runtimemicrovm.ValidateProviderRunInput(runtimemicrovm.ProviderRunInput{
 		RequestID:              "req",
@@ -322,17 +309,9 @@ func TestControllerLifetimePolicyEnvParsesAppTheoryRunPolicy(t *testing.T) {
 		AuthContext:            runtimemicrovm.AuthContext{Subject: hostedgenesis.MicroVMAuthSubject, TenantID: "slug:demo", Namespace: hostedgenesis.MicroVMNamespace},
 		ImageRef:               "image-ref",
 		NetworkConnectorRef:    "network-ref",
-		IdlePolicy:             policy,
 		MaximumDurationSeconds: 450,
 	}); err != nil {
 		t.Fatalf("configured AppTheory run policy should validate: %v", err)
-	}
-
-	defaultPolicy := microVMIdlePolicyFromEnv(func(string) string { return "" })
-	if defaultPolicy.AutoResumeEnabled ||
-		defaultPolicy.MaxIdleDurationSeconds != config.HostedGenesisMicroVMDefaultIdleMaxSeconds ||
-		defaultPolicy.SuspendedDurationSeconds != config.HostedGenesisMicroVMDefaultIdleSuspendedSeconds {
-		t.Fatalf("unexpected default idle policy: %#v", defaultPolicy)
 	}
 }
 
@@ -350,10 +329,6 @@ func testControllerApp(t *testing.T) interface {
 		},
 		EgressNetworkConnectorRefs: []string{"egress-ref"},
 		MaximumDurationSeconds:     config.HostedGenesisMicroVMDefaultMaximumDurationSeconds,
-		IdlePolicy: &runtimemicrovm.ProviderIdlePolicy{
-			MaxIdleDurationSeconds:   config.HostedGenesisMicroVMDefaultIdleMaxSeconds,
-			SuspendedDurationSeconds: config.HostedGenesisMicroVMDefaultIdleSuspendedSeconds,
-		},
 	})
 	if err != nil {
 		t.Fatalf("NewMicroVMControllerRuntime: %v", err)

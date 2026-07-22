@@ -1065,7 +1065,7 @@ func (s *Server) reconcileHostedGenesisMicroVMRecovery(ctx *apptheory.Context, c
 		log.Printf("controlplane: hosted genesis microvm reconciliation failed agent_hash=%s conversation_hash=%s err=%v", soulMintInstanceReadAuditHash(convCtx.agentIDHex), soulMintInstanceReadAuditHash(convCtx.conversationID), reconcileErr)
 		return hostedGenesisMicroVMRecoveryResult{}, newAppTheoryError(appErrCodeMicroVMUnavailable, "MicroVM reconstruction failed")
 	}
-	if result.Terminal {
+	if result.CannotCompletePendingTurn {
 		// The VM is dead/expired while the durable Host status has not advanced
 		// to a workload completion. This is the silent no-op reconstruction had
 		// before H1.3; it is now a loud retryable failure so the operator sees

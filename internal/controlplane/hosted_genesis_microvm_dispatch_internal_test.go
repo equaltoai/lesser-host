@@ -19,7 +19,7 @@ import (
 
 // microVMWiringTestConfig returns a complete HTTP-transport MicroVM config for
 // NewServer wiring tests. The ControllerEndpoint + AuthTokenSSMParam +
-// ImageRef/NetworkConnectorRef/IdlePolicy satisfy Complete(); tests inject an
+// ImageRef/NetworkConnectorRef/maximum duration satisfy Complete(); tests inject an
 // httptest stub controller URL + a stub SSM getter so no AWS or SSM is called.
 func microVMWiringTestConfig() config.Config {
 	return config.Config{
@@ -36,10 +36,6 @@ func microVMWiringTestConfig() config.Config {
 			IngressConnectorRefs:   []string{"arn:aws:lambda::network-connector/all-ingress:test"},
 			EgressConnectorRefs:    []string{"arn:aws:lambda::network-connector/egress:test"},
 			MaximumDurationSeconds: config.HostedGenesisMicroVMDefaultMaximumDurationSeconds,
-			IdlePolicy: config.HostedGenesisMicroVMIdlePolicyConfig{
-				MaxIdleDurationSeconds:   300,
-				SuspendedDurationSeconds: 1800,
-			},
 		},
 	}
 }

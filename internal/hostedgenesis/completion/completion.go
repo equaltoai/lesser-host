@@ -304,7 +304,8 @@ func applyPriorRecoveryBudget(next hostedgenesis.Failure, prior *hostedgenesis.F
 	if prior == nil ||
 		next.Code != prior.Code ||
 		(next.Code != hostedgenesis.FailureCodeDeclarationExtractionFailed &&
-			next.Code != hostedgenesis.FailureCodeAssistantTurnFailed) {
+			next.Code != hostedgenesis.FailureCodeAssistantTurnFailed &&
+			next.Code != hostedgenesis.FailureCodeMicroVMUnavailable) {
 		return next
 	}
 	switch prior.Recovery.Action {

@@ -44,13 +44,16 @@ type MicroVMDispatchResult struct {
 // MicroVMDispatchResult it excludes endpoint auth tokens, bearer tokens, raw
 // lifecycle payloads, transcripts, and provider credentials.
 //
-// Terminal reports whether the observed lifecycle state is a terminal MicroVM
-// state (terminated/failed) so the control plane can map a dead/expired VM to a
-// loud failure instead of silently no-oping reconstruction.
+// CannotCompletePendingTurn reports that the observed MicroVM can no longer be
+// trusted to finish an already-accepted provider call. That includes terminal
+// and expired sessions plus suspended sessions: suspension preserves guest
+// memory, but it stops compute and does not prove that an in-flight provider
+// connection can resume safely. The control plane must converge such a turn to
+// durable typed failure rather than resume uncertain work or leave it pending.
 type MicroVMReconcileResult struct {
-	LifecycleRef MicroVMLifecycleRef
-	SessionID    string
-	Terminal     bool
+	LifecycleRef              MicroVMLifecycleRef
+	SessionID                 string
+	CannotCompletePendingTurn bool
 }
 
 // MicroVMDispatcher is the governed HTTP dispatch boundary for the hosted
@@ -100,18 +103,20 @@ type FreshMicroVMDispatcher interface {
 // (runtime/microvm/controller_routes.go controllerRoutePayload). The route
 // handler fixes the command to "run", derives tenant_id from x-tenant-id /
 // query, and namespace from x-namespace-id; only the session + image/network
-// fields + AppTheory lifetime controls are caller-supplied in the body.
-// AuthContext is populated by the controller authorizer, not the body.
+// fields + AppTheory maximum runtime are caller-supplied in the body. Hosted
+// Genesis deliberately omits ProviderIdlePolicy: its accepted provider work is
+// asynchronous endpoint work, and AWS measures MicroVM idle from inbound
+// endpoint traffic rather than guest CPU/network activity. AuthContext is
+// populated by the controller authorizer, not the body.
 type microvmRunRequestPayload struct {
-	SessionID                   string                             `json:"session_id,omitempty"`
-	ImageRef                    string                             `json:"image_ref"`
-	ImageVersion                string                             `json:"image_version,omitempty"`
-	NetworkConnectorRef         string                             `json:"network_connector_ref"`
-	IngressNetworkConnectorRefs []string                           `json:"ingress_network_connector_refs,omitempty"`
-	EgressNetworkConnectorRefs  []string                           `json:"egress_network_connector_refs,omitempty"`
-	SessionSpec                 runtimemicrovm.SessionSpec         `json:"session_spec,omitempty"`
-	IdlePolicy                  *runtimemicrovm.ProviderIdlePolicy `json:"idle_policy,omitempty"`
-	MaximumDurationSeconds      int32                              `json:"maximum_duration_seconds,omitempty"`
+	SessionID                   string                     `json:"session_id,omitempty"`
+	ImageRef                    string                     `json:"image_ref"`
+	ImageVersion                string                     `json:"image_version,omitempty"`
+	NetworkConnectorRef         string                     `json:"network_connector_ref"`
+	IngressNetworkConnectorRefs []string                   `json:"ingress_network_connector_refs,omitempty"`
+	EgressNetworkConnectorRefs  []string                   `json:"egress_network_connector_refs,omitempty"`
+	SessionSpec                 runtimemicrovm.SessionSpec `json:"session_spec,omitempty"`
+	MaximumDurationSeconds      int32                      `json:"maximum_duration_seconds,omitempty"`
 }
 
 // HTTPControllerDispatcher adapts the governed AppTheoryMicrovmController HTTP
@@ -139,7 +144,6 @@ type HTTPControllerDispatcher struct {
 	ingressConnRefs  []string
 	egressConnRefs   []string
 	maxDuration      int32
-	idlePolicy       *runtimemicrovm.ProviderIdlePolicy
 	httpClient       *http.Client
 }
 
@@ -149,8 +153,6 @@ type HTTPControllerDispatcher struct {
 // credential — never committed or logged); the image/network refs are the
 // non-secret refs sent in the POST /microvms run body. MaxDurationSeconds caps
 // each active run session; zero lets the controller/provider default apply.
-// IdlePolicy is passed through AppTheory's v1.17.0 ProviderIdlePolicy contract
-// for human-gap ready/suspended lifetime instead of a Host-owned step machine.
 type HTTPControllerDispatcherConfig struct {
 	Endpoint             string
 	AuthToken            string //nolint:gosec // G117: name describes the authorizer bearer token; in-process config struct, never JSON-serialized over an untrusted wire.
@@ -162,7 +164,6 @@ type HTTPControllerDispatcherConfig struct {
 	IngressConnectorRefs []string
 	EgressConnectorRefs  []string
 	MaxDurationSeconds   int32
-	IdlePolicy           *runtimemicrovm.ProviderIdlePolicy
 	HTTPClient           *http.Client
 }
 
@@ -188,10 +189,6 @@ func NewHTTPControllerDispatcher(cfg HTTPControllerDispatcherConfig) (*HTTPContr
 	if cfg.MaxDurationSeconds < 0 || cfg.MaxDurationSeconds > int32(AWSLambdaMicroVMMaximumDuration/time.Second) {
 		return nil, ErrMicroVMDispatchUnavailable
 	}
-	idlePolicy, err := cloneAndValidateProviderIdlePolicy(cfg.IdlePolicy)
-	if err != nil {
-		return nil, err
-	}
 	return &HTTPControllerDispatcher{
 		endpoint:         strings.TrimRight(endpoint, "/"),
 		authToken:        authToken,
@@ -203,31 +200,8 @@ func NewHTTPControllerDispatcher(cfg HTTPControllerDispatcherConfig) (*HTTPContr
 		ingressConnRefs:  normalizeStringSlice(cfg.IngressConnectorRefs),
 		egressConnRefs:   normalizeStringSlice(cfg.EgressConnectorRefs),
 		maxDuration:      cfg.MaxDurationSeconds,
-		idlePolicy:       idlePolicy,
 		httpClient:       cfg.HTTPClient,
 	}, nil
-}
-
-func cloneAndValidateProviderIdlePolicy(policy *runtimemicrovm.ProviderIdlePolicy) (*runtimemicrovm.ProviderIdlePolicy, error) {
-	cloned := cloneProviderIdlePolicy(policy)
-	if cloned == nil {
-		return nil, nil
-	}
-	if cloned.MaxIdleDurationSeconds <= 0 || cloned.SuspendedDurationSeconds <= 0 {
-		return nil, ErrMicroVMDispatchUnavailable
-	}
-	return cloned, nil
-}
-
-func cloneProviderIdlePolicy(policy *runtimemicrovm.ProviderIdlePolicy) *runtimemicrovm.ProviderIdlePolicy {
-	if policy == nil {
-		return nil
-	}
-	return &runtimemicrovm.ProviderIdlePolicy{
-		AutoResumeEnabled:        policy.AutoResumeEnabled,
-		MaxIdleDurationSeconds:   policy.MaxIdleDurationSeconds,
-		SuspendedDurationSeconds: policy.SuspendedDurationSeconds,
-	}
 }
 
 // StartMicroVMRun POSTs /microvms to the governed controller API for the
@@ -258,7 +232,6 @@ func (d *HTTPControllerDispatcher) StartMicroVMRun(ctx context.Context, requestI
 			Metadata: binding.Metadata(),
 		},
 		MaximumDurationSeconds: d.maxDuration,
-		IdlePolicy:             cloneProviderIdlePolicy(d.idlePolicy),
 	}
 	resp, err := d.doControllerRequest(ctx, http.MethodPost, d.endpoint, requestID, binding, payload)
 	if err != nil {
@@ -545,7 +518,6 @@ func (d *HTTPControllerDispatcher) DispatchMicroVMRun(ctx context.Context, reque
 			Metadata: binding.Metadata(),
 		},
 		MaximumDurationSeconds: d.maxDuration,
-		IdlePolicy:             cloneProviderIdlePolicy(d.idlePolicy),
 	}
 	resp, err := d.doControllerRequest(ctx, http.MethodPost, d.endpoint, requestID, binding, payload)
 	if err != nil {
@@ -714,16 +686,14 @@ func (d *HTTPControllerDispatcher) invokeMicroVMTurn(ctx context.Context, reques
 // or the observed state no longer maps to the Host session binding
 // (stale/tenant mismatch). It never falls back to a local execution path and
 // never swallows a dead/expired VM as a silent no-op: terminal observed state is
-// reported via Terminal=true so the caller maps it to a loud failure.
+// reported via CannotCompletePendingTurn=true so the caller maps it to a loud
+// failure.
 //
-// H1.4: a session is Terminal when EITHER the observed lifecycle state is a
-// terminal MicroVM state (terminated/failed) OR the controller-reported
-// session expiry has passed (ExpiresAt is set and in the past). An expired
-// session is dead even when its lifecycle state is non-terminal (e.g. stopped):
-// the VM can no longer service the pending turn, so the recover path must map
-// it to a loud retryable failure rather than preserve a pending status that can
-// never advance. The reconciled lifecycle ref still reflects the observed
-// non-terminal state; only the Terminal flag forces the loud-failed mapping.
+// H1.4: an accepted turn cannot complete when the observed lifecycle is
+// terminated/failed/suspended, or the controller-reported session expiry has
+// passed. Suspended guest memory is not proof that the provider TCP/TLS stream
+// survived, so wait-only observation never resumes it. Recovery can launch one
+// fresh AppTheory runtime from Host truth when the durable budget allows.
 func (d *HTTPControllerDispatcher) ReconcileMicroVM(ctx context.Context, requestID string, binding MicroVMSessionBinding, ref MicroVMLifecycleRef) (MicroVMReconcileResult, error) {
 	if d == nil {
 		return MicroVMReconcileResult{}, ErrMicroVMDispatchUnavailable
@@ -769,9 +739,9 @@ func (d *HTTPControllerDispatcher) ReconcileMicroVM(ctx context.Context, request
 		return MicroVMReconcileResult{}, err
 	}
 	return MicroVMReconcileResult{
-		LifecycleRef: reconciled,
-		SessionID:    strings.TrimSpace(resp.SessionID),
-		Terminal:     microVMReconcileIsTerminal(reconciled.LifecycleState, resp.ExpiresAt, observedAt),
+		LifecycleRef:              reconciled,
+		SessionID:                 strings.TrimSpace(resp.SessionID),
+		CannotCompletePendingTurn: microVMReconcileCannotCompletePendingTurn(reconciled.LifecycleState, resp.ExpiresAt, observedAt),
 	}, nil
 }
 
@@ -844,13 +814,17 @@ const (
 	microvmControllerReadyPollInterval = 250 * time.Millisecond
 )
 
-// microVMReconcileIsTerminal reports whether a reconciled MicroVM session is
-// dead/expired and therefore must map to a loud retryable recovery failure. A
-// session is terminal when its observed lifecycle state is a terminal MicroVM
-// state (terminated/failed) OR its controller-reported expiry has passed. A zero
-// ExpiresAt (the controller did not report one) is not treated as expired; only
-// a set, past expiry forces the terminal mapping. observedAt is the controller
-// get observation time used to judge expiry.
+// microVMReconcileCannotCompletePendingTurn reports whether a reconciled
+// MicroVM cannot safely finish accepted provider work and must map to a loud
+// typed recovery failure. A zero ExpiresAt is not treated as expired.
+func microVMReconcileCannotCompletePendingTurn(state runtimemicrovm.LifecycleState, expiresAt time.Time, observedAt time.Time) bool {
+	return state == runtimemicrovm.StateSuspended || microVMReconcileIsTerminal(state, expiresAt, observedAt)
+}
+
+// microVMReconcileIsTerminal is the narrower lifecycle predicate used before
+// dispatch, where an idle suspended VM can still be explicitly resumed before
+// any provider work is accepted. Post-accept observation uses the stronger
+// predicate above and never resumes uncertain work.
 func microVMReconcileIsTerminal(state runtimemicrovm.LifecycleState, expiresAt time.Time, observedAt time.Time) bool {
 	if runtimemicrovm.IsTerminalState(state) {
 		return true

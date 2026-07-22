@@ -24,9 +24,6 @@ export const HOSTED_GENESIS_PROVIDER_CALL_TIMEOUT_SECONDS = 27900 as const;
 export const HOSTED_GENESIS_WORKLOAD_EXECUTION_TIMEOUT_SECONDS = 28200 as const;
 export const HOSTED_GENESIS_TERMINAL_PERSISTENCE_MARGIN_SECONDS = 300 as const;
 export const HOSTED_GENESIS_RUNTIME_CLEANUP_MARGIN_SECONDS = 600 as const;
-export const HOSTED_GENESIS_MICROVM_IDLE_MAX_SECONDS = 300 as const;
-export const HOSTED_GENESIS_MICROVM_IDLE_SUSPENDED_SECONDS = 1800 as const;
-export const HOSTED_GENESIS_MICROVM_IDLE_AUTO_RESUME_ENABLED = false as const;
 export const HOSTED_GENESIS_MICROVM_CONFIG_JSON_ENV =
   "HOSTED_GENESIS_MICROVM_CONFIG_JSON" as const;
 
@@ -375,7 +372,6 @@ export function configureHostedGenesisMicrovm(
       logging: {
         cloudWatch: {
           logGroup: `/aws/lambda/microvms/${props.namePrefix}_hosted_genesis`,
-          logStream: "build",
         },
       },
       resources: [{ minimumMemoryInMiB: 2048 }],
@@ -463,15 +459,6 @@ export function configureHostedGenesisMicrovm(
           HOSTED_GENESIS_MICROVM_AUTH_TOKEN_SHA256: authTokenSha256,
           HOSTED_GENESIS_MICROVM_MAXIMUM_DURATION_SECONDS: String(
             HOSTED_GENESIS_MICROVM_MAXIMUM_DURATION_SECONDS,
-          ),
-          HOSTED_GENESIS_MICROVM_IDLE_MAX_SECONDS: String(
-            HOSTED_GENESIS_MICROVM_IDLE_MAX_SECONDS,
-          ),
-          HOSTED_GENESIS_MICROVM_IDLE_SUSPENDED_SECONDS: String(
-            HOSTED_GENESIS_MICROVM_IDLE_SUSPENDED_SECONDS,
-          ),
-          HOSTED_GENESIS_MICROVM_IDLE_AUTO_RESUME_ENABLED: String(
-            HOSTED_GENESIS_MICROVM_IDLE_AUTO_RESUME_ENABLED,
           ),
           STATE_TABLE_NAME: props.stateTable.tableName,
         },
@@ -664,7 +651,7 @@ function grantFunctionMicroVMDispatch(
   // ai-worker. It carries the same AppTheory POST /microvms run inputs the
   // legacy per-variable env carried — governed controller endpoint, auth-token
   // SSM param name (raw token fetched at runtime), image ref, ingress/egress
-  // refs, MaximumDurationSeconds, and IdlePolicy — but avoids duplicating long
+  // refs and MaximumDurationSeconds — but avoids duplicating long
   // APPTHEORY_MICROVM_* key names on already-large deployment Lambdas. The
   // compact field names are Host-private CDK/runtime contract, not a public API.
   // addEnvironment is the CDK-supported way to append env vars to a Function
@@ -713,13 +700,7 @@ function hostedGenesisMicroVMDispatchConfigJSON(
     egressConnectorArns.join(","),
     '","max":',
     String(HOSTED_GENESIS_MICROVM_MAXIMUM_DURATION_SECONDS),
-    ',"idle":{"ar":',
-    String(HOSTED_GENESIS_MICROVM_IDLE_AUTO_RESUME_ENABLED),
-    ',"max":',
-    String(HOSTED_GENESIS_MICROVM_IDLE_MAX_SECONDS),
-    ',"sus":',
-    String(HOSTED_GENESIS_MICROVM_IDLE_SUSPENDED_SECONDS),
-    "}}",
+    "}",
   ]);
 }
 

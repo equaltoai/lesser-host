@@ -133,7 +133,8 @@ const hookPathPrefix = "/aws/lambda-microvms/runtime/v1"
 // question is whether ANY request reaches the app, at what path, and whether a
 // handler panics. The hook handlers, paths, and empty-body tolerance are
 // unchanged; the catch-all is not a security boundary (the specific hook paths
-// still go through handleHook).
+// still go through handleHook). Request bodies are never logged because an
+// unmatched application route can carry private provider material.
 func (s *hookServer) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc(hookPathPrefix+"/validate", s.handleHook(runtimemicrovm.HookValidate))
@@ -153,44 +154,17 @@ func (s *hookServer) routes() http.Handler {
 }
 
 // handleCatchAll acknowledges any path the workload does not register, logging
-// the method + path + first N bytes of body so a build that calls an unexpected
-// path (e.g. a different prefix or a short /<hook> path) is visible in the
-// CloudWatch build log group. It returns 200 so the AWS service does not retry
-// an unmatched path into a build timeout during diagnosis. This is diagnostic,
-// not a security boundary: the specific hook paths still go through handleHook,
-// and the build hooks carry no body to log. Body logging is capped at
-// logBodyCap bytes; the /run payload is a tenant string, not a secret.
+// the method + path so a build that calls an unexpected path is visible in the
+// CloudWatch log group. It returns 200 so the AWS service does not retry an
+// unmatched path into a build timeout during diagnosis. The request body is
+// deliberately ignored and never logged.
 func (s *hookServer) handleCatchAll(w http.ResponseWriter, r *http.Request) {
-	bodyPreview := readBodyPreview(r, logBodyCap)
-	slog.Info(serviceName+": unmatched path", //nolint:gosec // G706: method/path/preview are structured slog attributes (JSON-encoded key/values), not a log format string.
+	slog.Info(serviceName+": unmatched path", //nolint:gosec // G706: method/path are structured slog attributes (JSON-encoded key/values), not a log format string.
 		slog.String("method", r.Method),
 		slog.String("path", r.URL.Path),
 		slog.String("remote", r.RemoteAddr),
-		slog.String("body_preview", bodyPreview),
 	)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "unmatched"})
-}
-
-// logBodyCap is the maximum number of bytes of request body the catch-all logs.
-// The build hooks (/ready, /validate) send no body; the /run payload is a tenant
-// string, not a secret. Capping prevents a large body from flooding the log.
-const logBodyCap = 512
-
-// readBodyPreview reads up to the first n bytes of the request body for logging
-// by the catch-all. It restores the body so downstream code (none currently, but
-// defensively) can still read it. A read error is surfaced as a preview marker
-// rather than failing the request.
-func readBodyPreview(r *http.Request, n int) string {
-	if r.Body == nil {
-		return ""
-	}
-	preview, err := io.ReadAll(io.LimitReader(r.Body, int64(n)))
-	_ = r.Body.Close()
-	r.Body = io.NopCloser(strings.NewReader(string(preview)))
-	if err != nil {
-		return "<read error: " + err.Error() + ">"
-	}
-	return string(preview)
 }
 
 // requestLoggingMiddleware logs every request at the START (method, path,
@@ -609,7 +583,7 @@ func (s *hookServer) httpServer(addr string) *http.Server {
 //     address BEFORE the connection is handed to srv.Serve — this is below the
 //     HTTP layer, so even a TLS-mismatch / protocol-error connection is logged.
 //     Accept errors are logged too. Only remote addresses are logged here (no
-//     payloads); payloads are already logged by the catch-all up to logBodyCap.
+//     payloads); request bodies are never logged.
 //  2. A keepalive goroutine logs "alive" every keepaliveInterval until Serve
 //     returns, proving the app is still running after "listening" (vs. having
 //     exited silently). The ticker is stopped when Serve returns.
@@ -681,7 +655,7 @@ const keepaliveInterval = 10 * time.Second
 // — or any protocol error) still reaches Accept and is logged here, even though
 // it would never produce a "request received" line from the request-logging
 // middleware. Accept errors are logged too. Only remote addresses are logged
-// (no payloads); payloads are already logged by the catch-all up to logBodyCap.
+// (no payloads); request bodies are never logged.
 type loggingListener struct {
 	net.Listener
 }

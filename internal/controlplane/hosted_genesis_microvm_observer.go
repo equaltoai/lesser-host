@@ -18,10 +18,11 @@ import (
 // uses AppTheory's canonical controller GET through ReconcileMicroVM; it never
 // invokes, resumes, restarts, or locally models a MicroVM lifecycle.
 //
-// A live VM leaves Host truth untouched. A provider-terminated, failed, or
-// maximum-duration-expired VM is atomically projected to the existing typed
-// microvm_unavailable failure through CompletionWriter, whose TableTheory store
-// transaction is guarded by exact turn, status, and optimistic-lock version.
+// A live VM leaves Host truth untouched. A provider-suspended, terminated,
+// failed, or maximum-duration-expired VM is atomically projected to the
+// existing typed microvm_unavailable failure through CompletionWriter, whose
+// TableTheory transaction is guarded by exact turn, status, and optimistic-lock
+// version. The observer never resumes uncertain in-flight provider work.
 func (s *Server) observeHostedGenesisMicroVMOnRead(ctx *apptheory.Context, session *models.HostedGenesisSession, conv *models.SoulAgentMintConversation) (*models.HostedGenesisSession, *models.SoulAgentMintConversation, *apptheory.AppTheoryError) {
 	if !hostedGenesisSessionNeedsMicroVMReconciliation(session) {
 		return session, conv, nil
@@ -43,7 +44,7 @@ func (s *Server) observeHostedGenesisMicroVMOnRead(ctx *apptheory.Context, sessi
 		log.Printf("controlplane: hosted genesis wait observation failed agent_hash=%s conversation_hash=%s", soulMintInstanceReadAuditHash(session.AgentID), soulMintInstanceReadAuditHash(session.ConversationID))
 		return session, conv, nil
 	}
-	if !result.Terminal {
+	if !result.CannotCompletePendingTurn {
 		return session, conv, nil
 	}
 

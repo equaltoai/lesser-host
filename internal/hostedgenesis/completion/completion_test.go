@@ -458,28 +458,37 @@ func TestRecordFailure_CarriesDeclarationRetryBudget(t *testing.T) {
 }
 
 func TestRecordFailure_ExhaustedDeclarationRetryBecomesRestart(t *testing.T) {
+	assertExhaustedRetryBecomesRestart(t, hostedgenesis.FailureCodeDeclarationExtractionFailed, 3)
+}
+
+func TestRecordFailure_ExhaustedMicroVMUnavailableRetryBecomesRestart(t *testing.T) {
+	assertExhaustedRetryBecomesRestart(t, hostedgenesis.FailureCodeMicroVMUnavailable, 51)
+}
+
+func assertExhaustedRetryBecomesRestart(t *testing.T, code hostedgenesis.FailureCode, version int64) {
+	t.Helper()
 	prior := &hostedgenesis.Failure{
-		Code:      hostedgenesis.FailureCodeDeclarationExtractionFailed,
-		Message:   hostedgenesis.FailureMessage(hostedgenesis.FailureCodeDeclarationExtractionFailed),
+		Code:      code,
+		Message:   hostedgenesis.FailureMessage(code),
 		Retryable: false,
 		Recovery: hostedgenesis.Recovery{
 			Action: hostedgenesis.RecoveryActionRetrySameStep,
-			Reason: string(hostedgenesis.FailureCodeDeclarationExtractionFailed),
+			Reason: string(code),
 		},
 	}
-	session := newFakeSession("acme", "conv-1", "turn-1", hostedgenesis.StatusDeclarationExtractionPending, 3)
+	session := newFakeSession("acme", "conv-1", "turn-1", hostedgenesis.StatusDeclarationExtractionPending, version)
 	session.Failure = prior
 	store := &fakeCompletionStore{session: session}
 	w := NewCompletionWriter(store, nil)
 
-	got, err := w.RecordFailure(context.Background(), CompletionTurn{InstanceSlug: "acme", ConversationID: "conv-1", TurnID: "turn-1", RequestID: "req-1"}, CompletionFailure{
-		Code:      hostedgenesis.FailureCodeDeclarationExtractionFailed,
+	got, err := w.RecordFailure(context.Background(), CompletionTurn{InstanceSlug: "acme", ConversationID: "conv-1", TurnID: "turn-1", RequestID: "req-exhausted"}, CompletionFailure{
+		Code:      code,
 		Retryable: true,
 		Recovery: hostedgenesis.Recovery{
 			Action:            hostedgenesis.RecoveryActionRetrySameStep,
 			MaxAttempts:       3,
-			RetryAfterSeconds: 30,
-			Reason:            string(hostedgenesis.FailureCodeDeclarationExtractionFailed),
+			RetryAfterSeconds: 5,
+			Reason:            string(code),
 		},
 	})
 	if err != nil {
@@ -490,7 +499,7 @@ func TestRecordFailure_ExhaustedDeclarationRetryBecomesRestart(t *testing.T) {
 		got.Failure.Recovery.Action != hostedgenesis.RecoveryActionRestartSoulBootstrap ||
 		got.Failure.Recovery.MaxAttempts != 0 ||
 		got.Failure.Recovery.RetryAfterSeconds != 0 {
-		t.Fatalf("expected exhausted declaration retry to become restart guidance, got %#v", got.Failure)
+		t.Fatalf("expected exhausted %s retry to require a fresh soul bootstrap, got %#v", code, got.Failure)
 	}
 }
 

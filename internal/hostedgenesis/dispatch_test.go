@@ -471,11 +471,7 @@ func testHTTPDispatcher(t *testing.T, endpoint, token string) *HTTPControllerDis
 		RuntimeLogGroup:     "/aws/lambda/microvms/hosted-genesis-current",
 		NetworkConnectorRef: "arn:aws:lambda:us-east-1:123456789012:network-connector/hosted-genesis-egress",
 		MaxDurationSeconds:  300,
-		IdlePolicy: &runtimemicrovm.ProviderIdlePolicy{
-			MaxIdleDurationSeconds:   300,
-			SuspendedDurationSeconds: 1800,
-		},
-		HTTPClient: &http.Client{Timeout: 5 * time.Second},
+		HTTPClient:          &http.Client{Timeout: 5 * time.Second},
 	})
 	require.NoError(t, err)
 	return d
@@ -533,7 +529,7 @@ func TestHTTPControllerDispatcherPreparesFreshCurrentRuntimeBeforeInvoke(t *test
 	require.Equal(t, []string{"run", "get", "terminate", "run", "get", "invoke"}, stub.operationSequence(), "fresh recovery must use AppTheory Get/Terminate/Run/readiness Get before Invoke")
 }
 
-func TestHTTPControllerDispatcherPassesAppTheoryLifetimePolicyWithoutSecrets(t *testing.T) {
+func TestHTTPControllerDispatcherPassesAppTheoryRuntimeEnvelopeWithoutSecretsOrIdlePolicy(t *testing.T) {
 	t.Parallel()
 	stub := newStubControllerServer(t, "stub-bearer")
 	srv := httptest.NewServer(stub.handler())
@@ -548,10 +544,6 @@ func TestHTTPControllerDispatcherPassesAppTheoryLifetimePolicyWithoutSecrets(t *
 	require.True(t, ok, "expected stub controller to capture the run payload")
 	require.Equal(t, binding.ConversationID, payload.SessionID)
 	require.Equal(t, int32(300), payload.MaximumDurationSeconds)
-	require.NotNil(t, payload.IdlePolicy)
-	require.False(t, payload.IdlePolicy.AutoResumeEnabled, "default Host M11 policy must not opt into provider auto-resume before lab proof")
-	require.Equal(t, int32(300), payload.IdlePolicy.MaxIdleDurationSeconds)
-	require.Equal(t, int32(1800), payload.IdlePolicy.SuspendedDurationSeconds)
 	require.NoError(t, runtimemicrovm.ValidateProviderRunInput(runtimemicrovm.ProviderRunInput{
 		RequestID:                   "req-lifetime",
 		TenantID:                    binding.TenantID(),
@@ -563,10 +555,10 @@ func TestHTTPControllerDispatcherPassesAppTheoryLifetimePolicyWithoutSecrets(t *
 		IngressNetworkConnectorRefs: payload.IngressNetworkConnectorRefs,
 		EgressNetworkConnectorRefs:  payload.EgressNetworkConnectorRefs,
 		SessionSpec:                 payload.SessionSpec,
-		IdlePolicy:                  payload.IdlePolicy,
 		MaximumDurationSeconds:      payload.MaximumDurationSeconds,
 	}))
 	rawLower := strings.ToLower(rawBody)
+	require.NotContains(t, rawLower, "idle_policy", "asynchronous hosted-genesis work must omit AWS endpoint-idle suspension")
 	for _, forbidden := range []string{
 		"stub-bearer",
 		"authorization",
@@ -581,7 +573,7 @@ func TestHTTPControllerDispatcherPassesAppTheoryLifetimePolicyWithoutSecrets(t *
 		"messages",
 		"prompt",
 	} {
-		require.NotContains(t, rawLower, forbidden, "controller run body must carry only AppTheory run metadata/lifetime policy")
+		require.NotContains(t, rawLower, forbidden, "controller run body must carry only AppTheory run metadata/runtime envelope")
 	}
 }
 
@@ -637,7 +629,7 @@ func TestHTTPControllerDispatcherReconcilesViaGET(t *testing.T) {
 	result, err := dispatcher.ReconcileMicroVM(context.Background(), "req-get", binding, dispatch.LifecycleRef)
 	require.NoError(t, err)
 	require.Equal(t, binding.ConversationID, result.SessionID)
-	require.False(t, result.Terminal, "live VM must not be terminal")
+	require.False(t, result.CannotCompletePendingTurn, "live VM must not be terminal")
 	require.NoError(t, result.LifecycleRef.Validate(binding))
 	require.Equal(t, runtimemicrovm.CommandGet, result.LifecycleRef.LastAction)
 }
@@ -659,9 +651,28 @@ func TestHTTPControllerDispatcherReconcileTerminalVMReportsTerminal(t *testing.T
 
 	result, err := dispatcher.ReconcileMicroVM(context.Background(), "req-get", binding, dispatch.LifecycleRef)
 	require.NoError(t, err)
-	require.True(t, result.Terminal, "terminated VM must reconcile as terminal")
+	require.True(t, result.CannotCompletePendingTurn, "terminated VM must reconcile as terminal")
 	require.Equal(t, runtimemicrovm.StateTerminated, result.LifecycleRef.LifecycleState)
 	require.NoError(t, result.LifecycleRef.Validate(binding))
+}
+
+func TestHTTPControllerDispatcherReconcileSuspendedAcceptedTurnRequiresDurableConvergence(t *testing.T) {
+	t.Parallel()
+	stub := newStubControllerServer(t, "stub-bearer")
+	srv := httptest.NewServer(stub.handler())
+	t.Cleanup(srv.Close)
+
+	binding := testMicroVMBinding()
+	dispatcher := testHTTPDispatcher(t, srv.URL+"/microvms", stub.token)
+	dispatch, err := dispatcher.DispatchMicroVMRun(context.Background(), "req-run", binding)
+	require.NoError(t, err)
+	stub.suspend(binding.ConversationID)
+
+	result, err := dispatcher.ReconcileMicroVM(context.Background(), "req-observe-suspended", binding, dispatch.LifecycleRef)
+	require.NoError(t, err)
+	require.True(t, result.CannotCompletePendingTurn, "a suspended VM cannot prove an accepted provider stream remains runnable")
+	require.Equal(t, runtimemicrovm.StateSuspended, result.LifecycleRef.LifecycleState)
+	require.Equal(t, 0, stub.resumeCount(), "wait-only observation must never resume uncertain provider work")
 }
 
 func TestHTTPControllerDispatcherEnsuresSuspendedSessionViaResumeThenInvoke(t *testing.T) {
@@ -727,7 +738,6 @@ func TestHTTPControllerDispatcherConstructionFailsClosedOnMissingConfig(t *testi
 		{"nil http client", HTTPControllerDispatcherConfig{Endpoint: "https://example/microvms", AuthToken: "tok", ImageRef: "img", NetworkConnectorRef: "net"}},
 		{"negative maximum duration", HTTPControllerDispatcherConfig{Endpoint: "https://example/microvms", AuthToken: "tok", ImageRef: "img", NetworkConnectorRef: "net", MaxDurationSeconds: -1, HTTPClient: client}},
 		{"above AWS maximum duration", HTTPControllerDispatcherConfig{Endpoint: "https://example/microvms", AuthToken: "tok", ImageRef: "img", NetworkConnectorRef: "net", MaxDurationSeconds: 28801, HTTPClient: client}},
-		{"partial idle policy", HTTPControllerDispatcherConfig{Endpoint: "https://example/microvms", AuthToken: "tok", ImageRef: "img", NetworkConnectorRef: "net", IdlePolicy: &runtimemicrovm.ProviderIdlePolicy{MaxIdleDurationSeconds: 300}, HTTPClient: client}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -863,4 +873,12 @@ func TestH1_4_MicroVMReconcileIsTerminalClassification(t *testing.T) {
 			require.Equal(t, tc.want, got)
 		})
 	}
+}
+
+func TestMicroVMReconcileCannotCompletePendingTurnIncludesSuspended(t *testing.T) {
+	t.Parallel()
+	observedAt := time.Date(2026, 7, 22, 13, 40, 0, 0, time.UTC)
+	require.True(t, microVMReconcileCannotCompletePendingTurn(runtimemicrovm.StateSuspended, observedAt.Add(time.Hour), observedAt))
+	require.True(t, microVMReconcileCannotCompletePendingTurn(runtimemicrovm.StateTerminated, time.Time{}, observedAt))
+	require.False(t, microVMReconcileCannotCompletePendingTurn(runtimemicrovm.StateRunning, observedAt.Add(time.Hour), observedAt))
 }
