@@ -11,6 +11,7 @@ import (
 	apptheory "github.com/theory-cloud/apptheory/runtime"
 	runtimemicrovm "github.com/theory-cloud/apptheory/runtime/microvm"
 	"github.com/theory-cloud/tabletheory/v2/pkg/core"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
 	ttmocks "github.com/theory-cloud/tabletheory/v2/pkg/mocks"
 
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
@@ -125,6 +126,141 @@ func TestRegistrationWaitOnlyReadLeavesLiveMicroVMStateUnchanged(t *testing.T) {
 		t.Fatalf("live provider observation must leave Host truth unchanged: %#v", out.Conversation)
 	}
 	tdb.db.AssertNotCalled(t, "TransactWrite", mock.Anything, mock.Anything)
+}
+
+func TestWaitObservationDoesNotSwallowUnchangedPendingCompletionConflict(t *testing.T) {
+	tdb := newMintConversationTestDB()
+	s := newMintConversationServer(tdb)
+	dispatcher := stubHostedGenesisMicroVMDispatcher(t, s)
+	dispatcher.observedState = runtimemicrovm.StateTerminated
+	session, conversation := recoveredTerminalObservationConflictFixture(t)
+
+	// CompletionWriter preflight followed by the observer's conflict reload.
+	// Both reads return the exact same v51 pending turn, proving that no workload
+	// completion or other authoritative state transition won the race.
+	stubSoulInstanceRecoverySession(t, tdb, session)
+	stubSoulInstanceRecoveryConversation(t, tdb, conversation)
+	stubSoulInstanceRecoverySession(t, tdb, session)
+	stubSoulInstanceRecoveryConversation(t, tdb, conversation)
+	tx := new(ttmocks.MockTransactionBuilder)
+	tdb.db.TransactWriteBuilder = tx
+	tx.On("UpdateWithBuilder", mock.Anything, mock.Anything, mock.Anything).Return(tx).Times(3)
+	tx.On("Execute").Return(theoryErrors.ErrConditionFailed).Once()
+
+	gotSession, gotConversation, appErr := s.observeHostedGenesisMicroVMOnRead(
+		&apptheory.Context{RequestID: "req-terminal-observation"},
+		&session,
+		&conversation,
+	)
+	if appErr == nil || appErr.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("unchanged pending conditional failure must surface loudly, got session=%#v conversation=%#v err=%#v", gotSession, gotConversation, appErr)
+	}
+	if gotSession != nil || gotConversation != nil {
+		t.Fatalf("unchanged pending conflict must not be projected as success: session=%#v conversation=%#v", gotSession, gotConversation)
+	}
+	if dispatcher.reconcileCalls != 1 || dispatcher.calls != 0 || dispatcher.queueCalls != 0 {
+		t.Fatalf("conflict classification must remain wait-only: reconcile=%d run=%d queue=%d", dispatcher.reconcileCalls, dispatcher.calls, dispatcher.queueCalls)
+	}
+	tdb.db.AssertExpectations(t)
+	if !tx.AssertExpectations(t) {
+		t.Fatal("unchanged-pending conflict transaction expectations were not satisfied")
+	}
+}
+
+func TestWaitObservationReloadsTrueWorkloadWonRace(t *testing.T) {
+	tdb := newMintConversationTestDB()
+	s := newMintConversationServer(tdb)
+	dispatcher := stubHostedGenesisMicroVMDispatcher(t, s)
+	dispatcher.observedState = runtimemicrovm.StateTerminated
+	session, conversation := recoveredTerminalObservationConflictFixture(t)
+	advancedSession := session
+	advancedSession.Version++
+	advancedSession.Status = string(hostedgenesis.StatusFailed)
+	advancedSession.Failure = &hostedgenesis.Failure{
+		Code:      hostedgenesis.FailureCodeDeclarationExtractionFailed,
+		Message:   hostedgenesis.FailureMessage(hostedgenesis.FailureCodeDeclarationExtractionFailed),
+		Retryable: false,
+		Recovery: hostedgenesis.Recovery{
+			Action: hostedgenesis.RecoveryActionRestartSoulBootstrap,
+			Reason: string(hostedgenesis.FailureCodeDeclarationExtractionFailed),
+		},
+	}
+	advancedConversation := conversation
+	advancedConversation.Status = models.SoulMintConversationStatusFailed
+	advancedConversation.StatusReason = string(hostedgenesis.FailureCodeDeclarationExtractionFailed)
+
+	// The workload wins between the observer's stale input and CompletionWriter's
+	// guarded preflight, so the writer rejects the already-terminal row. The
+	// observer then reloads the same advanced Host truth and classifies the race.
+	stubSoulInstanceRecoverySession(t, tdb, advancedSession)
+	stubSoulInstanceRecoverySession(t, tdb, advancedSession)
+	stubSoulInstanceRecoveryConversation(t, tdb, advancedConversation)
+
+	gotSession, gotConversation, appErr := s.observeHostedGenesisMicroVMOnRead(
+		&apptheory.Context{RequestID: "req-terminal-observation"},
+		&session,
+		&conversation,
+	)
+	if appErr != nil {
+		t.Fatalf("true workload-won race should reload authoritative state: %#v", appErr)
+	}
+	if gotSession == nil || gotConversation == nil || gotSession.Version != 52 || hostedgenesis.NormalizeStatus(gotSession.Status) != hostedgenesis.StatusFailed || gotConversation.Status != models.SoulMintConversationStatusFailed {
+		t.Fatalf("true workload-won race did not return advanced authoritative rows: session=%#v conversation=%#v", gotSession, gotConversation)
+	}
+	if dispatcher.reconcileCalls != 1 || dispatcher.calls != 0 || dispatcher.queueCalls != 0 {
+		t.Fatalf("workload-won classification must remain wait-only: reconcile=%d run=%d queue=%d", dispatcher.reconcileCalls, dispatcher.calls, dispatcher.queueCalls)
+	}
+	tdb.db.AssertExpectations(t)
+}
+
+func recoveredTerminalObservationConflictFixture(t *testing.T) (models.HostedGenesisSession, models.SoulAgentMintConversation) {
+	t.Helper()
+	reg := mintConversationHandleReg()
+	session := hostedGenesisH1D3RecoverySessionFixture(t, reg, hostedgenesis.StatusDeclarationExtractionPending)
+	session.Version = 51
+	session.LatestTurnID = "turn_bMLVA5B9Sb-J4U8AgzYNWA"
+	session.RequestID = "req-recovered-turn"
+	session.TraceIDs = &hostedgenesis.TraceIDs{
+		HostRequestID:  session.RequestID,
+		CorrelationID:  "corr-terminal-observation",
+		IdempotencyKey: "idem-terminal-observation",
+	}
+	session.TurnLedger = []hostedgenesis.TurnLedgerEntry{{
+		TurnID:           session.LatestTurnID,
+		IdempotencyKey:   session.TraceIDs.IdempotencyKey,
+		RequestHash:      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		BillingLedgerRef: "usage:mint:" + session.ConversationID + ":" + session.LatestTurnID,
+		ChargedCredits:   soulMintConversationStreamBaseCredits,
+		MessageCount:     session.MessageCount,
+		AcceptedAt:       time.Date(2026, 7, 22, 11, 35, 0, 0, time.UTC),
+	}}
+	session.Failure = &hostedgenesis.Failure{
+		Code:      hostedgenesis.FailureCodeDeclarationExtractionFailed,
+		Message:   hostedgenesis.FailureMessage(hostedgenesis.FailureCodeDeclarationExtractionFailed),
+		Retryable: false,
+		Recovery: hostedgenesis.Recovery{
+			Action:            hostedgenesis.RecoveryActionRetrySameStep,
+			RetryAfterSeconds: 5,
+			Reason:            string(hostedgenesis.FailureCodeDeclarationExtractionFailed),
+		},
+	}
+	if err := session.BeforeCreate(); err != nil {
+		t.Fatalf("recovered terminal observation session: %v", err)
+	}
+	conversation := models.SoulAgentMintConversation{
+		AgentID:        session.AgentID,
+		ConversationID: session.ConversationID,
+		Model:          session.Model,
+		Status:         models.SoulMintConversationStatusDeclarationExtractionPending,
+		LatestTurnID:   session.LatestTurnID,
+		RequestID:      session.RequestID,
+		CreatedAt:      session.CreatedAt,
+		UpdatedAt:      session.UpdatedAt,
+	}
+	if err := conversation.BeforeCreate(); err != nil {
+		t.Fatalf("recovered terminal observation conversation: %v", err)
+	}
+	return session, conversation
 }
 
 // TestRegistrationObservationThenRecoveryReplaysAcceptedTurnFromPriorActorCheckpoint

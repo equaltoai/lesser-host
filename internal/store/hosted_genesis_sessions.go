@@ -73,7 +73,10 @@ func (s *Store) UpdateHostedGenesisSession(ctx context.Context, item *models.Hos
 // hosted-genesis failure into the Host-owned session truth and its legacy
 // conversation-list compatibility row. When the accepted turn carried an
 // idempotency key, the same guarded transaction also closes that exact
-// processing reservation as failed; the row retains its existing seven-day TTL.
+// reservation as failed; an exact already-failed reservation is accepted so a
+// recovered turn can converge without reopening or replacing its accepted-turn
+// identity. No other terminal status is accepted, and the row retains its
+// existing seven-day TTL.
 // The session's version and current status guard the entire transaction so a
 // late valid completion cannot be overwritten by a stale worker failure.
 func (s *Store) FailHostedGenesisSessionAndConversation(ctx context.Context, session *models.HostedGenesisSession, expectedVersion int64, expectedStatus hostedgenesis.Status, conversation *models.SoulAgentMintConversation) error {
@@ -120,7 +123,10 @@ func (s *Store) FailHostedGenesisSessionAndConversation(ctx context.Context, ses
 				ub.Set("UpdatedAt", idempotency.UpdatedAt)
 				return nil
 			}, tabletheory.IfExists(),
-				tabletheory.Condition("Status", "=", models.SoulMintConversationIdempotencyStatusProcessing),
+				tabletheory.Condition("Status", "IN", []string{
+					models.SoulMintConversationIdempotencyStatusProcessing,
+					models.SoulMintConversationIdempotencyStatusFailed,
+				}),
 				tabletheory.Condition("RegistrationID", "=", idempotency.RegistrationID),
 				tabletheory.Condition("AgentID", "=", idempotency.AgentID),
 				tabletheory.Condition("ConversationID", "=", idempotency.ConversationID),

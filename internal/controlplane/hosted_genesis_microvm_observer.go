@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
+	runtimemicrovm "github.com/theory-cloud/apptheory/runtime/microvm"
 
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis/completion"
@@ -41,12 +42,14 @@ func (s *Server) observeHostedGenesisMicroVMOnRead(ctx *apptheory.Context, sessi
 	defer cancel()
 	result, err := s.hostedGenesisMicroVMDispatcher.ReconcileMicroVM(observeCtx, requestID, binding, *session.MicroVMLifecycleRef)
 	if err != nil {
-		log.Printf("controlplane: hosted genesis wait observation failed agent_hash=%s conversation_hash=%s", soulMintInstanceReadAuditHash(session.AgentID), soulMintInstanceReadAuditHash(session.ConversationID))
+		logHostedGenesisTerminalObservation(session, "unknown", "reconcile_failed", "none")
 		return session, conv, nil
 	}
 	if !result.CannotCompletePendingTurn {
 		return session, conv, nil
 	}
+	lifecycleClass := hostedGenesisTerminalObservationLifecycleClass(result)
+	logHostedGenesisTerminalObservation(session, lifecycleClass, "terminal_observed", "none")
 
 	writer := completion.NewCompletionWriter(s.store, nil)
 	failed, err := writer.RecordFailure(ctx.Context(), completion.CompletionTurn{
@@ -66,18 +69,91 @@ func (s *Server) observeHostedGenesisMicroVMOnRead(ctx *apptheory.Context, sessi
 	})
 	if err != nil {
 		if errors.Is(err, completion.ErrCompletionConflict) {
-			// A workload completion won the version race. Reload and project the
-			// authoritative result instead of overwriting it with stale death.
-			return s.reloadHostedGenesisAfterObservation(ctx.Context(), session, conv)
+			reloadedSession, reloadedConv, reloadErr := s.reloadHostedGenesisAfterObservation(ctx.Context(), session, conv)
+			if reloadErr != nil {
+				logHostedGenesisTerminalObservation(session, lifecycleClass, "reload_failed", "completion_conflict")
+				return nil, nil, reloadErr
+			}
+			classification := hostedGenesisObservationConflictClassification(session, reloadedSession)
+			logHostedGenesisTerminalObservation(reloadedSession, lifecycleClass, "authoritative_reload", classification)
+			if classification != hostedGenesisObservationConflictWorkloadWon {
+				// Only a recognized workload progression wins this race. An exact
+				// unchanged pending row (including a conflicting idempotency guard),
+				// or an unrelated state advance, is not evidence of completion. Fail
+				// loudly instead of swallowing the conditional failure.
+				return nil, nil, soulMintInstanceReadError(soulMintInstanceReadCodeInternal, "internal error", 500, nil)
+			}
+			return reloadedSession, reloadedConv, nil
 		}
-		log.Printf("controlplane: hosted genesis terminal wait observation persist failed agent_hash=%s conversation_hash=%s", soulMintInstanceReadAuditHash(session.AgentID), soulMintInstanceReadAuditHash(session.ConversationID))
+		logHostedGenesisTerminalObservation(session, lifecycleClass, "persist_failed", "non_conditional")
 		return nil, nil, soulMintInstanceReadError(soulMintInstanceReadCodeInternal, "internal error", 500, nil)
 	}
 	reloadedSession, reloadedConv, reloadErr := s.reloadHostedGenesisAfterObservation(ctx.Context(), failed, conv)
 	if reloadErr != nil {
+		logHostedGenesisTerminalObservation(failed, lifecycleClass, "reload_failed", "none")
 		return nil, nil, reloadErr
 	}
+	logHostedGenesisTerminalObservation(reloadedSession, lifecycleClass, "converged", "none")
 	return reloadedSession, reloadedConv, nil
+}
+
+const (
+	hostedGenesisObservationConflictUnchangedPending = "unchanged_pending"
+	hostedGenesisObservationConflictWorkloadWon      = "workload_won"
+	hostedGenesisObservationConflictStateAdvanced    = "authoritative_state_advanced"
+)
+
+func hostedGenesisTerminalObservationLifecycleClass(result hostedgenesis.MicroVMReconcileResult) string {
+	switch result.LifecycleRef.LifecycleState {
+	case runtimemicrovm.StateSuspended:
+		return "suspended"
+	case runtimemicrovm.StateTerminated:
+		return "terminated"
+	case runtimemicrovm.StateFailed:
+		return "failed"
+	default:
+		// CannotCompletePendingTurn with a non-terminal, non-suspended
+		// lifecycle is the controller-expiry path.
+		return "expired"
+	}
+}
+
+func hostedGenesisObservationConflictClassification(expected *models.HostedGenesisSession, actual *models.HostedGenesisSession) string {
+	if expected != nil && actual != nil &&
+		expected.Version == actual.Version &&
+		hostedgenesis.NormalizeStatus(expected.Status) == hostedgenesis.NormalizeStatus(actual.Status) &&
+		strings.TrimSpace(expected.LatestTurnID) == strings.TrimSpace(actual.LatestTurnID) {
+		return hostedGenesisObservationConflictUnchangedPending
+	}
+	if expected != nil && actual != nil &&
+		actual.Version > expected.Version &&
+		strings.TrimSpace(actual.LatestTurnID) == strings.TrimSpace(expected.LatestTurnID) {
+		actualStatus := hostedgenesis.NormalizeStatus(actual.Status)
+		expectedStatus := hostedgenesis.NormalizeStatus(expected.Status)
+		if actualStatus == hostedgenesis.StatusAssistantTurnReady ||
+			actualStatus == hostedgenesis.StatusDeclarationReady ||
+			actualStatus == hostedgenesis.StatusFailed ||
+			(expectedStatus == hostedgenesis.StatusInProgress && actualStatus == hostedgenesis.StatusDeclarationExtractionPending) {
+			return hostedGenesisObservationConflictWorkloadWon
+		}
+	}
+	return hostedGenesisObservationConflictStateAdvanced
+}
+
+func logHostedGenesisTerminalObservation(session *models.HostedGenesisSession, lifecycleClass string, outcome string, conflict string) {
+	if session == nil {
+		return
+	}
+	log.Printf("controlplane: hosted genesis terminal wait observation agent_hash=%s conversation_hash=%s turn_hash=%s session_version=%d durable_status=%s lifecycle_class=%s outcome=%s conflict=%s",
+		soulMintInstanceReadAuditHash(session.AgentID),
+		soulMintInstanceReadAuditHash(session.ConversationID),
+		soulMintInstanceReadAuditHash(session.LatestTurnID),
+		session.Version,
+		hostedgenesis.NormalizeStatus(session.Status),
+		lifecycleClass,
+		outcome,
+		conflict,
+	)
 }
 
 func (s *Server) reloadHostedGenesisAfterObservation(ctx context.Context, session *models.HostedGenesisSession, conv *models.SoulAgentMintConversation) (*models.HostedGenesisSession, *models.SoulAgentMintConversation, *apptheory.AppTheoryError) {

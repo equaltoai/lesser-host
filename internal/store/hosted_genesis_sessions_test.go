@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -10,11 +11,15 @@ import (
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	runtimemicrovm "github.com/theory-cloud/apptheory/runtime/microvm"
+	"github.com/theory-cloud/tabletheory/v2"
 	"github.com/theory-cloud/tabletheory/v2/pkg/core"
 	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
 	ttmocks "github.com/theory-cloud/tabletheory/v2/pkg/mocks"
+	"github.com/theory-cloud/tabletheory/v2/pkg/session"
+	"github.com/theory-cloud/tabletheory/v2/pkg/testing/fakedb"
 
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
+	"github.com/equaltoai/lesser-host/internal/hostedgenesis/completion"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 	"github.com/equaltoai/lesser-host/internal/testutil"
 )
@@ -170,6 +175,123 @@ func TestStore_FailHostedGenesisSessionAndConversationUsesOneGuardedTransaction(
 	tx.AssertExpectations(t)
 }
 
+func TestStore_FailHostedGenesisSessionAndConversationAcceptsExactAlreadyFailedIdempotency(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	fake := fakedb.New()
+	rawDB, err := tabletheory.NewWithClient(session.Config{Region: "us-east-1"}, fake)
+	require.NoError(t, err)
+	require.NoError(t, rawDB.CreateTable(&models.HostedGenesisSession{}))
+	db, ok := rawDB.(DB)
+	require.True(t, ok, "TableTheory ExtendedDB must satisfy the Host Store transaction contract")
+
+	current, conversation, idempotency := recoveredTurnAlreadyFailedIdempotencyFixture(t)
+	require.NoError(t, db.Model(current).Create())
+	require.NoError(t, db.Model(conversation).Create())
+	require.NoError(t, db.Model(idempotency).Create())
+	st := New(db)
+	seededIdempotency, err := st.GetSoulMintConversationIdempotency(ctx, current.InstanceSlug, current.RegistrationID, idempotency.IdempotencyKey)
+	require.NoError(t, err)
+
+	terminalAt := time.Date(2026, 7, 22, 17, 5, 0, 0, time.UTC)
+	writer := completion.NewCompletionWriter(st, func() time.Time { return terminalAt })
+	failedSession, err := writer.RecordFailure(ctx, completion.CompletionTurn{
+		InstanceSlug:   current.InstanceSlug,
+		ConversationID: current.ConversationID,
+		TurnID:         current.LatestTurnID,
+		RequestID:      "req-observe-terminal",
+	}, completion.CompletionFailure{
+		Code:      hostedgenesis.FailureCodeMicroVMUnavailable,
+		Retryable: true,
+		Recovery: hostedgenesis.Recovery{
+			Action:            hostedgenesis.RecoveryActionRetrySameStep,
+			MaxAttempts:       3,
+			RetryAfterSeconds: 5,
+			Reason:            string(hostedgenesis.FailureCodeMicroVMUnavailable),
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, failedSession)
+	require.NotNil(t, failedSession.Failure)
+	require.Equal(t, hostedgenesis.RecoveryActionRestartSoulBootstrap, failedSession.Failure.Recovery.Action)
+	require.False(t, failedSession.Failure.Retryable)
+
+	gotSession, err := st.GetHostedGenesisSession(ctx, current.InstanceSlug, current.ConversationID)
+	require.NoError(t, err)
+	require.Equal(t, int64(52), gotSession.Version)
+	require.Equal(t, string(hostedgenesis.StatusFailed), gotSession.Status)
+	require.NotNil(t, gotSession.Failure)
+	require.Equal(t, hostedgenesis.RecoveryActionRestartSoulBootstrap, gotSession.Failure.Recovery.Action)
+	require.False(t, gotSession.Failure.Retryable)
+
+	gotConversation, err := st.GetSoulAgentMintConversation(ctx, current.AgentID, current.ConversationID)
+	require.NoError(t, err)
+	require.Equal(t, models.SoulMintConversationStatusFailed, gotConversation.Status)
+	require.Equal(t, current.LatestTurnID, gotConversation.LatestTurnID)
+
+	gotIdempotency, err := st.GetSoulMintConversationIdempotency(ctx, current.InstanceSlug, current.RegistrationID, idempotency.IdempotencyKey)
+	require.NoError(t, err)
+	require.Equal(t, models.SoulMintConversationIdempotencyStatusFailed, gotIdempotency.Status)
+	require.Equal(t, idempotency.TurnID, gotIdempotency.TurnID)
+	require.Equal(t, idempotency.RequestHash, gotIdempotency.RequestHash)
+	require.Equal(t, seededIdempotency.CreatedAt, gotIdempotency.CreatedAt)
+	require.Equal(t, seededIdempotency.TTL, gotIdempotency.TTL)
+}
+
+func recoveredTurnAlreadyFailedIdempotencyFixture(t *testing.T) (*models.HostedGenesisSession, *models.SoulAgentMintConversation, *models.SoulMintConversationIdempotency) {
+	t.Helper()
+
+	acceptedAt := time.Date(2026, 7, 22, 11, 35, 0, 0, time.UTC)
+	updatedAt := time.Date(2026, 7, 22, 13, 27, 52, 62_432_003, time.UTC)
+	current := validStoreHostedGenesisSession()
+	current.Version = 51
+	current.Status = string(hostedgenesis.StatusDeclarationExtractionPending)
+	current.Failure = &hostedgenesis.Failure{
+		Code:      hostedgenesis.FailureCodeDeclarationExtractionFailed,
+		Message:   hostedgenesis.FailureMessage(hostedgenesis.FailureCodeDeclarationExtractionFailed),
+		Retryable: false,
+		Recovery: hostedgenesis.Recovery{
+			Action:            hostedgenesis.RecoveryActionRetrySameStep,
+			RetryAfterSeconds: 5,
+			Reason:            string(hostedgenesis.FailureCodeDeclarationExtractionFailed),
+		},
+	}
+	current.RequestID = "req-recovered-turn"
+	current.UpdatedAt = updatedAt
+	current.CompletedAt = time.Time{}
+	current.TurnLedger[0].AcceptedAt = acceptedAt
+	require.NoError(t, current.BeforeCreate())
+
+	conversation := &models.SoulAgentMintConversation{
+		AgentID:        current.AgentID,
+		ConversationID: current.ConversationID,
+		Model:          current.Model,
+		Status:         models.SoulMintConversationStatusDeclarationExtractionPending,
+		LatestTurnID:   current.LatestTurnID,
+		RequestID:      current.RequestID,
+		CreatedAt:      current.CreatedAt,
+		UpdatedAt:      updatedAt,
+	}
+	require.NoError(t, conversation.BeforeCreate())
+
+	idempotency := &models.SoulMintConversationIdempotency{
+		InstanceSlug:   current.InstanceSlug,
+		RegistrationID: current.RegistrationID,
+		AgentID:        current.AgentID,
+		ConversationID: current.ConversationID,
+		TurnID:         current.LatestTurnID,
+		IdempotencyKey: current.TraceIDs.IdempotencyKey,
+		RequestHash:    current.TurnLedger[0].RequestHash,
+		RequestID:      "req-original-failure",
+		Status:         models.SoulMintConversationIdempotencyStatusFailed,
+		CreatedAt:      acceptedAt,
+		UpdatedAt:      time.Date(2026, 7, 22, 11, 36, 16, 57_666_784, time.UTC),
+	}
+	require.NoError(t, idempotency.BeforeCreate())
+	return current, conversation, idempotency
+}
+
 func TestStore_FailHostedGenesisSessionRejectsUnboundIdempotencyBeforeWrite(t *testing.T) {
 	t.Parallel()
 
@@ -315,11 +437,15 @@ func hasStatusCondition(conditions []core.TransactCondition, status hostedgenesi
 }
 
 func hasFieldCondition(conditions []core.TransactCondition, field string, value any) bool {
+	return hasFieldConditionWithOperator(conditions, field, "=", value)
+}
+
+func hasFieldConditionWithOperator(conditions []core.TransactCondition, field string, operator string, value any) bool {
 	for _, condition := range conditions {
 		if condition.Kind == core.TransactConditionKindField &&
 			condition.Field == field &&
-			condition.Operator == "=" &&
-			condition.Value == value {
+			condition.Operator == operator &&
+			reflect.DeepEqual(condition.Value, value) {
 			return true
 		}
 	}
@@ -334,7 +460,10 @@ func matchesFailedHostedGenesisIdempotency(item any) bool {
 
 func hasFailedHostedGenesisIdempotencyConditions(conditions []core.TransactCondition) bool {
 	return hasConditionKind(conditions, core.TransactConditionKindPrimaryKeyExists) &&
-		hasFieldCondition(conditions, "Status", models.SoulMintConversationIdempotencyStatusProcessing) &&
+		hasFieldConditionWithOperator(conditions, "Status", "IN", []string{
+			models.SoulMintConversationIdempotencyStatusProcessing,
+			models.SoulMintConversationIdempotencyStatusFailed,
+		}) &&
 		hasFieldCondition(conditions, "RegistrationID", "reg_123") &&
 		hasFieldCondition(conditions, "ConversationID", "conv_123") &&
 		hasFieldCondition(conditions, "TurnID", "turn_123") &&
