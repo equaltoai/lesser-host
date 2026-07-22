@@ -1,14 +1,14 @@
 {
   "$schema": "https://gov.pai.dev/schemas/pack.schema.json",
   "schemaVersion": 1,
-  "packVersion": "2026.07.22-m11-provider-runnable.1",
-  "packDigest": "723dacbddb6b1931ebbb315939312896f212fceda7ec2690cd367c9e8cf7c950",
+  "packVersion": "2026.07.22-m11-typed-candidate.0",
+  "packDigest": "acdf1dd447f486c8710ee415910ae17221ab7bea24c7de5b703a4a3d5d67120c",
   "domain": "custom",
   "projectSlug": "lesser-host",
-  "generatedAt": "2026-07-22T15:11:34Z",
+  "generatedAt": "2026-07-22T21:35:35Z",
   "source": {
-    "commitSha": "d60ea0717dd72621a6f0972d837ee2c048d2e563",
-    "branch": "theorymcp/equaltoai/host/issue-959-provider-telemetry"
+    "commitSha": "372c08a3293ac79715787fbcc0bddd68daf4fe6d",
+    "branch": "theorymcp/equaltoai/host/issue-977-typed-five-body"
   },
   "artifacts": {
     "planning": [
