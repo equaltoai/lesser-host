@@ -189,6 +189,7 @@ require_pattern "${dispatcher_tests}" 'TestHTTPControllerDispatcherPassesAppTheo
 require_pattern "${dispatcher_tests}" 'TestHTTPControllerDispatcherReconcileSuspendedAcceptedTurnRequiresDurableConvergence' 'suspended accepted work has no-resume convergence coverage'
 require_pattern "${completion}" 'FailureCodeMicroVMUnavailable' 'MicroVM failure preserves the prior durable recovery budget'
 require_pattern "${completion_tests}" 'TestRecordFailure_ExhaustedMicroVMUnavailableRetryBecomesRestart' 'exhausted MicroVM retry gives exact restart guidance'
+require_pattern "${completion_tests}" 'TestRecordFailure_SuspendedVMOnExhaustedDeclarationRetryStaysExhausted' 'suspended observation cannot reset an exhausted provider-step budget'
 
 # Runtime stdout/stderr is real only when AppTheory propagates the Host-owned
 # execution role and that role can assume/tag the runtime session and write the
