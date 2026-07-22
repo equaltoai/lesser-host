@@ -4,7 +4,8 @@
 # The hosted-genesis MicroVM must observe every OpenAI/Anthropic SDK streaming
 # event without logging content, emit provider-call heartbeats while a call is
 # idle, bound the whole SDK retry lifecycle, and durably fail the accepted turn
-# when the provider times out or AppTheory reports a terminal/expired MicroVM.
+# when the provider times out or AppTheory reports a suspended/terminal/expired
+# MicroVM.
 # Normal client reads remain wait-only: they may observe AppTheory's canonical
 # GET lifecycle but never dispatch, resume, or implement a Host-side controller.
 # TableTheory owns the exact status/version/turn guarded convergence write.
@@ -62,6 +63,18 @@ observer="internal/controlplane/hosted_genesis_microvm_observer.go"
 observer_tests="internal/controlplane/hosted_genesis_microvm_observer_internal_test.go"
 read_handler="internal/controlplane/handlers_soul_mint_conversation_instance_read.go"
 dispatcher="internal/hostedgenesis/dispatch.go"
+dispatcher_tests="internal/hostedgenesis/dispatch_test.go"
+completion="internal/hostedgenesis/completion/completion.go"
+completion_tests="internal/hostedgenesis/completion/completion_test.go"
+workload_hooks="cmd/hosted-genesis-microvm-workload/hooks.go"
+workload_hook_tests="cmd/hosted-genesis-microvm-workload/hooks_test.go"
+controller="cmd/hosted-genesis-microvm-controller/main.go"
+controller_runtime="internal/hostedgenesis/microvm_controller.go"
+host_config="internal/config/config.go"
+controlplane_dispatch="internal/controlplane/hosted_genesis_microvm_dispatch.go"
+aiworker_dispatch="internal/aiworker/hosted_genesis_microvm.go"
+microvm_cdk="cdk/lib/hosted-genesis-microvm.ts"
+microvm_cdk_tests="cdk/test/lesser-host-stack-microvm.test.ts"
 store="internal/store/hosted_genesis_sessions.go"
 store_tests="internal/store/hosted_genesis_sessions_test.go"
 
@@ -79,6 +92,18 @@ required_files=(
   "${observer_tests}"
   "${read_handler}"
   "${dispatcher}"
+  "${dispatcher_tests}"
+  "${completion}"
+  "${completion_tests}"
+  "${workload_hooks}"
+  "${workload_hook_tests}"
+  "${controller}"
+  "${controller_runtime}"
+  "${host_config}"
+  "${controlplane_dispatch}"
+  "${aiworker_dispatch}"
+  "${microvm_cdk}"
+  "${microvm_cdk_tests}"
   "${store}"
   "${store_tests}"
 )
@@ -107,6 +132,7 @@ done
 require_pattern "${llm_telemetry}" 'func[[:space:]]+[(]r [+*]providerTelemetryRecorder[)][[:space:]]+emitSDK' 'SDK events use the first-event/sequence recorder'
 require_pattern "${llm_telemetry}" 'sha256[.]Sum256' 'output and declaration-request payload identities use SHA256 metadata'
 require_pattern "${workload_telemetry}" 'provider_call_heartbeat' 'periodic provider heartbeat is structured'
+require_pattern "${workload_telemetry}" 'defaultProviderHeartbeatInterval[[:space:]]*=[[:space:]]*10 [*] time[.]Second' 'production provider heartbeat remains ten seconds'
 require_pattern "${workload_telemetry}" 'last_sdk_event_at' 'heartbeat records last SDK-event time'
 require_pattern "${workload_telemetry}" 'output_sha256' 'heartbeat records output identity without output content'
 require_pattern "${workload_telemetry}" 'payload_bytes' 'declaration request heartbeat records payload size without content'
@@ -126,7 +152,7 @@ require_pattern "${llm_declarations}" 'ToolName:' 'declaration telemetry names t
 # client. Lifecycle semantics remain in AppTheory's reconciliation result.
 require_pattern "${read_handler}" 'observeHostedGenesisMicroVMOnRead[(]' 'authenticated single read invokes wait-only lifecycle observation'
 require_pattern "${observer}" '[.]ReconcileMicroVM[(]' 'observer uses the existing AppTheory controller adapter'
-require_pattern "${observer}" 'result[.]Terminal' 'observer consumes AppTheory-reconciled terminal state'
+require_pattern "${observer}" 'result[.]CannotCompletePendingTurn' 'observer consumes AppTheory-reconciled non-runnable state'
 require_pattern "${observer}" 'FailureCodeMicroVMUnavailable' 'terminal MicroVM state becomes a typed Host failure'
 require_pattern "${observer}" '[.]RecordFailure[(]' 'terminal MicroVM state converges through CompletionWriter'
 reject_pattern "${observer}" 'DispatchMicroVMRun|Resume|Restart' 'wait-only observer cannot dispatch, resume, or restart execution'
@@ -134,6 +160,55 @@ reject_pattern "${observer}" 'aws-sdk-go-v2/service/dynamodb|tabletheory' 'wait-
 reject_pattern "${read_handler}" 'DispatchMicroVMRun|Resume|Restart' 'client read handler cannot nudge processing work'
 require_pattern "${dispatcher}" 'http[.]MethodGet' 'controller reconciliation uses AppTheory MicroVM GET'
 require_pattern "${dispatcher}" 'ReconcileMicroVMRegistryStatus[(]' 'controller response uses AppTheory lifecycle reconciliation'
+require_pattern "${dispatcher}" 'StateSuspended' 'suspended accepted work is classified as unable to complete'
+require_pattern "${dispatcher}" 'CannotCompletePendingTurn' 'dispatcher exposes the non-runnable accepted-turn verdict'
+
+# Endpoint-dispatched provider work continues after the ingress response. AWS
+# defines MicroVM idleness using inbound endpoint traffic, not guest CPU or
+# outbound provider traffic, so Hosted Genesis must omit ProviderIdlePolicy
+# entirely. There is no polling keepalive, raw SDK escape hatch, or legacy idle
+# env path. AppTheory remains the sole Run/Get/Invoke lifecycle substrate.
+idle_policy_sources=(
+  "${dispatcher}"
+  "${controller}"
+  "${controller_runtime}"
+  "${host_config}"
+  "${controlplane_dispatch}"
+  "${aiworker_dispatch}"
+  "${microvm_cdk}"
+)
+for path in "${idle_policy_sources[@]}"; do
+  reject_pattern "${path}" 'HOSTED_GENESIS_MICROVM_IDLE_(MAX|SUSPENDED|AUTO_RESUME)' 'Hosted Genesis has no legacy endpoint-idle env/config path'
+  reject_pattern "${path}" '^[[:space:]]*IdlePolicy[[:space:]]*:' 'Hosted Genesis has no deployed AppTheory idle-policy field or assignment'
+done
+reject_pattern "${dispatcher}" 'json:"idle_policy' 'Hosted Genesis AppTheory run payload omits ProviderIdlePolicy'
+reject_pattern "${host_config}" 'json:"idle"' 'Hosted Genesis compact deployment config has no legacy idle-policy field'
+reject_pattern "${dispatcher}" 'aws-sdk-go-v2/service/lambdamicrovms' 'Host dispatcher has no raw MicroVM SDK escape hatch'
+require_pattern "${workload_hook_tests}" 'TestHookServer_TurnEndpointDetachedProviderOutlivesFormerIdleBoundary' 'detached in-VM provider work has beyond-boundary regression coverage'
+require_pattern "${dispatcher_tests}" 'TestHTTPControllerDispatcherPassesAppTheoryRuntimeEnvelopeWithoutSecretsOrIdlePolicy' 'AppTheory run payload omission is tested'
+require_pattern "${dispatcher_tests}" 'TestHTTPControllerDispatcherReconcileSuspendedAcceptedTurnRequiresDurableConvergence' 'suspended accepted work has no-resume convergence coverage'
+require_pattern "${completion}" 'FailureCodeMicroVMUnavailable' 'MicroVM failure preserves the prior durable recovery budget'
+require_pattern "${completion_tests}" 'TestRecordFailure_ExhaustedMicroVMUnavailableRetryBecomesRestart' 'exhausted MicroVM retry gives exact restart guidance'
+
+# Runtime stdout/stderr is real only when AppTheory propagates the Host-owned
+# execution role and that role can assume/tag the runtime session and write the
+# documented default /aws/lambda/microvms/<image> group. Do not pin all runtime
+# output to a misleading build stream. Application logs remain content-free.
+require_pattern "${microvm_cdk}" 'executionRole,' 'AppTheory controller receives the Host-owned execution role'
+require_pattern "${microvm_cdk}" '[.]withSessionTags[(]' 'MicroVM execution-role trust allows tagged sessions'
+require_pattern "${microvm_cdk}" 'logs:CreateLogStream' 'MicroVM execution role can create runtime log streams'
+require_pattern "${microvm_cdk}" 'logs:PutLogEvents' 'MicroVM execution role can emit runtime log events'
+require_pattern "${microvm_cdk}" '/aws/lambda/microvms/' 'runtime logs use the AWS-documented default MicroVM group'
+reject_pattern "${microvm_cdk}" 'logStream:[[:space:]]*"build"' 'runtime logging is not pinned to a build-only stream'
+require_pattern "${microvm_cdk_tests}" 'APPTHEORY_MICROVM_EXECUTION_ROLE_ARN' 'synth tests prove AppTheory execution-role propagation'
+require_pattern "${workload_hook_tests}" 'turn execution started' 'runtime start logging is tested'
+require_pattern "${workload_hook_tests}" 'provider_sdk_event' 'runtime SDK-event logging is tested'
+require_pattern "${workload_hook_tests}" 'provider_call_heartbeat' 'runtime heartbeat logging is tested'
+require_pattern "${workload_hook_tests}" 'persist_completed' 'runtime persistence-boundary logging is tested'
+require_pattern "${workload_hook_tests}" 'turn execution completed' 'runtime completion logging is tested'
+require_pattern "${workload_hooks}" 'turn execution failed' 'runtime failure logging remains wired'
+require_pattern "${workload_tests}" 'failure_persist_completed' 'runtime typed-failure persistence logging is tested'
+reject_pattern "${workload_hooks}" 'body_preview|readBodyPreview' 'unmatched routes never log request bodies'
 
 # The durable failure mutation must remain one guarded TableTheory transaction:
 # the stale in_progress writer wins only at the exact session version and turn,
@@ -153,12 +228,14 @@ require_pattern "${llm_tests}" 'TestProviderStreamTelemetryOpenAIAndAnthropicIsP
 require_pattern "${llm_tests}" 'TestDeclarationExtractionTelemetryHasPhaseBoundariesAndNoRawPayload' 'declaration telemetry has deterministic redaction coverage'
 require_pattern "${llm_tests}" 'assertProviderRequestPayloadMetadata' 'declaration request size/hash metadata is deterministic'
 require_pattern "${workload_tests}" 'TestHungProviderHeartbeatsThenPersistsTypedFailureBeforeMicroVMEnvelope' 'hung provider calls heartbeat then durably fail'
+require_pattern "${workload_tests}" 'TestDefaultProviderHeartbeatIntervalIsTenSeconds' 'ten-second production heartbeat has regression coverage'
 require_pattern "${workload_tests}" 'assistant_stream timeout' 'durable provider failure test requires a content-free typed message'
 require_pattern "${workload_tests}" 'TestDeclarationParseFailureTelemetryIsCorrelatedRedactedAndDurable' 'declaration failure telemetry stays correlated and durable'
 require_pattern "${observer_tests}" 'TestWaitOnlyReadObservesTerminalMicroVMAndConvergesGuardedHostTruth' 'terminal MicroVM lifecycle has guarded convergence coverage'
 require_pattern "${observer_tests}" 'terminated|StateTerminated' 'terminal-state coverage includes terminated'
 require_pattern "${observer_tests}" 'failed|StateFailed' 'terminal-state coverage includes failed'
+require_pattern "${observer_tests}" 'suspended|StateSuspended' 'non-runnable-state coverage includes suspended'
 require_pattern "${observer_tests}" 'max-duration|expired' 'terminal-state coverage includes max-duration expiry'
 require_pattern "${store_tests}" 'TestStore_FailHostedGenesisSessionAndConversationUsesOneGuardedTransaction' 'TableTheory exact-guard transaction has focused coverage'
 
-echo "PASS: Hosted-genesis provider telemetry is content-free and terminal provider/MicroVM states converge through AppTheory + TableTheory without client nudges"
+echo "PASS: Hosted-genesis provider work stays runnable and content-free telemetry plus suspended/terminal convergence use AppTheory + TableTheory without client nudges"
