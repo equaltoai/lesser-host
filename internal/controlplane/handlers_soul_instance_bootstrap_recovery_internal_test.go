@@ -901,6 +901,7 @@ func setHostedGenesisRecoveryCandidate(t *testing.T, session *models.HostedGenes
 	t.Helper()
 	if session == nil {
 		t.Fatal("recovery candidate fixture requires a session")
+		return
 	}
 	candidate, err := hostedgenesis.NewDeclarationCandidate(hostedgenesis.DeclarationCandidateBinding{
 		InstanceSlug:   session.InstanceSlug,
