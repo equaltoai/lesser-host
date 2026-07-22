@@ -309,6 +309,7 @@ func TestControllerLifetimePolicyEnvParsesAppTheoryRunPolicy(t *testing.T) {
 	policy := microVMIdlePolicyFromEnv(getenv)
 	if policy == nil {
 		t.Fatalf("expected idle policy")
+		return
 	}
 	if !policy.AutoResumeEnabled || policy.MaxIdleDurationSeconds != 240 || policy.SuspendedDurationSeconds != 1200 {
 		t.Fatalf("unexpected idle policy: %#v", policy)
