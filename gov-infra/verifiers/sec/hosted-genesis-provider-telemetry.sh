@@ -6,8 +6,9 @@
 # state and content-free provider-attempt evidence through guarded TableTheory
 # writes, emit provider-call heartbeats while a call is idle, and durably fail
 # the accepted turn when the provider times out or AppTheory reports a
-# suspended/terminal/expired MicroVM. Structural review/affirmation and exact
-# provider-free finalization replace every whole-transcript extraction path.
+# suspended/terminal/expired MicroVM. Lossless exact-candidate review,
+# structural affirmation, and exact provider-free finalization replace every
+# whole-transcript extraction path and prevent owner-visible artifact misbinding.
 # Normal client reads remain wait-only: they may observe AppTheory's canonical
 # GET lifecycle but never dispatch, resume, or implement a Host-side controller.
 # TableTheory owns the exact status/version/turn guarded convergence write.
@@ -66,6 +67,7 @@ anthropic_helpers="internal/ai/llm/anthropic_helpers.go"
 llm_tests="internal/ai/llm/provider_telemetry_test.go"
 candidate="internal/hostedgenesis/candidate.go"
 candidate_tests="internal/hostedgenesis/candidate_test.go"
+candidate_review_tests="internal/hostedgenesis/candidate_review_test.go"
 observer="internal/controlplane/hosted_genesis_microvm_observer.go"
 observer_tests="internal/controlplane/hosted_genesis_microvm_observer_internal_test.go"
 read_handler="internal/controlplane/handlers_soul_mint_conversation_instance_read.go"
@@ -100,6 +102,7 @@ required_files=(
   "${llm_tests}"
   "${candidate}"
   "${candidate_tests}"
+  "${candidate_review_tests}"
   "${observer}"
   "${observer_tests}"
   "${read_handler}"
@@ -147,6 +150,9 @@ require_pattern "${candidate}" 'CandidateRevision[[:space:]]+int64' 'owner actio
 require_pattern "${candidate}" 'CandidateHash[[:space:]]+string' 'owner action binds the exact candidate hash'
 require_pattern "${candidate}" 'ReviewHash[[:space:]]+string' 'owner action binds the exact review hash'
 require_pattern "${candidate}" 'CanonicalJSON' 'candidate stores exact canonical publication bytes'
+require_pattern "${candidate}" 'RecoverDeclarationOwnerReviewCanonicalJSON[(]' 'owner review exposes a reversible exact canonical JSON block'
+require_pattern "${candidate}" 'reviewCanonicalJSON != c[.]CanonicalJSON' 'stored review must recover the exact candidate bytes'
+require_pattern "${candidate}" 'MaxDeclarationOwnerReviewRunes[[:space:]]*=[[:space:]]*65536' 'lossless owner review remains inside the documented API limit'
 require_pattern "${candidate}" 'ProviderAttempts' 'candidate stores bounded content-free provider attempts'
 require_pattern "${candidate}" 'ProviderAttempts.*excluded from CanonicalJSON|outside CanonicalJSON' 'provider telemetry cannot alter owner-reviewed semantic bytes'
 require_pattern "${candidate}" 'CandidateRevision \*int64[[:space:]]+`json:"candidateRevision,omitempty"`' 'phase tool payload carries the exact candidate revision'
@@ -275,6 +281,9 @@ require_pattern "${candidate_tests}" 'TestDeclarationCandidateMalformedSectionCa
 require_pattern "${candidate_tests}" 'TestDeclarationCandidateFiveToolsIdempotencyAndGuards' 'all five tools enforce idempotency and stale guards'
 require_pattern "${candidate_tests}" 'TestDeclarationCandidateToolPayloadBindingFailsClosed' 'missing, mismatched, and unknown phase payload bindings fail closed'
 require_pattern "${candidate_tests}" 'TestDeclarationCandidateReviewAffirmationAndDeterministicBytes' 'review, affirmation, and final bytes are structurally bound'
+require_pattern "${candidate_review_tests}" 'TestDeclarationCandidateOwnerReviewLosslesslyExposesExactCanonicalCandidate' 'owner review exposes every hash-covered semantic value and recovers exact canonical bytes'
+require_pattern "${candidate_review_tests}" 'TestDeclarationCandidatePreviouslyHiddenSemanticEditsInvalidateStructuralAffirmation' 'previously hidden semantic edits invalidate the old structural affirmation'
+require_pattern "${candidate_review_tests}" 'TestDeclarationCandidateOwnerReviewOverflowStaysInSectionRepairLoop' 'lossless review overflow stays inside the bounded section repair loop'
 require_pattern "${candidate_tests}" 'TestDeclarationCandidateProviderAttemptsAreBoundedDurableAndNonSemantic' 'provider attempts stay bounded and outside semantic bytes'
 require_pattern "${workload_tests}" 'TestHungProviderHeartbeatsThenPersistsTypedFailureBeforeMicroVMEnvelope' 'hung provider calls heartbeat then durably fail'
 require_pattern "${workload_tests}" 'TestDefaultProviderHeartbeatIntervalIsTenSeconds' 'ten-second production heartbeat has regression coverage'
@@ -292,4 +301,4 @@ require_pattern "${store_tests}" 'TestStore_FailHostedGenesisSessionAndConversat
 require_pattern "${store_tests}" 'TestStore_TypedCandidateCheckpointAndProjectionAreGuardedAtomically' 'candidate/session/projection checkpoint is one guarded transaction'
 require_pattern "${store_tests}" 'TestStore_TypedCandidateFinalizationPublishesExactBytesOnce' 'exact candidate finalization is atomic and repeatable'
 
-echo "PASS: Hosted-genesis phase tools, typed candidate integrity, content-free provider evidence, and terminal convergence use AppTheory + TableTheory without extractor or client nudges"
+echo "PASS: Hosted-genesis phase tools, lossless exact-candidate review, typed candidate integrity, content-free provider evidence, and terminal convergence use AppTheory + TableTheory without extractor or client nudges"
