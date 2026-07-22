@@ -1,11 +1,137 @@
 package llm
 
 import (
+	"context"
 	"encoding/json"
+	"io"
+	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
 )
+
+func TestMintConversationPhaseProviderLoopsRepairCurrentSectionAndReachText(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		modelSet  string
+		provider  string
+		responses [][]byte
+	}{
+		{name: "openai", modelSet: "openai:gpt-test", provider: "openai", responses: openAIMintConversationPhaseResponses(t)},
+		{name: "anthropic", modelSet: "anthropic:claude-test", provider: "anthropic", responses: anthropicMintConversationPhaseResponses(t)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			assertMintConversationPhaseProviderRepair(t, test.modelSet, test.provider, test.responses)
+		})
+	}
+}
+
+func assertMintConversationPhaseProviderRepair(t *testing.T, modelSet string, provider string, responses [][]byte) {
+	t.Helper()
+	requestCount := installMintConversationPhaseProvider(t, provider, responses)
+	handlerCalls := 0
+	out, err := RunMintConversationPhase(context.Background(), "provider-test-key", MintConversationPhaseInput{
+		ModelSet: modelSet, SystemPrompt: "Construct the current section.",
+		Messages: []MintConversationMessage{{Role: "user", Content: "I am tenant bound."}},
+		Section:  hostedgenesis.DeclarationSectionIdentity, CandidateRevision: 0,
+		CandidateHash: "sha256:" + strings.Repeat("a", 64), SourceTurnID: "turn-1",
+	}, func(_ context.Context, call MintConversationPhaseToolCall) (hostedgenesis.DeclarationToolResult, error) {
+		handlerCalls++
+		if call.Name != hostedgenesis.DeclarationToolIdentityPut || call.CallID == "" || len(call.Arguments) == 0 {
+			t.Fatalf("provider emitted an unbound tool call: %#v", call)
+		}
+		if handlerCalls == 1 {
+			return hostedgenesis.DeclarationToolResult{Section: hostedgenesis.DeclarationSectionIdentity, Errors: []hostedgenesis.DeclarationValidationIssue{{
+				Section: hostedgenesis.DeclarationSectionIdentity, Path: "fiveBodies.identity.summary", Code: hostedgenesis.DeclarationCodeFiveBodyIdentity,
+			}}}, nil
+		}
+		return hostedgenesis.DeclarationToolResult{Accepted: true, Section: hostedgenesis.DeclarationSectionIdentity, Revision: 1, CandidateHash: "sha256:" + strings.Repeat("b", 64)}, nil
+	}, nil)
+	if err != nil || out.AssistantContent != "Identity accepted; continue to philosophy." {
+		t.Fatalf("phase loop did not repair and continue: out=%#v err=%v", out, err)
+	}
+	if handlerCalls != 2 || *requestCount != 3 {
+		t.Fatalf("phase loop counts diverged: handler=%d requests=%d", handlerCalls, *requestCount)
+	}
+	if out.Usage.Provider != provider || out.Usage.TotalTokens == 0 {
+		t.Fatalf("phase usage missing provider identity: %#v", out.Usage)
+	}
+}
+
+func installMintConversationPhaseProvider(t *testing.T, provider string, responses [][]byte) *int {
+	t.Helper()
+	requestCount := 0
+	client := &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+		_, _ = io.Copy(io.Discard, request.Body)
+		index := requestCount
+		requestCount++
+		if index >= len(responses) {
+			t.Fatalf("unexpected extra %s request %d", provider, requestCount)
+		}
+		return providerTelemetryHTTPResponse(request, "application/json", responses[index]), nil
+	})}
+	switch provider {
+	case "openai":
+		t.Setenv("OPENAI_BASE_URL", "https://openai.example.test")
+		openAIHTTPClient = client
+		t.Cleanup(func() { openAIHTTPClient = nil })
+	case "anthropic":
+		t.Setenv("ANTHROPIC_BASE_URL", "https://anthropic.example.test")
+		anthropicHTTPClient = client
+		t.Cleanup(func() { anthropicHTTPClient = nil })
+	default:
+		t.Fatalf("unsupported test provider %q", provider)
+	}
+	return &requestCount
+}
+
+func openAIMintConversationPhaseResponses(t *testing.T) [][]byte {
+	t.Helper()
+	return [][]byte{
+		mustJSONBytes(t, openAIMintConversationPhaseToolResponse("openai-call-reject", 2, 1)),
+		mustJSONBytes(t, openAIMintConversationPhaseToolResponse("openai-call-accept", 3, 2)),
+		mustJSONBytes(t, map[string]any{
+			"id": "chatcmpl-text", "object": "chat.completion", "created": 1, "model": "gpt-test",
+			"choices": []any{map[string]any{"index": 0, "finish_reason": "stop", "message": map[string]any{"role": "assistant", "content": "Identity accepted; continue to philosophy."}}},
+			"usage":   map[string]any{"prompt_tokens": 4, "completion_tokens": 3, "total_tokens": 7},
+		}),
+	}
+}
+
+func openAIMintConversationPhaseToolResponse(callID string, inputTokens int, outputTokens int) map[string]any {
+	arguments := `{"candidateRevision":0,"candidateHash":"sha256:` + strings.Repeat("a", 64) + `","section":{"summary":"I am tenant bound.","notes":[]}}`
+	return map[string]any{
+		"id": "chatcmpl-" + callID, "object": "chat.completion", "created": 1, "model": "gpt-test",
+		"choices": []any{map[string]any{"index": 0, "finish_reason": "tool_calls", "message": map[string]any{
+			"role": "assistant", "content": "", "tool_calls": []any{map[string]any{"id": callID, "type": "function", "function": map[string]any{"name": hostedgenesis.DeclarationToolIdentityPut, "arguments": arguments}}},
+		}}},
+		"usage": map[string]any{"prompt_tokens": inputTokens, "completion_tokens": outputTokens, "total_tokens": inputTokens + outputTokens},
+	}
+}
+
+func anthropicMintConversationPhaseResponses(t *testing.T) [][]byte {
+	t.Helper()
+	return [][]byte{
+		mustJSONBytes(t, anthropicMintConversationPhaseToolResponse("anthropic-call-reject", 2, 1)),
+		mustJSONBytes(t, anthropicMintConversationPhaseToolResponse("anthropic-call-accept", 3, 2)),
+		mustJSONBytes(t, map[string]any{
+			"id": "msg-text", "type": "message", "role": "assistant", "model": "claude-test", "stop_reason": "end_turn", "stop_sequence": nil,
+			"content": []any{map[string]any{"type": "text", "text": "Identity accepted; continue to philosophy."}},
+			"usage":   map[string]any{"input_tokens": 4, "output_tokens": 3},
+		}),
+	}
+}
+
+func anthropicMintConversationPhaseToolResponse(callID string, inputTokens int, outputTokens int) map[string]any {
+	return map[string]any{
+		"id": "msg-" + callID, "type": "message", "role": "assistant", "model": "claude-test", "stop_reason": "tool_use", "stop_sequence": nil,
+		"content": []any{map[string]any{"type": "tool_use", "id": callID, "name": hostedgenesis.DeclarationToolIdentityPut, "input": map[string]any{
+			"candidateRevision": 0, "candidateHash": "sha256:" + strings.Repeat("a", 64), "section": map[string]any{"summary": "I am tenant bound.", "notes": []any{}},
+		}}},
+		"usage": map[string]any{"input_tokens": inputTokens, "output_tokens": outputTokens},
+	}
+}
 
 func TestMintConversationPhaseToolsOpenAIAnthropicParity(t *testing.T) {
 	for _, section := range []hostedgenesis.DeclarationSection{
