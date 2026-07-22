@@ -7,7 +7,7 @@
   "projectSlug": "lesser-host",
   "generatedAt": "2026-07-22T21:35:35Z",
   "source": {
-    "commitSha": "2810c23901cc8b3bb33c749a316a1528a86cabbc",
+    "commitSha": "c2401afca39a07762f56939a9bdc382c6a8d4b77",
     "branch": "theorymcp/equaltoai/host/issue-977-typed-five-body"
   },
   "artifacts": {
