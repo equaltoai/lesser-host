@@ -258,7 +258,7 @@ func (w *CompletionWriter) RecordFailure(ctx context.Context, turn CompletionTur
 		return nil, fmt.Errorf("%w: %v", ErrCompletionSessionMissing, err)
 	}
 	expectedStatus := hostedgenesis.NormalizeStatus(session.Status)
-	if expectedStatus == hostedgenesis.StatusFailed || expectedStatus == hostedgenesis.StatusDeclarationReady {
+	if completionFailureStatusTerminal(expectedStatus) {
 		return nil, fmt.Errorf("%w: session is already terminal (%q)", ErrCompletionConflict, session.Status)
 	}
 	if err := assertTurnMatch(session, turn, expectedStatus); err != nil {
@@ -296,6 +296,15 @@ func (w *CompletionWriter) RecordFailure(ctx context.Context, turn CompletionTur
 		return nil, fmt.Errorf("%w: %v", ErrCompletionConflict, err)
 	}
 	return progressed, nil
+}
+
+func completionFailureStatusTerminal(status hostedgenesis.Status) bool {
+	switch status {
+	case hostedgenesis.StatusFailed, hostedgenesis.StatusDeclarationReady, hostedgenesis.StatusPublished:
+		return true
+	default:
+		return false
+	}
 }
 
 func applyPriorRecoveryBudget(next hostedgenesis.Failure, prior *hostedgenesis.Failure) hostedgenesis.Failure {

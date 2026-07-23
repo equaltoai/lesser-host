@@ -108,6 +108,43 @@ func (s *Store) FailHostedGenesisSessionAndConversation(ctx context.Context, ses
 	})
 }
 
+// PublishHostedGenesisSessionAndConversation atomically records terminal
+// publication truth in HostedGenesisSession and its compatibility conversation
+// row. Both writes are guarded by the same declaration_ready expectation, and
+// the authoritative session additionally uses TableTheory's version guard.
+func (s *Store) PublishHostedGenesisSessionAndConversation(ctx context.Context, session *models.HostedGenesisSession, expectedVersion int64, expectedStatus hostedgenesis.Status, conversation *models.SoulAgentMintConversation) error {
+	if s == nil || s.DB == nil || session == nil || conversation == nil {
+		return theoryErrors.ErrItemNotFound
+	}
+	if hostedgenesis.NormalizeStatus(session.Status) != hostedgenesis.StatusPublished ||
+		strings.TrimSpace(conversation.Status) != models.SoulMintConversationStatusPublished {
+		return fmt.Errorf("hosted genesis publication transaction requires published session and conversation states")
+	}
+	if !strings.EqualFold(strings.TrimSpace(session.AgentID), strings.TrimSpace(conversation.AgentID)) ||
+		strings.TrimSpace(session.ConversationID) != strings.TrimSpace(conversation.ConversationID) {
+		return fmt.Errorf("hosted genesis publication transaction requires matching session and conversation identity")
+	}
+	expectedStatus, err := validateHostedGenesisSessionUpdate(session, expectedVersion, expectedStatus)
+	if err != nil {
+		return err
+	}
+	if err := conversation.BeforeUpdate(); err != nil {
+		return err
+	}
+	return s.DB.TransactWrite(ctx, func(tx core.TransactionBuilder) error {
+		addHostedGenesisSessionUpdate(tx, session, expectedVersion, expectedStatus)
+		tx.UpdateWithBuilder(conversation, func(ub core.UpdateBuilder) error {
+			ub.Set("Status", conversation.Status)
+			ub.Set("StatusReason", conversation.StatusReason)
+			ub.Set("RequestID", conversation.RequestID)
+			ub.Set("UpdatedAt", conversation.UpdatedAt)
+			ub.Set("CompletedAt", conversation.CompletedAt)
+			return nil
+		}, tabletheory.IfExists(), tabletheory.Condition("Status", "=", string(expectedStatus)))
+		return nil
+	})
+}
+
 func validateHostedGenesisSessionUpdate(item *models.HostedGenesisSession, expectedVersion int64, expectedStatus hostedgenesis.Status) (hostedgenesis.Status, error) {
 	if expectedVersion < 0 {
 		return "", fmt.Errorf("expected version must be non-negative")
@@ -138,6 +175,7 @@ func addHostedGenesisSessionUpdate(tx core.TransactionBuilder, item *models.Host
 		ub.Set("MicroVMExecutionID", item.MicroVMExecutionID)
 		ub.Set("MicroVMLifecycleRef", item.MicroVMLifecycleRef)
 		ub.Set("DeclarationCheckpoint", item.DeclarationCheckpoint)
+		ub.Set("Publication", item.Publication)
 		ub.Set("Failure", item.Failure)
 		ub.Set("TraceIDs", item.TraceIDs)
 		ub.Set("VMCheckpoint", item.VMCheckpoint)
