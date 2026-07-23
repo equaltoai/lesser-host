@@ -246,6 +246,73 @@ func TestDeclarationCandidateProviderAttemptsAreBoundedDurableAndNonSemantic(t *
 	}
 }
 
+func TestDeclarationCandidateProviderContinuationRequiresAcceptedToolCheckpoint(t *testing.T) {
+	candidate := testDeclarationCandidate(t)
+	anchorRevision, anchorHash := candidate.Revision, candidate.CandidateHash
+	attemptUpdate := DeclarationProviderAttemptUpdate{
+		Provider: "openai", Model: "gpt-5", Phase: "declaration_phase", Section: DeclarationSectionIdentity,
+		SourceTurnID: candidate.SourceTurnID, CandidateRevision: anchorRevision, CandidateHash: anchorHash,
+		SDKAttemptOrdinal: 1, SDKRetryBudget: 2, HTTPStatus: 200, ProviderRequestID: "req_provider_1",
+	}
+	withAttempt, err := ApplyDeclarationProviderAttempt(candidate, attemptUpdate, time.Unix(200, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	applied := applyCandidatePayload(t, withAttempt, DeclarationToolIdentityPut, "provider-call-1",
+		declarationSectionPayload{Section: testFiveBody().Identity}, time.Unix(201, 0))
+	if !applied.result.Accepted {
+		t.Fatalf("identity checkpoint was rejected: %#v", applied.result)
+	}
+	progressed := applied.next
+	accepted, err := ApplyDeclarationProviderAttempt(progressed, DeclarationProviderAttemptUpdate{
+		Provider: "openai", Model: "gpt-5", Phase: "declaration_phase", Section: DeclarationSectionIdentity,
+		SourceTurnID: candidate.SourceTurnID, CandidateRevision: anchorRevision, CandidateHash: anchorHash,
+		ToolName: DeclarationToolIdentityPut, ToolCallHash: hashText("provider-call-1"), Accepted: true,
+	}, time.Unix(202, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	continuation := attemptUpdate
+	continuation.SDKAttemptOrdinal = 2
+	continuation.ProviderRequestID = "req_provider_2"
+	continued, err := ApplyDeclarationProviderAttempt(accepted, continuation, time.Unix(203, 0))
+	if err != nil {
+		t.Fatalf("accepted post-tool provider continuation was rejected: %v", err)
+	}
+	if len(continued.ProviderAttempts) != 2 || continued.ProviderAttempts[1].SDKAttemptOrdinal != 2 ||
+		continued.Revision != 1 || continued.CurrentSection != DeclarationSectionPhilosophy {
+		t.Fatalf("post-tool provider continuation evidence diverged: %#v", continued)
+	}
+
+	continuation.SDKAttemptOrdinal = 3
+	if _, err := ApplyDeclarationProviderAttempt(continued, continuation, time.Unix(204, 0)); err != nil {
+		t.Fatalf("bounded SDK retry for the same continuation was rejected: %v", err)
+	}
+	continuation.SDKAttemptOrdinal = 2
+	if _, err := ApplyDeclarationProviderAttempt(continued, continuation, time.Unix(205, 0)); err == nil {
+		t.Fatal("stale continuation attempt ordinal did not fail closed")
+	}
+
+	if _, err := ApplyDeclarationProviderAttempt(progressed, continuation, time.Unix(206, 0)); err == nil {
+		t.Fatal("continuation without accepted tool evidence did not fail closed")
+	}
+	wrongCall := accepted.Clone()
+	wrongCall.ProviderAttempts[0].ToolCallHash = hashText("different-provider-call")
+	if _, err := ApplyDeclarationProviderAttempt(wrongCall, continuation, time.Unix(207, 0)); err == nil {
+		t.Fatal("continuation with mismatched tool checkpoint evidence did not fail closed")
+	}
+	wrongProvider := accepted.Clone()
+	wrongProvider.ProviderAttempts[0].Provider = "anthropic"
+	if _, err := ApplyDeclarationProviderAttempt(wrongProvider, continuation, time.Unix(208, 0)); err == nil {
+		t.Fatal("continuation with mismatched provider evidence did not fail closed")
+	}
+	jumpedRevision := accepted.Clone()
+	jumpedRevision.Revision++
+	if _, err := ApplyDeclarationProviderAttempt(jumpedRevision, continuation, time.Unix(209, 0)); err == nil {
+		t.Fatal("continuation across more than one semantic revision did not fail closed")
+	}
+}
+
 type candidateApply struct {
 	next   *DeclarationCandidate
 	result DeclarationToolResult
