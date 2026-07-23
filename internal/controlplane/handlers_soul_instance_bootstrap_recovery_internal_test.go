@@ -7,10 +7,12 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/mock"
+	apptheory "github.com/theory-cloud/apptheory/runtime"
 	runtimemicrovm "github.com/theory-cloud/apptheory/runtime/microvm"
 	ttmocks "github.com/theory-cloud/tabletheory/v2/pkg/mocks"
 
@@ -218,8 +220,8 @@ func TestSoulInstanceRecoverMintConversation_RetriesFailedAssistantTurn(t *testi
 	if resp.Status != http.StatusAccepted {
 		t.Fatalf("expected 202 assistant retry response, got %#v", resp)
 	}
-	if dispatcher.calls != 1 || dispatcher.reconcileCalls != 0 {
-		t.Fatalf("expected one assistant redispatch and no reconcile, got run=%d reconcile=%d", dispatcher.calls, dispatcher.reconcileCalls)
+	if dispatcher.calls != 0 || dispatcher.startCalls != 1 || dispatcher.waitAndInvokeCalls != 1 || dispatcher.reconcileCalls != 0 {
+		t.Fatalf("expected split assistant redispatch and no reconcile, got legacy_run=%d start=%d wait_invoke=%d reconcile=%d", dispatcher.calls, dispatcher.startCalls, dispatcher.waitAndInvokeCalls, dispatcher.reconcileCalls)
 	}
 	if dispatcher.lastBinding.ConversationID != mintConversationTestConversationID || dispatcher.lastBinding.TurnID != "turn-assistant" {
 		t.Fatalf("expected assistant retry dispatch bound to latest failed turn, got %#v", dispatcher.lastBinding)
@@ -236,6 +238,264 @@ func TestSoulInstanceRecoverMintConversation_RetriesFailedAssistantTurn(t *testi
 	}
 	assertHostedGenesisResponseNoForbiddenValues(t, resp.Body, hostedGenesisStatusForbiddenValues())
 	tdb.qBudget.AssertNumberOfCalls(t, "First", 0)
+}
+
+func TestSoulInstanceRecoverMintConversation_PersistsLifecycleBeforeDelayedProviderAttempt(t *testing.T) {
+	tdb := newMintConversationTestDB()
+	s := newMintConversationServer(tdb)
+	reg := mintConversationHandleReg()
+	now := time.Date(2026, 7, 23, 19, 40, 0, 0, time.UTC)
+	session := completeBoundariesRecoverySession(t, reg, now)
+	dispatcher := newDelayedProviderAttemptRecoveryDispatcher(t, &session)
+	s.hostedGenesisMicroVMDispatcher = dispatcher
+
+	expectDelayedProviderAttemptRecoveryReads(t, tdb, reg, session, now)
+	expectDelayedProviderAttemptRecoveryWrites(t, tdb, dispatcher, session.Version)
+	resp, recoverErr := s.handleSoulInstanceRecoverMintConversation(newSoulInstanceBootstrapContext(
+		map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey}, nil,
+		map[string]string{"id": reg.ID, "conversationId": mintConversationTestConversationID},
+	))
+	assertDelayedProviderAttemptRecovery(t, resp, recoverErr, dispatcher)
+}
+
+func completeBoundariesRecoverySession(t *testing.T, reg models.SoulAgentRegistration, now time.Time) models.HostedGenesisSession {
+	t.Helper()
+	session := failedAssistantTurnRecoveryHostedGenesisSessionFixture(t, reg, now)
+	session.Version = 41
+	reviewed := controlplaneCompleteReviewCandidate(t, hostedgenesis.DeclarationCandidateBinding{
+		InstanceSlug: session.InstanceSlug, RegistrationID: session.RegistrationID, AgentID: session.AgentID,
+		ConversationID: session.ConversationID, SourceTurnID: session.LatestTurnID, Model: session.Model,
+	}, now.Add(-time.Minute))
+	edited, err := hostedgenesis.ApplyDeclarationCandidateAction(reviewed, hostedgenesis.DeclarationCandidateAction{
+		Action: "edit", Section: hostedgenesis.DeclarationSectionBoundaries,
+		CandidateRevision: reviewed.Revision, CandidateHash: reviewed.CandidateHash, ReviewHash: reviewed.Review.ReviewHash,
+	}, session.LatestTurnID, now)
+	if err != nil {
+		t.Fatalf("reopen complete candidate boundaries: %v", err)
+	}
+	if edited.Revision != 6 || edited.CurrentSection != hostedgenesis.DeclarationSectionBoundaries ||
+		edited.Phase != hostedgenesis.DeclarationCandidatePhaseSection || len(edited.CompletedSections) != 5 {
+		t.Fatalf("recovery fixture did not reopen boundaries from the complete five-section candidate: %#v", edited)
+	}
+	session.DeclarationCandidate = edited
+	session.CandidateRevision, session.CandidateHash, session.CandidatePhase = edited.Revision, edited.CandidateHash, string(edited.Phase)
+	if err := session.BeforeCreate(); err != nil {
+		t.Fatalf("validate recovery session: %v", err)
+	}
+	return session
+}
+
+func expectDelayedProviderAttemptRecoveryReads(t *testing.T, tdb *mintConversationTestDB, reg models.SoulAgentRegistration, session models.HostedGenesisSession, now time.Time) {
+	t.Helper()
+	expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, soulInstanceBootstrapTestInstanceSlug)
+	stubMintConversationRegistration(t, tdb, reg)
+	stubSoulInstanceBootstrapDomainAndInstance(t, tdb, reg.DomainNormalized, soulInstanceBootstrapTestInstanceSlug)
+	stubSoulInstanceRecoveryConversation(t, tdb, models.SoulAgentMintConversation{
+		AgentID: reg.AgentID, ConversationID: mintConversationTestConversationID,
+		Model: session.Model, Messages: encodeMintConversationBlob(`[{"role":"user","content":"Revise boundaries."}]`),
+		Status: models.SoulMintConversationStatusFailed, StatusReason: hostedGenesisFailureAssistantTurnFailed,
+		LatestTurnID: session.LatestTurnID, ChargedCredits: soulMintConversationStreamBaseCredits,
+		RequestID: "req-failed", CreatedAt: now.Add(-5 * time.Minute), UpdatedAt: now, CompletedAt: now,
+	})
+	stubSoulInstanceRecoverySession(t, tdb, session)
+}
+
+func assertDelayedProviderAttemptRecovery(t *testing.T, resp *apptheory.Response, recoverErr error, dispatcher *delayedProviderAttemptRecoveryDispatcher) {
+	t.Helper()
+	if recoverErr != nil || resp.Status != http.StatusAccepted {
+		t.Fatalf("unexpected delayed provider-attempt recovery response=%#v err=%v", resp, recoverErr)
+	}
+	requireDelayedProviderAttemptCheckpoint(t, dispatcher)
+	assertDelayedProviderAttemptDurable(t, dispatcher)
+}
+
+func requireDelayedProviderAttemptCheckpoint(t *testing.T, dispatcher *delayedProviderAttemptRecoveryDispatcher) {
+	t.Helper()
+	select {
+	case checkpointErr := <-dispatcher.callbackDone:
+		if checkpointErr != nil {
+			t.Fatalf("current SDK attempt checkpoint did not persist: %v", checkpointErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for delayed provider-attempt checkpoint")
+	}
+}
+
+func assertDelayedProviderAttemptDurable(t *testing.T, dispatcher *delayedProviderAttemptRecoveryDispatcher) {
+	t.Helper()
+	durable := dispatcher.readSession()
+	if dispatcher.monolithicCalls != 0 || dispatcher.startCalls != 1 || dispatcher.waitAndInvokeCalls != 1 {
+		t.Fatalf("recovery did not use split start/persist/wait-and-invoke orchestration: %#v", dispatcher)
+	}
+	if dispatcher.providerAttemptCheckpointConflict || dispatcher.assistantTurnFailed {
+		t.Fatalf("delayed provider attempt hit the stale-version assistant_turn_failed path: %#v", dispatcher)
+	}
+	if durable == nil || durable.MicroVMLifecycleRef == nil ||
+		hostedgenesis.NormalizeStatus(durable.Status) != hostedgenesis.StatusInProgress ||
+		durable.DeclarationCandidate == nil || len(durable.DeclarationCandidate.ProviderAttempts) != 1 ||
+		durable.DeclarationCandidate.ProviderAttempts[0].SDKAttemptOrdinal != 1 {
+		t.Fatalf("current provider attempt/lifecycle state was not durable: %#v", durable)
+	}
+}
+
+type delayedProviderAttemptRecoveryDispatcher struct {
+	*stubMicroVMDispatcher
+
+	mu                                sync.Mutex
+	durable                           *models.HostedGenesisSession
+	lifecyclePersisted                chan struct{}
+	lifecyclePersistedOnce            sync.Once
+	callbackDone                      chan error
+	monolithicCalls                   int
+	startCalls                        int
+	waitAndInvokeCalls                int
+	providerAttemptCheckpointConflict bool
+	assistantTurnFailed               bool
+}
+
+func newDelayedProviderAttemptRecoveryDispatcher(t *testing.T, session *models.HostedGenesisSession) *delayedProviderAttemptRecoveryDispatcher {
+	t.Helper()
+	return &delayedProviderAttemptRecoveryDispatcher{
+		stubMicroVMDispatcher: &stubMicroVMDispatcher{t: t},
+		durable:               cloneHostedGenesisSession(session),
+		lifecyclePersisted:    make(chan struct{}),
+		callbackDone:          make(chan error, 1),
+	}
+}
+
+func (d *delayedProviderAttemptRecoveryDispatcher) readSession() *models.HostedGenesisSession {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return cloneHostedGenesisSession(d.durable)
+}
+
+func (d *delayedProviderAttemptRecoveryDispatcher) persistSession(session *models.HostedGenesisSession, version int64) {
+	d.mu.Lock()
+	persisted := cloneHostedGenesisSession(session)
+	persisted.Version = version
+	d.durable = persisted
+	hasLifecycle := persisted.MicroVMLifecycleRef != nil
+	d.mu.Unlock()
+	if hasLifecycle {
+		d.lifecyclePersistedOnce.Do(func() { close(d.lifecyclePersisted) })
+	}
+}
+
+func (d *delayedProviderAttemptRecoveryDispatcher) StartMicroVMRun(_ context.Context, requestID string, binding hostedgenesis.MicroVMSessionBinding) (hostedgenesis.MicroVMDispatchResult, error) {
+	d.startCalls++
+	if d.dispatchErr != nil {
+		return hostedgenesis.MicroVMDispatchResult{}, d.dispatchErr
+	}
+	return delayedProviderAttemptDispatchResult(d.t, requestID, binding)
+}
+
+func (d *delayedProviderAttemptRecoveryDispatcher) WaitAndInvokeMicroVMTurn(_ context.Context, requestID string, binding hostedgenesis.MicroVMSessionBinding) (hostedgenesis.MicroVMDispatchResult, error) {
+	d.waitAndInvokeCalls++
+	if d.invokeErr != nil {
+		return hostedgenesis.MicroVMDispatchResult{}, d.invokeErr
+	}
+	preflight := d.readSession()
+	if preflight == nil || preflight.MicroVMLifecycleRef == nil {
+		return hostedgenesis.MicroVMDispatchResult{}, errors.New("workload invoked before lifecycle persistence")
+	}
+	d.startDelayedProviderAttempt(preflight)
+	return delayedProviderAttemptDispatchResult(d.t, requestID, binding)
+}
+
+func (d *delayedProviderAttemptRecoveryDispatcher) DispatchMicroVMRun(_ context.Context, requestID string, binding hostedgenesis.MicroVMSessionBinding) (hostedgenesis.MicroVMDispatchResult, error) {
+	d.monolithicCalls++
+	if d.dispatchErr != nil {
+		return hostedgenesis.MicroVMDispatchResult{}, d.dispatchErr
+	}
+	preflight := d.readSession()
+	d.startDelayedProviderAttempt(preflight)
+	return delayedProviderAttemptDispatchResult(d.t, requestID, binding)
+}
+
+func (d *delayedProviderAttemptRecoveryDispatcher) startDelayedProviderAttempt(preflight *models.HostedGenesisSession) {
+	go func() {
+		select {
+		case <-d.lifecyclePersisted:
+		case <-time.After(time.Second):
+			d.callbackDone <- errors.New("lifecycle persistence was not observed")
+			return
+		}
+		d.callbackDone <- d.checkpointProviderAttempt(preflight)
+	}()
+}
+
+func (d *delayedProviderAttemptRecoveryDispatcher) checkpointProviderAttempt(preflight *models.HostedGenesisSession) error {
+	if preflight == nil || preflight.DeclarationCandidate == nil {
+		return errors.New("provider attempt preflight is unavailable")
+	}
+	candidate := preflight.DeclarationCandidate
+	next, err := hostedgenesis.ApplyDeclarationProviderAttempt(candidate, hostedgenesis.DeclarationProviderAttemptUpdate{
+		Provider: "anthropic", Model: "claude-sonnet-4-6", Phase: "declaration_phase",
+		Section: candidate.CurrentSection, SourceTurnID: preflight.LatestTurnID,
+		CandidateRevision: candidate.Revision, CandidateHash: candidate.CandidateHash,
+		SDKAttemptOrdinal: 1, SDKRetryBudget: 2, HTTPStatus: http.StatusOK,
+		ProviderRequestID: "provider-request-redacted", DurationMS: 13,
+	}, time.Date(2026, 7, 23, 19, 40, 13, 0, time.UTC))
+	if err != nil {
+		return err
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.durable == nil || d.durable.Version != preflight.Version {
+		d.providerAttemptCheckpointConflict = true
+		d.assistantTurnFailed = true
+		return fmt.Errorf("checkpoint provider attempt evidence: optimistic version conflict (expected %d, current %d)", preflight.Version, d.durable.Version)
+	}
+	progressed := cloneHostedGenesisSession(preflight)
+	progressed.DeclarationCandidate = next
+	progressed.CandidateRevision, progressed.CandidateHash, progressed.CandidatePhase = next.Revision, next.CandidateHash, string(next.Phase)
+	progressed.Version = preflight.Version + 1
+	d.durable = progressed
+	return nil
+}
+
+func delayedProviderAttemptDispatchResult(t *testing.T, requestID string, binding hostedgenesis.MicroVMSessionBinding) (hostedgenesis.MicroVMDispatchResult, error) {
+	t.Helper()
+	if strings.TrimSpace(requestID) == "" {
+		return hostedgenesis.MicroVMDispatchResult{}, errors.New("empty request id")
+	}
+	if err := binding.Validate(); err != nil {
+		return hostedgenesis.MicroVMDispatchResult{}, err
+	}
+	response := runtimemicrovm.ControllerResponse{
+		Command: runtimemicrovm.CommandRun, RequestID: requestID, TenantID: binding.TenantID(),
+		Namespace: hostedgenesis.MicroVMNamespace, SessionID: binding.ConversationID,
+		State: runtimemicrovm.StateRunning, DesiredState: runtimemicrovm.StateRunning,
+		LifecycleState: runtimemicrovm.StateRunning, MicroVMID: "mv-delayed-provider",
+		ProviderMicroVMID: "mv-delayed-provider", LastAction: runtimemicrovm.CommandRun,
+		LastTransition: time.Date(2026, 7, 23, 19, 40, 1, 0, time.UTC), RegistryVersion: 1,
+	}
+	ref, err := hostedgenesis.MicroVMLifecycleRefFromResponse(binding, response, response.LastTransition)
+	if err != nil {
+		return hostedgenesis.MicroVMDispatchResult{}, err
+	}
+	return hostedgenesis.MicroVMDispatchResult{LifecycleRef: ref, SessionID: response.SessionID}, nil
+}
+
+func expectDelayedProviderAttemptRecoveryWrites(t *testing.T, tdb *mintConversationTestDB, dispatcher *delayedProviderAttemptRecoveryDispatcher, initialVersion int64) {
+	t.Helper()
+	tb := new(ttmocks.MockTransactionBuilder)
+	tdb.db.TransactWriteBuilder = tb
+	tdb.db.On("TransactWrite", mock.Anything, mock.Anything).Return(nil).Once()
+	tb.On("UpdateWithBuilder", mock.AnythingOfType("*models.HostedGenesisSession"), mock.Anything, mock.Anything).Return(tb).Once().Run(func(args mock.Arguments) {
+		pending := testutil.RequireMockArg[*models.HostedGenesisSession](t, args, 0)
+		assertHostedGenesisAssistantRetryPendingSession(t, pending, "turn-assistant")
+		dispatcher.persistSession(pending, initialVersion+1)
+	})
+	tb.On("UpdateWithBuilder", mock.AnythingOfType("*models.SoulAgentMintConversation"), mock.Anything, mock.Anything).Return(tb).Once()
+	tb.On("Execute").Return(nil).Once()
+	tdb.db.On("TransactWrite", mock.Anything, mock.Anything).Return(nil).Once()
+	tb.On("UpdateWithBuilder", mock.AnythingOfType("*models.HostedGenesisSession"), mock.Anything, mock.Anything).Return(tb).Once().Run(func(args mock.Arguments) {
+		progressed := testutil.RequireMockArg[*models.HostedGenesisSession](t, args, 0)
+		assertHostedGenesisAssistantRetryLifecycleSession(t, progressed, "turn-assistant")
+		dispatcher.persistSession(progressed, initialVersion+2)
+	})
+	tb.On("Execute").Return(nil).Once()
 }
 
 func TestSoulInstanceRecoverMintConversation_AssistantProviderTimeoutUsesFreshRuntimeWithoutSecondDebit(t *testing.T) {
@@ -334,8 +594,8 @@ func TestSoulInstanceRecoverMintConversation_AssistantRetryPersistsPendingBefore
 	if resp.Status != http.StatusAccepted {
 		t.Fatalf("expected 202 assistant retry response, got %#v", resp)
 	}
-	if dispatcher.calls != 1 {
-		t.Fatalf("expected one assistant redispatch, got %d", dispatcher.calls)
+	if dispatcher.calls != 0 || dispatcher.startCalls != 1 || dispatcher.waitAndInvokeCalls != 1 {
+		t.Fatalf("expected one split assistant redispatch, got legacy_run=%d start=%d wait_invoke=%d", dispatcher.calls, dispatcher.startCalls, dispatcher.waitAndInvokeCalls)
 	}
 }
 
@@ -346,12 +606,24 @@ type stateReadingMicroVMDispatcher struct {
 	expectedRemainingAttempts int
 }
 
-func (d *stateReadingMicroVMDispatcher) DispatchMicroVMRun(ctx context.Context, requestID string, binding hostedgenesis.MicroVMSessionBinding) (hostedgenesis.MicroVMDispatchResult, error) {
+func (d *stateReadingMicroVMDispatcher) StartMicroVMRun(ctx context.Context, requestID string, binding hostedgenesis.MicroVMSessionBinding) (hostedgenesis.MicroVMDispatchResult, error) {
+	d.t.Helper()
+	d.assertDurableRetryState(false, binding)
+	return d.stubMicroVMDispatcher.StartMicroVMRun(ctx, requestID, binding)
+}
+
+func (d *stateReadingMicroVMDispatcher) WaitAndInvokeMicroVMTurn(ctx context.Context, requestID string, binding hostedgenesis.MicroVMSessionBinding) (hostedgenesis.MicroVMDispatchResult, error) {
+	d.t.Helper()
+	d.assertDurableRetryState(true, binding)
+	return d.stubMicroVMDispatcher.WaitAndInvokeMicroVMTurn(ctx, requestID, binding)
+}
+
+func (d *stateReadingMicroVMDispatcher) assertDurableRetryState(requireLifecycle bool, binding hostedgenesis.MicroVMSessionBinding) {
 	d.t.Helper()
 	session := d.readSession()
 	if session == nil {
 		d.t.Fatalf("workload test double could not read durable Host state")
-		return hostedgenesis.MicroVMDispatchResult{}, errors.New("workload test double could not read durable Host state")
+		return
 	}
 	expectedFailureCode := d.expectedFailureCode
 	if expectedFailureCode == "" {
@@ -371,7 +643,12 @@ func (d *stateReadingMicroVMDispatcher) DispatchMicroVMRun(ctx context.Context, 
 	if expectedFailureCode == hostedgenesis.FailureCodeMicroVMUnavailable && session.VMCheckpoint == nil {
 		d.t.Fatalf("microvm relaunch did not expose the validated VM checkpoint to the workload: %#v", session)
 	}
-	return d.stubMicroVMDispatcher.DispatchMicroVMRun(ctx, requestID, binding)
+	if requireLifecycle && session.MicroVMLifecycleRef == nil {
+		d.t.Fatalf("workload invocation observed retry state before lifecycle persistence: %#v", session)
+	}
+	if !requireLifecycle && session.MicroVMLifecycleRef != nil {
+		d.t.Fatalf("MicroVM start observed lifecycle state before the controller returned it: %#v", session)
+	}
 }
 
 func TestSoulInstanceRecoverMintConversation_FailedAssistantRetryDispatchErrorPersistsLoudFailure(t *testing.T) {
@@ -412,8 +689,8 @@ func TestSoulInstanceRecoverMintConversation_FailedAssistantRetryDispatchErrorPe
 	if appErr.Code != soulInstanceBootstrapCodeMicroVMUnavailable || appErr.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("expected loud microvm_unavailable dispatch failure, got %#v", appErr)
 	}
-	if dispatcher.calls != 1 {
-		t.Fatalf("expected dispatch attempt after durable retry transition, got %d", dispatcher.calls)
+	if dispatcher.calls != 0 || dispatcher.startCalls != 1 || dispatcher.waitAndInvokeCalls != 0 {
+		t.Fatalf("expected failed split start after durable retry transition, got legacy_run=%d start=%d wait_invoke=%d", dispatcher.calls, dispatcher.startCalls, dispatcher.waitAndInvokeCalls)
 	}
 	tdb.db.AssertNumberOfCalls(t, "TransactWrite", 2)
 }
@@ -457,8 +734,8 @@ func TestSoulInstanceRecoverMintConversation_SalvagesPendingAssistantRetryWithLi
 	if resp.Status != http.StatusAccepted {
 		t.Fatalf("expected 202 salvage redispatch response, got %#v", resp)
 	}
-	if dispatcher.calls != 1 || dispatcher.reconcileCalls != 0 {
-		t.Fatalf("expected live-bad shape to redispatch instead of reconciling pending forever, run=%d reconcile=%d", dispatcher.calls, dispatcher.reconcileCalls)
+	if dispatcher.calls != 0 || dispatcher.startCalls != 1 || dispatcher.waitAndInvokeCalls != 1 || dispatcher.reconcileCalls != 0 {
+		t.Fatalf("expected live-bad shape to use split redispatch instead of reconciling pending forever, legacy_run=%d start=%d wait_invoke=%d reconcile=%d", dispatcher.calls, dispatcher.startCalls, dispatcher.waitAndInvokeCalls, dispatcher.reconcileCalls)
 	}
 	var out hostedGenesisConversationResponse
 	if err := json.Unmarshal(resp.Body, &out); err != nil {
@@ -518,8 +795,8 @@ func TestSoulInstanceRecoverMintConversation_RelaunchesMicroVMUnavailableFromChe
 	if resp.Status != http.StatusAccepted {
 		t.Fatalf("expected 202 microvm relaunch response, got %#v", resp)
 	}
-	if dispatcher.calls != 1 || dispatcher.reconcileCalls != 0 {
-		t.Fatalf("expected one relaunch dispatch and no reconcile, got run=%d reconcile=%d", dispatcher.calls, dispatcher.reconcileCalls)
+	if dispatcher.calls != 0 || dispatcher.startCalls != 1 || dispatcher.waitAndInvokeCalls != 1 || dispatcher.reconcileCalls != 0 {
+		t.Fatalf("expected one split relaunch dispatch and no reconcile, got legacy_run=%d start=%d wait_invoke=%d reconcile=%d", dispatcher.calls, dispatcher.startCalls, dispatcher.waitAndInvokeCalls, dispatcher.reconcileCalls)
 	}
 	if dispatcher.lastBinding.ConversationID != mintConversationTestConversationID || dispatcher.lastBinding.TurnID != hostedGenesisMicroVMRecoveryTurnID {
 		t.Fatalf("expected relaunch dispatch bound to failed turn, got %#v", dispatcher.lastBinding)
