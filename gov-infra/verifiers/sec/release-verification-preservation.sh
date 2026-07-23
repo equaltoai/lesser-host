@@ -2,7 +2,8 @@
 # SEC-10: Release-verification change-lock.
 #
 # Verifies that the two-channel release verification code paths remain
-# unchanged from origin/main. Runs git diff to detect any semantic changes
+# unchanged from the pull request's validated target branch (origin/main/main
+# outside pull-request contexts). Runs git diff to detect any semantic changes
 # to the locked files:
 #
 #   - internal/provisionworker/release_compatibility.go
@@ -65,7 +66,7 @@ source "${VERIFIER_DIR}/_resolve_base_ref.sh"
 
 BASE_REF=""
 if ! BASE_REF="$(resolve_base_ref)"; then
-  echo "BLOCKED: cannot resolve origin/main or main (fetch + local fallback exhausted)" >&2
+  echo "BLOCKED: cannot resolve required change-lock base ref" >&2
   exit 2
 fi
 

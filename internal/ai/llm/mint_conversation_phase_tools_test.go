@@ -29,7 +29,7 @@ func TestMintConversationPhaseProviderLoopsRepairCurrentSectionAndReachText(t *t
 
 func assertMintConversationPhaseProviderRepair(t *testing.T, modelSet string, provider string, responses [][]byte) {
 	t.Helper()
-	requestCount := installMintConversationPhaseProvider(t, provider, responses)
+	requestCount, requests := installMintConversationPhaseProvider(t, provider, responses)
 	handlerCalls := 0
 	out, err := RunMintConversationPhase(context.Background(), "provider-test-key", MintConversationPhaseInput{
 		ModelSet: modelSet, SystemPrompt: "Construct the current section.",
@@ -57,13 +57,19 @@ func assertMintConversationPhaseProviderRepair(t *testing.T, modelSet string, pr
 	if out.Usage.Provider != provider || out.Usage.TotalTokens == 0 {
 		t.Fatalf("phase usage missing provider identity: %#v", out.Usage)
 	}
+	assertMintConversationPhaseContinuationRequest(t, provider, *requests)
 }
 
-func installMintConversationPhaseProvider(t *testing.T, provider string, responses [][]byte) *int {
+func installMintConversationPhaseProvider(t *testing.T, provider string, responses [][]byte) (*int, *[][]byte) {
 	t.Helper()
 	requestCount := 0
+	requests := make([][]byte, 0, len(responses))
 	client := &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
-		_, _ = io.Copy(io.Discard, request.Body)
+		body, err := io.ReadAll(request.Body)
+		if err != nil {
+			t.Fatalf("read %s request body: %v", provider, err)
+		}
+		requests = append(requests, append([]byte(nil), body...))
 		index := requestCount
 		requestCount++
 		if index >= len(responses) {
@@ -83,7 +89,45 @@ func installMintConversationPhaseProvider(t *testing.T, provider string, respons
 	default:
 		t.Fatalf("unsupported test provider %q", provider)
 	}
-	return &requestCount
+	return &requestCount, &requests
+}
+
+func assertMintConversationPhaseContinuationRequest(t *testing.T, provider string, requests [][]byte) {
+	t.Helper()
+	if len(requests) != 3 {
+		t.Fatalf("expected three %s requests, got %d", provider, len(requests))
+	}
+	for index, body := range requests {
+		var request struct {
+			Tools      []json.RawMessage `json:"tools"`
+			ToolChoice json.RawMessage   `json:"tool_choice"`
+		}
+		if err := json.Unmarshal(body, &request); err != nil {
+			t.Fatalf("decode %s request %d: %v", provider, index+1, err)
+		}
+		if len(request.Tools) != 1 {
+			t.Fatalf("%s request %d lost its section-local tool declaration", provider, index+1)
+		}
+		if index != len(requests)-1 {
+			continue
+		}
+		switch provider {
+		case "openai":
+			var choice string
+			if err := json.Unmarshal(request.ToolChoice, &choice); err != nil || choice != "none" {
+				t.Fatalf("openai continuation did not disable the declared tool: choice=%s err=%v", request.ToolChoice, err)
+			}
+		case "anthropic":
+			var choice struct {
+				Type string `json:"type"`
+			}
+			if err := json.Unmarshal(request.ToolChoice, &choice); err != nil || choice.Type != "none" {
+				t.Fatalf("anthropic continuation did not disable the declared tool: choice=%s err=%v", request.ToolChoice, err)
+			}
+		default:
+			t.Fatalf("unsupported test provider %q", provider)
+		}
+	}
 }
 
 func openAIMintConversationPhaseResponses(t *testing.T) [][]byte {

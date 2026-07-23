@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -254,14 +255,19 @@ func TestDeclarationPhasePersistsContentFreeProviderAttemptEvidence(t *testing.T
 	t.Setenv("OPENAI_API_KEY", "test-key")
 	store, comp, turn := baseTurnInput()
 	runner := &turnRunner{store: store, writer: completion.NewCompletionWriter(comp, fixedClock), nowFunc: fixedClock,
-		phaseRunner: contentFreeProviderAttemptPhaseRunner(t)}
+		phaseRunner: postToolProviderContinuationPhaseRunner(t)}
 	if err := runner.runTurnAndPersist(context.Background(), turn); err != nil {
 		t.Fatal(err)
+	}
+	if hostedgenesis.NormalizeStatus(comp.session.Status) != hostedgenesis.StatusAssistantTurnReady ||
+		comp.session.DeclarationCandidate == nil || comp.session.DeclarationCandidate.Revision != 1 ||
+		comp.session.DeclarationCandidate.CurrentSection != hostedgenesis.DeclarationSectionPhilosophy {
+		t.Fatalf("post-tool provider continuation did not reach assistant-ready: %#v", comp.session)
 	}
 	assertContentFreeProviderAttemptEvidence(t, comp.session.DeclarationCandidate.ProviderAttempts)
 }
 
-func contentFreeProviderAttemptPhaseRunner(t *testing.T) declarationPhaseRunner {
+func postToolProviderContinuationPhaseRunner(t *testing.T) declarationPhaseRunner {
 	t.Helper()
 	return func(ctx context.Context, _ string, input llm.MintConversationPhaseInput, handler llm.MintConversationPhaseToolHandler, sink llm.ProviderTelemetrySink) (llm.MintConversationPhaseOutput, error) {
 		sink(llm.ProviderTelemetryEvent{
@@ -275,7 +281,12 @@ func contentFreeProviderAttemptPhaseRunner(t *testing.T) declarationPhaseRunner 
 		}
 		sink(llm.ProviderTelemetryEvent{
 			Provider: "openai", Model: "gpt-test", Phase: "declaration_phase", EventType: "tool_validation_completed",
-			ToolName: hostedgenesis.DeclarationToolIdentityPut, ToolCallHash: "sha256:" + strings.Repeat("a", 64), Accepted: true,
+			ToolName: hostedgenesis.DeclarationToolIdentityPut, ToolCallHash: fmt.Sprintf("sha256:%x", sha256.Sum256([]byte("accepted"))), Accepted: true,
+		})
+		sink(llm.ProviderTelemetryEvent{
+			Provider: "openai", Model: "gpt-test", Phase: "declaration_phase", EventType: "sdk_http_attempt",
+			SDKAttemptOrdinal: 2, SDKRetryBudget: llm.DefaultProviderSDKRetryBudget, HTTPStatus: 200,
+			ProviderRequestID: "req_provider_2", DurationMS: 29,
 		})
 		sink(llm.ProviderTelemetryEvent{
 			Provider: "openai", Model: "gpt-test", Phase: "declaration_phase", EventType: "provider_call_completed",
@@ -287,18 +298,34 @@ func contentFreeProviderAttemptPhaseRunner(t *testing.T) declarationPhaseRunner 
 
 func assertContentFreeProviderAttemptEvidence(t *testing.T, attempts []hostedgenesis.DeclarationProviderAttempt) {
 	t.Helper()
-	if len(attempts) != 1 {
-		t.Fatalf("expected one durable SDK attempt, got %#v", attempts)
+	if len(attempts) != 2 {
+		t.Fatalf("expected tool and continuation SDK attempts, got %#v", attempts)
 	}
-	attempt := attempts[0]
-	if attempt.SDKAttemptOrdinal != 1 || attempt.SDKRetryBudget != llm.DefaultProviderSDKRetryBudget || attempt.HTTPStatus != 200 ||
-		attempt.ProviderRequestID != "req_provider_1" || attempt.ToolName != hostedgenesis.DeclarationToolIdentityPut || !attempt.Accepted ||
-		attempt.OutputBytes != 38 || attempt.TotalTokens != 28 || attempt.OutputSHA256 != strings.Repeat("b", 64) {
-		t.Fatalf("durable attempt evidence was incomplete: %#v", attempt)
+	toolAttempt, continuationAttempt := attempts[0], attempts[1]
+	if !validTestToolAttemptEvidence(toolAttempt) {
+		t.Fatalf("durable tool attempt evidence was incomplete: %#v", toolAttempt)
 	}
-	if strings.Contains(mustMarshal(attempt), "tenant-bound conversation actor") || strings.Contains(mustMarshal(attempt), "Let us construct") {
-		t.Fatalf("durable attempt evidence retained provider content: %#v", attempt)
+	if !validTestContinuationAttemptEvidence(continuationAttempt) {
+		t.Fatalf("durable continuation attempt evidence was incomplete: %#v", continuationAttempt)
 	}
+	for _, attempt := range attempts {
+		if strings.Contains(mustMarshal(attempt), "tenant-bound conversation actor") || strings.Contains(mustMarshal(attempt), "Let us construct") {
+			t.Fatalf("durable attempt evidence retained provider content: %#v", attempt)
+		}
+	}
+}
+
+func validTestToolAttemptEvidence(attempt hostedgenesis.DeclarationProviderAttempt) bool {
+	return attempt.SDKAttemptOrdinal == 1 && attempt.SDKRetryBudget == llm.DefaultProviderSDKRetryBudget &&
+		attempt.HTTPStatus == 200 && attempt.ProviderRequestID == "req_provider_1" &&
+		attempt.ToolName == hostedgenesis.DeclarationToolIdentityPut && attempt.Accepted
+}
+
+func validTestContinuationAttemptEvidence(attempt hostedgenesis.DeclarationProviderAttempt) bool {
+	return attempt.SDKAttemptOrdinal == 2 && attempt.SDKRetryBudget == llm.DefaultProviderSDKRetryBudget &&
+		attempt.HTTPStatus == 200 && attempt.ProviderRequestID == "req_provider_2" &&
+		attempt.OutputBytes == 38 && attempt.TotalTokens == 28 &&
+		attempt.OutputSHA256 == strings.Repeat("b", 64) && attempt.ToolName == ""
 }
 
 func TestAffirmedFinalizationMakesZeroProviderCallsAndIsStable(t *testing.T) {

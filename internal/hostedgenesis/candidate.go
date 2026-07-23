@@ -564,8 +564,9 @@ func declarationProviderAttemptIndex(candidate *DeclarationCandidate, update Dec
 	if update.SDKAttemptOrdinal <= 0 {
 		return existingDeclarationProviderAttemptIndex(candidate.ProviderAttempts, update)
 	}
-	if update.SourceTurnID != candidate.SourceTurnID || update.CandidateRevision != candidate.Revision || update.CandidateHash != candidate.CandidateHash ||
-		candidate.Phase != DeclarationCandidatePhaseSection || candidate.CurrentSection != update.Section {
+	directBinding := update.CandidateRevision == candidate.Revision && update.CandidateHash == candidate.CandidateHash &&
+		candidate.Phase == DeclarationCandidatePhaseSection && candidate.CurrentSection == update.Section
+	if update.SourceTurnID != candidate.SourceTurnID || (!directBinding && !declarationProviderContinuationBound(candidate, update)) {
 		return -1, errors.New("declaration provider attempt candidate binding mismatch")
 	}
 	if declarationProviderAttemptOrdinalIsStale(candidate.ProviderAttempts, update) {
