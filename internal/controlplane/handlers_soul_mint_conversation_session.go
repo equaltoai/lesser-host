@@ -33,6 +33,7 @@ func buildHostedGenesisConversationResponseFromSession(session *models.HostedGen
 			Status:           hostedgenesis.StatusFailed,
 			MessageCount:     session.MessageCount,
 			Failure:          hostedGenesisInvalidProjectionFailure(),
+			PublishedVersion: 0,
 			RequestID:        session.RequestID,
 			PollAfterSeconds: 0,
 			CreatedAt:        session.CreatedAt,
@@ -60,6 +61,8 @@ func buildHostedGenesisConversationResponseFromSession(session *models.HostedGen
 		CreatedAt:        timePtrIfSet(projection.CreatedAt),
 		UpdatedAt:        timePtrIfSet(projection.UpdatedAt),
 		CompletedAt:      timePtrIfSet(projection.CompletedAt),
+		PublishedVersion: projection.PublishedVersion,
+		PublishedAt:      timePtrIfSet(projection.PublishedAt),
 	}
 	if hostedGenesisStatusIncludesMessages(string(projection.Status)) {
 		if messages, bounded := buildHostedGenesisConversationMessages(session, conv); len(messages) > 0 {

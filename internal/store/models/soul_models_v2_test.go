@@ -257,6 +257,7 @@ func TestSoulAgentMintConversation_Keys(t *testing.T) {
 func TestSoulAgentMintConversation_StatusConstants(t *testing.T) {
 	require.Equal(t, "in_progress", SoulMintConversationStatusInProgress)
 	require.Equal(t, "completed", SoulMintConversationStatusCompleted)
+	require.Equal(t, "published", SoulMintConversationStatusPublished)
 	require.Equal(t, "failed", SoulMintConversationStatusFailed)
 }
 

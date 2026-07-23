@@ -377,7 +377,8 @@ export interface paths {
          * List compact mint-conversation metadata for an instance-owned agent
          * @description Instance-key authenticated read used by Lesser's self-scope proxy. The list response is compact and never
          *     includes private `messages` or `produced_declarations`; use the explicit single-conversation route for a
-         *     bounded full private record.
+         *     bounded full private record. Published sessions are terminal and include `published_version` and
+         *     `published_at`; callers proceed to agent read/list rather than retrying completion or finalize preflight.
          */
         get: operations["soulInstanceListMintConversations"];
         put?: never;
@@ -400,7 +401,8 @@ export interface paths {
          * @description Instance-key authenticated read used by Lesser's self-scope proxy. This explicit single-conversation route returns
          *     the hosted-genesis durable conversation envelope and may include bounded `conversation.messages` at
          *     `assistant_turn_ready` for Lesser same-origin relay. Terminal declaration evidence appears only as
-         *     `conversation.produced_declarations` when the durable status is `declaration_ready`; raw legacy
+         *     `conversation.produced_declarations` when the durable status is `declaration_ready`. Successful publication is
+         *     the distinct terminal `published` status with its exact version and timestamp; raw legacy
          *     message/declaration strings, credentials, target-account
          *     details, and infrastructure state are never returned.
          */
@@ -1440,7 +1442,7 @@ export interface components {
             principal_address?: string;
             latest_conversation_id?: string;
             /** @enum {string} */
-            latest_conversation_status?: "created" | "in_progress" | "assistant_turn_ready" | "declaration_extraction_pending" | "declaration_ready" | "completed" | "failed";
+            latest_conversation_status?: "created" | "in_progress" | "assistant_turn_ready" | "declaration_extraction_pending" | "declaration_ready" | "published" | "completed" | "failed";
             latest_review_sha256?: string;
             latest_boundary_count?: number;
             latest_capability_count?: number;
@@ -1616,16 +1618,19 @@ export interface components {
         };
         SoulInstanceMintConversationSummary: {
             agent_id: string;
+            registration_id: string;
             conversation_id: string;
-            model?: string;
             /** @enum {string} */
-            status: "created" | "in_progress" | "assistant_turn_ready" | "declaration_extraction_pending" | "declaration_ready" | "completed" | "failed";
-            usage?: components["schemas"]["AIUsage"];
-            charged_credits?: number;
+            status: "created" | "in_progress" | "assistant_turn_ready" | "declaration_extraction_pending" | "declaration_ready" | "published" | "failed";
+            message_count?: number;
+            latest_turn_id?: string;
             /** Format: date-time */
             created_at: string;
             /** Format: date-time */
-            completed_at?: string;
+            updated_at?: string;
+            published_version?: number;
+            /** Format: date-time */
+            published_at?: string;
         };
         SoulInstanceMintConversationsResponse: {
             /** @enum {string} */
@@ -2008,7 +2013,7 @@ export interface components {
             anchor_state?: "hosted_offchain" | "immutable_onchain";
             latest_conversation_id?: string;
             /** @enum {string} */
-            latest_conversation_status?: "in_progress" | "completed" | "failed";
+            latest_conversation_status?: "in_progress" | "declaration_ready" | "published" | "failed";
             published_version?: number;
             /** Format: date-time */
             graduated_at?: string;
@@ -2017,9 +2022,15 @@ export interface components {
         "soul-instance-bootstrap.finalize.response.schema": {
             /** @constant */
             version: "1";
+            /** @constant */
+            status: "published";
+            registration_id: string;
+            conversation_id: string;
             agent_id: string;
             agent: components["schemas"]["soul-agent-identity.schema"];
             published_version: number;
+            /** Format: date-time */
+            published_at: string;
             publication: components["schemas"]["publication"];
             promotion?: components["schemas"]["promotion"];
             $defs: {
@@ -2054,7 +2065,7 @@ export interface components {
                     anchor_state?: "hosted_offchain" | "immutable_onchain";
                     latest_conversation_id?: string;
                     /** @enum {string} */
-                    latest_conversation_status?: "in_progress" | "completed" | "failed";
+                    latest_conversation_status?: "in_progress" | "declaration_ready" | "published" | "failed";
                     published_version?: number;
                     /** Format: date-time */
                     graduated_at?: string;
@@ -2076,7 +2087,7 @@ export interface components {
             };
         };
         /** @enum {string} */
-        status: "created" | "in_progress" | "assistant_turn_ready" | "declaration_extraction_pending" | "declaration_ready" | "failed";
+        status: "created" | "in_progress" | "assistant_turn_ready" | "declaration_extraction_pending" | "declaration_ready" | "published" | "failed";
         conversation_message: {
             id: string;
             /** @enum {string} */
@@ -2134,6 +2145,9 @@ export interface components {
             messages_truncated?: boolean;
             produced_declarations?: components["schemas"]["produced_declarations"];
             failure?: components["schemas"]["failure"];
+            published_version?: number;
+            /** Format: date-time */
+            published_at?: string;
             request_id: string;
             trace_ids?: components["schemas"]["trace_ids"];
             poll_after_seconds?: number;
@@ -2143,7 +2157,7 @@ export interface components {
             updated_at?: string;
             /** Format: date-time */
             completed_at?: string;
-        };
+        } & (unknown & unknown);
         /** Hosted genesis durable conversation response */
         "hosted-genesis.conversation.response.schema": {
             /** @constant */
@@ -2152,7 +2166,7 @@ export interface components {
             conversation: components["schemas"]["conversation"];
             $defs: {
                 /** @enum {string} */
-                status: "created" | "in_progress" | "assistant_turn_ready" | "declaration_extraction_pending" | "declaration_ready" | "failed";
+                status: "created" | "in_progress" | "assistant_turn_ready" | "declaration_extraction_pending" | "declaration_ready" | "published" | "failed";
                 trace_ids: {
                     host_request_id?: string;
                     correlation_id?: string;
@@ -2224,6 +2238,9 @@ export interface components {
                     messages_truncated?: boolean;
                     produced_declarations?: components["schemas"]["produced_declarations"];
                     failure?: components["schemas"]["failure"];
+                    published_version?: number;
+                    /** Format: date-time */
+                    published_at?: string;
                     request_id: string;
                     trace_ids?: components["schemas"]["trace_ids"];
                     poll_after_seconds?: number;
@@ -2233,7 +2250,7 @@ export interface components {
                     updated_at?: string;
                     /** Format: date-time */
                     completed_at?: string;
-                };
+                } & (unknown & unknown);
             };
         };
         /** Instance-key soul bootstrap error envelope */
