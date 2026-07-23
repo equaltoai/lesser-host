@@ -518,15 +518,39 @@ func (s *Server) dispatchHostedGenesisPersistedMicroVMRetry(ctx *apptheory.Conte
 	return s.dispatchHostedGenesisPersistedConversationRetry(ctx, convCtx, pending, conv, hostedGenesisFailureMicroVMUnavailable)
 }
 
+type hostedGenesisRecoveryMicroVMTurnController interface {
+	StartMicroVMRun(ctx context.Context, requestID string, binding hostedgenesis.MicroVMSessionBinding) (hostedgenesis.MicroVMDispatchResult, error)
+	WaitAndInvokeMicroVMTurn(ctx context.Context, requestID string, binding hostedgenesis.MicroVMSessionBinding) (hostedgenesis.MicroVMDispatchResult, error)
+}
+
+var _ hostedGenesisRecoveryMicroVMTurnController = (*hostedgenesis.HTTPControllerDispatcher)(nil)
+
+func (s *Server) hostedGenesisRecoveryTurnController(ctx context.Context, pending *models.HostedGenesisSession, conv *models.SoulAgentMintConversation, requestID string, failureReason string) (hostedGenesisRecoveryMicroVMTurnController, *apptheory.AppTheoryError) {
+	controller, ok := s.hostedGenesisMicroVMDispatcher.(hostedGenesisRecoveryMicroVMTurnController)
+	if ok {
+		return controller, nil
+	}
+	return nil, s.hostedGenesisRetryDispatchFailureAppError(
+		ctx, pending, conv, requestID, failureReason,
+		newAppTheoryError(appErrCodeMicroVMUnavailable, "MicroVM recovery dispatch is unavailable"),
+	)
+}
+
+func (s *Server) hostedGenesisRetryDispatchFailureAppError(ctx context.Context, pending *models.HostedGenesisSession, conv *models.SoulAgentMintConversation, requestID string, failureReason string, fallback *apptheory.AppTheoryError) *apptheory.AppTheoryError {
+	if _, _, appErr := s.persistHostedGenesisRetryDispatchFailure(ctx, pending, conv, requestID, time.Now().UTC(), failureReason); appErr != nil {
+		return appErr
+	}
+	return fallback
+}
+
 func (s *Server) dispatchHostedGenesisPersistedConversationRetry(ctx *apptheory.Context, convCtx soulInstanceBootstrapConversationContext, pending *models.HostedGenesisSession, conv *models.SoulAgentMintConversation, failureReason string) (*models.HostedGenesisSession, *models.SoulAgentMintConversation, *apptheory.AppTheoryError) {
 	if s == nil || s.store == nil || s.store.DB == nil || pending == nil || conv == nil {
 		return nil, nil, newAppTheoryError("app.internal", "internal error")
 	}
-	if s.hostedGenesisMicroVMDispatcher == nil {
-		if _, _, appErr := s.persistHostedGenesisRetryDispatchFailure(ctx.Context(), pending, conv, strings.TrimSpace(ctx.RequestID), time.Now().UTC(), failureReason); appErr != nil {
-			return nil, nil, appErr
-		}
-		return nil, nil, newAppTheoryError(appErrCodeMicroVMUnavailable, "MicroVM recovery dispatch is unavailable")
+	requestID := strings.TrimSpace(ctx.RequestID)
+	controller, appErr := s.hostedGenesisRecoveryTurnController(ctx.Context(), pending, conv, requestID, failureReason)
+	if appErr != nil {
+		return nil, nil, appErr
 	}
 	binding := pending.MicroVMSessionBinding()
 	if err := binding.Validate(); err != nil {
@@ -535,28 +559,39 @@ func (s *Server) dispatchHostedGenesisPersistedConversationRetry(ctx *apptheory.
 	}
 	runCtx, cancel := context.WithTimeout(detachedMintConversationContext(ctx.Context()), hostedGenesisAcceptedTurnDispatchTimeout)
 	defer cancel()
-	dispatch, dispatchErr := s.hostedGenesisMicroVMDispatcher.DispatchMicroVMRun(runCtx, strings.TrimSpace(ctx.RequestID), binding)
+	// Start and persist the execution/cache identity before invoking the workload.
+	// Workload preflight snapshots the current HostedGenesisSession Version for
+	// guarded provider-attempt checkpoints; advancing Version after invoke would
+	// make that otherwise-current snapshot stale while provider work is detached.
+	dispatch, dispatchErr := controller.StartMicroVMRun(runCtx, requestID, binding)
 	if dispatchErr != nil {
-		log.Printf("controlplane: hosted genesis assistant retry dispatch failed agent_hash=%s conversation_hash=%s err=%v", soulMintInstanceReadAuditHash(convCtx.agentIDHex), soulMintInstanceReadAuditHash(convCtx.conversationID), dispatchErr)
-		if _, _, appErr := s.persistHostedGenesisRetryDispatchFailure(ctx.Context(), pending, conv, strings.TrimSpace(ctx.RequestID), time.Now().UTC(), failureReason); appErr != nil {
-			return nil, nil, appErr
-		}
-		return nil, nil, newAppTheoryError(appErrCodeMicroVMUnavailable, "MicroVM recovery dispatch failed")
+		log.Printf("controlplane: hosted genesis assistant retry start failed agent_hash=%s conversation_hash=%s err=%v", soulMintInstanceReadAuditHash(convCtx.agentIDHex), soulMintInstanceReadAuditHash(convCtx.conversationID), dispatchErr)
+		return nil, nil, s.hostedGenesisRetryDispatchFailureAppError(
+			ctx.Context(), pending, conv, requestID, failureReason,
+			newAppTheoryError(appErrCodeMicroVMUnavailable, "MicroVM recovery dispatch failed"),
+		)
 	}
 	progressedSession := cloneHostedGenesisSession(pending)
 	if err := progressedSession.ApplyMicroVMLifecycleRef(dispatch.LifecycleRef); err != nil {
 		log.Printf("controlplane: hosted genesis assistant retry lifecycle ref rejected agent_hash=%s conversation_hash=%s err=%v", soulMintInstanceReadAuditHash(convCtx.agentIDHex), soulMintInstanceReadAuditHash(convCtx.conversationID), err)
-		if _, _, appErr := s.persistHostedGenesisRetryDispatchFailure(ctx.Context(), pending, conv, strings.TrimSpace(ctx.RequestID), time.Now().UTC(), failureReason); appErr != nil {
-			return nil, nil, appErr
-		}
-		return nil, nil, newAppTheoryError("app.internal", "failed to record microvm recovery dispatch")
+		return nil, nil, s.hostedGenesisRetryDispatchFailureAppError(
+			ctx.Context(), pending, conv, requestID, failureReason,
+			newAppTheoryError("app.internal", "failed to record microvm recovery dispatch"),
+		)
 	}
-	progressedSession.RequestID = strings.TrimSpace(ctx.RequestID)
+	progressedSession.RequestID = requestID
 	progressedSession.UpdatedAt = time.Now().UTC()
 	if appErr := s.persistHostedGenesisAssistantRetryLifecycle(ctx.Context(), pending, progressedSession); appErr != nil {
 		return nil, nil, appErr
 	}
 	progressedSession.Version = pending.Version + 1
+	if _, invokeErr := controller.WaitAndInvokeMicroVMTurn(runCtx, requestID, binding); invokeErr != nil {
+		log.Printf("controlplane: hosted genesis assistant retry invoke failed agent_hash=%s conversation_hash=%s err=%v", soulMintInstanceReadAuditHash(convCtx.agentIDHex), soulMintInstanceReadAuditHash(convCtx.conversationID), invokeErr)
+		return nil, nil, s.hostedGenesisRetryDispatchFailureAppError(
+			ctx.Context(), progressedSession, conv, requestID, failureReason,
+			newAppTheoryError(appErrCodeMicroVMUnavailable, "MicroVM recovery dispatch failed"),
+		)
+	}
 	return progressedSession, conv, nil
 }
 

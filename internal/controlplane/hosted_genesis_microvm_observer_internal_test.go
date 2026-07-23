@@ -363,8 +363,8 @@ func assertMicroVMUnavailableRecoveryDispatch(t *testing.T, resp *apptheory.Resp
 	if resp.Status != http.StatusAccepted {
 		t.Fatalf("expected 202 accepted recovery, got %#v", resp)
 	}
-	if dispatcher.reconcileCalls != 1 || dispatcher.calls != 1 || dispatcher.queueCalls != 0 {
-		t.Fatalf("recovery must issue exactly one official run with no queue/nudge: reconcile=%d run=%d queue=%d", dispatcher.reconcileCalls, dispatcher.calls, dispatcher.queueCalls)
+	if dispatcher.reconcileCalls != 1 || dispatcher.calls != 0 || dispatcher.startCalls != 1 || dispatcher.waitAndInvokeCalls != 1 || dispatcher.queueCalls != 0 {
+		t.Fatalf("recovery must use one split official run/invoke with no queue/nudge: reconcile=%d legacy_run=%d start=%d wait_invoke=%d queue=%d", dispatcher.reconcileCalls, dispatcher.calls, dispatcher.startCalls, dispatcher.waitAndInvokeCalls, dispatcher.queueCalls)
 	}
 	if dispatcher.lastBinding.ConversationID != stale.ConversationID || dispatcher.lastBinding.TurnID != stale.LatestTurnID {
 		t.Fatalf("recovery did not replay the same durable accepted turn: %#v", dispatcher.lastBinding)

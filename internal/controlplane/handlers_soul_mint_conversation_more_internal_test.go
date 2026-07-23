@@ -215,18 +215,20 @@ func stubHostedGenesisMicroVMDispatcher(t *testing.T, s *Server) *stubMicroVMDis
 }
 
 type stubMicroVMDispatcher struct {
-	t                 *testing.T
-	calls             int
-	reconcileCalls    int
-	prepareFreshCalls int
-	invokeCalls       int
-	lastBinding       hostedgenesis.MicroVMSessionBinding
-	dispatchErr       error
-	reconcileErr      error
-	prepareFreshErr   error
-	invokeErr         error
-	queueCalls        int
-	lastQueue         hostedgenesis.QueueMessage
+	t                  *testing.T
+	calls              int
+	startCalls         int
+	waitAndInvokeCalls int
+	reconcileCalls     int
+	prepareFreshCalls  int
+	invokeCalls        int
+	lastBinding        hostedgenesis.MicroVMSessionBinding
+	dispatchErr        error
+	reconcileErr       error
+	prepareFreshErr    error
+	invokeErr          error
+	queueCalls         int
+	lastQueue          hostedgenesis.QueueMessage
 	// observedState is the lifecycle state the stub reports from a controller
 	// get reconciliation (defaults to running/non-terminal).
 	observedState runtimemicrovm.LifecycleState
@@ -284,13 +286,39 @@ func (d *stubMicroVMDispatcher) InvokeMicroVMTurn(_ context.Context, requestID s
 	return d.invokeErr
 }
 
-func (d *stubMicroVMDispatcher) DispatchMicroVMRun(ctx context.Context, requestID string, binding hostedgenesis.MicroVMSessionBinding) (hostedgenesis.MicroVMDispatchResult, error) {
+func (d *stubMicroVMDispatcher) StartMicroVMRun(_ context.Context, requestID string, binding hostedgenesis.MicroVMSessionBinding) (hostedgenesis.MicroVMDispatchResult, error) {
+	d.t.Helper()
+	d.startCalls++
+	d.lastBinding = binding
+	if d.dispatchErr != nil {
+		return hostedgenesis.MicroVMDispatchResult{}, d.dispatchErr
+	}
+	return d.microVMDispatchResult(requestID, binding)
+}
+
+func (d *stubMicroVMDispatcher) WaitAndInvokeMicroVMTurn(_ context.Context, requestID string, binding hostedgenesis.MicroVMSessionBinding) (hostedgenesis.MicroVMDispatchResult, error) {
+	d.t.Helper()
+	d.waitAndInvokeCalls++
+	d.invokeCalls++
+	d.lastBinding = binding
+	if d.invokeErr != nil {
+		return hostedgenesis.MicroVMDispatchResult{}, d.invokeErr
+	}
+	return d.microVMDispatchResult(requestID, binding)
+}
+
+func (d *stubMicroVMDispatcher) DispatchMicroVMRun(_ context.Context, requestID string, binding hostedgenesis.MicroVMSessionBinding) (hostedgenesis.MicroVMDispatchResult, error) {
 	d.t.Helper()
 	d.calls++
 	d.lastBinding = binding
 	if d.dispatchErr != nil {
 		return hostedgenesis.MicroVMDispatchResult{}, d.dispatchErr
 	}
+	return d.microVMDispatchResult(requestID, binding)
+}
+
+func (d *stubMicroVMDispatcher) microVMDispatchResult(requestID string, binding hostedgenesis.MicroVMSessionBinding) (hostedgenesis.MicroVMDispatchResult, error) {
+	d.t.Helper()
 	if err := binding.Validate(); err != nil {
 		d.t.Fatalf("stub dispatcher received invalid binding: %v", err)
 	}
