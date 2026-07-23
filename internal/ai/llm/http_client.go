@@ -1,35 +1,112 @@
 package llm
 
 import (
+	"context"
+	"errors"
 	"net/http"
+	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/anthropics/anthropic-sdk-go/option"
 	openaioption "github.com/openai/openai-go/option"
+
+	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
 )
 
-// DefaultProviderHTTPTimeout is the explicit per-provider HTTP timeout applied
-// to every LLM provider call. It is intentionally shorter than the Lambda
-// envelope that hosts a call so a hanging provider fails at the client boundary
-// with a typed net/http deadline-exceeded error instead of being killed by the
-// runtime and surfaced as an opaque platform timeout (G8).
+// DefaultProviderHTTPTimeout is the explicit per-request-attempt timeout applied
+// to both LLM provider SDK HTTP clients. Provider SDK retries can span multiple
+// attempts, so callers that need a whole-call bound must also use a context
+// deadline; the Hosted Genesis MicroVM workload does so and retains enough of
+// its outer runtime envelope to persist a guarded typed failure (G8).
 //
-// The value is sized for the longest legitimate single mint-conversation turn
-// (streaming assistant response + declaration extraction). It bounds a single
+// The value is sized for the longest legitimate typed-section conversation
+// phase. It bounds a single
 // HTTP round trip; streaming callers still receive incremental deltas up to the
 // deadline.
-const DefaultProviderHTTPTimeout = 120 * time.Second
+const DefaultProviderHTTPTimeout = hostedgenesis.DefaultProviderHTTPTimeout
+
+var ErrInvalidProviderHTTPTimeout = errors.New("provider HTTP timeout must be positive")
+
+// DefaultProviderSDKRetryBudget is pinned explicitly on both provider SDKs.
+// It matches their documented default while making durable attempt evidence
+// unambiguous and preventing an SDK update from silently changing the budget.
+const DefaultProviderSDKRetryBudget = 2
+
+type providerAttemptContextKey struct{}
+
+type providerAttemptContext struct {
+	retryBudget int
+	ordinal     atomic.Int64
+	observe     func(ProviderTelemetryEvent)
+}
+
+func withProviderAttemptTelemetry(ctx context.Context, retryBudget int, observe func(ProviderTelemetryEvent)) context.Context {
+	if ctx == nil || observe == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, providerAttemptContextKey{}, &providerAttemptContext{retryBudget: retryBudget, observe: observe})
+}
+
+type providerAttemptRoundTripper struct{ base http.RoundTripper }
+
+func (t providerAttemptRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
+	base := t.base
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	started := time.Now()
+	response, err := base.RoundTrip(request)
+	tracker, _ := request.Context().Value(providerAttemptContextKey{}).(*providerAttemptContext)
+	if tracker != nil && tracker.observe != nil {
+		event := ProviderTelemetryEvent{
+			EventType: "sdk_http_attempt", SDKAttemptOrdinal: tracker.ordinal.Add(1),
+			SDKRetryBudget: tracker.retryBudget, DurationMS: time.Since(started).Milliseconds(),
+		}
+		if response != nil {
+			event.HTTPStatus = response.StatusCode
+			event.ProviderRequestID = boundedProviderRequestID(firstProviderRequestID(response.Header))
+		}
+		if err != nil {
+			event.FailureClass = ProviderFailureClass(err)
+		}
+		tracker.observe(event)
+	}
+	return response, err
+}
+
+func firstProviderRequestID(header http.Header) string {
+	for _, name := range []string{"x-request-id", "request-id", "anthropic-request-id"} {
+		if value := strings.TrimSpace(header.Get(name)); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func boundedProviderRequestID(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" || len(value) > 160 {
+		return ""
+	}
+	for _, char := range value {
+		if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') ||
+			(char >= '0' && char <= '9') || strings.ContainsRune("-_.:", char) {
+			continue
+		}
+		return ""
+	}
+	return value
+}
 
 // ConfigureProviderHTTPClient installs an explicit-timeout HTTP client on both
 // the OpenAI and Anthropic provider adapters. Pass a nil client to reset to the
 // SDK defaults (no explicit timeout). The client's Transport is left to the
 // caller; only the Timeout field is load-bearing here.
 //
-// This is the single seam the in-VM hosted-genesis workload and tests use to
-// guarantee provider calls carry an explicit HTTP deadline rather than relying
-// on the surrounding Lambda/context envelope. Streaming and parsing behavior is
-// unchanged: the same request bodies, stream decoders, and usage accounting run
-// underneath; only the transport-level deadline is bounded.
+// This is the transport seam the in-VM hosted-genesis workload and tests use;
+// it complements, but does not replace, the workload's whole-call context
+// deadline. Streaming and parsing behavior is otherwise unchanged.
 func ConfigureProviderHTTPClient(c *http.Client) {
 	if c == nil {
 		openAIHTTPClient = nil
@@ -43,18 +120,38 @@ func ConfigureProviderHTTPClient(c *http.Client) {
 // newDefaultProviderHTTPClient returns an *http.Client with the explicit
 // DefaultProviderHTTPTimeout applied and a default transport. It is the client
 // the hosted-genesis MicroVM workload installs at startup.
-func newDefaultProviderHTTPClient() *http.Client {
-	return &http.Client{
-		Timeout:   DefaultProviderHTTPTimeout,
-		Transport: http.DefaultTransport,
+func newProviderHTTPClient(timeout time.Duration) (*http.Client, error) {
+	if timeout <= 0 {
+		return nil, ErrInvalidProviderHTTPTimeout
 	}
+	return &http.Client{
+		Timeout:   timeout,
+		Transport: providerAttemptRoundTripper{base: http.DefaultTransport},
+	}, nil
 }
 
 // ConfigureDefaultProviderHTTPClient installs the default explicit-timeout
 // provider HTTP client. It is safe to call once at process startup; later
 // calls replace the prior client.
 func ConfigureDefaultProviderHTTPClient() {
-	ConfigureProviderHTTPClient(newDefaultProviderHTTPClient())
+	client, err := newProviderHTTPClient(DefaultProviderHTTPTimeout)
+	if err != nil {
+		panic(err)
+	}
+	ConfigureProviderHTTPClient(client)
+}
+
+// ConfigureProviderHTTPTimeout installs a provider client with an explicit
+// attempt timeout after validating it. Workload startup uses this with the
+// validated execution envelope so transport and whole-call deadlines cannot
+// drift independently.
+func ConfigureProviderHTTPTimeout(timeout time.Duration) error {
+	client, err := newProviderHTTPClient(timeout)
+	if err != nil {
+		return err
+	}
+	ConfigureProviderHTTPClient(client)
+	return nil
 }
 
 // ProviderHTTPClientTimeout reports the configured timeout for the OpenAI

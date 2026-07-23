@@ -170,42 +170,17 @@ const (
 	// config envelope used on deployment Lambdas. It keeps the Lambda
 	// environment below AWS's 4KB limit while still carrying the same AppTheory
 	// run inputs (controller endpoint, auth-token source, image ref, connector
-	// refs, MaximumDurationSeconds, and IdlePolicy). Legacy individual env vars
-	// remain supported for local tests/tools.
+	// refs, and MaximumDurationSeconds). Legacy individual env vars remain
+	// supported for local tests/tools.
 	HostedGenesisMicroVMConfigJSONEnv = "HOSTED_GENESIS_MICROVM_CONFIG_JSON"
 
 	// HostedGenesisMicroVMDefaultMaximumDurationSeconds caps one active
 	// AppTheory MicroVM run for the longest provider turn plus in-VM
-	// declaration extraction. Human wait time is handled by the explicit
-	// ProviderIdlePolicy below, not by stretching the active-run ceiling.
-	HostedGenesisMicroVMDefaultMaximumDurationSeconds int32 = 300
-	// HostedGenesisMicroVMDefaultIdleMaxSeconds is the ready-idle interval
-	// before the provider may suspend the conversation actor. It is long enough
-	// for normal poll/retry jitter and short enough to force the lab human-gap
-	// canary through the AppTheory suspend/resume/relaunch contract.
-	HostedGenesisMicroVMDefaultIdleMaxSeconds int32 = 300
-	// HostedGenesisMicroVMDefaultIdleSuspendedSeconds is deliberately shorter
-	// than Host's one-hour AppTheory registry cache TTL so a suspended provider
-	// session is not treated as durable business truth after Host's
-	// HostedGenesisSession/reconstruction boundary would have to revalidate it.
-	HostedGenesisMicroVMDefaultIdleSuspendedSeconds int32 = 1800
+	// phase-tool validation. Hosted Genesis intentionally omits an idle policy:
+	// AWS defines idleness by inbound endpoint traffic, which cannot represent
+	// the long-running provider work continuing inside the MicroVM.
+	HostedGenesisMicroVMDefaultMaximumDurationSeconds int32 = 28800
 )
-
-// HostedGenesisMicroVMIdlePolicyConfig is Host's env-friendly representation of
-// AppTheory runtime/microvm.ProviderIdlePolicy. The dispatcher converts it at
-// the controller boundary so config never carries raw provider SDK state.
-type HostedGenesisMicroVMIdlePolicyConfig struct {
-	AutoResumeEnabled        bool
-	MaxIdleDurationSeconds   int32
-	SuspendedDurationSeconds int32
-}
-
-// Complete reports whether the idle policy can be passed to AppTheory's
-// ProviderIdlePolicy. AppTheory v1.17.0 rejects partial idle policies; Host
-// treats a missing policy as incomplete deployed MicroVM config.
-func (p HostedGenesisMicroVMIdlePolicyConfig) Complete() bool {
-	return p.MaxIdleDurationSeconds > 0 && p.SuspendedDurationSeconds > 0
-}
 
 // HostedGenesisMicroVMConfig groups the AppTheory M16 MicroVM controller HTTP
 // transport inputs controlplane.NewServer uses to construct the production
@@ -216,19 +191,20 @@ func (p HostedGenesisMicroVMIdlePolicyConfig) Complete() bool {
 // IngressConnectorRefs / EgressConnectorRefs are non-secret refs the control
 // plane sends in the POST /microvms run body (the HTTP route handler does not
 // fill them from env the way the in-process runtime did). MaximumDurationSeconds
-// caps each dispatched run session duration. IdlePolicy is the explicit
-// AppTheory human-gap policy for ready/suspended lifetime; Host does not
-// emulate it with a local scheduler or step machine.
+// caps each dispatched run session duration. No idle policy is carried: the
+// asynchronous conversation actor must remain runnable for that entire cap.
 type HostedGenesisMicroVMConfig struct {
 	Enabled                bool
 	ControllerEndpoint     string
 	AuthTokenSSMParam      string
 	ImageRef               string
+	ImageVersion           string
+	ExecutionRoleARN       string
+	RuntimeLogGroup        string
 	NetworkConnectorRef    string
 	IngressConnectorRefs   []string
 	EgressConnectorRefs    []string
 	MaximumDurationSeconds int32
-	IdlePolicy             HostedGenesisMicroVMIdlePolicyConfig
 }
 
 // Complete reports whether the MicroVM dispatch config has the minimum required
@@ -238,7 +214,7 @@ type HostedGenesisMicroVMConfig struct {
 // parameter named here; Complete only requires the parameter name. A missing or
 // empty token at fetch time fails the dispatcher construction loudly.
 func (c HostedGenesisMicroVMConfig) Complete() bool {
-	return c.Enabled && c.ControllerEndpoint != "" && c.AuthTokenSSMParam != "" && c.ImageRef != "" && c.NetworkConnectorRef != "" && c.IdlePolicy.Complete()
+	return c.Enabled && c.ControllerEndpoint != "" && c.AuthTokenSSMParam != "" && c.ImageRef != "" && c.ImageVersion != "" && c.ExecutionRoleARN != "" && c.RuntimeLogGroup != "" && c.NetworkConnectorRef != "" && c.MaximumDurationSeconds > 0
 }
 
 // Load reads environment variables and returns a Config with defaults applied.
@@ -436,20 +412,16 @@ func Load() Config {
 // this package owns the consumer. Values remain the same AppTheory request
 // inputs the legacy per-variable env carried.
 type hostedGenesisMicroVMCompactConfig struct {
-	Version                int                                 `json:"v"`
-	ControllerEndpoint     string                              `json:"ep"`
-	AuthTokenSSMParam      string                              `json:"ap"`
-	ImageRef               string                              `json:"img"`
-	IngressConnectorRefs   string                              `json:"in"`
-	EgressConnectorRefs    string                              `json:"eg"`
-	MaximumDurationSeconds *int32                              `json:"max"`
-	IdlePolicy             hostedGenesisMicroVMCompactIdleJSON `json:"idle"`
-}
-
-type hostedGenesisMicroVMCompactIdleJSON struct {
-	AutoResumeEnabled        *bool  `json:"ar"`
-	MaxIdleDurationSeconds   *int32 `json:"max"`
-	SuspendedDurationSeconds *int32 `json:"sus"`
+	Version                int    `json:"v"`
+	ControllerEndpoint     string `json:"ep"`
+	AuthTokenSSMParam      string `json:"ap"`
+	ImageRef               string `json:"img"`
+	ImageVersion           string `json:"iv"`
+	ExecutionRoleARN       string `json:"er"`
+	RuntimeLogGroup        string `json:"lg"`
+	IngressConnectorRefs   string `json:"in"`
+	EgressConnectorRefs    string `json:"eg"`
+	MaximumDurationSeconds *int32 `json:"max"`
 }
 
 func loadHostedGenesisMicroVMConfig() HostedGenesisMicroVMConfig {
@@ -476,11 +448,13 @@ func loadHostedGenesisMicroVMLegacyEnvConfig() HostedGenesisMicroVMConfig {
 		ControllerEndpoint:     strings.TrimSpace(envString("APPTHEORY_MICROVM_CONTROLLER_ENDPOINT")),
 		AuthTokenSSMParam:      strings.TrimSpace(envString("HOSTED_GENESIS_MICROVM_AUTH_TOKEN_SSM_PARAM")),
 		ImageRef:               envString("APPTHEORY_MICROVM_IMAGE_REF"),
+		ImageVersion:           strings.TrimSpace(envString("APPTHEORY_MICROVM_IMAGE_VERSION")),
+		ExecutionRoleARN:       strings.TrimSpace(envString("HOSTED_GENESIS_MICROVM_EXECUTION_ROLE_ARN")),
+		RuntimeLogGroup:        strings.TrimSpace(envString("HOSTED_GENESIS_MICROVM_RUNTIME_LOG_GROUP")),
 		NetworkConnectorRef:    firstNonEmpty(microvmEgressRefs),
 		IngressConnectorRefs:   parseCSV(envString("APPTHEORY_MICROVM_INGRESS_NETWORK_CONNECTOR_REFS")),
 		EgressConnectorRefs:    microvmEgressRefs,
-		MaximumDurationSeconds: envInt32Bounded("HOSTED_GENESIS_MICROVM_MAXIMUM_DURATION_SECONDS", HostedGenesisMicroVMDefaultMaximumDurationSeconds, 0, 3600),
-		IdlePolicy:             hostedGenesisMicroVMDefaultIdlePolicyFromEnv(),
+		MaximumDurationSeconds: envInt32Bounded("HOSTED_GENESIS_MICROVM_MAXIMUM_DURATION_SECONDS", HostedGenesisMicroVMDefaultMaximumDurationSeconds, 1, HostedGenesisMicroVMDefaultMaximumDurationSeconds),
 	}
 }
 
@@ -488,10 +462,9 @@ func parseHostedGenesisMicroVMCompactConfig(raw string) HostedGenesisMicroVMConf
 	cfg := HostedGenesisMicroVMConfig{
 		Enabled:                true,
 		MaximumDurationSeconds: HostedGenesisMicroVMDefaultMaximumDurationSeconds,
-		IdlePolicy:             hostedGenesisMicroVMDefaultIdlePolicy(),
 	}
 	var compact hostedGenesisMicroVMCompactConfig
-	if err := json.Unmarshal([]byte(strings.TrimSpace(raw)), &compact); err != nil || compact.Version != 1 {
+	if err := json.Unmarshal([]byte(strings.TrimSpace(raw)), &compact); err != nil || compact.Version != 2 {
 		// Fail closed: a present-but-invalid compact env means deployment config
 		// is malformed. Do not silently fall back to legacy variables because
 		// that could mask a broken CDK/runtime boundary.
@@ -500,42 +473,18 @@ func parseHostedGenesisMicroVMCompactConfig(raw string) HostedGenesisMicroVMConf
 	cfg.ControllerEndpoint = strings.TrimSpace(compact.ControllerEndpoint)
 	cfg.AuthTokenSSMParam = strings.TrimSpace(compact.AuthTokenSSMParam)
 	cfg.ImageRef = strings.TrimSpace(compact.ImageRef)
+	cfg.ImageVersion = strings.TrimSpace(compact.ImageVersion)
+	cfg.ExecutionRoleARN = strings.TrimSpace(compact.ExecutionRoleARN)
+	cfg.RuntimeLogGroup = strings.TrimSpace(compact.RuntimeLogGroup)
 	cfg.IngressConnectorRefs = parseCSV(compact.IngressConnectorRefs)
 	cfg.EgressConnectorRefs = parseCSV(compact.EgressConnectorRefs)
 	cfg.NetworkConnectorRef = firstNonEmpty(cfg.EgressConnectorRefs)
-	cfg.MaximumDurationSeconds = boundedInt32Ptr(compact.MaximumDurationSeconds, HostedGenesisMicroVMDefaultMaximumDurationSeconds, 0, 3600)
-	cfg.IdlePolicy = HostedGenesisMicroVMIdlePolicyConfig{
-		AutoResumeEnabled:        boolPtrValue(compact.IdlePolicy.AutoResumeEnabled, false),
-		MaxIdleDurationSeconds:   boundedInt32Ptr(compact.IdlePolicy.MaxIdleDurationSeconds, HostedGenesisMicroVMDefaultIdleMaxSeconds, 1, 3600),
-		SuspendedDurationSeconds: boundedInt32Ptr(compact.IdlePolicy.SuspendedDurationSeconds, HostedGenesisMicroVMDefaultIdleSuspendedSeconds, 1, 3600),
-	}
+	cfg.MaximumDurationSeconds = boundedInt32Ptr(compact.MaximumDurationSeconds, HostedGenesisMicroVMDefaultMaximumDurationSeconds, 1, HostedGenesisMicroVMDefaultMaximumDurationSeconds)
 	return cfg
-}
-
-func hostedGenesisMicroVMDefaultIdlePolicyFromEnv() HostedGenesisMicroVMIdlePolicyConfig {
-	return HostedGenesisMicroVMIdlePolicyConfig{
-		AutoResumeEnabled:        envBoolOn("HOSTED_GENESIS_MICROVM_IDLE_AUTO_RESUME_ENABLED"),
-		MaxIdleDurationSeconds:   envInt32Bounded("HOSTED_GENESIS_MICROVM_IDLE_MAX_SECONDS", HostedGenesisMicroVMDefaultIdleMaxSeconds, 1, 3600),
-		SuspendedDurationSeconds: envInt32Bounded("HOSTED_GENESIS_MICROVM_IDLE_SUSPENDED_SECONDS", HostedGenesisMicroVMDefaultIdleSuspendedSeconds, 1, 3600),
-	}
-}
-
-func hostedGenesisMicroVMDefaultIdlePolicy() HostedGenesisMicroVMIdlePolicyConfig {
-	return HostedGenesisMicroVMIdlePolicyConfig{
-		MaxIdleDurationSeconds:   HostedGenesisMicroVMDefaultIdleMaxSeconds,
-		SuspendedDurationSeconds: HostedGenesisMicroVMDefaultIdleSuspendedSeconds,
-	}
 }
 
 func boundedInt32Ptr(value *int32, fallback int32, minValue int32, maxValue int32) int32 {
 	if value == nil || *value < minValue || *value > maxValue {
-		return fallback
-	}
-	return *value
-}
-
-func boolPtrValue(value *bool, fallback bool) bool {
-	if value == nil {
 		return fallback
 	}
 	return *value

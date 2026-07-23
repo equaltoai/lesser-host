@@ -43,7 +43,6 @@ func TestHostedGenesisPublishedReadAndListProjectionsAreTerminal(t *testing.T) {
 	require.False(t, hostedGenesisSessionNeedsAssistantRecovery(session))
 	require.False(t, hostedGenesisSessionRequiresRestart(session))
 	require.False(t, hostedGenesisSessionCanRetryAssistantTurn(session))
-	require.False(t, hostedGenesisSessionCanRetryDeclarationExtraction(session))
 
 	payload, err := json.Marshal(response)
 	require.NoError(t, err)

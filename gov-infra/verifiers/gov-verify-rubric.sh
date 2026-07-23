@@ -76,6 +76,7 @@ rm -f \
   "${EVIDENCE_DIR}/SEC-13-output.log" \
   "${EVIDENCE_DIR}/SEC-14-output.log" \
   "${EVIDENCE_DIR}/SEC-15-output.log" \
+  "${EVIDENCE_DIR}/SEC-16-output.log" \
   "${EVIDENCE_DIR}/MAI-5-output.log" \
   "${EVIDENCE_DIR}/CON-4-output.log"
 
@@ -2311,6 +2312,7 @@ run_check "SEC-12" "Security" "bash ${GOV_INFRA}/verifiers/sec/operator-drift-au
 run_check "SEC-13" "Security" "bash ${GOV_INFRA}/verifiers/sec/cost-telemetry-redaction.sh"
 run_check "SEC-14" "Security" "bash ${GOV_INFRA}/verifiers/sec/hosted-genesis-microvm-registry-boundary.sh"
 run_check "SEC-15" "Security" "bash ${GOV_INFRA}/verifiers/sec/hosted-genesis-declaration-contract.sh"
+run_check "SEC-16" "Security" "bash ${GOV_INFRA}/verifiers/sec/hosted-genesis-provider-telemetry.sh"
 
 # === Compliance Readiness (CMP) ===
 check_file_exists "CMP-1" "Compliance" "${PLANNING_DIR}/lesser-host-controls-matrix.md"

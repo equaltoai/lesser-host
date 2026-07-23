@@ -11,6 +11,7 @@ import (
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
 
+	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
@@ -20,6 +21,7 @@ type openAIJSONSchemaBatchConfig struct {
 	Schema            map[string]any
 	SystemPrompt      string
 	Temperature       float64
+	Telemetry         ProviderTelemetrySink
 }
 
 var openAIHTTPClient option.HTTPClient
@@ -40,7 +42,7 @@ func openAIModelFromSet(modelSet string) (string, error) {
 
 func openAIClientForKey(apiKey string) openai.Client {
 	apiKey = strings.TrimSpace(apiKey)
-	opts := []option.RequestOption{}
+	opts := []option.RequestOption{option.WithMaxRetries(DefaultProviderSDKRetryBudget)}
 	if apiKey != "" {
 		opts = append(opts, option.WithAPIKey(apiKey))
 	}
@@ -141,11 +143,15 @@ func openAIJSONSchemaBatch[Prompt any, Parsed any, Out any](
 	if err != nil {
 		return zero, models.AIUsage{}, err
 	}
+	recorder := newProviderTelemetryRecorder("openai", model, "json_text_batch", cfg.Telemetry)
 
 	payload, err := json.Marshal(prompt)
 	if err != nil {
+		recorder.emit(ProviderTelemetryEvent{EventType: "provider_call_failed", LastEvent: true, FailureClass: ProviderFailureClass(err)})
 		return zero, models.AIUsage{}, err
 	}
+	payloadBytes, payloadHash := providerPayloadMetadata(payload)
+	recorder.emit(ProviderTelemetryEvent{EventType: "request_start", PayloadBytes: payloadBytes, PayloadSHA256: payloadHash, SchemaName: cfg.SchemaName})
 
 	schemaParam := openai.ResponseFormatJSONSchemaJSONSchemaParam{
 		Name:        cfg.SchemaName,
@@ -156,19 +162,39 @@ func openAIJSONSchemaBatch[Prompt any, Parsed any, Out any](
 
 	chat, start, err := openAIJSONSchemaChatCompletion(ctx, apiKey, model, cfg.SystemPrompt, payload, schemaParam, cfg.Temperature)
 	if err != nil {
+		recorder.emit(ProviderTelemetryEvent{EventType: "provider_call_failed", LastEvent: true, FailureClass: ProviderFailureClass(err), PayloadBytes: payloadBytes, PayloadSHA256: payloadHash, SchemaName: cfg.SchemaName})
 		return zero, models.AIUsage{}, err
 	}
+	usage := openAIUsageFromChat(chat, start)
+	stopReason := ""
+	toolCalls := int64(0)
+	if len(chat.Choices) > 0 {
+		stopReason = strings.TrimSpace(chat.Choices[0].FinishReason)
+		toolCalls = int64(len(chat.Choices[0].Message.ToolCalls))
+	}
+	recorder.emit(ProviderTelemetryEvent{EventType: "response_received", InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens, TotalTokens: usage.TotalTokens, ToolCalls: toolCalls, OutputCount: int64(len(chat.Choices)), StopReason: stopReason, SchemaName: cfg.SchemaName})
 
 	raw, err := openAIContentFromChat(chat)
 	if err != nil {
+		err = withProviderFailureClass(err, string(hostedgenesis.FailureClassInvalidProviderOutput))
+		recorder.emit(ProviderTelemetryEvent{EventType: "provider_call_failed", LastEvent: true, FailureClass: ProviderFailureClass(err)})
 		return zero, models.AIUsage{}, err
 	}
+	rawBytes, rawRunes, rawHash := providerOutputMetadata(raw)
+	recorder.emit(ProviderTelemetryEvent{EventType: "schema_output_received", OutputBytes: rawBytes, OutputRunes: rawRunes, OutputSHA256: rawHash, OutputCount: 1, SchemaName: cfg.SchemaName})
+	recorder.emit(ProviderTelemetryEvent{EventType: "parse_start", OutputBytes: rawBytes, OutputRunes: rawRunes, OutputSHA256: rawHash, SchemaName: cfg.SchemaName})
 
 	parsed, err := parse(raw)
 	if err != nil {
+		err = withProviderFailureClass(err, string(hostedgenesis.FailureClassParseValidation))
+		recorder.emit(ProviderTelemetryEvent{EventType: "provider_call_failed", LastEvent: true, FailureClass: ProviderFailureClass(err), OutputBytes: rawBytes, OutputRunes: rawRunes, OutputSHA256: rawHash, SchemaName: cfg.SchemaName})
 		return zero, models.AIUsage{}, err
 	}
+	recorder.emit(ProviderTelemetryEvent{EventType: "parse_completed", OutputBytes: rawBytes, OutputRunes: rawRunes, OutputSHA256: rawHash, SchemaName: cfg.SchemaName})
 
+	recorder.emit(ProviderTelemetryEvent{EventType: "validation_start", OutputBytes: rawBytes, OutputRunes: rawRunes, OutputSHA256: rawHash, SchemaName: cfg.SchemaName})
 	out := normalize(parsed)
-	return out, openAIUsageFromChat(chat, start), nil
+	recorder.emit(ProviderTelemetryEvent{EventType: "validation_completed", OutputBytes: rawBytes, OutputRunes: rawRunes, OutputSHA256: rawHash, SchemaName: cfg.SchemaName})
+	recorder.emit(ProviderTelemetryEvent{EventType: "provider_call_completed", LastEvent: true, OutputBytes: rawBytes, OutputRunes: rawRunes, OutputSHA256: rawHash, OutputCount: 1, InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens, TotalTokens: usage.TotalTokens, ToolCalls: maxInt64(1, toolCalls), StopReason: stopReason, SchemaName: cfg.SchemaName})
+	return out, usage, nil
 }

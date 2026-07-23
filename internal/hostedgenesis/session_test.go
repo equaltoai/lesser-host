@@ -19,16 +19,12 @@ func TestStatusTransitionTable(t *testing.T) {
 	}{
 		{StatusCreated, StatusInProgress},
 		{StatusInProgress, StatusAssistantTurnReady},
-		{StatusInProgress, StatusDeclarationExtractionPending},
 		{StatusInProgress, StatusDeclarationReady},
 		{StatusAssistantTurnReady, StatusInProgress},
-		{StatusAssistantTurnReady, StatusDeclarationExtractionPending},
-		{StatusDeclarationExtractionPending, StatusDeclarationReady},
 		{StatusDeclarationReady, StatusPublished},
 		{StatusCreated, StatusFailed},
 		{StatusInProgress, StatusFailed},
 		{StatusAssistantTurnReady, StatusFailed},
-		{StatusDeclarationExtractionPending, StatusFailed},
 	}
 	for _, tt := range legal {
 		t.Run(string(tt.from)+"_to_"+string(tt.to), func(t *testing.T) {
@@ -42,7 +38,7 @@ func TestStatusTransitionTable(t *testing.T) {
 		to   Status
 	}{
 		{StatusCreated, StatusDeclarationReady},
-		{StatusDeclarationExtractionPending, StatusAssistantTurnReady},
+		{StatusAssistantTurnReady, StatusCreated},
 		{StatusDeclarationReady, StatusInProgress},
 		{StatusDeclarationReady, StatusFailed},
 		{StatusPublished, StatusDeclarationReady},
@@ -153,7 +149,8 @@ func TestFailedRecoveryActionsAreServerAuthoredAndBounded(t *testing.T) {
 
 	failure := Failure{
 		Code:      FailureCodeLLMUnavailable,
-		Message:   "assistant turn failed before declaration extraction",
+		Class:     FailureClassProviderAPIFailure,
+		Message:   "assistant turn failed during current declaration section",
 		Retryable: true,
 		Recovery: Recovery{
 			Action:            RecoveryActionRetrySameStep,
@@ -163,8 +160,13 @@ func TestFailedRecoveryActionsAreServerAuthoredAndBounded(t *testing.T) {
 		},
 	}
 	require.NoError(t, failure.Validate())
+	require.Equal(t, FailureClassProviderTimeout, NormalizeFailureClass(" provider_timeout "))
+	require.Equal(t, FailureClassProviderAPIFailure, NormalizeFailureClass("private arbitrary detail"))
 
 	failure.Recovery.Action = RecoveryAction("caller_supplied_shell_command")
+	require.ErrorIs(t, failure.Validate(), ErrInvalidFailureRecovery)
+	failure.Recovery.Action = RecoveryActionRetrySameStep
+	failure.Class = FailureClass("private_detail")
 	require.ErrorIs(t, failure.Validate(), ErrInvalidFailureRecovery)
 }
 

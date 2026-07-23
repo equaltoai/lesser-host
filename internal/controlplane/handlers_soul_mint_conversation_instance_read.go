@@ -410,13 +410,18 @@ func (s *Server) handleSoulInstanceGetMintConversation(ctx *apptheory.Context) (
 
 	session, err := s.store.GetHostedGenesisSession(ctx.Context(), reqCtx.key.InstanceSlug, conversationID)
 	if err != nil || session == nil || !strings.EqualFold(strings.TrimSpace(session.AgentID), strings.TrimSpace(reqCtx.agentIDHex)) {
-		appErr := soulMintInstanceReadError(soulMintInstanceReadCodeNotFound, "conversation not found", http.StatusNotFound, nil)
-		s.logSoulMintInstanceReadAccess(ctx, reqCtx.key, reqCtx.agentIDHex, conversationID, soulMintInstanceReadRouteSingle, "error", appErr.StatusCode, 0, start)
-		return nil, appErr
+		notFoundErr := soulMintInstanceReadError(soulMintInstanceReadCodeNotFound, "conversation not found", http.StatusNotFound, nil)
+		s.logSoulMintInstanceReadAccess(ctx, reqCtx.key, reqCtx.agentIDHex, conversationID, soulMintInstanceReadRouteSingle, "error", notFoundErr.StatusCode, 0, start)
+		return nil, notFoundErr
 	}
 	conv, convErr := getSoulAgentItemBySK[models.SoulAgentMintConversation](s, ctx.Context(), reqCtx.agentIDHex, fmt.Sprintf("MINT_CONVERSATION#%s", conversationID))
 	if convErr == nil && conv != nil {
 		decodeMintConversationFields(conv)
+	}
+	session, conv, appErr = s.observeHostedGenesisMicroVMOnRead(ctx, session, conv)
+	if appErr != nil {
+		s.logSoulMintInstanceReadAccess(ctx, reqCtx.key, reqCtx.agentIDHex, conversationID, soulMintInstanceReadRouteSingle, "error", appErr.StatusCode, 0, start)
+		return nil, appErr
 	}
 	promotion, promotionErr := s.loadSoulAgentPromotionForPublishedConvergence(ctx.Context(), reqCtx.agentIDHex)
 	if promotionErr != nil {

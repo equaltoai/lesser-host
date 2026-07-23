@@ -16,6 +16,8 @@ import (
 	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
 )
 
+const hostedGenesisBenignCredentialSafetyProse = "Never expose a private key or bearer token."
+
 func TestHostedGenesisSessionProjectionFallbackAndTraceNil(t *testing.T) {
 	t.Parallel()
 
@@ -69,83 +71,6 @@ func TestHostedGenesisFailureProjectionMatchesCompatibilityAndSanitizesDetail(t 
 	if response.Conversation.Status != string(hostedgenesis.StatusFailed) || response.Conversation.Failure == nil ||
 		response.Conversation.Failure.Code != fromSession.Code || response.Conversation.Failure.Recovery.Reason != fromSession.Recovery.Reason {
 		t.Fatalf("response failure projection disagrees with session projection: %#v", response.Conversation.Failure)
-	}
-}
-
-func TestHostedGenesisSessionProjectionUsesTerminalFailureOverStaleConversation(t *testing.T) {
-	t.Parallel()
-
-	session := testHostedGenesisSessionProjectionBase()
-	session.Status = string(hostedgenesis.StatusFailed)
-	session.CompletedAt = time.Date(2026, 3, 7, 12, 10, 0, 0, time.UTC)
-	session.Failure = &hostedgenesis.Failure{
-		Code:      hostedgenesis.FailureCodeDeclarationExtractionFailed,
-		Message:   hostedgenesis.FailureMessage(hostedgenesis.FailureCodeDeclarationExtractionFailed),
-		Retryable: true,
-		Recovery: hostedgenesis.Recovery{
-			Action:            hostedgenesis.RecoveryActionRetrySameStep,
-			MaxAttempts:       3,
-			RetryAfterSeconds: 30,
-			Reason:            string(hostedgenesis.FailureCodeDeclarationExtractionFailed),
-		},
-	}
-	conv := &models.SoulAgentMintConversation{
-		AgentID:        session.AgentID,
-		ConversationID: session.ConversationID,
-		Status:         models.SoulMintConversationStatusDeclarationExtractionPending,
-		StatusReason:   "provider returned partial private JSON that must not leak",
-		Messages:       models.EncodeSoulMintConversationBlob(`[{"role":"user","content":"private transcript"},{"role":"assistant","content":"private draft"}]`),
-	}
-
-	resp := buildHostedGenesisConversationResponseFromSession(session, conv, hostedGenesisProjectionOptions{RequestID: "req-terminal"})
-	if resp.Conversation.Status != string(hostedgenesis.StatusFailed) || resp.Conversation.PollAfterSeconds != 0 || resp.Conversation.Failure == nil {
-		t.Fatalf("terminal session truth must project failed over stale conversation status: %#v", resp.Conversation)
-	}
-	if resp.Conversation.Failure.Code != string(hostedgenesis.FailureCodeDeclarationExtractionFailed) || resp.Conversation.Failure.Recovery.Reason != string(hostedgenesis.FailureCodeDeclarationExtractionFailed) {
-		t.Fatalf("expected sanitized declaration extraction failure, got %#v", resp.Conversation.Failure)
-	}
-	payload := string(mustMarshalJSON(t, resp))
-	if strings.Contains(payload, "partial private JSON") || strings.Contains(payload, "private transcript") || strings.Contains(payload, string(hostedgenesis.StatusDeclarationExtractionPending)) {
-		t.Fatalf("terminal projection leaked stale/private compatibility state: %s", payload)
-	}
-}
-
-func TestHostedGenesisSessionProjectionExhaustedDeclarationRetryRequiresRestart(t *testing.T) {
-	t.Parallel()
-
-	assertHostedGenesisDeclarationRetryProjectsRestart(t, true, 0, "exhausted declaration retry")
-}
-
-func TestHostedGenesisSessionProjectionNonRetryableDeclarationRetryRequiresRestart(t *testing.T) {
-	t.Parallel()
-
-	assertHostedGenesisDeclarationRetryProjectsRestart(t, false, 2, "non-retryable declaration retry")
-}
-
-func assertHostedGenesisDeclarationRetryProjectsRestart(t *testing.T, retryable bool, maxAttempts int, caseName string) {
-	t.Helper()
-
-	session := testHostedGenesisSessionProjectionBase()
-	session.Status = string(hostedgenesis.StatusFailed)
-	session.Failure = &hostedgenesis.Failure{
-		Code:      hostedgenesis.FailureCodeDeclarationExtractionFailed,
-		Message:   hostedgenesis.FailureMessage(hostedgenesis.FailureCodeDeclarationExtractionFailed),
-		Retryable: retryable,
-		Recovery: hostedgenesis.Recovery{
-			Action:            hostedgenesis.RecoveryActionRetrySameStep,
-			MaxAttempts:       maxAttempts,
-			RetryAfterSeconds: 30,
-			Reason:            string(hostedgenesis.FailureCodeDeclarationExtractionFailed),
-		},
-	}
-
-	resp := buildHostedGenesisConversationResponseFromSession(session, nil, hostedGenesisProjectionOptions{})
-	if resp.Conversation.Failure == nil ||
-		resp.Conversation.Failure.Retryable ||
-		resp.Conversation.Failure.Recovery.Action != hostedGenesisRecoveryRestartSoulBootstrap ||
-		resp.Conversation.Failure.Recovery.MaxAttempts != 0 ||
-		resp.Conversation.Failure.Recovery.RetryAfterSeconds != 0 {
-		t.Fatalf("expected %s to project restart guidance, got %#v", caseName, resp.Conversation.Failure)
 	}
 }
 
@@ -242,7 +167,7 @@ func TestHostedGenesisSessionProjectionIncludesAssistantReadyMessages(t *testing
 	}
 }
 
-func TestHostedGenesisSessionProjectionBoundsAndOmitsUnsafeMessages(t *testing.T) {
+func TestHostedGenesisSessionProjectionBoundsMessagesAndContent(t *testing.T) {
 	t.Parallel()
 
 	session := testHostedGenesisSessionProjectionBase()
@@ -257,9 +182,9 @@ func TestHostedGenesisSessionProjectionBoundsAndOmitsUnsafeMessages(t *testing.T
 		Messages:       models.EncodeSoulMintConversationBlob(string(mustMarshalJSON(t, messages))),
 	}
 
-	projected, bounded := buildHostedGenesisConversationMessages(session, conv)
-	if len(projected) != hostedGenesisTranscriptMaxMessages || !bounded {
-		t.Fatalf("expected bounded transcript projection, len=%d bounded=%v", len(projected), bounded)
+	projected, bounded, redacted := buildHostedGenesisConversationMessages(session, conv)
+	if len(projected) != hostedGenesisTranscriptMaxMessages || !bounded || redacted {
+		t.Fatalf("expected bounded unredacted transcript projection, len=%d bounded=%v redacted=%v", len(projected), bounded, redacted)
 	}
 	if projected[0].Order != 3 || projected[len(projected)-1].Order != hostedGenesisTranscriptMaxMessages+2 || !projected[len(projected)-1].Truncated {
 		t.Fatalf("unexpected bounded transcript entries: first=%#v last=%#v", projected[0], projected[len(projected)-1])
@@ -267,21 +192,48 @@ func TestHostedGenesisSessionProjectionBoundsAndOmitsUnsafeMessages(t *testing.T
 	if len([]rune(projected[len(projected)-1].Content)) != hostedGenesisTranscriptMaxContentRunes {
 		t.Fatalf("expected assistant content cap, got %d", len([]rune(projected[len(projected)-1].Content)))
 	}
+}
 
-	unsafe := *conv
-	unsafe.Messages = models.EncodeSoulMintConversationBlob(`[{"role":"assistant","content":"AWS_SECRET_ACCESS_KEY=do-not-project"}]`)
-	if projected, _ := buildHostedGenesisConversationMessages(session, &unsafe); len(projected) != 0 {
-		t.Fatalf("unsafe credential-like transcript must be omitted, got %#v", projected)
+func TestHostedGenesisSessionProjectionRedactsOnlySecretShapedMessages(t *testing.T) {
+	t.Parallel()
+
+	session := testHostedGenesisSessionProjectionBase()
+	conv := &models.SoulAgentMintConversation{
+		AgentID:        session.AgentID,
+		ConversationID: session.ConversationID,
+	}
+	benign := *conv
+	benign.Messages = models.EncodeSoulMintConversationBlob(`[{"role":"user","content":"` + hostedGenesisBenignCredentialSafetyProse + `"},{"role":"assistant","content":"Correct: defensive prose must remain visible."}]`)
+	projected, bounded, redacted := buildHostedGenesisConversationMessages(session, &benign)
+	if len(projected) != 2 || bounded || redacted || projected[0].Content != hostedGenesisBenignCredentialSafetyProse {
+		t.Fatalf("benign credential-safety prose must remain visible, got %#v bounded=%v redacted=%v", projected, bounded, redacted)
 	}
 
-	mismatched := *conv
+	unsafe := *conv
+	unsafe.Messages = models.EncodeSoulMintConversationBlob(`[{"role":"user","content":"Keep the prior safe message."},{"role":"assistant","content":"AWS_SECRET_ACCESS_KEY=do-not-project"},{"role":"assistant","content":"Authorization: Bearer abcdefghijklmnopqrstuvwxyz012345"},{"role":"assistant","content":"sk-ant-abcdefghijklmnopqrstuvwxyz012345"}]`)
+	projected, bounded, redacted = buildHostedGenesisConversationMessages(session, &unsafe)
+	if len(projected) != 4 || bounded || !redacted || projected[0].Content != "Keep the prior safe message." {
+		t.Fatalf("secret-shaped entries must not erase safe transcript entries, got %#v bounded=%v redacted=%v", projected, bounded, redacted)
+	}
+	for _, index := range []int{1, 2, 3} {
+		if projected[index].Content != hostedGenesisTranscriptRedactedContent || !projected[index].Redacted {
+			t.Fatalf("secret-shaped transcript entry must be explicitly redacted: %#v", projected[index])
+		}
+	}
+}
+
+func TestHostedGenesisSessionProjectionRejectsMismatchedCompatibilityIdentity(t *testing.T) {
+	t.Parallel()
+
+	session := testHostedGenesisSessionProjectionBase()
+	mismatched := models.SoulAgentMintConversation{ConversationID: session.ConversationID}
 	mismatched.AgentID = "0x" + strings.Repeat("99", 32)
-	if projected, _ := buildHostedGenesisConversationMessages(session, &mismatched); len(projected) != 0 {
+	if projected, _, _ := buildHostedGenesisConversationMessages(session, &mismatched); len(projected) != 0 {
 		t.Fatalf("mismatched compatibility row must not project transcript, got %#v", projected)
 	}
 }
 
-func TestHostedGenesisSessionProjectionOmitsTerminalMessages(t *testing.T) {
+func TestHostedGenesisSessionProjectionIncludesSafeFailedTranscriptWithSignals(t *testing.T) {
 	t.Parallel()
 
 	session := testHostedGenesisSessionProjectionBase()
@@ -290,12 +242,22 @@ func TestHostedGenesisSessionProjectionOmitsTerminalMessages(t *testing.T) {
 	conv := &models.SoulAgentMintConversation{
 		AgentID:        session.AgentID,
 		ConversationID: session.ConversationID,
-		Messages:       models.EncodeSoulMintConversationBlob(`[{"role":"user","content":"do not include terminal transcript"}]`),
+		Messages:       models.EncodeSoulMintConversationBlob(`[{"role":"user","content":"Never share a private key or bearer token."},{"role":"assistant","content":"private_key=abcdefghijklmnopqrstuvwxyz012345"}]`),
 	}
 
 	resp := buildHostedGenesisConversationResponseFromSession(session, conv, hostedGenesisProjectionOptions{RequestID: "req-terminal"})
-	if len(resp.Conversation.Messages) != 0 || strings.Contains(string(mustMarshalJSON(t, resp)), "do not include terminal transcript") {
-		t.Fatalf("terminal status should omit transcript messages, got %#v", resp.Conversation)
+	if len(resp.Conversation.Messages) != 2 || resp.Conversation.MessagesTruncated || !resp.Conversation.MessagesRedacted {
+		t.Fatalf("failed status should retain safe transcript and signal redaction, got %#v", resp.Conversation)
+	}
+	if resp.Conversation.Messages[0].Content != "Never share a private key or bearer token." || resp.Conversation.Messages[0].Redacted {
+		t.Fatalf("benign defensive prose was not preserved: %#v", resp.Conversation.Messages[0])
+	}
+	if resp.Conversation.Messages[1].Content != hostedGenesisTranscriptRedactedContent || !resp.Conversation.Messages[1].Redacted {
+		t.Fatalf("secret-shaped content was not redacted: %#v", resp.Conversation.Messages[1])
+	}
+	raw := string(mustMarshalJSON(t, resp))
+	if strings.Contains(raw, "abcdefghijklmnopqrstuvwxyz012345") || !strings.Contains(raw, `"messages_redacted":true`) {
+		t.Fatalf("failed transcript projection leaked a secret or omitted the redaction signal: %s", raw)
 	}
 }
 
@@ -414,7 +376,7 @@ func TestHostedGenesisSessionHelperBranches(t *testing.T) {
 func TestHostedGenesisProcessingStatusesAreWaitOnly(t *testing.T) {
 	t.Parallel()
 
-	for _, status := range []hostedgenesis.Status{hostedgenesis.StatusInProgress, hostedgenesis.StatusDeclarationExtractionPending} {
+	for _, status := range []hostedgenesis.Status{hostedgenesis.StatusInProgress} {
 		if hostedGenesisStatusAcceptsTurn(status) {
 			t.Fatalf("processing status %s must not accept a new owner turn", status)
 		}
@@ -547,51 +509,6 @@ func TestMintConversationInstanceTrustRequestParsingBranches(t *testing.T) {
 	}
 }
 
-func TestMintConversationCompleteDeclarationParsingBranches(t *testing.T) {
-	t.Parallel()
-
-	rawDecl := string(mustMarshalJSON(t, testMintConversationDecl()))
-	ctx := adminCtx()
-	ctx.Request.Body = mustMarshalJSON(t, map[string]any{"declarations": json.RawMessage(rawDecl)})
-	if got := parseMintConversationCompleteDeclarations(ctx); got != rawDecl {
-		t.Fatalf("raw declarations parse mismatch: %q", got)
-	}
-
-	ctx = adminCtx()
-	ctx.Request.Body = mustMarshalJSON(t, map[string]any{"declarations": rawDecl})
-	if got := parseMintConversationCompleteDeclarations(ctx); got != rawDecl {
-		t.Fatalf("string declarations parse mismatch: %q", got)
-	}
-
-	ctx = adminCtx()
-	ctx.Request.Body = []byte(`{"declarations":`)
-	if got := parseMintConversationCompleteDeclarations(ctx); got != "" {
-		t.Fatalf("invalid wrapped declarations should be empty, got %q", got)
-	}
-}
-
-func TestMintConversationExtractionAndProviderBranches(t *testing.T) {
-	t.Parallel()
-
-	s := &Server{}
-	reg := &models.SoulAgentRegistration{ID: "reg-1", DomainNormalized: "example.com", LocalID: "alice", AgentID: "0x" + strings.Repeat("42", 32)}
-	conv := &models.SoulAgentMintConversation{AgentID: reg.AgentID, ConversationID: "conv-1"}
-	if _, _, appErr := s.extractMintConversationDeclarations(t.Context(), reg, nil, time.Now().UTC()); appErr == nil {
-		t.Fatalf("nil conversation should fail")
-	}
-	if _, _, appErr := s.extractMintConversationDeclarations(t.Context(), reg, conv, time.Now().UTC()); appErr == nil || appErr.Message != "conversation model is missing" {
-		t.Fatalf("missing model should fail, got %v", appErr)
-	}
-	conv.Model = "unsupported:model"
-	if _, _, appErr := s.extractMintConversationDeclarations(t.Context(), reg, conv, time.Now().UTC()); appErr == nil || appErr.Message != "conversation has no messages" {
-		t.Fatalf("missing messages should fail, got %v", appErr)
-	}
-	conv.Messages = `[{"role":"user","content":"hello"}]`
-	if _, _, appErr := s.extractMintConversationDeclarations(t.Context(), reg, conv, time.Now().UTC()); appErr == nil || appErr.Message != mintConversationUnsupportedModelSetMessage {
-		t.Fatalf("unsupported provider should fail, got %v", appErr)
-	}
-}
-
 func TestMintConversationProviderKeyEnvBranches(t *testing.T) {
 	s := &Server{}
 	t.Setenv("OPENAI_API_KEY", "openai-test")
@@ -717,33 +634,6 @@ func TestMintConversationLegacyFinalizeHelperBranches(t *testing.T) {
 	if appErr := requireMintConversationReadyForFinalize(inProgress, "not complete", "missing"); appErr == nil || appErr.Message != "not complete" {
 		t.Fatalf("expected not-complete conflict, got %v", appErr)
 	}
-	if appErr := requireMintConversationDurableAssistantTurn(&models.SoulAgentMintConversation{Status: models.SoulMintConversationStatusCreated}); appErr == nil {
-		t.Fatalf("created conversation should not have durable assistant turn")
-	}
-}
-
-func TestHostedGenesisCompletionCheckpointHelperBranches(t *testing.T) {
-	t.Parallel()
-
-	regCtx := mintConversationRegistrationContext{reg: &models.SoulAgentRegistration{ID: "reg-1"}, agentIDHex: "0x" + strings.Repeat("42", 32)}
-	if _, appErr := hostedGenesisDeclarationCheckpointForCompletion(regCtx, nil, nil, "{}", "req", time.Now().UTC()); appErr == nil {
-		t.Fatalf("nil session should fail")
-	}
-	session := testHostedGenesisSessionProjectionBase()
-	if _, appErr := hostedGenesisDeclarationCheckpointForCompletion(regCtx, session, nil, "", "req", time.Now().UTC()); appErr == nil {
-		t.Fatalf("empty declarations should fail")
-	}
-	conv := &models.SoulAgentMintConversation{Model: "anthropic:claude-sonnet-4-6", Messages: `[{"role":"user","content":"hi"},{"role":"assistant","content":"ok"}]`}
-	checkpoint, appErr := hostedGenesisDeclarationCheckpointForCompletion(regCtx, session, conv, string(mustMarshalJSON(t, testMintConversationDecl())), "", time.Now().UTC())
-	if appErr != nil || checkpoint == nil || checkpoint.Model != conv.Model || checkpoint.MessageCount == 0 {
-		t.Fatalf("expected checkpoint with compatibility model/message count, checkpoint=%#v err=%v", checkpoint, appErr)
-	}
-	if appErr := requireHostedGenesisSessionAssistantReady(nil); appErr == nil {
-		t.Fatalf("nil assistant-ready session should fail")
-	}
-	if appErr := requireHostedGenesisSessionAssistantReady(&models.HostedGenesisSession{Status: string(hostedgenesis.StatusDeclarationReady)}); appErr == nil {
-		t.Fatalf("declaration-ready session is not assistant-ready for completion")
-	}
 }
 
 func TestMintConversationFinalizeBeginParsingBranches(t *testing.T) {
@@ -770,11 +660,5 @@ func TestHostedGenesisFinalizeGateErrorBranches(t *testing.T) {
 	session := testHostedGenesisDeclarationReadySession(string(mustMarshalJSON(t, testMintConversationDecl())), "req-gate-extra")
 	if appErr := requireHostedGenesisFinalizeDeclarationsMatchSession(session, nil); appErr == nil || appErr.Message != "conversation has no produced declarations" {
 		t.Fatalf("expected missing compatibility declarations, got %v", appErr)
-	}
-	regCtx := mintConversationRegistrationContext{reg: &models.SoulAgentRegistration{ID: session.RegistrationID}, agentIDHex: session.AgentID}
-	badSession := *session
-	badSession.ConversationID = ""
-	if _, appErr := hostedGenesisDeclarationCheckpointForCompletion(regCtx, &badSession, nil, "{}", "req", time.Now().UTC()); appErr == nil {
-		t.Fatalf("invalid checkpoint identity should fail validation")
 	}
 }

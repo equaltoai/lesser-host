@@ -329,18 +329,26 @@ For the Lesser instance-key hosted-genesis path:
 - `GET /api/v1/soul/instance/agents/register/{id}/mint-conversation/{conversationId}`
 
 The POST response and GET status read are durable JSON HostConversation envelopes. `HTTP 200` / `HTTP 202` is transport
-success only. Lesser must persist `conversation_id` immediately and project `in_progress` and
-`declaration_extraction_pending` as progress. When the registration-scoped status read observes
-`declaration_ready` with `produced_declarations`, Lesser should treat the declaration evidence as terminal and then call
-the explicit instance-key `/finalize` route (`PublishHostedSoul`) to publish the instance-trust hosted/off-chain
-registration. The status read is read-only with respect to publication and must not be used as a substitute for publish.
+success only. Lesser must persist `conversation_id` immediately and treat `in_progress` and `assistant_turn_ready` as
+progress. `conversation.declaration_candidate` reports the bounded typed phase, current/completed sections, revision,
+canonical candidate hash, and deterministic owner review checkpoint when one is ready.
 
-When the latest assistant turn asks the final minted-soul affirmation question, the user's affirmative reply is the
-review-completion action for the Lesser instance-key route. Lesser should send that affirmation as the next ordinary
-`POST /mint-conversation` turn; Host records the affirmation in the durable transcript and transitions to
-`declaration_extraction_pending` instead of generating another assistant turn. Clients should then poll the canonical
-GET status until `declaration_ready` with `produced_declarations`, then call the instance-key finalize route to publish
-explicit instance-trust identities.
+The authoritative `declaration_candidate.review.review_text` contains a stable header and a byte-counted, delimited
+copy of the exact canonical JSON. Clients must display that full lossless payload for owner review rather than relying
+on the bounded transcript-message projection. `candidate_hash` authenticates the canonical JSON; `review_hash`
+authenticates the complete rendered review text, and structural affirmation repeats both with the exact revision.
+
+Owner authority is structural, not phrase based. When the candidate is in `review`, Lesser sends the next ordinary
+`POST /mint-conversation` turn with `candidate_action.action=affirm` plus the exact `candidate_revision`,
+`candidate_hash`, and `review_hash` that Host returned. To revise, it sends `candidate_action.action=edit` with those
+same bindings and one of `identity`, `philosophy`, `discipline`, `boundaries`, or `soul` as `section`. A stale or
+mismatched action fails closed. Free-form message text may accompany the action for the transcript, but it does not
+authorize affirmation or select an edit by itself.
+
+After a matching affirmation, the MicroVM performs deterministic provider-free finalization from the exact stored
+candidate bytes. Lesser polls the canonical GET status until `declaration_ready` with `produced_declarations`, then
+calls the explicit instance-key `/finalize` route (`PublishHostedSoul`) to publish the instance-trust hosted/off-chain
+registration. The status read is read-only with respect to publication and must not be used as a substitute for publish.
 
 For portal/native Host UI routes:
 
@@ -364,12 +372,14 @@ Important behavior:
 - agent-scoped:
   - `POST /api/v1/soul/agents/{agentId}/mint-conversation/{conversationId}/complete`
 
-For the Lesser instance-key hosted-genesis path, this step is normally driven by the final affirmation turn described
-above, not by a separate browser-visible Host button. The explicit `/complete` route remains available for controlled
-recovery and compatibility; the normal final-affirmation path proceeds through declaration extraction, status polling to
-`declaration_ready`, and explicit instance-key finalize publication.
+For the Lesser instance-key hosted-genesis path, this step is normally driven by the structural affirmation turn
+described above, not by a separate browser-visible Host button. The explicit `/complete` route is a read/convergence
+gate only: it performs no provider call, accepts no caller-authored declaration document, and cannot reconstruct a
+candidate. The normal path proceeds through provider-free finalization, status polling to `declaration_ready`, and
+explicit instance-key finalize publication.
 
-Response is the completed conversation record with extracted declarations stored on the backend.
+Response is the durable conversation projection; `produced_declarations` are present only after exact-candidate
+finalization.
 
 Side effects:
 
@@ -509,7 +519,7 @@ Current event types:
 - `review_started`
   - the workflow entered a live mint-conversation review
 - `finalize_ready`
-  - declarations were extracted and finalize preflight can be shown
+  - the exact typed candidate was affirmed and finalize preflight can be shown
 - `graduated`
   - publication completed and the agent has a new published version
 

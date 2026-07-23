@@ -484,6 +484,7 @@ func assertSoulPublicAgentBoolPointer(t *testing.T, name string, got *bool, want
 
 	if got == nil {
 		t.Fatalf("expected public agent %s=%v, got nil (agent=%#v)", name, want, agent)
+		return
 	}
 	if *got != want {
 		t.Fatalf("expected public agent %s=%v, got %v (agent=%#v)", name, want, *got, agent)

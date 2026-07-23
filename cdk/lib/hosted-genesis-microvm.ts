@@ -18,10 +18,12 @@ import type { Construct } from "constructs";
 export const HOSTED_GENESIS_MICROVM_NAMESPACE = "hosted-genesis" as const;
 export const HOSTED_GENESIS_MICROVM_SOURCE_OF_TRUTH =
   "host-dynamodb-hosted-genesis-session" as const;
-export const HOSTED_GENESIS_MICROVM_MAXIMUM_DURATION_SECONDS = 300 as const;
-export const HOSTED_GENESIS_MICROVM_IDLE_MAX_SECONDS = 300 as const;
-export const HOSTED_GENESIS_MICROVM_IDLE_SUSPENDED_SECONDS = 1800 as const;
-export const HOSTED_GENESIS_MICROVM_IDLE_AUTO_RESUME_ENABLED = false as const;
+export const HOSTED_GENESIS_MICROVM_MAXIMUM_DURATION_SECONDS = 28800 as const;
+export const HOSTED_GENESIS_PROVIDER_HTTP_TIMEOUT_SECONDS = 27900 as const;
+export const HOSTED_GENESIS_PROVIDER_CALL_TIMEOUT_SECONDS = 27900 as const;
+export const HOSTED_GENESIS_WORKLOAD_EXECUTION_TIMEOUT_SECONDS = 28200 as const;
+export const HOSTED_GENESIS_TERMINAL_PERSISTENCE_MARGIN_SECONDS = 300 as const;
+export const HOSTED_GENESIS_RUNTIME_CLEANUP_MARGIN_SECONDS = 600 as const;
 export const HOSTED_GENESIS_MICROVM_CONFIG_JSON_ENV =
   "HOSTED_GENESIS_MICROVM_CONFIG_JSON" as const;
 
@@ -341,12 +343,35 @@ export function configureHostedGenesisMicrovm(
           key: HOSTED_GENESIS_GUIDANCE_VERSION_ENV,
           value: HOSTED_GENESIS_GUIDANCE_VERSION_V2,
         },
+        {
+          key: "HOSTED_GENESIS_PROVIDER_HTTP_TIMEOUT_SECONDS",
+          value: String(HOSTED_GENESIS_PROVIDER_HTTP_TIMEOUT_SECONDS),
+        },
+        {
+          key: "HOSTED_GENESIS_PROVIDER_CALL_TIMEOUT_SECONDS",
+          value: String(HOSTED_GENESIS_PROVIDER_CALL_TIMEOUT_SECONDS),
+        },
+        {
+          key: "HOSTED_GENESIS_WORKLOAD_EXECUTION_TIMEOUT_SECONDS",
+          value: String(HOSTED_GENESIS_WORKLOAD_EXECUTION_TIMEOUT_SECONDS),
+        },
+        {
+          key: "HOSTED_GENESIS_MICROVM_MAXIMUM_DURATION_SECONDS",
+          value: String(HOSTED_GENESIS_MICROVM_MAXIMUM_DURATION_SECONDS),
+        },
+        {
+          key: "HOSTED_GENESIS_TERMINAL_PERSISTENCE_MARGIN_SECONDS",
+          value: String(HOSTED_GENESIS_TERMINAL_PERSISTENCE_MARGIN_SECONDS),
+        },
+        {
+          key: "HOSTED_GENESIS_RUNTIME_CLEANUP_MARGIN_SECONDS",
+          value: String(HOSTED_GENESIS_RUNTIME_CLEANUP_MARGIN_SECONDS),
+        },
       ],
       hooks: {},
       logging: {
         cloudWatch: {
           logGroup: `/aws/lambda/microvms/${props.namePrefix}_hosted_genesis`,
-          logStream: "build",
         },
       },
       resources: [{ minimumMemoryInMiB: 2048 }],
@@ -435,15 +460,6 @@ export function configureHostedGenesisMicrovm(
           HOSTED_GENESIS_MICROVM_MAXIMUM_DURATION_SECONDS: String(
             HOSTED_GENESIS_MICROVM_MAXIMUM_DURATION_SECONDS,
           ),
-          HOSTED_GENESIS_MICROVM_IDLE_MAX_SECONDS: String(
-            HOSTED_GENESIS_MICROVM_IDLE_MAX_SECONDS,
-          ),
-          HOSTED_GENESIS_MICROVM_IDLE_SUSPENDED_SECONDS: String(
-            HOSTED_GENESIS_MICROVM_IDLE_SUSPENDED_SECONDS,
-          ),
-          HOSTED_GENESIS_MICROVM_IDLE_AUTO_RESUME_ENABLED: String(
-            HOSTED_GENESIS_MICROVM_IDLE_AUTO_RESUME_ENABLED,
-          ),
           STATE_TABLE_NAME: props.stateTable.tableName,
         },
       },
@@ -518,6 +534,9 @@ export function configureHostedGenesisMicrovm(
       dispatchFn,
       controller.endpoint,
       microvmImage.microvmImageArn,
+      microvmImage.latestActiveImageVersion,
+      executionRole.roleArn,
+      `/aws/lambda/microvms/${props.namePrefix}_hosted_genesis`,
       [
         ingressConnector.networkConnectorArn,
         shellIngressConnector.networkConnectorArn,
@@ -598,6 +617,9 @@ function grantFunctionMicroVMDispatch(
   fn: lambda.Function,
   controllerEndpoint: string,
   imageArn: string,
+  imageVersion: string,
+  executionRoleArn: string,
+  runtimeLogGroup: string,
   ingressConnectorArns: string[],
   egressConnectorArns: string[],
   authTokenSSMParamName: string,
@@ -629,7 +651,7 @@ function grantFunctionMicroVMDispatch(
   // ai-worker. It carries the same AppTheory POST /microvms run inputs the
   // legacy per-variable env carried — governed controller endpoint, auth-token
   // SSM param name (raw token fetched at runtime), image ref, ingress/egress
-  // refs, MaximumDurationSeconds, and IdlePolicy — but avoids duplicating long
+  // refs and MaximumDurationSeconds — but avoids duplicating long
   // APPTHEORY_MICROVM_* key names on already-large deployment Lambdas. The
   // compact field names are Host-private CDK/runtime contract, not a public API.
   // addEnvironment is the CDK-supported way to append env vars to a Function
@@ -640,6 +662,9 @@ function grantFunctionMicroVMDispatch(
       controllerEndpoint,
       authTokenSSMParamName,
       imageArn,
+      imageVersion,
+      executionRoleArn,
+      runtimeLogGroup,
       ingressConnectorArns,
       egressConnectorArns,
     ),
@@ -650,29 +675,32 @@ function hostedGenesisMicroVMDispatchConfigJSON(
   controllerEndpoint: string,
   authTokenSSMParamName: string,
   imageArn: string,
+  imageVersion: string,
+  executionRoleArn: string,
+  runtimeLogGroup: string,
   ingressConnectorArns: string[],
   egressConnectorArns: string[],
 ): string {
   return cdk.Fn.join("", [
-    '{"v":1,"ep":"',
+    '{"v":2,"ep":"',
     controllerEndpoint,
     '","ap":"',
     authTokenSSMParamName,
     '","img":"',
     imageArn,
+    '","iv":"',
+    imageVersion,
+    '","er":"',
+    executionRoleArn,
+    '","lg":"',
+    runtimeLogGroup,
     '","in":"',
     ingressConnectorArns.join(","),
     '","eg":"',
     egressConnectorArns.join(","),
     '","max":',
     String(HOSTED_GENESIS_MICROVM_MAXIMUM_DURATION_SECONDS),
-    ',"idle":{"ar":',
-    String(HOSTED_GENESIS_MICROVM_IDLE_AUTO_RESUME_ENABLED),
-    ',"max":',
-    String(HOSTED_GENESIS_MICROVM_IDLE_MAX_SECONDS),
-    ',"sus":',
-    String(HOSTED_GENESIS_MICROVM_IDLE_SUSPENDED_SECONDS),
-    "}}",
+    "}",
   ]);
 }
 
@@ -916,7 +944,12 @@ function createHostedGenesisMicrovmImageBuildRole(
     // docs specify lambda.amazonaws.com as the trust principal; the
     // microvms.lambda.amazonaws.com form is rejected by IAM as an invalid
     // principal (CREATE fails with "IAM Invalid principal in policy").
-    assumedBy: new iam.ServicePrincipal("lambda.amazonaws.com"),
+    // AWS Lambda MicroVMs require both sts:AssumeRole and sts:TagSession on
+    // build/execution role trust. withSessionTags() adds the latter without
+    // broadening the service principal.
+    assumedBy: new iam.ServicePrincipal(
+      "lambda.amazonaws.com",
+    ).withSessionTags(),
   });
 
   // Fetch the workload code artifact tarball from the CDK asset staging bucket.
@@ -1032,7 +1065,13 @@ function createHostedGenesisMicrovmExecutionRole(
     // AWS Lambda MicroVMs assume this role via lambda.amazonaws.com trust
     // (microvms.lambda.amazonaws.com is rejected by IAM as an invalid
     // principal — see the build role comment above).
-    assumedBy: new iam.ServicePrincipal("lambda.amazonaws.com"),
+    // AWS Lambda MicroVMs require both sts:AssumeRole and sts:TagSession on
+    // build/execution role trust. The live role previously allowed only
+    // AssumeRole, which prevented the service's tagged runtime session from
+    // delivering stdout/stderr even though the role had Logs permissions.
+    assumedBy: new iam.ServicePrincipal(
+      "lambda.amazonaws.com",
+    ).withSessionTags(),
   });
 
   // DynamoDB read/write on the Host state table only. The workload reads
@@ -1072,13 +1111,31 @@ function createHostedGenesisMicrovmExecutionRole(
     }),
   );
 
-  // X-Ray trace emission + CloudWatch Logs for the in-VM process observability
-  // (the workload wires apptheory observability hooks). Scoped managed policies
-  // only — no administrative actions.
-  role.addManagedPolicy(
-    iam.ManagedPolicy.fromAwsManagedPolicyName(
-      "service-role/AWSLambdaBasicExecutionRole",
-    ),
+  // Runtime stdout/stderr delivery uses this role, not the controller Lambda's
+  // role. Grant exactly the AWS-documented actions. CreateLogGroup cannot be
+  // resource-scoped; stream creation and writes are limited to the canonical
+  // hosted-genesis MicroVM log group. AppTheory remains the only RunMicrovm
+  // lifecycle path and propagates this role through executionRole.
+  role.addToPolicy(
+    new iam.PolicyStatement({
+      sid: "CreateMicrovmRuntimeLogGroup",
+      actions: ["logs:CreateLogGroup"],
+      resources: ["*"],
+    }),
+  );
+  role.addToPolicy(
+    new iam.PolicyStatement({
+      sid: "WriteMicrovmRuntimeLogs",
+      actions: ["logs:CreateLogStream", "logs:PutLogEvents"],
+      resources: [
+        cdk.Stack.of(scope).formatArn({
+          service: "logs",
+          resource: "log-group",
+          resourceName: `/aws/lambda/microvms/${namePrefix}_hosted_genesis:*`,
+          arnFormat: cdk.ArnFormat.COLON_RESOURCE_NAME,
+        }),
+      ],
+    }),
   );
 
   cdk.Tags.of(role).add("Service", "lesser-host");

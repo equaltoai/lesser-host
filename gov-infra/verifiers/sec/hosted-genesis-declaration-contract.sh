@@ -17,16 +17,16 @@
 #     DeclarationContractFromVersions, or the no-contract prompt wrapper
 #     MintConversationSystemPrompt( (the contract-scoped
 #     MintConversationSystemPromptForContract remains legal);
-#   - deployed fresh hosted-genesis runtime code (MicroVM workload + aiworker)
+#   - deployed fresh hosted-genesis runtime code (MicroVM workload only)
 #     does not reference the legacy DeclarationCodeBoundaries emission;
-#   - both fresh runtime paths call RequireFiveBodyDeclarationContractFromEnv
-#     and route ErrDeclarationContractUnconfigured to the operator_action lane;
-#   - both fresh builders guard on IsFiveBody and fail closed with
+#   - the MicroVM runtime calls RequireFiveBodyDeclarationContractFromEnv and
+#     routes ErrDeclarationContractUnconfigured to the operator_action lane;
+#   - its builder guards on IsFiveBody and fails closed with
 #     ErrDeclarationContractUnconfigured;
+#   - aiworker remains transport-only and cannot select/build/extract declarations;
 #   - the fail-closed selectors (env + version parser) + sentinel exist in
 #     internal/hostedgenesis;
-#   - CDK still provisions the five-body contract env for the MicroVM image and
-#     the ai-worker Lambda (issue #955 wiring stays load-bearing).
+#   - CDK still provisions the five-body contract env for the MicroVM image.
 # Zero points: any invariant fails. No partial credit.
 
 set -euo pipefail
@@ -41,7 +41,7 @@ deployed_go_files() {
 }
 
 fresh_runtime_go_files() {
-  find cmd/hosted-genesis-microvm-workload internal/aiworker -type f -name '*.go' ! -name '*_test.go' | sort
+  find cmd/hosted-genesis-microvm-workload -type f -name '*.go' ! -name '*_test.go' | sort
 }
 
 fail() {
@@ -107,13 +107,11 @@ selector_file="internal/hostedgenesis/fivebody.go"
 workload_runner="cmd/hosted-genesis-microvm-workload/runner.go"
 aiworker_file="internal/aiworker/hosted_genesis.go"
 cdk_microvm="cdk/lib/hosted-genesis-microvm.ts"
-cdk_stack="cdk/lib/lesser-host-stack.ts"
 
 require_file "${selector_file}"
 require_file "${workload_runner}"
 require_file "${aiworker_file}"
 require_file "${cdk_microvm}"
-require_file "${cdk_stack}"
 
 require_pattern "${selector_file}" 'func[[:space:]]+RequireFiveBodyDeclarationContractFromEnv' 'fail-closed five-body contract selector is defined'
 require_pattern "${selector_file}" 'func[[:space:]]+ParseFiveBodyDeclarationContract' 'fail-closed five-body version parser is defined'
@@ -124,12 +122,13 @@ require_pattern "${workload_runner}" 'errors[.]Is[(][^)]*ErrDeclarationContractU
 require_pattern "${workload_runner}" 'FailureCodeOperatorActionRequired' 'MicroVM workload records operator_action_required for an unconfigured contract'
 require_pattern "${workload_runner}" 'if[[:space:]]+!contract[.]IsFiveBody[(][)]' 'MicroVM workload declaration builder guards on the five-body contract'
 
-require_pattern "${aiworker_file}" 'RequireFiveBodyDeclarationContractFromEnv[(]' 'aiworker fallback resolves the contract through the fail-closed selector'
-require_pattern "${aiworker_file}" 'hostedGenesisFailureOperatorActionRequired[[:space:]]*=[[:space:]]*"operator_action_required"' 'aiworker maps the unconfigured contract to operator_action_required'
-require_pattern "${aiworker_file}" 'if[[:space:]]+!contract[.]IsFiveBody[(][)]' 'aiworker declaration builder guards on the five-body contract'
-require_pattern "${aiworker_file}" 'ErrDeclarationContractUnconfigured' 'aiworker fails closed with the unconfigured-contract sentinel'
+for forbidden in RequireFiveBodyDeclarationContractFromEnv BuildMintConversationDeclarations ExtractMintConversationDeclarations declaration_extraction; do
+  if grep -En "${forbidden}" "${aiworker_file}"; then
+    fail "aiworker transport path must not select, build, or extract declarations: ${forbidden}"
+  fi
+  echo "PASS: aiworker transport path omits ${forbidden}"
+done
 
 require_pattern "${cdk_microvm}" 'HOSTED_GENESIS_DECLARATION_SCHEMA_VERSION' 'CDK provisions the declaration schema env for the MicroVM image'
-require_pattern "${cdk_stack}" 'HOSTED_GENESIS_DECLARATION_SCHEMA_VERSION_ENV' 'CDK provisions the declaration schema env for the ai-worker Lambda'
 
-echo "PASS: fresh hosted-genesis declaration production is five-body-only and fails closed without an explicit contract"
+echo "PASS: MicroVM-only hosted-genesis declaration production is five-body-only and fails closed without an explicit contract"

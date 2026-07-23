@@ -95,7 +95,7 @@ func (c DeclarationContract) IsFiveBody() bool {
 	return strings.EqualFold(strings.TrimSpace(c.SchemaVersion), DeclarationSchemaVersionV2) || strings.EqualFold(strings.TrimSpace(c.GuidanceVersion), GuidanceVersionV2)
 }
 
-// ValidateDeclarationContractVersions ensures an extraction result carries the
+// ValidateDeclarationContractVersions ensures a typed candidate carries the
 // exact Host-selected five-body schema/guidance versions before
 // declaration_ready. A non-five-body contract fails closed as unconfigured.
 func ValidateDeclarationContractVersions(schemaVersion string, guidanceVersion string, contract DeclarationContract) error {
@@ -110,7 +110,7 @@ func ValidateDeclarationContractVersions(schemaVersion string, guidanceVersion s
 	return nil
 }
 
-// FiveBodyDeclaration captures the five first-class bodies extracted by the v2
+// FiveBodyDeclaration captures the five first-class bodies constructed by the v2
 // hosted genesis contract. Capabilities and transparency remain satellites.
 type FiveBodyDeclaration struct {
 	Identity   FiveBodySection  `json:"identity"`
@@ -212,22 +212,12 @@ func normalizeFiveBodyNotes(notes []string) []string {
 // refusal floor before any declaration_ready transition.
 func ValidateFiveBodyDeclaration(in FiveBodyDeclaration) error {
 	in = NormalizeFiveBodyDeclaration(in)
-	if strings.TrimSpace(in.Identity.Summary) == "" {
-		return NewDeclarationValidationError(DeclarationCodeFiveBodyIdentity)
+	for _, section := range declarationSectionOrder {
+		if err := validateDeclarationSection(section, in); err != nil {
+			return err
+		}
 	}
-	if strings.TrimSpace(in.Philosophy.Summary) == "" {
-		return NewDeclarationValidationError(DeclarationCodeFiveBodyPhilosophy)
-	}
-	if strings.TrimSpace(in.Discipline.Summary) == "" {
-		return NewDeclarationValidationError(DeclarationCodeFiveBodyDiscipline)
-	}
-	if strings.TrimSpace(in.Boundaries.Summary) == "" {
-		return NewDeclarationValidationError(DeclarationCodeFiveBodyBoundaries)
-	}
-	if strings.TrimSpace(in.Soul.Summary) == "" {
-		return NewDeclarationValidationError(DeclarationCodeFiveBodySoul)
-	}
-	return ValidateFiveBodyRefusals(in.Soul.Refusals)
+	return nil
 }
 
 // ValidateFiveBodyRefusals enforces minItems >= 3 and rejects generic refusal

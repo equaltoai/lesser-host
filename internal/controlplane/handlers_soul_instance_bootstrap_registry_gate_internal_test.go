@@ -117,47 +117,6 @@ func TestSoulInstanceHostedOffchainRead_DoesNotRequireRegistryContract(t *testin
 	}
 }
 
-func TestSoulInstanceHostedOffchainComplete_DoesNotRequireRegistryContract(t *testing.T) {
-	t.Parallel()
-
-	tdb := newMintConversationTestDB()
-	s := newMintConversationServer(tdb)
-	s.cfg.SoulRegistryContractAddress = ""
-	reg := mintConversationHandleReg()
-	expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, soulInstanceBootstrapTestInstanceSlug)
-	stubMintConversationRegistration(t, tdb, reg)
-	stubSoulInstanceBootstrapDomainAndInstance(t, tdb, reg.DomainNormalized, soulInstanceBootstrapTestInstanceSlug)
-	stubMintConversationConversation(t, tdb, models.SoulAgentMintConversation{
-		AgentID:        reg.AgentID,
-		ConversationID: mintConversationTestConversationID,
-		Model:          "anthropic:claude-sonnet-4-6",
-		Messages:       encodeMintConversationBlob(`[{"role":"user","content":"describe yourself"},{"role":"assistant","content":"done"}]`),
-		Status:         models.SoulMintConversationStatusAssistantTurnReady,
-		CreatedAt:      time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC),
-	})
-	stubMintConversationIdentity(t, tdb, nil, theoryErrors.ErrItemNotFound)
-	expectSoulInstanceMintConversationCompletionWrite(t, tdb)
-
-	resp, err := s.handleSoulInstanceCompleteMintConversation(newSoulInstanceBootstrapContext(
-		map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
-		mustMarshalJSON(t, map[string]any{"declarations": testMintConversationDecl()}),
-		map[string]string{"id": reg.ID, "conversationId": mintConversationTestConversationID},
-	))
-	if err != nil {
-		t.Fatalf("unexpected err: %v", err)
-	}
-	if resp.Status != http.StatusOK {
-		t.Fatalf("expected 200, got %d body=%q", resp.Status, string(resp.Body))
-	}
-	var out hostedGenesisConversationResponse
-	if err := json.Unmarshal(resp.Body, &out); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if out.Conversation.Status != models.SoulMintConversationStatusDeclarationReady || out.Conversation.ProducedDeclarations == nil {
-		t.Fatalf("expected declaration-ready hosted conversation, got %#v", out.Conversation)
-	}
-}
-
 func TestSoulInstanceRegistryRequiredRoute_FailsClosedWithoutRegistryContract(t *testing.T) {
 	t.Parallel()
 

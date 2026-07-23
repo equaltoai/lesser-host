@@ -62,7 +62,7 @@ func (s *Server) reserveHostedGenesisPublication(ctx context.Context, finalizeCt
 }
 
 // persistHostedGenesisPublished atomically moves authoritative session truth
-// and its compatibility row to the single explicit terminal publication state.
+// and its public projection row to the single explicit terminal publication state.
 func (s *Server) persistHostedGenesisPublished(ctx context.Context, finalizeCtx *mintConversationFinalizeContext, publication hostedgenesis.PublicationCheckpoint) *apptheory.AppTheoryError {
 	session, conversation, alreadyPublished, appErr := validateHostedGenesisPublishedPersistence(finalizeCtx, publication)
 	if appErr != nil || alreadyPublished || session == nil {

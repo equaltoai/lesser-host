@@ -1,7 +1,6 @@
 package controlplane
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -31,11 +30,9 @@ import (
 )
 
 const (
-	soulMintConversationStreamBaseCredits  = int64(10)
-	soulMintConversationExtractBaseCredits = int64(10)
+	soulMintConversationStreamBaseCredits = int64(10)
 
 	soulMintConversationStreamModule           = "soul.mint_conversation.stream"
-	soulMintConversationExtractModule          = "soul.mint_conversation.extract"
 	defaultSoulMintConversationModel           = "anthropic:claude-sonnet-4-6"
 	mintConversationUnsupportedModelSetMessage = "unsupported model set"
 
@@ -55,12 +52,13 @@ const (
 // --- Request / Response types ---
 
 type soulMintConversationRequest struct {
-	ConversationID  string `json:"conversation_id,omitempty"` // Empty = start new conversation.
-	Model           string `json:"model,omitempty"`           // e.g. "anthropic:claude-sonnet-4-6"
-	Message         string `json:"message"`                   // User's message for this turn.
-	IdempotencyKey  string `json:"idempotency_key,omitempty"`
-	CorrelationID   string `json:"correlation_id,omitempty"`
-	LesserRequestID string `json:"lesser_request_id,omitempty"`
+	ConversationID  string                                    `json:"conversation_id,omitempty"` // Empty = start new conversation.
+	Model           string                                    `json:"model,omitempty"`           // e.g. "anthropic:claude-sonnet-4-6"
+	Message         string                                    `json:"message"`                   // User's message for this turn.
+	IdempotencyKey  string                                    `json:"idempotency_key,omitempty"`
+	CorrelationID   string                                    `json:"correlation_id,omitempty"`
+	LesserRequestID string                                    `json:"lesser_request_id,omitempty"`
+	CandidateAction *hostedgenesis.DeclarationCandidateAction `json:"candidate_action,omitempty"`
 }
 
 type soulMintConversationMessage struct {
@@ -380,6 +378,15 @@ func requireMintConversationMessage(ctx *apptheory.Context) (soulMintConversatio
 	if len(message) > 8192 {
 		return req, "", newAppTheoryError("app.bad_request", "message is too long")
 	}
+	if req.CandidateAction != nil {
+		action := strings.ToLower(strings.TrimSpace(req.CandidateAction.Action))
+		if action != "edit" && action != "affirm" {
+			return req, "", newAppTheoryError("app.bad_request", "candidate_action.action must be edit or affirm")
+		}
+		if req.CandidateAction.CandidateRevision < 0 || strings.TrimSpace(req.CandidateAction.CandidateHash) == "" || strings.TrimSpace(req.CandidateAction.ReviewHash) == "" {
+			return req, "", newAppTheoryError("app.bad_request", "candidate_action binding is required")
+		}
+	}
 	return req, message, nil
 }
 
@@ -452,7 +459,7 @@ func mintConversationCompletionReplayReady(conv *models.SoulAgentMintConversatio
 			return false, soulMintConversationCompleteReasonMissingDeclarations
 		}
 		return false, soulMintConversationCompleteReasonInvalidDeclarations
-	case models.SoulMintConversationStatusInProgress, models.SoulMintConversationStatusAssistantTurnReady, models.SoulMintConversationStatusDeclarationExtractionPending:
+	case models.SoulMintConversationStatusInProgress, models.SoulMintConversationStatusAssistantTurnReady:
 		return false, ""
 	default:
 		return false, soulMintConversationCompleteReasonInvalidState
@@ -513,39 +520,6 @@ func requireMintConversationReadyForFinalize(conv *models.SoulAgentMintConversat
 		return newAppTheoryError("app.conflict", "conversation has invalid produced declarations")
 	}
 	return nil
-}
-
-func requireMintConversationDurableAssistantTurn(conv *models.SoulAgentMintConversation) *apptheory.AppTheoryError {
-	if conv == nil {
-		return newAppTheoryError("app.internal", "internal error")
-	}
-	ok, reason := mintConversationHasDurableAssistantTurn(conv)
-	if ok {
-		return nil
-	}
-	return newAppTheoryError(appErrCodeConflict, reason)
-}
-
-func mintConversationHasDurableAssistantTurn(conv *models.SoulAgentMintConversation) (bool, string) {
-	if conv == nil {
-		return false, "conversation has no durable messages"
-	}
-	decodeMintConversationFields(conv)
-	rawMessages := strings.TrimSpace(conv.Messages)
-	if rawMessages == "" {
-		return false, "conversation has no durable messages"
-	}
-
-	var messages []soulMintConversationMessage
-	if err := json.Unmarshal([]byte(rawMessages), &messages); err != nil {
-		return false, "conversation messages are invalid"
-	}
-	for _, msg := range messages {
-		if strings.EqualFold(strings.TrimSpace(msg.Role), "assistant") && strings.TrimSpace(msg.Content) != "" {
-			return true, ""
-		}
-	}
-	return false, "conversation has no completed assistant turn"
 }
 
 func (s *Server) loadMintConversationFinalizeContext(ctx *apptheory.Context) (mintConversationFinalizeContext, *apptheory.AppTheoryError) {
@@ -1213,11 +1187,10 @@ func (s *Server) updateMintConversationStatus(ctx context.Context, agentIDHex st
 	}
 }
 
-// handleSoulCompleteMintConversation marks a legacy conversation as completed
-// and extracts declarations. The Hosted Genesis instance-key path is projected
-// through handleSoulInstanceCompleteMintConversation; after Project 48 M11 that
-// path is a polling/finalize gate and no longer decides final affirmation or
-// starts Host-side extraction for ordinary actor turns.
+// handleSoulCompleteMintConversation is retained as a read/replay surface for
+// terminal records. Active declaration construction belongs exclusively to the
+// Hosted Genesis MicroVM typed-candidate lane; this route cannot accept caller
+// declaration bytes or invoke a provider.
 func (s *Server) handleSoulCompleteMintConversation(ctx *apptheory.Context) (*apptheory.Response, error) {
 	regCtx, appErr := s.requireMintConversationRegistrationContext(ctx, false)
 	if appErr != nil {
@@ -1244,7 +1217,7 @@ func (s *Server) handleSoulCompleteMintConversation(ctx *apptheory.Context) (*ap
 		return nil, publishGuardErr
 	}
 
-	return s.completeSoulMintConversationForRegistration(ctx, regCtx, conv, conversationID)
+	return nil, newAppTheoryError("app.conflict", "typed declaration candidate must be finalized by the Hosted Genesis MicroVM")
 }
 
 func (s *Server) handleSoulAgentCompleteMintConversation(ctx *apptheory.Context) (*apptheory.Response, error) {
@@ -1276,11 +1249,7 @@ func (s *Server) handleSoulAgentCompleteMintConversation(ctx *apptheory.Context)
 		return nil, publishGuardErr
 	}
 
-	return s.completeSoulMintConversationForRegistration(ctx, mintConversationRegistrationContext{
-		reg:        agentCtx.reg,
-		inst:       agentCtx.inst,
-		agentIDHex: agentCtx.agentIDHex,
-	}, conv, conversationID)
+	return nil, newAppTheoryError("app.conflict", "typed declaration candidate must be finalized by the Hosted Genesis MicroVM")
 }
 
 // handleSoulGetMintConversation retrieves a mint conversation record.
@@ -1798,102 +1767,6 @@ func soulIdentityAnchorState(identity *models.SoulAgentIdentity) string {
 	}
 }
 
-func parseMintConversationCompleteDeclarations(ctx *apptheory.Context) string {
-	var reqBody struct {
-		Declarations json.RawMessage `json:"declarations,omitempty"`
-	}
-	_ = httpx.ParseJSON(ctx, &reqBody)
-
-	raw := bytes.TrimSpace(reqBody.Declarations)
-	if len(raw) == 0 {
-		return ""
-	}
-	if raw[0] != '"' {
-		return strings.TrimSpace(string(raw))
-	}
-
-	var wrapped string
-	if decodeErr := json.Unmarshal(raw, &wrapped); decodeErr != nil {
-		return ""
-	}
-	return strings.TrimSpace(wrapped)
-}
-
-func (s *Server) resolveMintConversationCompletion(
-	ctx *apptheory.Context,
-	regCtx mintConversationRegistrationContext,
-	conv *models.SoulAgentMintConversation,
-	conversationID string,
-	now time.Time,
-) (string, models.AIUsage, *apptheory.AppTheoryError) {
-	declarationsJSON := parseMintConversationCompleteDeclarations(ctx)
-	if declarationsJSON != "" {
-		decl, appErr := parseAndValidateMintConversationDeclarations(declarationsJSON)
-		if appErr != nil {
-			return "", models.AIUsage{}, appErr
-		}
-		if !isRegistrationInstanceTrust(regCtx.reg) && len(decl.Capabilities) == 0 {
-			return "", models.AIUsage{}, newAppTheoryError("app.bad_request", string(hostedgenesis.DeclarationCodeCapabilities))
-		}
-		return declarationsJSON, models.AIUsage{}, nil
-	}
-
-	creditsDebited, appErr := s.debitSoulMintConversationCredits(
-		ctx.Context(),
-		regCtx.inst,
-		soulMintConversationExtractModule,
-		conversationID,
-		strings.TrimSpace(ctx.RequestID),
-		soulMintConversationExtractBaseCredits,
-		now,
-		func(tx core.TransactionBuilder, creditsRequested int64) error {
-			update := &models.SoulAgentMintConversation{AgentID: regCtx.agentIDHex, ConversationID: conversationID}
-			_ = update.UpdateKeys()
-			tx.UpdateWithBuilder(update, func(ub core.UpdateBuilder) error {
-				ub.Add("ChargedCredits", creditsRequested)
-				return nil
-			}, tabletheory.IfExists())
-			return nil
-		},
-	)
-	if appErr != nil {
-		return "", models.AIUsage{}, appErr
-	}
-	conv.ChargedCredits += creditsDebited
-
-	decl, usage, appErr := s.extractMintConversationDeclarations(ctx.Context(), regCtx.reg, conv, now)
-	if appErr != nil {
-		return "", models.AIUsage{}, appErr
-	}
-	b, err := json.Marshal(decl)
-	if err != nil {
-		return "", models.AIUsage{}, newAppTheoryError("app.internal", "failed to serialize declarations")
-	}
-	return strings.TrimSpace(string(b)), usage, nil
-}
-
-func (s *Server) persistCompletedMintConversation(ctx context.Context, conv *models.SoulAgentMintConversation, declarationsJSON string, extractUsage models.AIUsage, now time.Time) *apptheory.AppTheoryError {
-	if extractUsage != (models.AIUsage{}) {
-		conv.Usage = addAIUsage(conv.Usage, extractUsage)
-	}
-	conv.Status = models.SoulMintConversationStatusCompleted
-	conv.ProducedDeclarations = declarationsJSON
-	conv.CompletedAt = now
-	update := &models.SoulAgentMintConversation{
-		AgentID:              conv.AgentID,
-		ConversationID:       conv.ConversationID,
-		Status:               conv.Status,
-		ProducedDeclarations: encodeMintConversationBlob(declarationsJSON),
-		CompletedAt:          conv.CompletedAt,
-		Usage:                conv.Usage,
-	}
-	_ = update.UpdateKeys()
-	if err := s.store.DB.WithContext(ctx).Model(update).IfExists().Update("Status", "ProducedDeclarations", "CompletedAt", "Usage"); err != nil {
-		return newAppTheoryError("app.internal", "failed to complete conversation")
-	}
-	return nil
-}
-
 func verifyMintConversationBoundarySignatures(wallet string, boundaries []soul.BoundaryV2, signatures map[string]string) *apptheory.AppTheoryError {
 	for i := range boundaries {
 		b := boundaries[i]
@@ -2251,162 +2124,9 @@ func (s *Server) apiKeyForMintConversationModel(ctx context.Context, modelSet st
 	}
 }
 
-func (s *Server) extractMintConversationDeclarations(ctx context.Context, reg *models.SoulAgentRegistration, conv *models.SoulAgentMintConversation, now time.Time) (soulMintConversationProducedDeclarations, models.AIUsage, *apptheory.AppTheoryError) {
-	if s == nil || reg == nil || conv == nil {
-		return soulMintConversationProducedDeclarations{}, models.AIUsage{}, newAppTheoryError("app.internal", "internal error")
-	}
-
-	modelSet := strings.TrimSpace(conv.Model)
-	if modelSet == "" {
-		return soulMintConversationProducedDeclarations{}, models.AIUsage{}, newAppTheoryError("app.bad_request", "conversation model is missing")
-	}
-
-	var transcript []soulMintConversationMessage
-	if strings.TrimSpace(conv.Messages) != "" {
-		_ = json.Unmarshal([]byte(conv.Messages), &transcript)
-	}
-	if len(transcript) == 0 {
-		return soulMintConversationProducedDeclarations{}, models.AIUsage{}, newAppTheoryError("app.bad_request", "conversation has no messages")
-	}
-
-	apiKey, appErr := s.apiKeyForMintConversationModel(ctx, modelSet)
-	if appErr != nil {
-		return soulMintConversationProducedDeclarations{}, models.AIUsage{}, appErr
-	}
-
-	// The extraction contract resolves through the fail-closed five-body
-	// selector; there is no version-less legacy extraction lane.
-	contract, contractErr := hostedgenesis.RequireFiveBodyDeclarationContractFromEnv()
-	if contractErr != nil {
-		return soulMintConversationProducedDeclarations{}, models.AIUsage{}, newAppTheoryError("app.internal", "hosted genesis declaration contract is not configured; operator action required")
-	}
-
-	in := llm.MintConversationDeclarationsInput{
-		SchemaVersion:   contract.SchemaVersion,
-		GuidanceVersion: contract.GuidanceVersion,
-		Registration: llm.MintConversationRegistrationContext{
-			Domain:               strings.TrimSpace(reg.DomainNormalized),
-			LocalID:              strings.TrimSpace(reg.LocalID),
-			AgentID:              strings.TrimSpace(reg.AgentID),
-			DeclaredCapabilities: hostedgenesis.FilterDeclaredCapabilitiesForPrompt(reg.Capabilities),
-		},
-		Messages: make([]llm.MintConversationMessage, 0, len(transcript)),
-	}
-	for _, m := range transcript {
-		in.Messages = append(in.Messages, llm.MintConversationMessage{
-			Role:    strings.ToLower(strings.TrimSpace(m.Role)),
-			Content: strings.TrimSpace(m.Content),
-		})
-	}
-
-	draft, usage, appErr := runMintConversationDeclarationsModel(ctx, apiKey, modelSet, in)
-	if appErr != nil {
-		return soulMintConversationProducedDeclarations{}, models.AIUsage{}, appErr
-	}
-
-	declaredCapabilities := reg.Capabilities
-	allowEmptyCapabilities := isRegistrationInstanceTrust(reg)
-	if allowEmptyCapabilities {
-		declaredCapabilities = nil
-	}
-	decl, appErr := buildMintConversationProducedDeclarationsWithOptions(draft, now, modelSet, declaredCapabilities, allowEmptyCapabilities)
-	if appErr != nil {
-		return soulMintConversationProducedDeclarations{}, models.AIUsage{}, appErr
-	}
-	return decl, usage, nil
-}
-
-// runMintConversationDeclarationsModel dispatches extraction to the provider
-// selected by the model-set prefix.
-func runMintConversationDeclarationsModel(ctx context.Context, apiKey string, modelSet string, in llm.MintConversationDeclarationsInput) (llm.MintConversationDeclarationsDraft, models.AIUsage, *apptheory.AppTheoryError) {
-	switch {
-	case strings.HasPrefix(strings.ToLower(modelSet), "openai:"):
-		out, usage, err := llm.MintConversationDeclarationsOpenAI(ctx, apiKey, modelSet, in)
-		if err != nil {
-			log.Printf("controlplane: mint conversation declaration extraction failed: provider=openai model=%s failure_code=%s", modelSet, hostedGenesisFailureDeclarationExtractionFailed)
-			return llm.MintConversationDeclarationsDraft{}, models.AIUsage{}, newAppTheoryError("app.internal", "failed to extract declarations")
-		}
-		return out, usage, nil
-	case strings.HasPrefix(strings.ToLower(modelSet), "anthropic:"):
-		out, usage, err := llm.MintConversationDeclarationsAnthropic(ctx, apiKey, modelSet, in)
-		if err != nil {
-			log.Printf("controlplane: mint conversation declaration extraction failed: provider=anthropic model=%s failure_code=%s", modelSet, hostedGenesisFailureDeclarationExtractionFailed)
-			return llm.MintConversationDeclarationsDraft{}, models.AIUsage{}, newAppTheoryError("app.internal", "failed to extract declarations")
-		}
-		return out, usage, nil
-	default:
-		return llm.MintConversationDeclarationsDraft{}, models.AIUsage{}, newAppTheoryError("app.bad_request", mintConversationUnsupportedModelSetMessage)
-	}
-}
-
-func buildMintConversationProducedDeclarationsWithOptions(draft llm.MintConversationDeclarationsDraft, now time.Time, modelSet string, declaredCapabilities []string, allowEmptyCapabilities bool) (soulMintConversationProducedDeclarations, *apptheory.AppTheoryError) {
-	decl := soulMintConversationProducedDeclarations{
-		SelfDescription: draft.SelfDescription,
-		Capabilities:    []soul.CapabilityV2{},
-		Boundaries:      []soul.BoundaryV2{},
-		Transparency:    draft.Transparency,
-	}
-
-	decl.SelfDescription.AuthoredBy = "agent"
-	decl.SelfDescription.MintingModel = strings.TrimSpace(modelSet)
-	if err := decl.SelfDescription.Validate(); err != nil {
-		return soulMintConversationProducedDeclarations{}, newAppTheoryError("app.bad_request", string(hostedgenesis.DeclarationCodeSelfDescription))
-	}
-
-	if allowEmptyCapabilities {
-		var capErr error
-		decl.Capabilities, capErr = hostedgenesis.ValidateAndNormalizeProducedCapabilities(draft.Capabilities)
-		if capErr != nil {
-			return soulMintConversationProducedDeclarations{}, newAppTheoryError("app.bad_request", string(hostedgenesis.DeclarationCodeCapabilitiesBad))
-		}
-	} else {
-		decl.Capabilities = hostedgenesis.NormalizeProducedCapabilities(draft.Capabilities)
-	}
-	if !allowEmptyCapabilities {
-		decl.Capabilities = hostedgenesis.MergeDeclaredCapabilities(decl.Capabilities, declaredCapabilities)
-	}
-	if !allowEmptyCapabilities && len(decl.Capabilities) == 0 {
-		return soulMintConversationProducedDeclarations{}, newAppTheoryError("app.bad_request", string(hostedgenesis.DeclarationCodeCapabilities))
-	}
-
-	bounds := make([]soul.BoundaryV2, 0, len(draft.Boundaries))
-	invalidBoundary := false
-	for i, b := range draft.Boundaries {
-		id := fmt.Sprintf("mint-%d-%02d", now.Unix(), i+1)
-		entry := soul.BoundaryV2{
-			ID:             id,
-			Category:       strings.ToLower(strings.TrimSpace(b.Category)),
-			Statement:      strings.TrimSpace(b.Statement),
-			Rationale:      strings.TrimSpace(b.Rationale),
-			AddedAt:        now.UTC().Format(time.RFC3339),
-			AddedInVersion: "1",
-			Signature:      "0x00",
-		}
-		if err := entry.Validate(); err != nil {
-			invalidBoundary = true
-			continue
-		}
-		bounds = append(bounds, entry)
-	}
-	decl.Boundaries = bounds
-	if invalidBoundary {
-		return soulMintConversationProducedDeclarations{}, newAppTheoryError("app.bad_request", string(hostedgenesis.DeclarationCodeBoundariesBad))
-	}
-	if len(decl.Boundaries) == 0 {
-		code := hostedgenesis.DeclarationCodeBoundaries
-		if len(draft.Boundaries) > 0 {
-			code = hostedgenesis.DeclarationCodeBoundariesBad
-		}
-		return soulMintConversationProducedDeclarations{}, newAppTheoryError("app.bad_request", string(code))
-	}
-
-	if decl.Transparency == nil {
-		decl.Transparency = map[string]any{}
-	}
-
-	return decl, nil
-}
-
+// parseAndValidateMintConversationDeclarations validates the exact canonical
+// candidate bytes produced by the Hosted Genesis MicroVM. It never invokes a
+// provider or reconstructs declarations from a transcript.
 func parseAndValidateMintConversationDeclarations(raw string) (soulMintConversationProducedDeclarations, *apptheory.AppTheoryError) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {

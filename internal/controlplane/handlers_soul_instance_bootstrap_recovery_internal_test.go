@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/mock"
+	runtimemicrovm "github.com/theory-cloud/apptheory/runtime/microvm"
 	ttmocks "github.com/theory-cloud/tabletheory/v2/pkg/mocks"
 
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
@@ -18,7 +19,10 @@ import (
 	"github.com/equaltoai/lesser-host/internal/testutil"
 )
 
-const hostedGenesisMicroVMRecoveryTurnID = "turn-microvm"
+const (
+	hostedGenesisMicroVMRecoveryPriorTurnID = "turn-microvm-prior"
+	hostedGenesisMicroVMRecoveryTurnID      = "turn-microvm"
+)
 
 func TestSoulInstanceRecoverMintConversation_RetriggersStuckTurn(t *testing.T) {
 	tdb := newMintConversationTestDB()
@@ -80,11 +84,6 @@ func TestSoulInstanceRecoverMintConversation_NonStuckIsNoop(t *testing.T) {
 	tdb := newMintConversationTestDB()
 	s := newMintConversationServer(tdb)
 	reg := mintConversationHandleReg()
-	s.hostedGenesisAssistantRunner = func(_ context.Context, in hostedGenesisAssistantRunInput) (hostedGenesisAssistantRunResult, error) {
-		t.Fatalf("non-stuck recovery must not rerun assistant turn: %#v", in)
-		return hostedGenesisAssistantRunResult{}, nil
-	}
-
 	expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, soulInstanceBootstrapTestInstanceSlug)
 	stubMintConversationRegistration(t, tdb, reg)
 	stubSoulInstanceBootstrapDomainAndInstance(t, tdb, reg.DomainNormalized, soulInstanceBootstrapTestInstanceSlug)
@@ -162,60 +161,21 @@ func TestSoulInstanceRecoverMintConversation_RestartRequiredReturnsActionableCon
 	tdb.db.AssertNotCalled(t, "TransactWrite", mock.Anything, mock.Anything)
 }
 
-func TestSoulInstanceRecoverMintConversation_RetriesFailedDeclarationExtraction(t *testing.T) {
-	tdb := newMintConversationTestDB()
-	s := newMintConversationServer(tdb)
-	reg := mintConversationHandleReg()
-	dispatcher := &stubMicroVMDispatcher{t: t}
-	s.hostedGenesisMicroVMDispatcher = dispatcher
-	now := time.Date(2026, 3, 7, 12, 5, 0, 0, time.UTC)
-
-	expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, soulInstanceBootstrapTestInstanceSlug)
-	stubMintConversationRegistration(t, tdb, reg)
-	stubSoulInstanceBootstrapDomainAndInstance(t, tdb, reg.DomainNormalized, soulInstanceBootstrapTestInstanceSlug)
-	stubSoulInstanceRecoveryConversation(t, tdb, models.SoulAgentMintConversation{
-		AgentID:        reg.AgentID,
-		ConversationID: mintConversationTestConversationID,
-		Model:          "anthropic:claude-sonnet-4-6",
-		Messages:       encodeMintConversationBlob(`[{"role":"user","content":"describe the agent"},{"role":"assistant","content":"ready for declaration"}]`),
-		Status:         models.SoulMintConversationStatusFailed,
-		StatusReason:   hostedGenesisFailureDeclarationExtractionFailed,
-		LatestTurnID:   "turn-secret",
-		ChargedCredits: 110,
-		RequestID:      "req-failed",
-		CreatedAt:      time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC),
-		UpdatedAt:      now,
-		CompletedAt:    now,
-	})
-	stubSoulInstanceRecoverySession(t, tdb, failedRecoveryHostedGenesisSessionFixture(t, reg, now))
-	expectSoulInstanceMintConversationExtractionDebit(t, tdb)
-	expectHostedGenesisExtractionDispatchWrite(t, tdb)
-
-	resp, err := s.handleSoulInstanceRecoverMintConversation(newSoulInstanceBootstrapContext(
-		map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
-		nil,
-		map[string]string{"id": reg.ID, "conversationId": mintConversationTestConversationID},
-	))
+func applyProviderTimeoutRecoveryLifecycleRef(t *testing.T, session *models.HostedGenesisSession, microVMID string) {
+	t.Helper()
+	binding := session.MicroVMSessionBinding()
+	ref, err := hostedgenesis.MicroVMLifecycleRefFromResponse(binding, runtimemicrovm.ControllerResponse{
+		Command: runtimemicrovm.CommandGet, TenantID: binding.TenantID(), Namespace: hostedgenesis.MicroVMNamespace,
+		SessionID: binding.ConversationID, State: runtimemicrovm.StateRunning, DesiredState: runtimemicrovm.StateRunning,
+		LifecycleState: runtimemicrovm.StateRunning, MicroVMID: microVMID, ProviderMicroVMID: microVMID,
+		LastAction: runtimemicrovm.CommandGet, LastTransition: time.Now().UTC(), RegistryVersion: 7,
+	}, time.Now().UTC())
 	if err != nil {
-		t.Fatalf("unexpected declaration extraction recovery err: %v", err)
+		t.Fatalf("build provider-timeout lifecycle ref: %v", err)
 	}
-	if resp.Status != http.StatusAccepted {
-		t.Fatalf("expected 202 retry response, got %#v", resp)
+	if err := session.ApplyMicroVMLifecycleRef(ref); err != nil {
+		t.Fatalf("apply provider-timeout lifecycle ref: %v", err)
 	}
-	if dispatcher.calls != 1 || dispatcher.reconcileCalls != 0 {
-		t.Fatalf("expected one extraction redispatch and no reconcile, got run=%d reconcile=%d", dispatcher.calls, dispatcher.reconcileCalls)
-	}
-	if dispatcher.lastBinding.ConversationID != mintConversationTestConversationID || dispatcher.lastBinding.TurnID != "turn-secret" {
-		t.Fatalf("expected retry dispatch bound to latest failed turn, got %#v", dispatcher.lastBinding)
-	}
-	var out hostedGenesisConversationResponse
-	if err := json.Unmarshal(resp.Body, &out); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if out.Conversation.Status != models.SoulMintConversationStatusDeclarationExtractionPending || out.Conversation.Failure != nil {
-		t.Fatalf("expected actionable declaration extraction retry, got %#v", out.Conversation)
-	}
-	assertHostedGenesisResponseNoForbiddenValues(t, resp.Body, hostedGenesisStatusForbiddenValues())
 }
 
 func TestSoulInstanceRecoverMintConversation_RetriesFailedAssistantTurn(t *testing.T) {
@@ -278,6 +238,55 @@ func TestSoulInstanceRecoverMintConversation_RetriesFailedAssistantTurn(t *testi
 	tdb.qBudget.AssertNumberOfCalls(t, "First", 0)
 }
 
+func TestSoulInstanceRecoverMintConversation_AssistantProviderTimeoutUsesFreshRuntimeWithoutSecondDebit(t *testing.T) {
+	tdb := newMintConversationTestDB()
+	s := newMintConversationServer(tdb)
+	reg := mintConversationHandleReg()
+	dispatcher := &stubMicroVMDispatcher{t: t}
+	s.hostedGenesisMicroVMDispatcher = dispatcher
+	now := time.Date(2026, 7, 22, 11, 36, 16, 0, time.UTC)
+
+	expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, soulInstanceBootstrapTestInstanceSlug)
+	stubMintConversationRegistration(t, tdb, reg)
+	stubSoulInstanceBootstrapDomainAndInstance(t, tdb, reg.DomainNormalized, soulInstanceBootstrapTestInstanceSlug)
+	stubSoulInstanceRecoveryConversation(t, tdb, models.SoulAgentMintConversation{
+		AgentID: reg.AgentID, ConversationID: mintConversationTestConversationID,
+		Model: "anthropic:claude-sonnet-4-6", Messages: encodeMintConversationBlob(`[{"role":"user","content":"describe the agent"}]`),
+		Status: models.SoulMintConversationStatusFailed, StatusReason: hostedGenesisFailureAssistantTurnFailed,
+		LatestTurnID: "turn-assistant", ChargedCredits: soulMintConversationStreamBaseCredits,
+		RequestID: "req-failed", CreatedAt: now.Add(-5 * time.Minute), UpdatedAt: now, CompletedAt: now,
+	})
+	session := failedAssistantTurnRecoveryHostedGenesisSessionFixture(t, reg, now)
+	session.Version = 51
+	session.Failure.Class = hostedgenesis.FailureClassProviderTimeout
+	session.Failure.Recovery.MaxAttempts = 1
+	applyProviderTimeoutRecoveryLifecycleRef(t, &session, "microvm-predeploy-assistant")
+	stubSoulInstanceRecoverySession(t, tdb, session)
+	tb := new(ttmocks.MockTransactionBuilder)
+	tdb.db.TransactWriteBuilder = tb
+	tdb.db.On("TransactWrite", mock.Anything, mock.Anything).Return(nil).Once()
+	tb.On("UpdateWithBuilder", mock.AnythingOfType("*models.HostedGenesisSession"), mock.Anything, mock.Anything).Return(tb).Once().Run(func(args mock.Arguments) {
+		progressed := testutil.RequireMockArg[*models.HostedGenesisSession](t, args, 0)
+		if progressed.Failure == nil || progressed.Failure.Recovery.MaxAttempts != 0 || progressed.MicroVMLifecycleRef == nil || progressed.MicroVMLifecycleRef.ImageVersion != "29" {
+			t.Fatalf("expected atomic fresh assistant retry identity with consumed final attempt, got %#v", progressed)
+		}
+	})
+	tb.On("UpdateWithBuilder", mock.AnythingOfType("*models.SoulAgentMintConversation"), mock.Anything, mock.Anything).Return(tb).Once()
+	tb.On("Execute").Return(nil).Once()
+
+	resp, err := s.handleSoulInstanceRecoverMintConversation(newSoulInstanceBootstrapContext(
+		map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey}, nil,
+		map[string]string{"id": reg.ID, "conversationId": mintConversationTestConversationID},
+	))
+	if err != nil || resp.Status != http.StatusAccepted {
+		t.Fatalf("unexpected assistant provider-timeout recovery response=%#v err=%v", resp, err)
+	}
+	if dispatcher.prepareFreshCalls != 1 || dispatcher.invokeCalls != 1 || dispatcher.calls != 0 {
+		t.Fatalf("expected fresh prepare and one invoke without legacy run: %#v", dispatcher)
+	}
+	tdb.qBudget.AssertNumberOfCalls(t, "First", 0)
+}
+
 func TestSoulInstanceRecoverMintConversation_AssistantRetryPersistsPendingBeforeDispatch(t *testing.T) {
 	tdb := newMintConversationTestDB()
 	s := newMintConversationServer(tdb)
@@ -332,8 +341,9 @@ func TestSoulInstanceRecoverMintConversation_AssistantRetryPersistsPendingBefore
 
 type stateReadingMicroVMDispatcher struct {
 	*stubMicroVMDispatcher
-	readSession         func() *models.HostedGenesisSession
-	expectedFailureCode hostedgenesis.FailureCode
+	readSession               func() *models.HostedGenesisSession
+	expectedFailureCode       hostedgenesis.FailureCode
+	expectedRemainingAttempts int
 }
 
 func (d *stateReadingMicroVMDispatcher) DispatchMicroVMRun(ctx context.Context, requestID string, binding hostedgenesis.MicroVMSessionBinding) (hostedgenesis.MicroVMDispatchResult, error) {
@@ -341,16 +351,21 @@ func (d *stateReadingMicroVMDispatcher) DispatchMicroVMRun(ctx context.Context, 
 	session := d.readSession()
 	if session == nil {
 		d.t.Fatalf("workload test double could not read durable Host state")
+		return hostedgenesis.MicroVMDispatchResult{}, errors.New("workload test double could not read durable Host state")
 	}
 	expectedFailureCode := d.expectedFailureCode
 	if expectedFailureCode == "" {
 		expectedFailureCode = hostedgenesis.FailureCodeAssistantTurnFailed
 	}
+	expectedRemainingAttempts := d.expectedRemainingAttempts
+	if expectedRemainingAttempts == 0 {
+		expectedRemainingAttempts = 1
+	}
 	if hostedgenesis.NormalizeStatus(session.Status) != hostedgenesis.StatusInProgress ||
 		session.LatestTurnID != binding.TurnID ||
 		session.Failure == nil ||
 		session.Failure.Code != expectedFailureCode ||
-		session.Failure.Recovery.MaxAttempts != 1 {
+		session.Failure.Recovery.MaxAttempts != expectedRemainingAttempts {
 		d.t.Fatalf("workload observed old or invalid durable retry state during dispatch: %#v", session)
 	}
 	if expectedFailureCode == hostedgenesis.FailureCodeMicroVMUnavailable && session.VMCheckpoint == nil {
@@ -576,17 +591,36 @@ func TestHostedGenesisMicroVMRecoveryCheckpointValidationGuardsDurableInvariants
 	}
 
 	for name, mutate := range map[string]func(*models.HostedGenesisSession){
-		"latest turn mismatch": func(session *models.HostedGenesisSession) {
-			session.VMCheckpoint.LatestTurnID = "turn-other"
+		"current turn missing from ledger": func(session *models.HostedGenesisSession) {
+			session.TurnLedger = session.TurnLedger[:1]
 		},
-		"turn missing from ledger": func(session *models.HostedGenesisSession) {
-			session.TurnLedger = nil
+		"checkpoint turn missing from ledger": func(session *models.HostedGenesisSession) {
+			session.TurnLedger = session.TurnLedger[1:]
+		},
+		"current input checkpoint missing from session": func(session *models.HostedGenesisSession) {
+			session.InputCheckpointRef = ""
+		},
+		"current input checkpoint missing from ledger": func(session *models.HostedGenesisSession) {
+			session.TurnLedger[1].InputCheckpointRef = ""
+		},
+		"current input checkpoint cross conversation": func(session *models.HostedGenesisSession) {
+			session.InputCheckpointRef = hostedgenesis.CheckpointRef("input", "other-conversation", session.LatestTurnID)
 		},
 		"conversation ref mismatch": func(session *models.HostedGenesisSession) {
 			session.VMCheckpoint.Ref = hostedgenesis.CheckpointRef("vm-actor", "other-conversation", fmt.Sprintf("%s-%d-%s", session.VMCheckpoint.Step, session.VMCheckpoint.Sequence, session.VMCheckpoint.LatestTurnID))
 		},
+		"malformed checkpoint ref": func(session *models.HostedGenesisSession) {
+			session.VMCheckpoint.Ref = ""
+		},
+		"current turn checkpoint is not prior": func(session *models.HostedGenesisSession) {
+			session.VMCheckpoint.LatestTurnID = session.LatestTurnID
+			session.VMCheckpoint.Ref = hostedgenesis.CheckpointRef("vm-actor", session.ConversationID, fmt.Sprintf("%s-%d-%s", session.VMCheckpoint.Step, session.VMCheckpoint.Sequence, session.VMCheckpoint.LatestTurnID))
+		},
 		"failed checkpoint status": func(session *models.HostedGenesisSession) {
 			session.VMCheckpoint.StatusTo = string(hostedgenesis.StatusFailed)
+		},
+		"terminal declaration checkpoint": func(session *models.HostedGenesisSession) {
+			session.VMCheckpoint.StatusTo = string(hostedgenesis.StatusDeclarationReady)
 		},
 		"checkpoint ahead of version budget": func(session *models.HostedGenesisSession) {
 			session.VMCheckpoint.Sequence = session.Version + 2
@@ -600,75 +634,6 @@ func TestHostedGenesisMicroVMRecoveryCheckpointValidationGuardsDurableInvariants
 			}
 		})
 	}
-}
-
-func TestSoulInstanceRecoverMintConversation_ExhaustedDeclarationExtractionRetryRequiresRestart(t *testing.T) {
-	tdb := newMintConversationTestDB()
-	s := newMintConversationServer(tdb)
-	reg := mintConversationHandleReg()
-	now := time.Date(2026, 3, 7, 12, 5, 0, 0, time.UTC)
-	dispatcher := &stubMicroVMDispatcher{t: t}
-	s.hostedGenesisMicroVMDispatcher = dispatcher
-
-	expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, soulInstanceBootstrapTestInstanceSlug)
-	stubMintConversationRegistration(t, tdb, reg)
-	stubSoulInstanceBootstrapDomainAndInstance(t, tdb, reg.DomainNormalized, soulInstanceBootstrapTestInstanceSlug)
-	stubFailedRecoveryLegacyMintConversation(t, tdb, reg, now)
-	session := failedRecoveryHostedGenesisSessionFixture(t, reg, now)
-	session.Failure.Recovery.MaxAttempts = 0
-	stubSoulInstanceRecoverySession(t, tdb, session)
-
-	_, err := s.handleSoulInstanceRecoverMintConversation(newSoulInstanceBootstrapContext(
-		map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
-		nil,
-		map[string]string{"id": reg.ID, "conversationId": mintConversationTestConversationID},
-	))
-	appErr := requireAppTheoryError(t, err)
-	if appErr.Code != soulInstanceBootstrapCodeConflict || appErr.StatusCode != http.StatusConflict {
-		t.Fatalf("expected exhausted retry conflict, got %#v", appErr)
-	}
-	if appErr.Details["recovery_action"] != string(hostedgenesis.RecoveryActionRestartSoulBootstrap) {
-		t.Fatalf("expected restart action for exhausted retry, got %#v", appErr.Details)
-	}
-	if dispatcher.calls != 0 || dispatcher.reconcileCalls != 0 {
-		t.Fatalf("exhausted retry must not dispatch, got run=%d reconcile=%d", dispatcher.calls, dispatcher.reconcileCalls)
-	}
-	tdb.db.AssertNotCalled(t, "TransactWrite", mock.Anything, mock.Anything)
-}
-
-func TestSoulInstanceRecoverMintConversation_NonRetryableDeclarationExtractionRequiresRestart(t *testing.T) {
-	tdb := newMintConversationTestDB()
-	s := newMintConversationServer(tdb)
-	reg := mintConversationHandleReg()
-	now := time.Date(2026, 3, 7, 12, 5, 0, 0, time.UTC)
-	dispatcher := &stubMicroVMDispatcher{t: t}
-	s.hostedGenesisMicroVMDispatcher = dispatcher
-
-	expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, soulInstanceBootstrapTestInstanceSlug)
-	stubMintConversationRegistration(t, tdb, reg)
-	stubSoulInstanceBootstrapDomainAndInstance(t, tdb, reg.DomainNormalized, soulInstanceBootstrapTestInstanceSlug)
-	stubFailedRecoveryLegacyMintConversation(t, tdb, reg, now)
-	session := failedRecoveryHostedGenesisSessionFixture(t, reg, now)
-	session.Failure.Retryable = false
-	session.Failure.Recovery.MaxAttempts = 2
-	stubSoulInstanceRecoverySession(t, tdb, session)
-
-	_, err := s.handleSoulInstanceRecoverMintConversation(newSoulInstanceBootstrapContext(
-		map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
-		nil,
-		map[string]string{"id": reg.ID, "conversationId": mintConversationTestConversationID},
-	))
-	appErr := requireAppTheoryError(t, err)
-	if appErr.Code != soulInstanceBootstrapCodeConflict || appErr.StatusCode != http.StatusConflict {
-		t.Fatalf("expected unsafe retry conflict, got %#v", appErr)
-	}
-	if appErr.Details["recovery_action"] != string(hostedgenesis.RecoveryActionRestartSoulBootstrap) {
-		t.Fatalf("expected restart action for unsafe retry, got %#v", appErr.Details)
-	}
-	if dispatcher.calls != 0 || dispatcher.reconcileCalls != 0 {
-		t.Fatalf("unsafe retry must not dispatch, got run=%d reconcile=%d", dispatcher.calls, dispatcher.reconcileCalls)
-	}
-	tdb.db.AssertNotCalled(t, "TransactWrite", mock.Anything, mock.Anything)
 }
 
 func TestSoulInstanceGetRegistrationMintConversation_ReturnsRecoveryWithoutQueueOrLeaks(t *testing.T) {
@@ -699,6 +664,9 @@ func TestSoulInstanceGetRegistrationMintConversation_ReturnsRecoveryWithoutQueue
 		t.Fatalf("unmarshal: %v", err)
 	}
 	assertHostedGenesisFailedRecoveryProjection(t, out.Conversation)
+	if len(out.Conversation.Messages) != 2 || out.Conversation.Messages[0].Content != hostedGenesisBenignCredentialSafetyProse || out.Conversation.Messages[0].Redacted || out.Conversation.Messages[1].Content != hostedGenesisTranscriptRedactedContent || !out.Conversation.Messages[1].Redacted || !out.Conversation.MessagesRedacted {
+		t.Fatalf("failed recovery projection must preserve safe operator context and redact the secret-shaped entry: %#v", out.Conversation)
+	}
 	assertHostedGenesisResponseNoForbiddenValues(t, resp.Body, hostedGenesisStatusForbiddenValues())
 	assertHostedGenesisStatusAuditNoLeaks(t, tdb, append(hostedGenesisStatusForbiddenValues(), soulInstanceBootstrapTestInstanceSlug, reg.AgentID, mintConversationTestConversationID))
 }
@@ -748,6 +716,7 @@ func hostedGenesisRecoverySessionFixture(t *testing.T, reg models.SoulAgentRegis
 		session.MessageCount = 2
 		session.TurnLedger[0].TurnID = "turn-ready"
 	}
+	setHostedGenesisRecoveryCandidate(t, &session)
 	if err := session.BeforeCreate(); err != nil {
 		t.Fatalf("session fixture: %v", err)
 	}
@@ -760,7 +729,7 @@ func stubFailedRecoveryLegacyMintConversation(t *testing.T, tdb *mintConversatio
 		AgentID:        reg.AgentID,
 		ConversationID: mintConversationTestConversationID,
 		Model:          "anthropic:claude-sonnet-4-6",
-		Messages:       encodeMintConversationBlob(`[{"role":"user","content":"raw transcript secret"},{"role":"assistant","content":"private answer"}]`),
+		Messages:       encodeMintConversationBlob(`[{"role":"user","content":"` + hostedGenesisBenignCredentialSafetyProse + `"},{"role":"assistant","content":"Authorization: Bearer abcdefghijklmnopqrstuvwxyz012345"}]`),
 		Status:         models.SoulMintConversationStatusFailed,
 		LatestTurnID:   "turn-secret",
 		RequestID:      "req-failed",
@@ -822,12 +791,12 @@ func failedRecoveryTraceIDs() *hostedgenesis.TraceIDs {
 
 func failedRecoveryDeclarationFailure() *hostedgenesis.Failure {
 	return &hostedgenesis.Failure{
-		Code:      hostedgenesis.FailureCodeDeclarationExtractionFailed,
-		Message:   hostedGenesisFailureMessage(hostedGenesisFailureDeclarationExtractionFailed),
+		Code:      hostedgenesis.FailureCodeAssistantTurnFailed,
+		Message:   hostedGenesisFailureMessage(hostedGenesisFailureAssistantTurnFailed),
 		Retryable: true,
 		Recovery: hostedgenesis.Recovery{
 			Action:            hostedgenesis.RecoveryActionRetrySameStep,
-			Reason:            hostedGenesisFailureDeclarationExtractionFailed,
+			Reason:            hostedGenesisFailureAssistantTurnFailed,
 			MaxAttempts:       3,
 			RetryAfterSeconds: 30,
 		},
@@ -858,6 +827,7 @@ func failedAssistantTurnRecoveryHostedGenesisSessionFixture(t *testing.T, reg mo
 		UpdatedAt:   now,
 		CompletedAt: now,
 	}
+	setHostedGenesisRecoveryCandidate(t, &session)
 	if err := session.BeforeCreate(); err != nil {
 		t.Fatalf("session fixture: %v", err)
 	}
@@ -881,20 +851,32 @@ func failedAssistantTurnRecoveryFailure() *hostedgenesis.Failure {
 func failedMicroVMUnavailableRecoverySessionFixture(t *testing.T, reg models.SoulAgentRegistration, now time.Time) models.HostedGenesisSession {
 	t.Helper()
 	session := failedAssistantTurnRecoveryHostedGenesisSessionFixture(t, reg, now)
+	session.Version = 38
 	session.LatestTurnID = hostedGenesisMicroVMRecoveryTurnID
-	session.MessageCount = 1
-	session.TurnLedger = []hostedgenesis.TurnLedgerEntry{{
-		TurnID:         hostedGenesisMicroVMRecoveryTurnID,
-		ChargedCredits: soulMintConversationStreamBaseCredits,
-		MessageCount:   1,
-		AcceptedAt:     now.Add(-5 * time.Minute),
-	}}
+	session.MessageCount = 3
+	session.InputCheckpointRef = hostedgenesis.CheckpointRef("input", session.ConversationID, hostedGenesisMicroVMRecoveryTurnID)
+	session.TurnLedger = []hostedgenesis.TurnLedgerEntry{
+		{
+			TurnID:             hostedGenesisMicroVMRecoveryPriorTurnID,
+			InputCheckpointRef: hostedgenesis.CheckpointRef("input", session.ConversationID, hostedGenesisMicroVMRecoveryPriorTurnID),
+			ChargedCredits:     soulMintConversationStreamBaseCredits,
+			MessageCount:       1,
+			AcceptedAt:         now.Add(-10 * time.Minute),
+		},
+		{
+			TurnID:             hostedGenesisMicroVMRecoveryTurnID,
+			InputCheckpointRef: session.InputCheckpointRef,
+			ChargedCredits:     soulMintConversationStreamBaseCredits,
+			MessageCount:       3,
+			AcceptedAt:         now.Add(-5 * time.Minute),
+		},
+	}
 	session.Failure = failedMicroVMUnavailableRecoveryFailure()
 	checkpoint, err := hostedgenesis.NewVMCheckpointMetadata(hostedgenesis.VMCheckpointInput{
 		ConversationID:     session.ConversationID,
-		LatestTurnID:       hostedGenesisMicroVMRecoveryTurnID,
+		LatestTurnID:       hostedGenesisMicroVMRecoveryPriorTurnID,
 		RequestID:          "req-checkpoint",
-		Sequence:           session.Version + 1,
+		Sequence:           session.Version - 1,
 		Step:               "assistant_turn",
 		Action:             "ask",
 		StatusFrom:         hostedgenesis.StatusInProgress,
@@ -908,10 +890,34 @@ func failedMicroVMUnavailableRecoverySessionFixture(t *testing.T, reg models.Sou
 		t.Fatalf("microvm recovery checkpoint fixture: %v", err)
 	}
 	session.VMCheckpoint = &checkpoint
+	setHostedGenesisRecoveryCandidate(t, &session)
 	if err := session.BeforeCreate(); err != nil {
 		t.Fatalf("microvm unavailable fixture: %v", err)
 	}
 	return session
+}
+
+func setHostedGenesisRecoveryCandidate(t *testing.T, session *models.HostedGenesisSession) {
+	t.Helper()
+	if session == nil {
+		t.Fatal("recovery candidate fixture requires a session")
+		return
+	}
+	candidate, err := hostedgenesis.NewDeclarationCandidate(hostedgenesis.DeclarationCandidateBinding{
+		InstanceSlug:   session.InstanceSlug,
+		RegistrationID: session.RegistrationID,
+		AgentID:        session.AgentID,
+		ConversationID: session.ConversationID,
+		SourceTurnID:   session.LatestTurnID,
+		Model:          session.Model,
+	}, session.CreatedAt)
+	if err != nil {
+		t.Fatalf("build typed recovery candidate: %v", err)
+	}
+	session.DeclarationCandidate = candidate
+	session.CandidateRevision = candidate.Revision
+	session.CandidateHash = candidate.CandidateHash
+	session.CandidatePhase = string(candidate.Phase)
 }
 
 func failedMicroVMUnavailableRecoveryFailure() *hostedgenesis.Failure {
@@ -1083,15 +1089,14 @@ func assertHostedGenesisFailedRecoveryProjection(t *testing.T, conversation host
 	if conversation.Status != models.SoulMintConversationStatusFailed || conversation.Failure == nil {
 		t.Fatalf("expected durable failed recovery guidance, got %#v", conversation)
 	}
-	if conversation.Failure.Code != hostedGenesisFailureDeclarationExtractionFailed || conversation.Failure.Recovery.Action != hostedGenesisRecoveryRetrySameStep {
-		t.Fatalf("expected declaration-extraction retry guidance, got %#v", conversation.Failure)
+	if conversation.Failure.Code != hostedGenesisFailureAssistantTurnFailed || conversation.Failure.Recovery.Action != hostedGenesisRecoveryRetrySameStep {
+		t.Fatalf("expected assistant-turn retry guidance, got %#v", conversation.Failure)
 	}
 }
 
 func hostedGenesisStatusForbiddenValues() []string {
 	return []string{
-		"raw transcript secret",
-		"private answer",
+		"abcdefghijklmnopqrstuvwxyz012345",
 		mintConversationInstanceReadTestRawKey,
 		"Bearer ",
 		"provider_secret",
@@ -1127,7 +1132,7 @@ func assertHostedGenesisStatusAuditNoLeaks(t *testing.T, tdb *mintConversationTe
 
 func assertHostedGenesisAuditNoForbiddenValues(t *testing.T, auditText string, forbiddenValues []string) {
 	t.Helper()
-	for _, forbidden := range append(forbiddenValues, "raw transcript secret", "private answer") {
+	for _, forbidden := range append(forbiddenValues, hostedGenesisBenignCredentialSafetyProse) {
 		if strings.Contains(auditText, forbidden) {
 			t.Fatalf("audit event leaked forbidden value %q: %s", forbidden, auditText)
 		}

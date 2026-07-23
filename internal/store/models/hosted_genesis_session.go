@@ -53,6 +53,10 @@ type HostedGenesisSession struct {
 	MicroVMLifecycleRef    *hostedgenesis.MicroVMLifecycleRef `theorydb:"attr:microVmLifecycleRef" json:"-"`
 
 	DeclarationCheckpoint *hostedgenesis.DeclarationCheckpoint `theorydb:"attr:declarationCheckpoint" json:"declaration_checkpoint,omitempty"`
+	DeclarationCandidate  *hostedgenesis.DeclarationCandidate  `theorydb:"attr:declarationCandidate" json:"declaration_candidate,omitempty"`
+	CandidateRevision     int64                                `theorydb:"attr:candidateRevision" json:"candidate_revision,omitempty"`
+	CandidateHash         string                               `theorydb:"attr:candidateHash" json:"candidate_hash,omitempty"`
+	CandidatePhase        string                               `theorydb:"attr:candidatePhase" json:"candidate_phase,omitempty"`
 	Publication           *hostedgenesis.PublicationCheckpoint `theorydb:"attr:publication" json:"publication,omitempty"`
 	Failure               *hostedgenesis.Failure               `theorydb:"attr:failure" json:"failure,omitempty"`
 	TraceIDs              *hostedgenesis.TraceIDs              `theorydb:"attr:traceIds" json:"trace_ids,omitempty"`
@@ -108,6 +112,9 @@ func (s *HostedGenesisSession) UpdateKeys() error {
 	if s.DeclarationCheckpoint != nil {
 		s.DeclarationCheckpoint.CheckpointRef = hostedgenesis.NormalizeCheckpointRef(s.DeclarationCheckpoint.CheckpointRef)
 	}
+	if err := s.bindDeclarationCandidate(); err != nil {
+		return err
+	}
 	if s.MicroVMLifecycleRef != nil {
 		binding := s.MicroVMSessionBinding()
 		if err := s.MicroVMLifecycleRef.Validate(binding); err != nil {
@@ -130,6 +137,33 @@ func (s *HostedGenesisSession) UpdateKeys() error {
 	s.GSI2PK = HostedGenesisSessionAgentGSI2PK(s.InstanceSlug, s.AgentID)
 	s.GSI2SK = fmt.Sprintf("%s#%s", s.CreatedAt.UTC().Format(time.RFC3339Nano), s.ConversationID)
 	return nil
+}
+
+func (s *HostedGenesisSession) bindDeclarationCandidate() error {
+	if s.DeclarationCandidate == nil {
+		if s.CandidateRevision != 0 || strings.TrimSpace(s.CandidateHash) != "" || strings.TrimSpace(s.CandidatePhase) != "" {
+			return fmt.Errorf("declaration candidate checkpoint exists without candidate state")
+		}
+		return nil
+	}
+	candidate := s.DeclarationCandidate.Clone()
+	if err := candidate.Validate(); err != nil {
+		return fmt.Errorf("declaration candidate: %w", err)
+	}
+	if !s.declarationCandidateBindingMatches(candidate) {
+		return fmt.Errorf("declaration candidate binding does not match hosted genesis session")
+	}
+	s.DeclarationCandidate = candidate
+	s.CandidateRevision = candidate.Revision
+	s.CandidateHash = candidate.CandidateHash
+	s.CandidatePhase = string(candidate.Phase)
+	return nil
+}
+
+func (s *HostedGenesisSession) declarationCandidateBindingMatches(candidate *hostedgenesis.DeclarationCandidate) bool {
+	return candidate.InstanceSlug == s.InstanceSlug && candidate.RegistrationID == s.RegistrationID &&
+		strings.EqualFold(candidate.AgentID, s.AgentID) && candidate.ConversationID == s.ConversationID &&
+		candidate.Model == s.Model && candidate.SourceTurnID == s.LatestTurnID
 }
 
 func (s *HostedGenesisSession) validateAndUpdateKeys() error {
@@ -330,6 +364,10 @@ func HostedGenesisSessionUpdateFields() []string {
 		"MicroVMExecutionID",
 		"MicroVMLifecycleRef",
 		"DeclarationCheckpoint",
+		"DeclarationCandidate",
+		"CandidateRevision",
+		"CandidateHash",
+		"CandidatePhase",
 		"Publication",
 		"Failure",
 		"TraceIDs",

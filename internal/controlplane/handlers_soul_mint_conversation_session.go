@@ -64,11 +64,14 @@ func buildHostedGenesisConversationResponseFromSession(session *models.HostedGen
 		PublishedVersion: projection.PublishedVersion,
 		PublishedAt:      timePtrIfSet(projection.PublishedAt),
 	}
+	responseProjection.DeclarationCandidate = buildHostedGenesisCandidateProjection(session.DeclarationCandidate)
 	if hostedGenesisStatusIncludesMessages(string(projection.Status)) {
-		if messages, bounded := buildHostedGenesisConversationMessages(session, conv); len(messages) > 0 {
+		messages, bounded, redacted := buildHostedGenesisConversationMessages(session, conv)
+		if len(messages) > 0 {
 			responseProjection.Messages = messages
-			responseProjection.MessagesTruncated = bounded
 		}
+		responseProjection.MessagesTruncated = bounded
+		responseProjection.MessagesRedacted = redacted
 	}
 	if projection.Status == hostedgenesis.StatusDeclarationReady {
 		responseProjection.ProducedDeclarations = buildHostedGenesisProducedDeclarationsFromSession(session, conv, requestID)
@@ -81,6 +84,24 @@ func buildHostedGenesisConversationResponseFromSession(session *models.HostedGen
 		RequestID:    requestID,
 		Conversation: responseProjection,
 	}
+}
+
+func buildHostedGenesisCandidateProjection(candidate *hostedgenesis.DeclarationCandidate) *hostedGenesisCandidateProjection {
+	if candidate == nil {
+		return nil
+	}
+	out := &hostedGenesisCandidateProjection{
+		Version: candidate.Version, Phase: candidate.Phase, CurrentSection: candidate.CurrentSection,
+		CompletedSections: append([]hostedgenesis.DeclarationSection(nil), candidate.CompletedSections...),
+		Revision:          candidate.Revision, CandidateHash: candidate.CandidateHash,
+	}
+	if candidate.Review != nil {
+		out.Review = &hostedGenesisCandidateReview{
+			RendererVersion: candidate.Review.RendererVersion, CandidateRevision: candidate.Review.CandidateRevision,
+			CandidateHash: candidate.Review.CandidateHash, ReviewHash: candidate.Review.ReviewHash, ReviewText: candidate.Review.ReviewText,
+		}
+	}
+	return out
 }
 
 func hostedGenesisInvalidProjectionFailure() *hostedgenesis.Failure {
@@ -103,9 +124,6 @@ func hostedGenesisFailureFromSessionForSession(session *models.HostedGenesisSess
 	if failure == nil {
 		return hostedGenesisFailureFromReason(hostedGenesisFailureInvalidCompletionState)
 	}
-	if hostedGenesisDeclarationExtractionRetriesExhausted(session) {
-		failure = hostedGenesisExhaustedRetryFailure(failure, hostedGenesisFailureDeclarationExtractionFailed)
-	}
 	if hostedGenesisAssistantTurnRetriesExhausted(session) {
 		failure = hostedGenesisExhaustedRetryFailure(failure, hostedGenesisFailureAssistantTurnFailed)
 	}
@@ -116,6 +134,7 @@ func hostedGenesisFailureFromSessionForSession(session *models.HostedGenesisSess
 	reason := hostedgenesis.SanitizeFailureReason(code, failure.Recovery.Reason)
 	return &hostedGenesisFailure{
 		Code:      string(code),
+		Class:     string(failure.Class),
 		Message:   hostedgenesis.FailureMessage(code),
 		Retryable: failure.Retryable,
 		Recovery: hostedGenesisFailureRecovery{

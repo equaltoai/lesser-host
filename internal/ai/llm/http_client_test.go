@@ -3,6 +3,7 @@ package llm
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -33,6 +34,49 @@ func TestConfigureProviderHTTPClient_InstallsExplicitTimeout(t *testing.T) {
 	ConfigureProviderHTTPClient(nil)
 	if got := ProviderHTTPClientTimeout(); got != 0 {
 		t.Fatalf("expected zero timeout after reset, got %v", got)
+	}
+}
+
+func TestConfigureProviderHTTPTimeoutRejectsNonPositiveDuration(t *testing.T) {
+	if err := ConfigureProviderHTTPTimeout(0); !errors.Is(err, ErrInvalidProviderHTTPTimeout) {
+		t.Fatalf("expected ErrInvalidProviderHTTPTimeout, got %v", err)
+	}
+}
+
+func TestProviderHTTPClientEmitsBoundedSDKAttemptEvidence(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("x-request-id", "req_provider_123")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	t.Cleanup(srv.Close)
+	client, err := newProviderHTTPClient(time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var events []ProviderTelemetryEvent
+	ctx := withProviderAttemptTelemetry(t.Context(), DefaultProviderSDKRetryBudget, func(event ProviderTelemetryEvent) {
+		events = append(events, event)
+	})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, srv.URL, strings.NewReader("private body is never observed"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := client.Transport.RoundTrip(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if len(events) != 1 {
+		t.Fatalf("expected one transport attempt, got %#v", events)
+	}
+	event := events[0]
+	if event.EventType != "sdk_http_attempt" || event.SDKAttemptOrdinal != 1 || event.SDKRetryBudget != DefaultProviderSDKRetryBudget ||
+		event.HTTPStatus != http.StatusTooManyRequests || event.ProviderRequestID != "req_provider_123" || event.DurationMS < 0 {
+		t.Fatalf("unexpected bounded attempt evidence: %#v", event)
+	}
+	encoded, _ := json.Marshal(event)
+	if bytes.Contains(encoded, []byte("private body")) || bytes.Contains(encoded, []byte("Authorization")) {
+		t.Fatalf("attempt evidence leaked request content: %s", encoded)
 	}
 }
 

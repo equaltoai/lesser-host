@@ -328,12 +328,16 @@ function verifyHostedGenesisConversationSurface() {
     'created',
     'in_progress',
     'assistant_turn_ready',
-    'declaration_extraction_pending',
     'declaration_ready',
+    'published',
     'failed'
   ]) {
     assert(statusEnum.includes(status), `hosted-genesis conversation schema missing status: ${status}`);
   }
+  assert(
+    !statusEnum.includes('declaration_extraction_pending'),
+    'hosted-genesis contract must not retain the removed whole-transcript extraction state'
+  );
   assert(!statusEnum.includes('completed'), 'hosted-genesis contract must use declaration_ready instead of legacy completed');
   const requiredFields = schema?.$defs?.conversation?.required ?? [];
   for (const field of ['registration_id', 'conversation_id', 'agent_id', 'status', 'message_count', 'request_id']) {

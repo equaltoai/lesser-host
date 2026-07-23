@@ -131,14 +131,11 @@ func classifyLegacySession(seed SessionSeed, input LegacySessionInput) Migration
 		return planLegacyTerminalSession(seed, input)
 	}
 	if status == StatusCreated || status == StatusInProgress || status == StatusAssistantTurnReady {
-		return failMigration(seed, FailureCodeAssistantTurnFailed, RecoveryActionRetrySameStep)
-	}
-	if status == StatusDeclarationExtractionPending {
-		return failMigration(seed, FailureCodeDeclarationExtractionFailed, RecoveryActionRetrySameStep)
+		return failMigration(seed, FailureCodeInvalidCompletionState, RecoveryActionRestartSoulBootstrap)
 	}
 	if status == StatusFailed {
 		code := failureCodeFromLegacyReason(input.StatusReason)
-		return failMigration(seed, code, recoveryActionForFailure(code))
+		return failMigration(seed, code, RecoveryActionRestartSoulBootstrap)
 	}
 	return failMigration(seed, FailureCodeInvalidCompletionState, RecoveryActionRefreshState)
 }
@@ -195,7 +192,6 @@ func failureCodeFromLegacyReason(reason string) FailureCode {
 	switch FailureCode(strings.TrimSpace(reason)) {
 	case FailureCodeLLMUnavailable,
 		FailureCodeAssistantTurnFailed,
-		FailureCodeDeclarationExtractionFailed,
 		FailureCodeInvalidCompletionState,
 		FailureCodeMissingProducedDeclarations,
 		FailureCodeInvalidProducedDeclarations,
@@ -207,27 +203,12 @@ func failureCodeFromLegacyReason(reason string) FailureCode {
 	}
 }
 
-func recoveryActionForFailure(code FailureCode) RecoveryAction {
-	switch code {
-	case FailureCodeMissingProducedDeclarations, FailureCodeInvalidProducedDeclarations:
-		return RecoveryActionRestartSoulBootstrap
-	case FailureCodeTenantBoundaryViolation, FailureCodeOperatorActionRequired:
-		return RecoveryActionOperatorAction
-	case FailureCodeLLMUnavailable, FailureCodeAssistantTurnFailed, FailureCodeDeclarationExtractionFailed:
-		return RecoveryActionRetrySameStep
-	default:
-		return RecoveryActionRefreshState
-	}
-}
-
 func failureMessage(code FailureCode) string {
 	switch code {
 	case FailureCodeLLMUnavailable:
 		return "Assistant provider was unavailable."
 	case FailureCodeAssistantTurnFailed:
-		return "Assistant turn did not reach declaration extraction."
-	case FailureCodeDeclarationExtractionFailed:
-		return "Declaration extraction did not complete."
+		return "Assistant declaration phase did not complete."
 	case FailureCodeMissingProducedDeclarations:
 		return "Produced declarations are missing."
 	case FailureCodeInvalidProducedDeclarations:

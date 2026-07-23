@@ -2,6 +2,7 @@ package completion
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -91,253 +92,13 @@ func newFakeSession(slug, conv, turn string, status hostedgenesis.Status, versio
 	}
 }
 
-func hex64() string {
-	return "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-}
-
-func TestRecordAssistantTurnReady_AppliesConditionalWrite(t *testing.T) {
-	store := &fakeCompletionStore{session: newFakeSession("acme", "conv-1", "turn-1", hostedgenesis.StatusInProgress, 3)}
-	w := NewCompletionWriter(store, func() time.Time { return time.Unix(1000, 0).UTC() })
-
-	turn := CompletionTurn{InstanceSlug: "acme", ConversationID: "conv-1", TurnID: "turn-1", RequestID: "req-1"}
-	got, err := w.RecordAssistantTurnReady(context.Background(), turn, AssistantTurnCompletion{
-		AssistantContent: "hello",
-		MessageCount:     2,
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got.Status != string(hostedgenesis.StatusAssistantTurnReady) {
-		t.Fatalf("expected assistant_turn_ready, got %q", got.Status)
-	}
-	if store.lastExpectV != 3 || store.lastExpectS != hostedgenesis.StatusInProgress {
-		t.Fatalf("expected conditional on version=3 status=in_progress, got version=%d status=%q", store.lastExpectV, store.lastExpectS)
-	}
-	if got.AssistantCheckpointRef != hostedgenesis.CheckpointRef("assistant", "conv-1", "turn-1") {
-		t.Fatalf("unexpected assistant checkpoint ref %q", got.AssistantCheckpointRef)
-	}
-	if got.MessageCount != 2 {
-		t.Fatalf("expected message count 2, got %d", got.MessageCount)
-	}
-	if !got.UpdatedAt.Equal(time.Unix(1000, 0).UTC()) {
-		t.Fatalf("expected clock applied, got %v", got.UpdatedAt)
-	}
-}
-
-// TestRecordAssistantTurnReady_ReplayedTurnIDRejected proves the idempotency
-// invariant required by H1.1: a second write for the same turn ID against a
-// session that has already advanced past in_progress (here, to
-// assistant_turn_ready) is rejected as a conflict, not silently re-applied.
-func TestRecordAssistantTurnReady_ReplayedTurnIDRejected(t *testing.T) {
-	store := &fakeCompletionStore{session: newFakeSession("acme", "conv-1", "turn-1", hostedgenesis.StatusAssistantTurnReady, 4)}
-	w := NewCompletionWriter(store, nil)
-
-	turn := CompletionTurn{InstanceSlug: "acme", ConversationID: "conv-1", TurnID: "turn-1", RequestID: "req-1"}
-	_, err := w.RecordAssistantTurnReady(context.Background(), turn, AssistantTurnCompletion{
-		AssistantContent: "hello again",
-		MessageCount:     2,
-	})
-	if err == nil {
-		t.Fatal("expected conflict error on replayed turn against progressed status, got nil")
-	}
-	if !errors.Is(err, ErrCompletionConflict) {
-		t.Fatalf("expected ErrCompletionConflict, got %v", err)
-	}
-	if store.written != nil {
-		t.Fatalf("expected no write applied on conflict, but a write was recorded")
-	}
-}
-
-// TestRecordAssistantTurnReady_MismatchedTurnIDRejected proves a completion
-// write for a turn ID that does not match the session's latest turn is rejected.
-func TestRecordAssistantTurnReady_MismatchedTurnIDRejected(t *testing.T) {
-	store := &fakeCompletionStore{session: newFakeSession("acme", "conv-1", "turn-1", hostedgenesis.StatusInProgress, 3)}
-	w := NewCompletionWriter(store, nil)
-
-	turn := CompletionTurn{InstanceSlug: "acme", ConversationID: "conv-1", TurnID: "turn-other", RequestID: "req-1"}
-	_, err := w.RecordAssistantTurnReady(context.Background(), turn, AssistantTurnCompletion{
-		AssistantContent: "hello",
-		MessageCount:     2,
-	})
-	if err == nil {
-		t.Fatal("expected conflict error on mismatched turn ID, got nil")
-	}
-	if !errors.Is(err, ErrCompletionConflict) {
-		t.Fatalf("expected ErrCompletionConflict, got %v", err)
-	}
-}
-
-// TestRecordAssistantTurnReady_StaleVersionRejected proves a store condition
-// failure (stale version) surfaces as ErrCompletionConflict, not a silent
-// overwrite.
-func TestRecordAssistantTurnReady_StaleVersionRejected(t *testing.T) {
-	store := &fakeCompletionStore{
-		session:   newFakeSession("acme", "conv-1", "turn-1", hostedgenesis.StatusInProgress, 3),
-		updateErr: fmt.Errorf("conditional check failed"),
-	}
-	w := NewCompletionWriter(store, nil)
-
-	turn := CompletionTurn{InstanceSlug: "acme", ConversationID: "conv-1", TurnID: "turn-1", RequestID: "req-1"}
-	_, err := w.RecordAssistantTurnReady(context.Background(), turn, AssistantTurnCompletion{
-		AssistantContent: "hello",
-		MessageCount:     2,
-	})
-	if err == nil {
-		t.Fatal("expected conflict error on stale version, got nil")
-	}
-	if !errors.Is(err, ErrCompletionConflict) {
-		t.Fatalf("expected ErrCompletionConflict, got %v", err)
-	}
-}
-
-func TestRecordAssistantTurnReady_CheckpointGuardsStatusTurnAndSequence(t *testing.T) {
-	base := hostedgenesis.VMCheckpointInput{
-		ConversationID:     "conv-1",
-		LatestTurnID:       "turn-1",
-		RequestID:          "req-1",
-		Sequence:           4,
-		Step:               "assistant_turn",
-		Action:             "ask",
-		StatusFrom:         hostedgenesis.StatusInProgress,
-		StatusTo:           hostedgenesis.StatusAssistantTurnReady,
-		Runtime:            "hosted-genesis-microvm-workload/v1",
-		ProviderFamily:     "anthropic",
-		ModelID:            "claude-sonnet-4-6",
-		AdditionalHashSalt: "fresh",
-	}
-	valid, err := hostedgenesis.NewVMCheckpointMetadata(base)
-	if err != nil {
-		t.Fatalf("valid checkpoint fixture: %v", err)
-	}
-	stale, err := hostedgenesis.NewVMCheckpointMetadata(hostedgenesis.VMCheckpointInput{
-		ConversationID:     "conv-1",
-		LatestTurnID:       "turn-0",
-		RequestID:          "req-0",
-		Sequence:           4,
-		Step:               "assistant_turn",
-		Action:             "ask",
-		StatusFrom:         hostedgenesis.StatusInProgress,
-		StatusTo:           hostedgenesis.StatusAssistantTurnReady,
-		Runtime:            "hosted-genesis-microvm-workload/v1",
-		ProviderFamily:     "anthropic",
-		ModelID:            "claude-sonnet-4-6",
-		AdditionalHashSalt: "prior",
-	})
-	if err != nil {
-		t.Fatalf("stale checkpoint fixture: %v", err)
-	}
-
-	for name, mutate := range map[string]func(hostedgenesis.VMCheckpointMetadata) hostedgenesis.VMCheckpointMetadata{
-		"status_from mismatch": func(cp hostedgenesis.VMCheckpointMetadata) hostedgenesis.VMCheckpointMetadata {
-			cp.StatusFrom = string(hostedgenesis.StatusAssistantTurnReady)
-			return cp
-		},
-		"turn mismatch": func(cp hostedgenesis.VMCheckpointMetadata) hostedgenesis.VMCheckpointMetadata {
-			cp.LatestTurnID = "turn-other"
-			return cp
-		},
-		"conversation ref mismatch": func(cp hostedgenesis.VMCheckpointMetadata) hostedgenesis.VMCheckpointMetadata {
-			cp.Ref = hostedgenesis.CheckpointRef("vm-actor", "other-conversation", fmt.Sprintf("%s-%d-%s", cp.Step, cp.Sequence, cp.LatestTurnID))
-			return cp
-		},
-		"stale sequence": func(cp hostedgenesis.VMCheckpointMetadata) hostedgenesis.VMCheckpointMetadata {
-			cp.Sequence = stale.Sequence
-			return cp
-		},
-	} {
-		t.Run(name, func(t *testing.T) {
-			session := newFakeSession("acme", "conv-1", "turn-1", hostedgenesis.StatusInProgress, 4)
-			session.VMCheckpoint = &stale
-			store := &fakeCompletionStore{session: session}
-			w := NewCompletionWriter(store, nil)
-			cp := mutate(valid)
-			_, err := w.RecordAssistantTurnReadyWithCheckpoint(context.Background(), CompletionTurn{InstanceSlug: "acme", ConversationID: "conv-1", TurnID: "turn-1", RequestID: "req-1"}, AssistantTurnCompletion{
-				AssistantContent: "hello",
-				MessageCount:     2,
-			}, &cp)
-			if err == nil || !errors.Is(err, ErrCompletionConflict) {
-				t.Fatalf("expected guarded checkpoint conflict, got %v", err)
-			}
-			if store.written != nil {
-				t.Fatalf("checkpoint conflict must not write session: %#v", store.written)
-			}
-		})
-	}
-}
-
-func TestRecordDeclarationReady_AppliesFromActorOwnedStatuses(t *testing.T) {
-	for name, status := range map[string]hostedgenesis.Status{
-		"in-progress actor finalization": hostedgenesis.StatusInProgress,
-		"legacy pending extraction":      hostedgenesis.StatusDeclarationExtractionPending,
-	} {
-		t.Run(name, func(t *testing.T) {
-			store := &fakeCompletionStore{session: newFakeSession("acme", "conv-1", "turn-1", status, 5)}
-			w := NewCompletionWriter(store, func() time.Time { return time.Unix(2000, 0).UTC() })
-
-			cp := hostedgenesis.DeclarationCheckpoint{
-				DeclarationID:   "decl-1",
-				DeclarationHash: "sha256:" + hex64(),
-				CheckpointRef:   "checkpoint://hosted-genesis/conv-1/declaration/turn-1",
-				ProducedAt:      time.Unix(2000, 0).UTC(),
-				RegistrationID:  "reg-1",
-				ConversationID:  "conv-1",
-				AgentID:         "agent-1",
-				MessageCount:    2,
-				SchemaVersion:   hostedgenesis.DeclarationSchemaVersionV2,
-				GuidanceVersion: hostedgenesis.GuidanceVersionV2,
-				RequestID:       "req-1",
-			}
-			got, err := w.RecordDeclarationReady(context.Background(), CompletionTurn{InstanceSlug: "acme", ConversationID: "conv-1", TurnID: "turn-1", RequestID: "req-1"}, cp)
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			if got.Status != string(hostedgenesis.StatusDeclarationReady) {
-				t.Fatalf("expected declaration_ready, got %q", got.Status)
-			}
-			if got.DeclarationCheckpoint == nil || got.DeclarationCheckpoint.DeclarationID != "decl-1" {
-				t.Fatalf("expected declaration checkpoint persisted, got %+v", got.DeclarationCheckpoint)
-			}
-			if store.lastExpectS != status {
-				t.Fatalf("expected conditional on %s, got %q", status, store.lastExpectS)
-			}
-		})
-	}
-}
-
-// TestRecordDeclarationReady_ReplayRejected proves a second declaration write
-// for a session already at declaration_ready is rejected.
-func TestRecordDeclarationReady_ReplayRejected(t *testing.T) {
-	store := &fakeCompletionStore{session: newFakeSession("acme", "conv-1", "turn-1", hostedgenesis.StatusDeclarationReady, 6)}
-	w := NewCompletionWriter(store, nil)
-
-	cp := hostedgenesis.DeclarationCheckpoint{
-		DeclarationID:   "decl-1",
-		DeclarationHash: "sha256:" + hex64(),
-		CheckpointRef:   "checkpoint://hosted-genesis/conv-1/declaration/turn-1",
-		ProducedAt:      time.Unix(2000, 0).UTC(),
-		RegistrationID:  "reg-1",
-		ConversationID:  "conv-1",
-		AgentID:         "agent-1",
-		MessageCount:    2,
-		SchemaVersion:   hostedgenesis.DeclarationSchemaVersionV2,
-		GuidanceVersion: hostedgenesis.GuidanceVersionV2,
-		RequestID:       "req-1",
-	}
-	_, err := w.RecordDeclarationReady(context.Background(), CompletionTurn{InstanceSlug: "acme", ConversationID: "conv-1", TurnID: "turn-1", RequestID: "req-1"}, cp)
-	if err == nil {
-		t.Fatal("expected conflict on replay against declaration_ready, got nil")
-	}
-	if !errors.Is(err, ErrCompletionConflict) {
-		t.Fatalf("expected ErrCompletionConflict, got %v", err)
-	}
-}
-
 func TestRecordFailure_AppliesTypedFailure(t *testing.T) {
 	store := &fakeCompletionStore{session: newFakeSession("acme", "conv-1", "turn-1", hostedgenesis.StatusInProgress, 3)}
 	w := NewCompletionWriter(store, nil)
 
 	got, err := w.RecordFailure(context.Background(), CompletionTurn{InstanceSlug: "acme", ConversationID: "conv-1", TurnID: "turn-1", RequestID: "req-1"}, CompletionFailure{
 		Code:      hostedgenesis.FailureCodeAssistantTurnFailed,
+		Class:     hostedgenesis.FailureClassProviderTimeout,
 		Message:   "provider timed out",
 		Retryable: true,
 		Recovery:  hostedgenesis.Recovery{Action: hostedgenesis.RecoveryActionRetrySameStep, MaxAttempts: 3, RetryAfterSeconds: 5, Reason: "provider timed out"},
@@ -348,11 +109,44 @@ func TestRecordFailure_AppliesTypedFailure(t *testing.T) {
 	if got.Status != string(hostedgenesis.StatusFailed) {
 		t.Fatalf("expected failed, got %q", got.Status)
 	}
-	if got.Failure == nil || got.Failure.Code != hostedgenesis.FailureCodeAssistantTurnFailed {
+	if got.Failure == nil || got.Failure.Code != hostedgenesis.FailureCodeAssistantTurnFailed || got.Failure.Class != hostedgenesis.FailureClassProviderTimeout {
 		t.Fatalf("expected typed failure persisted, got %+v", got.Failure)
 	}
 	if !got.Failure.Retryable {
 		t.Fatalf("expected retryable failure")
+	}
+}
+
+func TestRecordFailurePersistsOnlyCanonicalContentFreeProviderClasses(t *testing.T) {
+	for _, class := range []hostedgenesis.FailureClass{
+		hostedgenesis.FailureClassProviderTimeout,
+		hostedgenesis.FailureClassProviderAPIFailure,
+		hostedgenesis.FailureClassInvalidProviderOutput,
+		hostedgenesis.FailureClassParseValidation,
+	} {
+		t.Run(string(class), func(t *testing.T) {
+			store := &fakeCompletionStore{session: newFakeSession("acme", "conv-1", "turn-1", hostedgenesis.StatusInProgress, 3)}
+			got, err := NewCompletionWriter(store, nil).RecordFailure(context.Background(), CompletionTurn{
+				InstanceSlug: "acme", ConversationID: "conv-1", TurnID: "turn-1", RequestID: "req-1",
+			}, CompletionFailure{
+				Code: hostedgenesis.FailureCodeAssistantTurnFailed, Class: class,
+				Message: "private provider response must not persist", Retryable: true,
+				Recovery: hostedgenesis.Recovery{Action: hostedgenesis.RecoveryActionRetrySameStep, MaxAttempts: 2, RetryAfterSeconds: 5, Reason: "private provider response must not persist"},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Failure == nil || got.Failure.Class != class || got.Failure.Message != hostedgenesis.FailureMessage(hostedgenesis.FailureCodeAssistantTurnFailed) || got.Failure.Recovery.Reason != string(hostedgenesis.FailureCodeAssistantTurnFailed) {
+				t.Fatalf("unexpected canonical failure persistence: %#v", got.Failure)
+			}
+			raw, marshalErr := json.Marshal(got.Failure)
+			if marshalErr != nil {
+				t.Fatal(marshalErr)
+			}
+			if strings.Contains(string(raw), "private provider response") {
+				t.Fatalf("durable failure leaked provider error detail: %s", raw)
+			}
+		})
 	}
 }
 
@@ -384,25 +178,25 @@ func TestRecordFailureAlignsConversationLatestTurnID(t *testing.T) {
 	}
 }
 
-func TestRecordFailure_CarriesDeclarationRetryBudget(t *testing.T) {
+func TestRecordFailure_CarriesCurrentSectionRetryBudget(t *testing.T) {
 	prior := &hostedgenesis.Failure{
-		Code:      hostedgenesis.FailureCodeDeclarationExtractionFailed,
-		Message:   hostedgenesis.FailureMessage(hostedgenesis.FailureCodeDeclarationExtractionFailed),
+		Code:      hostedgenesis.FailureCodeAssistantTurnFailed,
+		Message:   hostedgenesis.FailureMessage(hostedgenesis.FailureCodeAssistantTurnFailed),
 		Retryable: true,
 		Recovery: hostedgenesis.Recovery{
 			Action:            hostedgenesis.RecoveryActionRetrySameStep,
 			MaxAttempts:       2,
 			RetryAfterSeconds: 30,
-			Reason:            string(hostedgenesis.FailureCodeDeclarationExtractionFailed),
+			Reason:            string(hostedgenesis.FailureCodeAssistantTurnFailed),
 		},
 	}
-	session := newFakeSession("acme", "conv-1", "turn-1", hostedgenesis.StatusDeclarationExtractionPending, 3)
+	session := newFakeSession("acme", "conv-1", "turn-1", hostedgenesis.StatusInProgress, 3)
 	session.Failure = prior
 	store := &fakeCompletionStore{session: session}
 	w := NewCompletionWriter(store, nil)
 
 	got, err := w.RecordFailure(context.Background(), CompletionTurn{InstanceSlug: "acme", ConversationID: "conv-1", TurnID: "turn-1", RequestID: "req-1"}, CompletionFailure{
-		Code:      hostedgenesis.FailureCodeDeclarationExtractionFailed,
+		Code:      hostedgenesis.FailureCodeAssistantTurnFailed,
 		Retryable: true,
 		Recovery: hostedgenesis.Recovery{
 			Action:            hostedgenesis.RecoveryActionRetrySameStep,
@@ -417,34 +211,84 @@ func TestRecordFailure_CarriesDeclarationRetryBudget(t *testing.T) {
 	if got.Failure == nil ||
 		got.Failure.Recovery.MaxAttempts != 2 ||
 		got.Failure.Recovery.Action != hostedgenesis.RecoveryActionRetrySameStep ||
-		got.Failure.Recovery.Reason != string(hostedgenesis.FailureCodeDeclarationExtractionFailed) {
-		t.Fatalf("expected declaration retry budget carry-forward, got %#v", got.Failure)
+		got.Failure.Recovery.Reason != string(hostedgenesis.FailureCodeAssistantTurnFailed) {
+		t.Fatalf("expected current-section retry budget carry-forward, got %#v", got.Failure)
 	}
 }
 
-func TestRecordFailure_ExhaustedDeclarationRetryBecomesRestart(t *testing.T) {
+func TestRecordFailure_ExhaustedCurrentSectionRetryBecomesRestart(t *testing.T) {
+	assertExhaustedRetryBecomesRestart(t, hostedgenesis.FailureCodeAssistantTurnFailed, 3)
+}
+
+func TestRecordFailure_ExhaustedMicroVMUnavailableRetryBecomesRestart(t *testing.T) {
+	assertExhaustedRetryBecomesRestart(t, hostedgenesis.FailureCodeMicroVMUnavailable, 51)
+}
+
+func TestRecordFailure_SuspendedVMOnExhaustedCurrentSectionRetryStaysExhausted(t *testing.T) {
 	prior := &hostedgenesis.Failure{
-		Code:      hostedgenesis.FailureCodeDeclarationExtractionFailed,
-		Message:   hostedgenesis.FailureMessage(hostedgenesis.FailureCodeDeclarationExtractionFailed),
+		Code:      hostedgenesis.FailureCodeAssistantTurnFailed,
+		Message:   hostedgenesis.FailureMessage(hostedgenesis.FailureCodeAssistantTurnFailed),
 		Retryable: false,
 		Recovery: hostedgenesis.Recovery{
-			Action: hostedgenesis.RecoveryActionRetrySameStep,
-			Reason: string(hostedgenesis.FailureCodeDeclarationExtractionFailed),
+			Action:            hostedgenesis.RecoveryActionRetrySameStep,
+			RetryAfterSeconds: 5,
+			Reason:            string(hostedgenesis.FailureCodeAssistantTurnFailed),
 		},
 	}
-	session := newFakeSession("acme", "conv-1", "turn-1", hostedgenesis.StatusDeclarationExtractionPending, 3)
+	session := newFakeSession("trenchcoat", "K-JYArykVuog3gq-2lHBJw", "turn_bMLVA5B9Sb-J4U8AgzYNWA", hostedgenesis.StatusInProgress, 51)
 	session.Failure = prior
 	store := &fakeCompletionStore{session: session}
 	w := NewCompletionWriter(store, nil)
 
-	got, err := w.RecordFailure(context.Background(), CompletionTurn{InstanceSlug: "acme", ConversationID: "conv-1", TurnID: "turn-1", RequestID: "req-1"}, CompletionFailure{
-		Code:      hostedgenesis.FailureCodeDeclarationExtractionFailed,
+	got, err := w.RecordFailure(context.Background(), CompletionTurn{
+		InstanceSlug: "trenchcoat", ConversationID: "K-JYArykVuog3gq-2lHBJw", TurnID: "turn_bMLVA5B9Sb-J4U8AgzYNWA", RequestID: "req-observe-suspended",
+	}, CompletionFailure{
+		Code:      hostedgenesis.FailureCodeMicroVMUnavailable,
 		Retryable: true,
 		Recovery: hostedgenesis.Recovery{
 			Action:            hostedgenesis.RecoveryActionRetrySameStep,
 			MaxAttempts:       3,
-			RetryAfterSeconds: 30,
-			Reason:            string(hostedgenesis.FailureCodeDeclarationExtractionFailed),
+			RetryAfterSeconds: 5,
+			Reason:            string(hostedgenesis.FailureCodeMicroVMUnavailable),
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Failure == nil ||
+		got.Failure.Code != hostedgenesis.FailureCodeMicroVMUnavailable ||
+		got.Failure.Retryable ||
+		got.Failure.Recovery.Action != hostedgenesis.RecoveryActionRestartSoulBootstrap ||
+		got.Failure.Recovery.MaxAttempts != 0 ||
+		got.Failure.Recovery.RetryAfterSeconds != 0 {
+		t.Fatalf("suspended observation must not resurrect exhausted declaration recovery, got %#v", got.Failure)
+	}
+}
+
+func assertExhaustedRetryBecomesRestart(t *testing.T, code hostedgenesis.FailureCode, version int64) {
+	t.Helper()
+	prior := &hostedgenesis.Failure{
+		Code:      code,
+		Message:   hostedgenesis.FailureMessage(code),
+		Retryable: false,
+		Recovery: hostedgenesis.Recovery{
+			Action: hostedgenesis.RecoveryActionRetrySameStep,
+			Reason: string(code),
+		},
+	}
+	session := newFakeSession("acme", "conv-1", "turn-1", hostedgenesis.StatusInProgress, version)
+	session.Failure = prior
+	store := &fakeCompletionStore{session: session}
+	w := NewCompletionWriter(store, nil)
+
+	got, err := w.RecordFailure(context.Background(), CompletionTurn{InstanceSlug: "acme", ConversationID: "conv-1", TurnID: "turn-1", RequestID: "req-exhausted"}, CompletionFailure{
+		Code:      code,
+		Retryable: true,
+		Recovery: hostedgenesis.Recovery{
+			Action:            hostedgenesis.RecoveryActionRetrySameStep,
+			MaxAttempts:       3,
+			RetryAfterSeconds: 5,
+			Reason:            string(code),
 		},
 	})
 	if err != nil {
@@ -455,7 +299,7 @@ func TestRecordFailure_ExhaustedDeclarationRetryBecomesRestart(t *testing.T) {
 		got.Failure.Recovery.Action != hostedgenesis.RecoveryActionRestartSoulBootstrap ||
 		got.Failure.Recovery.MaxAttempts != 0 ||
 		got.Failure.Recovery.RetryAfterSeconds != 0 {
-		t.Fatalf("expected exhausted declaration retry to become restart guidance, got %#v", got.Failure)
+		t.Fatalf("expected exhausted %s retry to require a fresh soul bootstrap, got %#v", code, got.Failure)
 	}
 }
 
@@ -509,27 +353,6 @@ func TestRecordFailure_ReplayAgainstTerminalRejected(t *testing.T) {
 				t.Fatalf("expected ErrCompletionConflict, got %v", err)
 			}
 		})
-	}
-}
-
-func TestRecordAssistantTurnReady_MissingSessionRejected(t *testing.T) {
-	store := &fakeCompletionStore{session: nil}
-	w := NewCompletionWriter(store, nil)
-	_, err := w.RecordAssistantTurnReady(context.Background(), CompletionTurn{InstanceSlug: "acme", ConversationID: "conv-missing", TurnID: "turn-1"}, AssistantTurnCompletion{AssistantContent: "hi"})
-	if err == nil {
-		t.Fatal("expected missing-session error, got nil")
-	}
-	if !errors.Is(err, ErrCompletionSessionMissing) {
-		t.Fatalf("expected ErrCompletionSessionMissing, got %v", err)
-	}
-}
-
-func TestRecordAssistantTurnReady_EmptyContentRejected(t *testing.T) {
-	store := &fakeCompletionStore{session: newFakeSession("acme", "conv-1", "turn-1", hostedgenesis.StatusInProgress, 3)}
-	w := NewCompletionWriter(store, nil)
-	_, err := w.RecordAssistantTurnReady(context.Background(), CompletionTurn{InstanceSlug: "acme", ConversationID: "conv-1", TurnID: "turn-1"}, AssistantTurnCompletion{AssistantContent: "  "})
-	if err == nil {
-		t.Fatal("expected error for empty assistant content, got nil")
 	}
 }
 

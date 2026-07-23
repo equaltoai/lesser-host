@@ -187,6 +187,11 @@ func (s *Server) handleSoulInstanceGetRegistrationMintConversation(ctx *apptheor
 	if appErr := rejectOversizeSoulMintInstanceConversation(convCtx.conv); appErr != nil {
 		return nil, appErr
 	}
+	observedSession, observedConversation, observeErr := s.observeHostedGenesisMicroVMOnRead(ctx, convCtx.session, convCtx.conv)
+	if observeErr != nil {
+		return nil, observeErr
+	}
+	convCtx.session, convCtx.conv = observedSession, observedConversation
 	if appErr := s.repairSoulInstanceHostedGenesisPublishedPendingOnRead(ctx, convCtx); appErr != nil {
 		return nil, appErr
 	}
@@ -219,32 +224,12 @@ func (s *Server) handleSoulInstanceCompleteMintConversation(ctx *apptheory.Conte
 	if publishGuardErr != nil {
 		return nil, soulInstanceBootstrapConversationErrorFromAppError(publishGuardErr)
 	}
-	status := hostedgenesis.NormalizeStatus(convCtx.session.Status)
-	if status != hostedgenesis.StatusAssistantTurnReady &&
-		status != hostedgenesis.StatusDeclarationExtractionPending {
-		return hostedGenesisConversationJSONFromSession(http.StatusAccepted, convCtx.session, convCtx.conv, hostedGenesisProjectionOptions{RegistrationID: convCtx.reg.ID, RequestID: strings.TrimSpace(ctx.RequestID), CollapseCreated: true})
-	}
-	if status == hostedgenesis.StatusDeclarationExtractionPending && parseMintConversationCompleteDeclarations(ctx) == "" {
-		return hostedGenesisConversationJSONFromSession(http.StatusAccepted, convCtx.session, convCtx.conv, hostedGenesisProjectionOptions{RegistrationID: convCtx.reg.ID, RequestID: strings.TrimSpace(ctx.RequestID), CollapseCreated: true})
-	}
-	// Project 48 M11: Hosted Genesis completion is no longer a Host-side
-	// declaration-extraction trigger. The VM conversation actor owns the
-	// extract/finalize decision after Host accepts the user's turn and dispatches
-	// it through AppTheory Invoke. This endpoint remains a polling/finalize gate;
-	// explicit declarations are handled only as a bounded compatibility seam for
-	// older clients and are not the ordinary hosted path.
-	if parseMintConversationCompleteDeclarations(ctx) == "" {
-		return hostedGenesisConversationJSONFromSession(http.StatusAccepted, convCtx.session, convCtx.conv, hostedGenesisProjectionOptions{RegistrationID: convCtx.reg.ID, RequestID: strings.TrimSpace(ctx.RequestID), CollapseCreated: true})
-	}
-	resp, err := s.completeSoulMintConversationForRegistrationWithProjection(ctx, mintConversationRegistrationContext{
-		reg:        convCtx.reg,
-		inst:       convCtx.inst,
-		agentIDHex: convCtx.agentIDHex,
-	}, convCtx.conv, convCtx.conversationID, &hostedGenesisProjectionOptions{RegistrationID: convCtx.reg.ID, RequestID: strings.TrimSpace(ctx.RequestID), CollapseCreated: true})
-	if err != nil {
-		return nil, soulInstanceBootstrapConversationErrorFromError(err)
-	}
-	return resp, nil
+	// Hosted Genesis completion is a read-only convergence gate. The AppTheory
+	// MicroVM actor finalizes the exact structurally affirmed candidate; this
+	// control-plane route never accepts caller-authored declarations and never
+	// invokes a provider.
+	return hostedGenesisConversationJSONFromSession(http.StatusAccepted, convCtx.session, convCtx.conv, hostedGenesisProjectionOptions{RegistrationID: convCtx.reg.ID, RequestID: strings.TrimSpace(ctx.RequestID), CollapseCreated: true})
+
 }
 
 func (s *Server) handleSoulInstanceFinalizeMintConversationPreflight(ctx *apptheory.Context) (*apptheory.Response, error) {

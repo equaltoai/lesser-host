@@ -127,23 +127,11 @@ func TestLoad_Defaults(t *testing.T) {
 	}
 }
 
-func TestLoad_HostedGenesisMicroVMDefaultLifetimePolicy(t *testing.T) {
+func TestLoad_HostedGenesisMicroVMDefaultRuntimeEnvelope(t *testing.T) {
 	cfg := Load()
 
 	if got := cfg.HostedGenesisMicroVM.MaximumDurationSeconds; got != HostedGenesisMicroVMDefaultMaximumDurationSeconds {
 		t.Fatalf("expected hosted genesis microvm default max duration %d, got %d", HostedGenesisMicroVMDefaultMaximumDurationSeconds, got)
-	}
-	if !cfg.HostedGenesisMicroVM.IdlePolicy.Complete() {
-		t.Fatalf("expected default hosted genesis microvm idle policy to be complete: %#v", cfg.HostedGenesisMicroVM.IdlePolicy)
-	}
-	if cfg.HostedGenesisMicroVM.IdlePolicy.AutoResumeEnabled {
-		t.Fatalf("expected default hosted genesis microvm idle auto-resume disabled until lab proof explicitly validates it")
-	}
-	if got := cfg.HostedGenesisMicroVM.IdlePolicy.MaxIdleDurationSeconds; got != HostedGenesisMicroVMDefaultIdleMaxSeconds {
-		t.Fatalf("expected default hosted genesis microvm idle max %d, got %d", HostedGenesisMicroVMDefaultIdleMaxSeconds, got)
-	}
-	if got := cfg.HostedGenesisMicroVM.IdlePolicy.SuspendedDurationSeconds; got != HostedGenesisMicroVMDefaultIdleSuspendedSeconds {
-		t.Fatalf("expected default hosted genesis microvm suspended duration %d, got %d", HostedGenesisMicroVMDefaultIdleSuspendedSeconds, got)
 	}
 }
 
@@ -152,12 +140,12 @@ func TestLoad_HostedGenesisMicroVMLifetimePolicy(t *testing.T) {
 	t.Setenv("APPTHEORY_MICROVM_CONTROLLER_ENDPOINT", " "+testMicroVMControllerEndpoint+" ")
 	t.Setenv("HOSTED_GENESIS_MICROVM_AUTH_TOKEN_SSM_PARAM", " "+testMicroVMAuthTokenParam+" ")
 	t.Setenv("APPTHEORY_MICROVM_IMAGE_REF", " "+testMicroVMImageRef+" ")
+	t.Setenv("APPTHEORY_MICROVM_IMAGE_VERSION", "29")
+	t.Setenv("HOSTED_GENESIS_MICROVM_EXECUTION_ROLE_ARN", "arn:aws:iam::123456789012:role/hosted-genesis-test")
+	t.Setenv("HOSTED_GENESIS_MICROVM_RUNTIME_LOG_GROUP", "/aws/lambda/microvms/hosted-genesis-test")
 	t.Setenv("APPTHEORY_MICROVM_EGRESS_NETWORK_CONNECTOR_REFS", " "+testMicroVMEgressOne+", "+testMicroVMEgressTwo+" ")
 	t.Setenv("APPTHEORY_MICROVM_INGRESS_NETWORK_CONNECTOR_REFS", " "+testMicroVMIngressOne+" ")
 	t.Setenv("HOSTED_GENESIS_MICROVM_MAXIMUM_DURATION_SECONDS", "450")
-	t.Setenv("HOSTED_GENESIS_MICROVM_IDLE_MAX_SECONDS", "240")
-	t.Setenv("HOSTED_GENESIS_MICROVM_IDLE_SUSPENDED_SECONDS", "1200")
-	t.Setenv("HOSTED_GENESIS_MICROVM_IDLE_AUTO_RESUME_ENABLED", "true")
 
 	cfg := Load()
 
@@ -173,25 +161,20 @@ func TestLoad_HostedGenesisMicroVMLifetimePolicy(t *testing.T) {
 	if cfg.HostedGenesisMicroVM.MaximumDurationSeconds != 450 {
 		t.Fatalf("expected maximum duration 450, got %d", cfg.HostedGenesisMicroVM.MaximumDurationSeconds)
 	}
-	if !cfg.HostedGenesisMicroVM.IdlePolicy.AutoResumeEnabled {
-		t.Fatalf("expected explicit idle auto resume opt-in")
-	}
-	if cfg.HostedGenesisMicroVM.IdlePolicy.MaxIdleDurationSeconds != 240 ||
-		cfg.HostedGenesisMicroVM.IdlePolicy.SuspendedDurationSeconds != 1200 {
-		t.Fatalf("unexpected idle policy: %#v", cfg.HostedGenesisMicroVM.IdlePolicy)
-	}
 }
 
 func TestLoad_HostedGenesisMicroVMCompactConfig(t *testing.T) {
 	t.Setenv(HostedGenesisMicroVMConfigJSONEnv, `{
-		"v": 1,
+		"v": 2,
 		"ep": " `+testMicroVMControllerEndpoint+` ",
 		"ap": " `+testMicroVMAuthTokenParam+` ",
 		"img": " `+testMicroVMImageRef+` ",
+		"iv": "29",
+		"er": "arn:aws:iam::123456789012:role/hosted-genesis-test",
+		"lg": "/aws/lambda/microvms/hosted-genesis-test",
 		"in": " `+testMicroVMIngressOne+`, `+testMicroVMIngressTwo+` ",
 		"eg": " `+testMicroVMEgressOne+`, `+testMicroVMEgressTwo+` ",
-		"max": 450,
-		"idle": {"ar": true, "max": 240, "sus": 1200}
+		"max": 450
 	}`)
 	// Legacy per-variable env must not be required when the compact CDK-owned
 	// config is present; the compact value is the deployment env-budget path.
@@ -208,13 +191,13 @@ func TestLoad_HostedGenesisMicroVMCompactConfig(t *testing.T) {
 	assertEqual(t, "compact controller endpoint", cfg.HostedGenesisMicroVM.ControllerEndpoint, testMicroVMControllerEndpoint)
 	assertEqual(t, "compact auth-token param", cfg.HostedGenesisMicroVM.AuthTokenSSMParam, testMicroVMAuthTokenParam)
 	assertEqual(t, "compact image ref", cfg.HostedGenesisMicroVM.ImageRef, testMicroVMImageRef)
+	assertEqual(t, "compact image version", cfg.HostedGenesisMicroVM.ImageVersion, "29")
+	assertEqual(t, "compact execution role", cfg.HostedGenesisMicroVM.ExecutionRoleARN, "arn:aws:iam::123456789012:role/hosted-genesis-test")
+	assertEqual(t, "compact runtime log group", cfg.HostedGenesisMicroVM.RuntimeLogGroup, "/aws/lambda/microvms/hosted-genesis-test")
 	assertEqual(t, "compact network connector ref", cfg.HostedGenesisMicroVM.NetworkConnectorRef, testMicroVMEgressOne)
 	assertStringSliceEqual(t, "compact ingress refs", cfg.HostedGenesisMicroVM.IngressConnectorRefs, []string{testMicroVMIngressOne, testMicroVMIngressTwo})
 	assertStringSliceEqual(t, "compact egress refs", cfg.HostedGenesisMicroVM.EgressConnectorRefs, []string{testMicroVMEgressOne, testMicroVMEgressTwo})
 	assertEqual(t, "compact maximum duration", cfg.HostedGenesisMicroVM.MaximumDurationSeconds, int32(450))
-	assertEqual(t, "compact idle auto resume", cfg.HostedGenesisMicroVM.IdlePolicy.AutoResumeEnabled, true)
-	assertEqual(t, "compact idle max", cfg.HostedGenesisMicroVM.IdlePolicy.MaxIdleDurationSeconds, int32(240))
-	assertEqual(t, "compact idle suspended", cfg.HostedGenesisMicroVM.IdlePolicy.SuspendedDurationSeconds, int32(1200))
 }
 
 func TestLoad_HostedGenesisMicroVMCompactConfigFailsClosed(t *testing.T) {
@@ -237,9 +220,6 @@ func TestLoad_HostedGenesisMicroVMCompactConfigFailsClosed(t *testing.T) {
 		cfg.HostedGenesisMicroVM.AuthTokenSSMParam != "" ||
 		cfg.HostedGenesisMicroVM.ImageRef != "" {
 		t.Fatalf("invalid compact config leaked legacy values: %#v", cfg.HostedGenesisMicroVM)
-	}
-	if !cfg.HostedGenesisMicroVM.IdlePolicy.Complete() {
-		t.Fatalf("invalid compact config should retain safe default idle policy for diagnostics: %#v", cfg.HostedGenesisMicroVM.IdlePolicy)
 	}
 }
 
