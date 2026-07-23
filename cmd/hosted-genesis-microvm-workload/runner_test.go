@@ -302,14 +302,10 @@ func assertContentFreeProviderAttemptEvidence(t *testing.T, attempts []hostedgen
 		t.Fatalf("expected tool and continuation SDK attempts, got %#v", attempts)
 	}
 	toolAttempt, continuationAttempt := attempts[0], attempts[1]
-	if toolAttempt.SDKAttemptOrdinal != 1 || toolAttempt.SDKRetryBudget != llm.DefaultProviderSDKRetryBudget || toolAttempt.HTTPStatus != 200 ||
-		toolAttempt.ProviderRequestID != "req_provider_1" || toolAttempt.ToolName != hostedgenesis.DeclarationToolIdentityPut || !toolAttempt.Accepted {
+	if !validTestToolAttemptEvidence(toolAttempt) {
 		t.Fatalf("durable tool attempt evidence was incomplete: %#v", toolAttempt)
 	}
-	if continuationAttempt.SDKAttemptOrdinal != 2 || continuationAttempt.SDKRetryBudget != llm.DefaultProviderSDKRetryBudget ||
-		continuationAttempt.HTTPStatus != 200 || continuationAttempt.ProviderRequestID != "req_provider_2" ||
-		continuationAttempt.OutputBytes != 38 || continuationAttempt.TotalTokens != 28 ||
-		continuationAttempt.OutputSHA256 != strings.Repeat("b", 64) || continuationAttempt.ToolName != "" {
+	if !validTestContinuationAttemptEvidence(continuationAttempt) {
 		t.Fatalf("durable continuation attempt evidence was incomplete: %#v", continuationAttempt)
 	}
 	for _, attempt := range attempts {
@@ -317,6 +313,19 @@ func assertContentFreeProviderAttemptEvidence(t *testing.T, attempts []hostedgen
 			t.Fatalf("durable attempt evidence retained provider content: %#v", attempt)
 		}
 	}
+}
+
+func validTestToolAttemptEvidence(attempt hostedgenesis.DeclarationProviderAttempt) bool {
+	return attempt.SDKAttemptOrdinal == 1 && attempt.SDKRetryBudget == llm.DefaultProviderSDKRetryBudget &&
+		attempt.HTTPStatus == 200 && attempt.ProviderRequestID == "req_provider_1" &&
+		attempt.ToolName == hostedgenesis.DeclarationToolIdentityPut && attempt.Accepted
+}
+
+func validTestContinuationAttemptEvidence(attempt hostedgenesis.DeclarationProviderAttempt) bool {
+	return attempt.SDKAttemptOrdinal == 2 && attempt.SDKRetryBudget == llm.DefaultProviderSDKRetryBudget &&
+		attempt.HTTPStatus == 200 && attempt.ProviderRequestID == "req_provider_2" &&
+		attempt.OutputBytes == 38 && attempt.TotalTokens == 28 &&
+		attempt.OutputSHA256 == strings.Repeat("b", 64) && attempt.ToolName == ""
 }
 
 func TestAffirmedFinalizationMakesZeroProviderCallsAndIsStable(t *testing.T) {
