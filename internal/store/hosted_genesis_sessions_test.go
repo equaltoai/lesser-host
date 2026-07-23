@@ -192,6 +192,10 @@ func TestStore_TypedCandidateFinalizationPublishesExactBytesOnce(t *testing.T) {
 	require.NoError(t, db.Model(conversation).Create())
 	current, err := st.GetHostedGenesisSession(ctx, session.InstanceSlug, session.ConversationID)
 	require.NoError(t, err)
+	require.NotNil(t, current.DeclarationCandidate.Capabilities)
+	require.Empty(t, current.DeclarationCandidate.Capabilities)
+	require.Contains(t, current.DeclarationCandidate.CanonicalJSON, `"capabilities":[]`)
+	require.NoError(t, current.DeclarationCandidate.Validate())
 	canonicalJSON, canonicalHash := current.DeclarationCandidate.CanonicalJSON, current.DeclarationCandidate.CandidateHash
 	finalized, err := hostedgenesis.FinalizeDeclarationCandidate(current.DeclarationCandidate, current.LatestTurnID, current.DeclarationCandidate.Affirmation.AffirmedAt)
 	require.NoError(t, err)

@@ -193,7 +193,7 @@ type DeclarationCandidate struct {
 	CompletedSections []DeclarationSection              `json:"completed_sections,omitempty"`
 	FiveBodies        FiveBodyDeclaration               `json:"five_bodies"`
 	SelfDescription   soul.SelfDescriptionV2            `json:"self_description"`
-	Capabilities      []soul.CapabilityV2               `json:"capabilities,omitempty"`
+	Capabilities      []soul.CapabilityV2               `json:"capabilities"`
 	Transparency      DeclarationTransparency           `json:"transparency"`
 	Revision          int64                             `json:"revision"`
 	SectionHashes     map[string]string                 `json:"section_hashes,omitempty"`
@@ -469,6 +469,9 @@ func applyDeclarationToolPayload(updated *DeclarationCandidate, section Declarat
 	if bindingIssue := declarationPayloadBindingIssue(section, payload.CandidateRevision, payload.CandidateHash, request); bindingIssue != nil {
 		return []DeclarationValidationIssue{*bindingIssue}
 	}
+	if boundsIssue := declarationSectionPayloadBoundsIssue(section, payload.Section); boundsIssue != nil {
+		return []DeclarationValidationIssue{*boundsIssue}
+	}
 	setCandidateSection(updated, section, normalizeFiveBodySection(payload.Section))
 	if err := validateDeclarationSection(section, updated.FiveBodies); err != nil {
 		return []DeclarationValidationIssue{issueForCode(section, DeclarationValidationCodeFromError(err))}
@@ -485,6 +488,9 @@ func applyDeclarationSoulPayload(updated *DeclarationCandidate, request Declarat
 	if bindingIssue := declarationPayloadBindingIssue(section, payload.CandidateRevision, payload.CandidateHash, request); bindingIssue != nil {
 		return []DeclarationValidationIssue{*bindingIssue}
 	}
+	if boundsIssue := declarationSoulPayloadBoundsIssue(payload.Section); boundsIssue != nil {
+		return []DeclarationValidationIssue{*boundsIssue}
+	}
 	updated.FiveBodies.Soul = NormalizeFiveBodyDeclaration(FiveBodyDeclaration{Soul: payload.Section}).Soul
 	updated.SelfDescription = normalizeCandidateSelfDescription(payload.SelfDescription, updated.FiveBodies, updated.Model)
 	updated.Transparency = normalizeCandidateTransparency(payload.Transparency)
@@ -494,6 +500,45 @@ func applyDeclarationSoulPayload(updated *DeclarationCandidate, request Declarat
 		issues = append(issues, issueForCode(section, DeclarationValidationCodeFromError(err)))
 	}
 	return issues
+}
+
+func declarationSectionPayloadBoundsIssue(section DeclarationSection, payload FiveBodySection) *DeclarationValidationIssue {
+	path := "fiveBodies." + string(section)
+	if utf8.RuneCountInString(strings.TrimSpace(payload.Summary)) > fiveBodySummaryMaxRunes {
+		value := issue(section, path+".summary", DeclarationCodeInvalid)
+		return &value
+	}
+	if len(payload.Notes) > fiveBodyEvidenceMaxItems {
+		value := issue(section, path+".notes", DeclarationCodeInvalid)
+		return &value
+	}
+	for _, note := range payload.Notes {
+		if utf8.RuneCountInString(strings.TrimSpace(note)) > fiveBodyRefusalFieldMaxRunes {
+			value := issue(section, path+".notes", DeclarationCodeInvalid)
+			return &value
+		}
+	}
+	return nil
+}
+
+func declarationSoulPayloadBoundsIssue(payload FiveBodySoulBody) *DeclarationValidationIssue {
+	section := DeclarationSectionSoul
+	if boundsIssue := declarationSectionPayloadBoundsIssue(section, FiveBodySection{Summary: payload.Summary, Notes: payload.Notes}); boundsIssue != nil {
+		return boundsIssue
+	}
+	if len(payload.Refusals) > fiveBodyRefusalsMaxItems {
+		value := issue(section, "fiveBodies.soul.refusals", DeclarationCodeSoulRefusalsBad)
+		return &value
+	}
+	for _, refusal := range payload.Refusals {
+		if utf8.RuneCountInString(strings.TrimSpace(refusal.Bypass)) > fiveBodyRefusalFieldMaxRunes ||
+			utf8.RuneCountInString(strings.TrimSpace(refusal.Invariant)) > fiveBodyRefusalFieldMaxRunes ||
+			utf8.RuneCountInString(strings.TrimSpace(refusal.ClosestSafePath)) > fiveBodyRefusalFieldMaxRunes {
+			value := issue(section, "fiveBodies.soul.refusals", DeclarationCodeSoulRefusalsBad)
+			return &value
+		}
+	}
+	return nil
 }
 
 func declarationPayloadBindingIssue(section DeclarationSection, revision *int64, candidateHash string, request DeclarationToolRequest) *DeclarationValidationIssue {
@@ -823,10 +868,11 @@ func (c *DeclarationCandidate) refreshCanonical() error {
 	doc := canonicalProducedDeclarations{
 		SchemaVersion: c.SchemaVersion, GuidanceVersion: c.GuidanceVersion,
 		FiveBodies: c.FiveBodies, SelfDescription: c.SelfDescription,
-		Capabilities: append([]soul.CapabilityV2(nil), c.Capabilities...),
+		Capabilities: make([]soul.CapabilityV2, len(c.Capabilities)),
 		Boundaries:   FiveBodyBoundariesDeterministic(c.FiveBodies.Soul.Refusals, c.EstablishedAt),
 		Transparency: c.Transparency,
 	}
+	copy(doc.Capabilities, c.Capabilities)
 	if len(c.CompletedSections) == len(declarationSectionOrder) {
 		review, err := BuildAdversarialReviewV2(c.FiveBodies)
 		if err != nil {
@@ -864,6 +910,9 @@ func FiveBodyBoundariesDeterministic(refusals []FiveBodyRefusalRule, established
 func ValidateDeclarationCandidateComplete(candidate *DeclarationCandidate) error {
 	if candidate == nil || len(candidate.CompletedSections) != len(declarationSectionOrder) {
 		return NewDeclarationValidationError(DeclarationCodeInvalid)
+	}
+	if candidate.Capabilities == nil {
+		return NewDeclarationValidationError(DeclarationCodeCapabilities)
 	}
 	if err := ValidateFiveBodyDeclaration(candidate.FiveBodies); err != nil {
 		return err
@@ -995,7 +1044,16 @@ func applyDeclarationCandidateEdit(candidate *DeclarationCandidate, action Decla
 	candidate.Affirmation = nil
 	candidate.SourceTurnID = strings.TrimSpace(sourceTurnID)
 	candidate.UpdatedAt = now.UTC()
-	return nil
+	// capabilities is a required array in the v2 contract. Early M11 rows could
+	// lose an intentionally empty slice through an omitempty persistence round
+	// trip even though the stored soul-section hash was computed over [].
+	// Structural edit invalidates the old review, so Host can safely restore the
+	// required empty representation before regenerating canonical bytes. Any
+	// unrelated section/hash corruption still fails candidate validation.
+	if candidate.Capabilities == nil {
+		candidate.Capabilities = []soul.CapabilityV2{}
+	}
+	return candidate.refreshCanonical()
 }
 
 func applyDeclarationCandidateAffirmation(candidate *DeclarationCandidate, action DeclarationCandidateAction, sourceTurnID string, now time.Time) error {
@@ -1069,6 +1127,9 @@ func validateDeclarationCandidateCore(c *DeclarationCandidate) error {
 	}
 	if c.Revision < 0 || len(c.ToolRecords) > MaxDeclarationToolRecords || len(c.ProviderAttempts) > MaxDeclarationProviderAttempts {
 		return errors.New("declaration candidate revision is invalid")
+	}
+	if c.Capabilities == nil {
+		return errors.New("declaration candidate capabilities array is required")
 	}
 	return nil
 }

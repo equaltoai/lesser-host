@@ -2,9 +2,11 @@ package hostedgenesis
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/equaltoai/lesser-host/internal/soul"
 )
@@ -27,6 +29,92 @@ func TestDeclarationCandidateMalformedSectionCanBeRevisedInPlace(t *testing.T) {
 	}, time.Unix(102, 0))
 	if !good.result.Accepted || good.next == nil || good.next.Revision != 1 || good.next.CurrentSection != DeclarationSectionPhilosophy {
 		t.Fatalf("same-section revision did not advance: %#v", good)
+	}
+}
+
+func TestDeclarationCandidateRejectsOverLimitBoundariesWithoutTruncation(t *testing.T) {
+	candidate := testDeclarationCandidate(t)
+	overLimit := strings.Repeat("B1-B9 owner boundary evidence. ", 96) +
+		"B10. Fail closed, preserve exact evidence, and require an owner-approved recovery plan."
+	if utf8.RuneCountInString(overLimit) <= fiveBodySummaryMaxRunes {
+		t.Fatal("over-limit B10 fixture does not cross the canonical summary bound")
+	}
+	got := applyCandidatePayload(t, candidate, DeclarationToolIdentityPut, "identity", declarationSectionPayload{Section: testFiveBody().Identity}, time.Unix(101, 0))
+	candidate = got.next
+	candidate = acceptCandidateSection(t, candidate, DeclarationToolPhilosophyPut, "philosophy", declarationSectionPayload{Section: testFiveBody().Philosophy}, 2)
+	candidate = acceptCandidateSection(t, candidate, DeclarationToolDisciplinePut, "discipline", declarationSectionPayload{Section: testFiveBody().Discipline}, 3)
+
+	rejected := applyCandidatePayload(t, candidate, DeclarationToolBoundariesPut, "boundaries-over-limit", declarationSectionPayload{
+		Section: FiveBodySection{Summary: overLimit, Notes: []string{"B1-B10 remain owner supplied."}},
+	}, time.Unix(104, 0))
+	if rejected.next != nil || rejected.result.Accepted || len(rejected.result.Errors) != 1 {
+		t.Fatalf("over-limit boundaries were not rejected intact: %#v", rejected)
+	}
+	if got := rejected.result.Errors[0]; got.Section != DeclarationSectionBoundaries || got.Path != "fiveBodies.boundaries.summary" || got.Code != DeclarationCodeInvalid {
+		t.Fatalf("unexpected over-limit repair issue: %#v", got)
+	}
+	if candidate.Revision != 3 || candidate.CurrentSection != DeclarationSectionBoundaries || candidate.FiveBodies.Boundaries.Summary != "" {
+		t.Fatalf("over-limit rejection mutated candidate: %#v", candidate)
+	}
+}
+
+func TestDeclarationCandidateRejectsAllLossyProviderBounds(t *testing.T) {
+	longField := strings.Repeat("x", fiveBodyRefusalFieldMaxRunes+1)
+	tests := []struct {
+		name string
+		got  *DeclarationValidationIssue
+		path string
+		code DeclarationValidationCode
+	}{
+		{
+			name: "too many notes",
+			got: declarationSectionPayloadBoundsIssue(DeclarationSectionIdentity, FiveBodySection{
+				Summary: "identity", Notes: make([]string, fiveBodyEvidenceMaxItems+1),
+			}),
+			path: "fiveBodies.identity.notes", code: DeclarationCodeInvalid,
+		},
+		{
+			name: "over-limit note",
+			got: declarationSectionPayloadBoundsIssue(DeclarationSectionPhilosophy, FiveBodySection{
+				Summary: "philosophy", Notes: []string{longField},
+			}),
+			path: "fiveBodies.philosophy.notes", code: DeclarationCodeInvalid,
+		},
+		{
+			name: "too many refusals",
+			got: declarationSoulPayloadBoundsIssue(FiveBodySoulBody{
+				Summary: "soul", Refusals: make([]FiveBodyRefusalRule, fiveBodyRefusalsMaxItems+1),
+			}),
+			path: "fiveBodies.soul.refusals", code: DeclarationCodeSoulRefusalsBad,
+		},
+		{
+			name: "over-limit bypass",
+			got: declarationSoulPayloadBoundsIssue(FiveBodySoulBody{
+				Summary: "soul", Refusals: []FiveBodyRefusalRule{{Bypass: longField}},
+			}),
+			path: "fiveBodies.soul.refusals", code: DeclarationCodeSoulRefusalsBad,
+		},
+		{
+			name: "over-limit invariant",
+			got: declarationSoulPayloadBoundsIssue(FiveBodySoulBody{
+				Summary: "soul", Refusals: []FiveBodyRefusalRule{{Invariant: longField}},
+			}),
+			path: "fiveBodies.soul.refusals", code: DeclarationCodeSoulRefusalsBad,
+		},
+		{
+			name: "over-limit safe path",
+			got: declarationSoulPayloadBoundsIssue(FiveBodySoulBody{
+				Summary: "soul", Refusals: []FiveBodyRefusalRule{{ClosestSafePath: longField}},
+			}),
+			path: "fiveBodies.soul.refusals", code: DeclarationCodeSoulRefusalsBad,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if test.got == nil || test.got.Path != test.path || test.got.Code != test.code {
+				t.Fatalf("lossy provider bound did not fail closed: %#v", test.got)
+			}
+		})
 	}
 }
 
@@ -150,6 +238,76 @@ func TestDeclarationCandidateReviewAffirmationAndDeterministicBytes(t *testing.T
 	}
 	assertCandidateEditInvalidatesReview(t, candidate)
 	assertCandidateFinalizationIsDeterministic(t, affirmed, beforeJSON, beforeHash)
+}
+
+func TestDeclarationCandidateExactBoundariesEditRegeneratesReviewAndStalesOldActions(t *testing.T) {
+	reviewed := completeTestDeclarationCandidate(t)
+	oldAction := DeclarationCandidateAction{
+		Action: "edit", Section: DeclarationSectionBoundaries,
+		CandidateRevision: reviewed.Revision, CandidateHash: reviewed.CandidateHash, ReviewHash: reviewed.Review.ReviewHash,
+	}
+	edited, err := ApplyDeclarationCandidateAction(reviewed, oldAction, "turn-boundaries-edit", time.Unix(301, 0))
+	if err != nil {
+		t.Fatalf("exact advertised boundaries edit rejected: %v", err)
+	}
+	if edited.Phase != DeclarationCandidatePhaseSection || edited.CurrentSection != DeclarationSectionBoundaries ||
+		edited.Revision != 6 || len(edited.CompletedSections) != len(declarationSectionOrder) || edited.Review != nil {
+		t.Fatalf("review did not reopen exact boundaries section: %#v", edited)
+	}
+
+	revisedSummary := "B1. Owner authority. B2. External effects. B3. Destructive work. B4. Identity truthfulness. " +
+		"B5. Privacy and secrets. B6. Access controls. B7. Harm prevention. B8. Fraud refusal. " +
+		"B9. High-consequence advice. B10. Fail closed, preserve evidence, and require a recovery plan."
+	regenerated := acceptCandidateSection(t, edited, DeclarationToolBoundariesPut, "boundaries-revision", declarationSectionPayload{
+		Section: FiveBodySection{Summary: revisedSummary, Notes: []string{"All owner-supplied B1-B10 limits are retained."}},
+	}, 7)
+	if regenerated.Phase != DeclarationCandidatePhaseReview || regenerated.Review == nil || regenerated.Revision != 7 {
+		t.Fatalf("revised boundaries did not regenerate deterministic review: %#v", regenerated)
+	}
+	if regenerated.CandidateHash == reviewed.CandidateHash || regenerated.Review.ReviewHash == oldAction.ReviewHash ||
+		!strings.Contains(regenerated.Review.ReviewText, "B10. Fail closed") {
+		t.Fatalf("regenerated review did not bind the revised B1-B10 content: %#v", regenerated.Review)
+	}
+	if _, err := ApplyDeclarationCandidateAction(regenerated, oldAction, "turn-stale-action", time.Unix(302, 0)); err == nil {
+		t.Fatal("action from the prior review did not fail closed")
+	}
+}
+
+func TestDeclarationCandidateExactEditRepairsRequiredEmptyCapabilitiesRepresentation(t *testing.T) {
+	payload := testSoulPayload()
+	payload.Capabilities = []soul.CapabilityV2{}
+	reviewed := completeTestDeclarationCandidateWithSoul(t, payload)
+	legacy := reviewed.Clone()
+	legacy.Capabilities = nil
+	legacy.CanonicalJSON = strings.Replace(legacy.CanonicalJSON, `"capabilities":[]`, `"capabilities":null`, 1)
+	if legacy.CanonicalJSON == reviewed.CanonicalJSON {
+		t.Fatal("empty-capability fixture did not create the deployed null representation")
+	}
+	legacy.CandidateHash = hashText(legacy.CanonicalJSON)
+	reviewText := fmt.Sprintf(
+		"Hosted Genesis owner review\n\nReview the exact canonical JSON below. Structural affirmation binds this review text, these canonical bytes, and the candidate revision.\n\nCandidate revision: %d\nCandidate hash: %s\n%s%d\n%s\n%s\n%s\n",
+		legacy.Revision, legacy.CandidateHash, declarationOwnerReviewCanonicalLength, len(legacy.CanonicalJSON),
+		declarationOwnerReviewCanonicalBegin, legacy.CanonicalJSON, declarationOwnerReviewCanonicalEnd,
+	)
+	legacy.Review.CandidateHash = legacy.CandidateHash
+	legacy.Review.ReviewHash = hashText(reviewText)
+	legacy.Review.ReviewText = reviewText
+	if err := legacy.Validate(); err == nil {
+		t.Fatal("deployed null-capability representation should fail the required-array invariant")
+	}
+
+	action := DeclarationCandidateAction{
+		Action: "edit", Section: DeclarationSectionBoundaries,
+		CandidateRevision: legacy.Revision, CandidateHash: legacy.CandidateHash, ReviewHash: legacy.Review.ReviewHash,
+	}
+	edited, err := ApplyDeclarationCandidateAction(legacy, action, "turn-live-shaped-edit", time.Unix(301, 0))
+	if err != nil {
+		t.Fatalf("exact live-shaped edit did not repair the required empty array: %v", err)
+	}
+	if edited.Capabilities == nil || edited.Revision != 6 || edited.Phase != DeclarationCandidatePhaseSection ||
+		!strings.Contains(edited.CanonicalJSON, `"capabilities":[]`) || strings.Contains(edited.CanonicalJSON, `"capabilities":null`) {
+		t.Fatalf("required empty capability array was not restored: %#v", edited)
+	}
 }
 
 func assertCandidateRejectsStaleAffirmation(t *testing.T, candidate *DeclarationCandidate) {
@@ -336,13 +494,17 @@ func testDeclarationCandidate(t *testing.T) *DeclarationCandidate {
 }
 
 func completeTestDeclarationCandidate(t *testing.T) *DeclarationCandidate {
+	return completeTestDeclarationCandidateWithSoul(t, testSoulPayload())
+}
+
+func completeTestDeclarationCandidateWithSoul(t *testing.T, soulPayload declarationSoulPayload) *DeclarationCandidate {
 	t.Helper()
 	candidate := testDeclarationCandidate(t)
 	candidate = acceptCandidateSection(t, candidate, DeclarationToolIdentityPut, "identity", declarationSectionPayload{Section: testFiveBody().Identity}, 1)
 	candidate = acceptCandidateSection(t, candidate, DeclarationToolPhilosophyPut, "philosophy", declarationSectionPayload{Section: testFiveBody().Philosophy}, 2)
 	candidate = acceptCandidateSection(t, candidate, DeclarationToolDisciplinePut, "discipline", declarationSectionPayload{Section: testFiveBody().Discipline}, 3)
 	candidate = acceptCandidateSection(t, candidate, DeclarationToolBoundariesPut, "boundaries", declarationSectionPayload{Section: testFiveBody().Boundaries}, 4)
-	return acceptCandidateSection(t, candidate, DeclarationToolSoulPut, "soul", testSoulPayload(), 5)
+	return acceptCandidateSection(t, candidate, DeclarationToolSoulPut, "soul", soulPayload, 5)
 }
 
 func acceptCandidateSection(t *testing.T, candidate *DeclarationCandidate, tool, callID string, payload any, wantRevision int64) *DeclarationCandidate {

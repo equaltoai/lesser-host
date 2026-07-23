@@ -2,6 +2,7 @@ package controlplane
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -172,6 +173,106 @@ func TestHostedGenesisStructuralAffirmationQueuesProviderFreeFinalizationTurn(t 
 		t.Fatalf("unexpected err: %v", err)
 	}
 	assertProviderFreeFinalizationAccepted(t, resp, dispatcher)
+}
+
+func TestHostedGenesisExactAdvertisedBoundariesEditQueuesOnlySelectedSection(t *testing.T) {
+	tdb := newMintConversationTestDB()
+	s := newMintConversationServer(tdb)
+	reg := mintConversationHandleReg()
+	t.Setenv("ANTHROPIC_API_KEY", "anthropic-test-key")
+	dispatcher := stubHostedGenesisMicroVMDispatcher(t, s)
+	now := time.Date(2026, 7, 23, 11, 30, 30, 0, time.UTC)
+	candidate := controlplaneCompleteReviewCandidate(t, hostedgenesis.DeclarationCandidateBinding{
+		InstanceSlug: soulInstanceBootstrapTestInstanceSlug, RegistrationID: reg.ID, AgentID: reg.AgentID,
+		ConversationID: mintConversationTestConversationID, SourceTurnID: "turn-live-review", Model: "anthropic:claude-sonnet-4-6",
+	}, now)
+	candidate = liveShapedNullCapabilitiesReviewCandidate(t, candidate)
+
+	expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, soulInstanceBootstrapTestInstanceSlug)
+	stubMintConversationRegistration(t, tdb, reg)
+	stubSoulInstanceBootstrapDomainAndInstance(t, tdb, reg.DomainNormalized, soulInstanceBootstrapTestInstanceSlug)
+	stubMintConversationIdentity(t, tdb, nil, theoryErrors.ErrItemNotFound)
+	conv := models.SoulAgentMintConversation{
+		AgentID: reg.AgentID, ConversationID: mintConversationTestConversationID, Model: "anthropic:claude-sonnet-4-6",
+		Messages: encodeMintConversationBlob(`[{"role":"user","content":"define yourself"},{"role":"assistant","content":` + jsonString(candidate.Review.ReviewText) + `}]`),
+		Status:   models.SoulMintConversationStatusAssistantTurnReady, LatestTurnID: "turn-live-review", CreatedAt: now,
+	}
+	tdb.qConv.On("First", mock.AnythingOfType("*models.SoulAgentMintConversation")).Return(nil).Run(func(args mock.Arguments) {
+		target, ok := args.Get(0).(*models.SoulAgentMintConversation)
+		if !ok {
+			t.Fatal("conversation mock target has unexpected type")
+		}
+		*target = conv
+	}).Once()
+	tdb.qHosted.On("First", mock.AnythingOfType("*models.HostedGenesisSession")).Return(nil).Run(func(args mock.Arguments) {
+		session := hostedGenesisSessionFromLegacyConversationForTest(tdb, conv)
+		session.DeclarationCandidate = candidate.Clone()
+		session.CandidateRevision = candidate.Revision
+		session.CandidateHash = candidate.CandidateHash
+		session.CandidatePhase = string(candidate.Phase)
+		target, ok := args.Get(0).(*models.HostedGenesisSession)
+		if !ok {
+			t.Fatal("hosted genesis session mock target has unexpected type")
+		}
+		*target = session
+	}).Once()
+	expectSoulInstanceMintConversationDebit(t, tdb, reg.AgentID, false)
+
+	resp, err := s.handleSoulInstanceMintConversation(newSoulInstanceBootstrapContext(
+		map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
+		mustMarshalJSON(t, soulMintConversationRequest{
+			ConversationID: mintConversationTestConversationID,
+			Message:        "Revise boundaries: retain the owner-supplied B10 and regenerate the exact review.",
+			CandidateAction: &hostedgenesis.DeclarationCandidateAction{
+				Action: "edit", Section: hostedgenesis.DeclarationSectionBoundaries,
+				CandidateRevision: candidate.Revision, CandidateHash: candidate.CandidateHash, ReviewHash: candidate.Review.ReviewHash,
+			},
+		}),
+		map[string]string{"id": reg.ID},
+	))
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if resp.Status != http.StatusAccepted {
+		t.Fatalf("exact advertised edit returned %d: %#v", resp.Status, resp)
+	}
+	var out hostedGenesisConversationResponse
+	if err := json.Unmarshal(resp.Body, &out); err != nil {
+		t.Fatal(err)
+	}
+	got := out.Conversation.DeclarationCandidate
+	if got == nil || got.Phase != hostedgenesis.DeclarationCandidatePhaseSection ||
+		got.CurrentSection != hostedgenesis.DeclarationSectionBoundaries || got.Revision != candidate.Revision+1 ||
+		len(got.CompletedSections) != 5 || got.Review != nil {
+		t.Fatalf("exact edit did not reopen only boundaries: %#v", got)
+	}
+	if dispatcher.queueCalls != 1 || dispatcher.calls != 0 || dispatcher.lastQueue.TurnID == "" {
+		t.Fatalf("edit must queue one AppTheory MicroVM actor turn only: %#v", dispatcher)
+	}
+}
+
+func liveShapedNullCapabilitiesReviewCandidate(t *testing.T, candidate *hostedgenesis.DeclarationCandidate) *hostedgenesis.DeclarationCandidate {
+	t.Helper()
+	legacy := candidate.Clone()
+	legacy.Capabilities = nil
+	legacy.CanonicalJSON = strings.Replace(legacy.CanonicalJSON, `"capabilities":[]`, `"capabilities":null`, 1)
+	if legacy.CanonicalJSON == candidate.CanonicalJSON {
+		t.Fatal("review fixture did not create the deployed null capabilities shape")
+	}
+	canonicalDigest := sha256.Sum256([]byte(legacy.CanonicalJSON))
+	legacy.CandidateHash = fmt.Sprintf("sha256:%x", canonicalDigest)
+	reviewText := fmt.Sprintf(
+		"Hosted Genesis owner review\n\nReview the exact canonical JSON below. Structural affirmation binds this review text, these canonical bytes, and the candidate revision.\n\nCandidate revision: %d\nCandidate hash: %s\nCanonical JSON byte length: %d\n-----BEGIN HOSTED GENESIS CANONICAL JSON-----\n%s\n-----END HOSTED GENESIS CANONICAL JSON-----\n",
+		legacy.Revision, legacy.CandidateHash, len(legacy.CanonicalJSON), legacy.CanonicalJSON,
+	)
+	reviewDigest := sha256.Sum256([]byte(reviewText))
+	legacy.Review.CandidateHash = legacy.CandidateHash
+	legacy.Review.ReviewHash = fmt.Sprintf("sha256:%x", reviewDigest)
+	legacy.Review.ReviewText = reviewText
+	if err := legacy.Validate(); err == nil {
+		t.Fatal("deployed null-capabilities representation should be invalid before exact edit repair")
+	}
+	return legacy
 }
 
 func assertControlplaneReviewCandidateCanAffirm(t *testing.T, candidate *hostedgenesis.DeclarationCandidate, turnID string, now time.Time) {
