@@ -275,6 +275,9 @@ func TestDeclarationCandidateProviderContinuationRequiresAcceptedToolCheckpoint(
 	continuation := attemptUpdate
 	continuation.SDKAttemptOrdinal = 2
 	continuation.ProviderRequestID = "req_provider_2"
+	if !declarationProviderContinuationBound(accepted, continuation) {
+		t.Fatal("exact accepted tool checkpoint did not bind the continuation")
+	}
 	continued, err := ApplyDeclarationProviderAttempt(accepted, continuation, time.Unix(203, 0))
 	if err != nil {
 		t.Fatalf("accepted post-tool provider continuation was rejected: %v", err)
@@ -293,23 +296,26 @@ func TestDeclarationCandidateProviderContinuationRequiresAcceptedToolCheckpoint(
 		t.Fatal("stale continuation attempt ordinal did not fail closed")
 	}
 
-	if _, err := ApplyDeclarationProviderAttempt(progressed, continuation, time.Unix(206, 0)); err == nil {
-		t.Fatal("continuation without accepted tool evidence did not fail closed")
-	}
+	requireDeclarationProviderContinuationRejected(t, progressed, continuation, time.Unix(206, 0),
+		"continuation without accepted tool evidence did not fail closed")
 	wrongCall := accepted.Clone()
 	wrongCall.ProviderAttempts[0].ToolCallHash = hashText("different-provider-call")
-	if _, err := ApplyDeclarationProviderAttempt(wrongCall, continuation, time.Unix(207, 0)); err == nil {
-		t.Fatal("continuation with mismatched tool checkpoint evidence did not fail closed")
-	}
+	requireDeclarationProviderContinuationRejected(t, wrongCall, continuation, time.Unix(207, 0),
+		"continuation with mismatched tool checkpoint evidence did not fail closed")
 	wrongProvider := accepted.Clone()
 	wrongProvider.ProviderAttempts[0].Provider = "anthropic"
-	if _, err := ApplyDeclarationProviderAttempt(wrongProvider, continuation, time.Unix(208, 0)); err == nil {
-		t.Fatal("continuation with mismatched provider evidence did not fail closed")
-	}
+	requireDeclarationProviderContinuationRejected(t, wrongProvider, continuation, time.Unix(208, 0),
+		"continuation with mismatched provider evidence did not fail closed")
 	jumpedRevision := accepted.Clone()
 	jumpedRevision.Revision++
-	if _, err := ApplyDeclarationProviderAttempt(jumpedRevision, continuation, time.Unix(209, 0)); err == nil {
-		t.Fatal("continuation across more than one semantic revision did not fail closed")
+	requireDeclarationProviderContinuationRejected(t, jumpedRevision, continuation, time.Unix(209, 0),
+		"continuation across more than one semantic revision did not fail closed")
+}
+
+func requireDeclarationProviderContinuationRejected(t *testing.T, candidate *DeclarationCandidate, update DeclarationProviderAttemptUpdate, now time.Time, message string) {
+	t.Helper()
+	if _, err := ApplyDeclarationProviderAttempt(candidate, update, now); err == nil {
+		t.Fatal(message)
 	}
 }
 
