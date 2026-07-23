@@ -104,7 +104,7 @@ is_allowed_framework_migration_diff() {
         '-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"' \
         '-	ttmocks "github.com/theory-cloud/tabletheory/pkg/mocks"' \
         '+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"' \
-        '+	tmocks "github.com/theory-cloud/tabletheory/v2/pkg/mocks"'
+        '+	ttmocks "github.com/theory-cloud/tabletheory/v2/pkg/mocks"'
       ;;
     "internal/trust/auth_instance.go")
       payload_equals "${payload}" \
