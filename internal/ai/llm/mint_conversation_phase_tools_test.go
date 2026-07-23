@@ -192,6 +192,58 @@ func TestMintConversationPhaseToolsOpenAIAnthropicParity(t *testing.T) {
 	}
 }
 
+func TestMintConversationPhasePromptRejectsTruncationForBothProviderPaths(t *testing.T) {
+	input := MintConversationPhaseInput{
+		SystemPrompt: "five-body contract", Section: hostedgenesis.DeclarationSectionBoundaries,
+		CandidateRevision: 5, CandidateHash: "sha256:" + strings.Repeat("a", 64), SourceTurnID: "turn-review-edit",
+	}
+	prompt := mintConversationPhaseSystemPrompt(input)
+	for _, required := range []string{
+		"summary at most 2400 Unicode characters",
+		"notes at most 8 items of at most 480 Unicode characters each",
+		"Preserve every owner-supplied item for the current section.",
+		"Host rejects over-limit fields instead of truncating them.",
+		hostedgenesis.DeclarationToolBoundariesPut,
+	} {
+		if !strings.Contains(prompt, required) {
+			t.Fatalf("shared OpenAI/Anthropic section prompt missing %q: %s", required, prompt)
+		}
+	}
+	input.Section = hostedgenesis.DeclarationSectionSoul
+	if prompt := mintConversationPhaseSystemPrompt(input); !strings.Contains(prompt, "refusals 3-8 items") ||
+		!strings.Contains(prompt, "each at most 480 Unicode characters") {
+		t.Fatalf("shared soul prompt omits exact refusal limits: %s", prompt)
+	}
+}
+
+func TestMintConversationPhaseToolSchemaCarriesCanonicalSectionLimits(t *testing.T) {
+	section := mintConversationPhaseToolSchema(hostedgenesis.DeclarationSectionBoundaries)
+	properties := requireSchemaMap(t, section, "properties")
+	body := requireSchemaMap(t, properties, "section")
+	bodyProperties := requireSchemaMap(t, body, "properties")
+	summary := requireSchemaMap(t, bodyProperties, "summary")
+	notes := requireSchemaMap(t, bodyProperties, "notes")
+	note := requireSchemaMap(t, notes, "items")
+	if summary["maxLength"] != mintConversationPhaseSummaryMaxRunes ||
+		notes["maxItems"] != mintConversationPhaseNotesMaxItems ||
+		note["maxLength"] != mintConversationPhaseNoteMaxRunes {
+		t.Fatalf("section tool schema limits drifted: %#v", body)
+	}
+
+	soulSchema := mintConversationPhaseToolSchema(hostedgenesis.DeclarationSectionSoul)
+	soulProperties := requireSchemaMap(t, soulSchema, "properties")
+	soulBody := requireSchemaMap(t, soulProperties, "section")
+	refusals := requireSchemaMap(t, requireSchemaMap(t, soulBody, "properties"), "refusals")
+	refusalProperties := requireSchemaMap(t, requireSchemaMap(t, refusals, "items"), "properties")
+	if refusals["minItems"] != mintConversationPhaseRefusalsMinItems ||
+		refusals["maxItems"] != mintConversationPhaseRefusalsMaxItems ||
+		requireSchemaMap(t, refusalProperties, "bypass")["maxLength"] != mintConversationPhaseRefusalFieldMaxRunes ||
+		requireSchemaMap(t, refusalProperties, "invariant")["maxLength"] != mintConversationPhaseRefusalFieldMaxRunes ||
+		requireSchemaMap(t, refusalProperties, "closestSafePath")["maxLength"] != mintConversationPhaseRefusalFieldMaxRunes {
+		t.Fatalf("soul tool schema limits drifted: %#v", soulBody)
+	}
+}
+
 func assertMintConversationPhaseToolParity(t *testing.T, section hostedgenesis.DeclarationSection) {
 	t.Helper()
 	wantName, ok := hostedgenesis.DeclarationToolForSection(section)

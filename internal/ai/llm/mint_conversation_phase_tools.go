@@ -16,7 +16,15 @@ import (
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
-const maxMintConversationPhaseToolRounds = 4
+const (
+	maxMintConversationPhaseToolRounds        = 4
+	mintConversationPhaseSummaryMaxRunes      = 2400
+	mintConversationPhaseNotesMaxItems        = 8
+	mintConversationPhaseNoteMaxRunes         = 480
+	mintConversationPhaseRefusalsMinItems     = 3
+	mintConversationPhaseRefusalsMaxItems     = 8
+	mintConversationPhaseRefusalFieldMaxRunes = 480
+)
 
 // MintConversationPhaseInput exposes exactly one typed declaration tool for
 // the candidate's current section. Revision/hash are durable preconditions,
@@ -269,6 +277,20 @@ func finishAnthropicMintConversationPhaseText(message *anthropic.Message, text s
 
 func mintConversationPhaseSystemPrompt(in MintConversationPhaseInput) string {
 	toolName, _ := hostedgenesis.DeclarationToolForSection(in.Section)
+	limits := fmt.Sprintf(
+		"summary at most %d Unicode characters; notes at most %d items of at most %d Unicode characters each",
+		mintConversationPhaseSummaryMaxRunes,
+		mintConversationPhaseNotesMaxItems,
+		mintConversationPhaseNoteMaxRunes,
+	)
+	if in.Section == hostedgenesis.DeclarationSectionSoul {
+		limits += fmt.Sprintf(
+			"; refusals %d-%d items with bypass, invariant, and closestSafePath each at most %d Unicode characters",
+			mintConversationPhaseRefusalsMinItems,
+			mintConversationPhaseRefusalsMaxItems,
+			mintConversationPhaseRefusalFieldMaxRunes,
+		)
+	}
 	return strings.TrimSpace(in.SystemPrompt) + fmt.Sprintf(`
 
 Typed declaration construction protocol:
@@ -276,8 +298,10 @@ Typed declaration construction protocol:
 - Current candidate revision: %d.
 - Current candidate hash: %s.
 - Use only %s when the owner's answers support a complete current section, and copy the exact current revision/hash into its candidateRevision/candidateHash fields.
+- Current-section payload limits: %s.
+- Preserve every owner-supplied item for the current section. Compress wording before the tool call when necessary; Host rejects over-limit fields instead of truncating them.
 - The tool result is authoritative. On a machine-readable section/path/code error, revise only this section and call the same tool again.
-- Do not reconstruct accepted sections from the transcript and do not claim finalization.`, in.Section, in.CandidateRevision, in.CandidateHash, toolName)
+- Do not reconstruct accepted sections from the transcript and do not claim finalization.`, in.Section, in.CandidateRevision, in.CandidateHash, toolName, limits)
 }
 
 func openAIMintConversationPhaseTool(section hostedgenesis.DeclarationSection) openai.ChatCompletionToolParam {
@@ -332,7 +356,7 @@ func fiveBodySectionSchema() map[string]any {
 	return map[string]any{
 		"type": "object", "additionalProperties": false,
 		"properties": map[string]any{
-			"summary": map[string]any{"type": "string", "maxLength": 2400},
+			"summary": map[string]any{"type": "string", "maxLength": mintConversationPhaseSummaryMaxRunes},
 			"notes":   fiveBodyNotesSchema(),
 		},
 		"required": []string{"summary", "notes"},
@@ -341,8 +365,8 @@ func fiveBodySectionSchema() map[string]any {
 
 func fiveBodyNotesSchema() map[string]any {
 	return map[string]any{
-		"type": "array", "minItems": 0, "maxItems": 8,
-		"items": map[string]any{"type": "string", "maxLength": 480},
+		"type": "array", "minItems": 0, "maxItems": mintConversationPhaseNotesMaxItems,
+		"items": map[string]any{"type": "string", "maxLength": mintConversationPhaseNoteMaxRunes},
 	}
 }
 
@@ -350,14 +374,14 @@ func soulPhaseSectionSchema() map[string]any {
 	return map[string]any{
 		"type": "object", "additionalProperties": false,
 		"properties": map[string]any{
-			"summary": map[string]any{"type": "string", "maxLength": 2400}, "notes": fiveBodyNotesSchema(),
+			"summary": map[string]any{"type": "string", "maxLength": mintConversationPhaseSummaryMaxRunes}, "notes": fiveBodyNotesSchema(),
 			"refusals": map[string]any{
-				"type": "array", "minItems": 3, "maxItems": 8,
+				"type": "array", "minItems": mintConversationPhaseRefusalsMinItems, "maxItems": mintConversationPhaseRefusalsMaxItems,
 				"items": map[string]any{
 					"type": "object", "additionalProperties": false,
 					"properties": map[string]any{
-						"bypass": map[string]any{"type": "string", "maxLength": 480}, "invariant": map[string]any{"type": "string", "maxLength": 480},
-						"closestSafePath": map[string]any{"type": "string", "maxLength": 480},
+						"bypass": map[string]any{"type": "string", "maxLength": mintConversationPhaseRefusalFieldMaxRunes}, "invariant": map[string]any{"type": "string", "maxLength": mintConversationPhaseRefusalFieldMaxRunes},
+						"closestSafePath": map[string]any{"type": "string", "maxLength": mintConversationPhaseRefusalFieldMaxRunes},
 					}, "required": []string{"bypass", "invariant", "closestSafePath"},
 				},
 			},

@@ -33,7 +33,7 @@ func TestMergeDeclaredCapabilitiesRejectsInvalidDeclaredNames(t *testing.T) {
 }
 
 func TestValidateAndNormalizeProducedCapabilitiesAllowsEmptyAndSanitizesInvalid(t *testing.T) {
-	if got, err := ValidateAndNormalizeProducedCapabilities(nil); err != nil || len(got) != 0 {
+	if got, err := ValidateAndNormalizeProducedCapabilities(nil); err != nil || got == nil || len(got) != 0 {
 		t.Fatalf("expected empty produced capabilities to be valid, got %#v %v", got, err)
 	}
 	if got, err := ValidateAndNormalizeProducedCapabilities([]soul.CapabilityV2{{Capability: "simulacrum.hosted-first-default", Scope: "retired", ClaimLevel: "self-declared"}}); err != nil || len(got) != 0 {
