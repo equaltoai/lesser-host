@@ -566,7 +566,7 @@ func declarationProviderAttemptIndex(candidate *DeclarationCandidate, update Dec
 	}
 	directBinding := update.CandidateRevision == candidate.Revision && update.CandidateHash == candidate.CandidateHash &&
 		candidate.Phase == DeclarationCandidatePhaseSection && candidate.CurrentSection == update.Section
-	if update.SourceTurnID != candidate.SourceTurnID || (!directBinding && !declarationProviderContinuationValid(candidate, update)) {
+	if update.SourceTurnID != candidate.SourceTurnID || (!directBinding && !declarationProviderContinuationBound(candidate, update)) {
 		return -1, errors.New("declaration provider attempt candidate binding mismatch")
 	}
 	if declarationProviderAttemptOrdinalIsStale(candidate.ProviderAttempts, update) {
@@ -583,40 +583,6 @@ func declarationProviderAttemptIndex(candidate *DeclarationCandidate, update Dec
 		SDKRetryBudget: update.SDKRetryBudget, ObservedAt: now.UTC(),
 	})
 	return len(candidate.ProviderAttempts) - 1, nil
-}
-
-// The current candidate must prove the exact accepted-tool transition.
-func declarationProviderContinuationValid(candidate *DeclarationCandidate, update DeclarationProviderAttemptUpdate) bool {
-	section, turnID := update.Section, update.SourceTurnID
-	if section == DeclarationSectionSoul || candidate.Revision != update.CandidateRevision+1 {
-		return false
-	}
-	provider, model := strings.ToLower(strings.TrimSpace(update.Provider)), strings.TrimSpace(update.Model)
-	phaseValid := candidate.Phase == DeclarationCandidatePhaseSection && candidate.CurrentSection != "" && candidate.CurrentSection != section ||
-		candidate.Phase == DeclarationCandidatePhaseReview && candidate.CurrentSection == "" && candidate.Review != nil
-	if !phaseValid {
-		return false
-	}
-	toolName, ok := DeclarationToolForSection(section)
-	if !ok {
-		return false
-	}
-	for _, attempt := range candidate.ProviderAttempts {
-		if attempt.SourceTurnID != turnID || attempt.Section != section ||
-			attempt.CandidateRevision != update.CandidateRevision || attempt.CandidateHash != update.CandidateHash ||
-			attempt.Provider != provider || attempt.Model != model || attempt.Phase != update.Phase ||
-			!attempt.Accepted || attempt.ToolName != toolName || attempt.ToolCallHash == "" {
-			continue
-		}
-		for _, record := range candidate.ToolRecords {
-			if record.ToolCallHash == attempt.ToolCallHash && record.ToolName == toolName && record.Section == section &&
-				record.SourceTurnID == turnID && record.Revision == candidate.Revision &&
-				record.CandidateHash == candidate.CandidateHash && record.SectionHash == candidate.SectionHashes[string(section)] {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 func declarationProviderAttemptOrdinalIsStale(attempts []DeclarationProviderAttempt, update DeclarationProviderAttemptUpdate) bool {
