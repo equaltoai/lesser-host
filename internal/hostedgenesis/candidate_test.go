@@ -273,7 +273,7 @@ func TestDeclarationCandidateExactBoundariesEditRegeneratesReviewAndStalesOldAct
 	}
 }
 
-func TestDeclarationCandidateExactEditRepairsRequiredEmptyCapabilitiesRepresentation(t *testing.T) {
+func TestDeclarationCandidateExactEditRejectsNullCapabilitiesRepresentation(t *testing.T) {
 	payload := testSoulPayload()
 	payload.Capabilities = []soul.CapabilityV2{}
 	reviewed := completeTestDeclarationCandidateWithSoul(t, payload)
@@ -300,13 +300,77 @@ func TestDeclarationCandidateExactEditRepairsRequiredEmptyCapabilitiesRepresenta
 		Action: "edit", Section: DeclarationSectionBoundaries,
 		CandidateRevision: legacy.Revision, CandidateHash: legacy.CandidateHash, ReviewHash: legacy.Review.ReviewHash,
 	}
-	edited, err := ApplyDeclarationCandidateAction(legacy, action, "turn-live-shaped-edit", time.Unix(301, 0))
-	if err != nil {
-		t.Fatalf("exact live-shaped edit did not repair the required empty array: %v", err)
+	if _, err := ApplyDeclarationCandidateAction(legacy, action, "turn-live-shaped-edit", time.Unix(301, 0)); err == nil {
+		t.Fatal("null capability representation must fail closed before an edit")
 	}
-	if edited.Capabilities == nil || edited.Revision != 6 || edited.Phase != DeclarationCandidatePhaseSection ||
-		!strings.Contains(edited.CanonicalJSON, `"capabilities":[]`) || strings.Contains(edited.CanonicalJSON, `"capabilities":null`) {
-		t.Fatalf("required empty capability array was not restored: %#v", edited)
+}
+
+func TestNormalizePersistedDeclarationCandidateRepairsOnlyHashBoundEmptyArray(t *testing.T) {
+	t.Parallel()
+
+	valid := testDeclarationCandidate(t)
+	valid.Capabilities = nil
+	if err := NormalizePersistedDeclarationCandidate(valid); err != nil {
+		t.Fatalf("normalize exact hash-bound empty capability array: %v", err)
+	}
+	if valid.Capabilities == nil || len(valid.Capabilities) != 0 {
+		t.Fatalf("expected a present empty capability array, got %#v", valid.Capabilities)
+	}
+	if err := valid.Validate(); err != nil {
+		t.Fatalf("normalized candidate must pass full validation: %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(*DeclarationCandidate)
+	}{
+		{
+			name: "null",
+			mutate: func(candidate *DeclarationCandidate) {
+				candidate.CanonicalJSON = strings.Replace(candidate.CanonicalJSON, `"capabilities":[]`, `"capabilities":null`, 1)
+				candidate.CandidateHash = hashText(candidate.CanonicalJSON)
+			},
+		},
+		{
+			name: "missing",
+			mutate: func(candidate *DeclarationCandidate) {
+				candidate.CanonicalJSON = strings.Replace(candidate.CanonicalJSON, `"capabilities":[],`, "", 1)
+				candidate.CandidateHash = hashText(candidate.CanonicalJSON)
+			},
+		},
+		{
+			name: "mismatched hash",
+			mutate: func(candidate *DeclarationCandidate) {
+				candidate.CandidateHash = "sha256:" + strings.Repeat("f", 64)
+			},
+		},
+		{
+			name: "malformed",
+			mutate: func(candidate *DeclarationCandidate) {
+				candidate.CanonicalJSON = `{"capabilities":`
+				candidate.CandidateHash = hashText(candidate.CanonicalJSON)
+			},
+		},
+		{
+			name: "non-array",
+			mutate: func(candidate *DeclarationCandidate) {
+				candidate.CanonicalJSON = strings.Replace(candidate.CanonicalJSON, `"capabilities":[]`, `"capabilities":{}`, 1)
+				candidate.CandidateHash = hashText(candidate.CanonicalJSON)
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			candidate := testDeclarationCandidate(t)
+			candidate.Capabilities = nil
+			test.mutate(candidate)
+			if err := NormalizePersistedDeclarationCandidate(candidate); err == nil {
+				t.Fatal("unsafe persisted representation did not fail closed")
+			}
+			if candidate.Capabilities != nil {
+				t.Fatalf("failed normalization mutated candidate: %#v", candidate.Capabilities)
+			}
+		})
 	}
 }
 

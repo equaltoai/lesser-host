@@ -889,6 +889,44 @@ func (c *DeclarationCandidate) refreshCanonical() error {
 	return nil
 }
 
+// NormalizePersistedDeclarationCandidate repairs the one persistence shape
+// TableTheory v2.0.3 can produce for an otherwise-valid candidate: a missing
+// nested empty capabilities slice whose already-stored canonical bytes still
+// contain the authoritative empty array. No other nil representation is
+// accepted, and the candidate is not mutated until full validation succeeds.
+func NormalizePersistedDeclarationCandidate(candidate *DeclarationCandidate) error {
+	if candidate == nil || candidate.Capabilities != nil {
+		return nil
+	}
+
+	var canonical map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(candidate.CanonicalJSON), &canonical); err != nil {
+		return errors.New("declaration candidate canonical payload is invalid")
+	}
+	rawCapabilities, ok := canonical["capabilities"]
+	if !ok {
+		return errors.New("declaration candidate canonical capabilities array is missing")
+	}
+	var capabilities []json.RawMessage
+	if err := json.Unmarshal(rawCapabilities, &capabilities); err != nil || capabilities == nil || len(capabilities) != 0 {
+		return errors.New("declaration candidate canonical capabilities must be an empty array")
+	}
+	if candidate.CandidateHash != hashBytes([]byte(candidate.CanonicalJSON)) {
+		return errors.New("declaration candidate canonical hash mismatch")
+	}
+
+	normalized := candidate.Clone()
+	normalized.Capabilities = []soul.CapabilityV2{}
+	if err := normalized.Validate(); err != nil {
+		return fmt.Errorf("declaration candidate persisted normalization: %w", err)
+	}
+	if normalized.CanonicalJSON != candidate.CanonicalJSON || normalized.CandidateHash != candidate.CandidateHash {
+		return errors.New("declaration candidate persisted normalization changed canonical binding")
+	}
+	candidate.Capabilities = []soul.CapabilityV2{}
+	return nil
+}
+
 // FiveBodyBoundariesDeterministic derives stable publication rows from the
 // accepted refusal bytes and the candidate's persisted establishment time.
 func FiveBodyBoundariesDeterministic(refusals []FiveBodyRefusalRule, establishedAt time.Time) []soul.BoundaryV2 {
@@ -1044,15 +1082,6 @@ func applyDeclarationCandidateEdit(candidate *DeclarationCandidate, action Decla
 	candidate.Affirmation = nil
 	candidate.SourceTurnID = strings.TrimSpace(sourceTurnID)
 	candidate.UpdatedAt = now.UTC()
-	// capabilities is a required array in the v2 contract. Early M11 rows could
-	// lose an intentionally empty slice through an omitempty persistence round
-	// trip even though the stored soul-section hash was computed over [].
-	// Structural edit invalidates the old review, so Host can safely restore the
-	// required empty representation before regenerating canonical bytes. Any
-	// unrelated section/hash corruption still fails candidate validation.
-	if candidate.Capabilities == nil {
-		candidate.Capabilities = []soul.CapabilityV2{}
-	}
 	return candidate.refreshCanonical()
 }
 

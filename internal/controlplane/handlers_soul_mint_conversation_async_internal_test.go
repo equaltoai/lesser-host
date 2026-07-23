@@ -2,7 +2,6 @@ package controlplane
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -186,7 +185,7 @@ func TestHostedGenesisExactAdvertisedBoundariesEditQueuesOnlySelectedSection(t *
 		InstanceSlug: soulInstanceBootstrapTestInstanceSlug, RegistrationID: reg.ID, AgentID: reg.AgentID,
 		ConversationID: mintConversationTestConversationID, SourceTurnID: "turn-live-review", Model: "anthropic:claude-sonnet-4-6",
 	}, now)
-	candidate = liveShapedNullCapabilitiesReviewCandidate(t, candidate)
+	candidate = liveShapedMissingCapabilitiesReviewCandidate(t, candidate)
 
 	expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, soulInstanceBootstrapTestInstanceSlug)
 	stubMintConversationRegistration(t, tdb, reg)
@@ -251,26 +250,12 @@ func TestHostedGenesisExactAdvertisedBoundariesEditQueuesOnlySelectedSection(t *
 	}
 }
 
-func liveShapedNullCapabilitiesReviewCandidate(t *testing.T, candidate *hostedgenesis.DeclarationCandidate) *hostedgenesis.DeclarationCandidate {
+func liveShapedMissingCapabilitiesReviewCandidate(t *testing.T, candidate *hostedgenesis.DeclarationCandidate) *hostedgenesis.DeclarationCandidate {
 	t.Helper()
 	legacy := candidate.Clone()
 	legacy.Capabilities = nil
-	legacy.CanonicalJSON = strings.Replace(legacy.CanonicalJSON, `"capabilities":[]`, `"capabilities":null`, 1)
-	if legacy.CanonicalJSON == candidate.CanonicalJSON {
-		t.Fatal("review fixture did not create the deployed null capabilities shape")
-	}
-	canonicalDigest := sha256.Sum256([]byte(legacy.CanonicalJSON))
-	legacy.CandidateHash = fmt.Sprintf("sha256:%x", canonicalDigest)
-	reviewText := fmt.Sprintf(
-		"Hosted Genesis owner review\n\nReview the exact canonical JSON below. Structural affirmation binds this review text, these canonical bytes, and the candidate revision.\n\nCandidate revision: %d\nCandidate hash: %s\nCanonical JSON byte length: %d\n-----BEGIN HOSTED GENESIS CANONICAL JSON-----\n%s\n-----END HOSTED GENESIS CANONICAL JSON-----\n",
-		legacy.Revision, legacy.CandidateHash, len(legacy.CanonicalJSON), legacy.CanonicalJSON,
-	)
-	reviewDigest := sha256.Sum256([]byte(reviewText))
-	legacy.Review.CandidateHash = legacy.CandidateHash
-	legacy.Review.ReviewHash = fmt.Sprintf("sha256:%x", reviewDigest)
-	legacy.Review.ReviewText = reviewText
 	if err := legacy.Validate(); err == nil {
-		t.Fatal("deployed null-capabilities representation should be invalid before exact edit repair")
+		t.Fatal("transaction-shaped missing capabilities representation should be invalid before read repair")
 	}
 	return legacy
 }

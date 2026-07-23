@@ -75,6 +75,25 @@ func TestStore_CreateHostedGenesisSessionUsesTransactionalCreate(t *testing.T) {
 	tx.AssertExpectations(t)
 }
 
+func TestStore_TransactionalCreateReloadRepairsHashBoundEmptyCapabilities(t *testing.T) {
+	ctx := t.Context()
+	st, _ := newFakeHostedGenesisStore(t)
+	session, _ := typedCandidateStoreFixture(t, false)
+	canonicalJSON := session.DeclarationCandidate.CanonicalJSON
+	candidateHash := session.DeclarationCandidate.CandidateHash
+
+	require.NoError(t, st.CreateHostedGenesisSession(ctx, session))
+	reloaded, err := st.GetHostedGenesisSession(ctx, session.InstanceSlug, session.ConversationID)
+	require.NoError(t, err)
+	require.NotNil(t, reloaded.DeclarationCandidate)
+	require.NotNil(t, reloaded.DeclarationCandidate.Capabilities)
+	require.Empty(t, reloaded.DeclarationCandidate.Capabilities)
+	require.Equal(t, canonicalJSON, reloaded.DeclarationCandidate.CanonicalJSON)
+	require.Equal(t, candidateHash, reloaded.DeclarationCandidate.CandidateHash)
+	require.Contains(t, reloaded.DeclarationCandidate.CanonicalJSON, `"capabilities":[]`)
+	require.NoError(t, reloaded.DeclarationCandidate.Validate())
+}
+
 func TestStore_UpdateHostedGenesisSessionUsesExpectedVersion(t *testing.T) {
 	t.Parallel()
 
@@ -423,6 +442,55 @@ func TestStore_PublishHostedGenesisSessionAndConversationUsesOneGuardedTransacti
 
 	session, conversation := validStoreHostedGenesisPublication()
 	require.NoError(t, New(db).PublishHostedGenesisSessionAndConversation(ctx, session, 7, hostedgenesis.StatusDeclarationReady, conversation))
+
+	db.AssertExpectations(t)
+	tx.AssertExpectations(t)
+}
+
+func TestStore_FailHostedGenesisSessionDoesNotRewriteInvalidCandidate(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := ttmocks.NewMockExtendedDBStrict()
+	tx := new(ttmocks.MockTransactionBuilder)
+	db.TransactWriteBuilder = tx
+	db.On("TransactWrite", ctx, mock.Anything).Return(nil).Once()
+	capture := &captureHostedGenesisUpdateBuilder{}
+	tx.UpdateBuilder = capture
+	tx.On("UpdateWithBuilder", mock.AnythingOfType("*models.HostedGenesisSession"), mock.Anything,
+		mock.MatchedBy(func(conditions []core.TransactCondition) bool {
+			return hasConditionKind(conditions, core.TransactConditionKindPrimaryKeyExists) &&
+				hasVersionCondition(conditions, 7) &&
+				hasStatusCondition(conditions, hostedgenesis.StatusInProgress) &&
+				hasFieldCondition(conditions, "LatestTurnID", "turn_123")
+		})).Return(tx).Once()
+	tx.On("UpdateWithBuilder", mock.AnythingOfType("*models.SoulAgentMintConversation"), mock.Anything,
+		mock.MatchedBy(func(conditions []core.TransactCondition) bool {
+			return hasConditionKind(conditions, core.TransactConditionKindPrimaryKeyExists) &&
+				hasStatusCondition(conditions, hostedgenesis.StatusInProgress) &&
+				hasFieldCondition(conditions, "LatestTurnID", "turn_123")
+		})).Return(tx).Once()
+
+	session, conversation := validStoreHostedGenesisFailure()
+	session.TraceIDs = nil
+	session.Model = "openai:gpt-5"
+	candidate, err := hostedgenesis.NewDeclarationCandidate(hostedgenesis.DeclarationCandidateBinding{
+		InstanceSlug: session.InstanceSlug, RegistrationID: session.RegistrationID,
+		AgentID: session.AgentID, ConversationID: session.ConversationID,
+		SourceTurnID: session.LatestTurnID, Model: session.Model,
+	}, session.CreatedAt)
+	require.NoError(t, err)
+	candidate.CandidateHash = "sha256:" + strings.Repeat("f", 64)
+	session.DeclarationCandidate = candidate
+	session.CandidateRevision = candidate.Revision
+	session.CandidateHash = candidate.CandidateHash
+	session.CandidatePhase = string(candidate.Phase)
+
+	require.NoError(t, New(db).FailHostedGenesisSessionAndConversation(ctx, session, 7, hostedgenesis.StatusInProgress, conversation))
+	require.Contains(t, capture.sets, "Status")
+	require.Contains(t, capture.sets, "Failure")
+	require.NotContains(t, capture.sets, "DeclarationCandidate")
+	require.NotContains(t, capture.sets, "CandidateHash")
 
 	db.AssertExpectations(t)
 	tx.AssertExpectations(t)

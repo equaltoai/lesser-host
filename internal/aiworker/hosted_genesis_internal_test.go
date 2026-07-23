@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -39,6 +41,8 @@ type fakeHostedGenesisStore struct {
 	convErr    error
 	idemErr    error
 	updateErr  error
+	updateErrs []error
+	updateHook func(*fakeHostedGenesisStore)
 	putErr     error
 }
 
@@ -126,6 +130,16 @@ func (f *fakeHostedGenesisStore) UpdateHostedGenesisSession(_ context.Context, i
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if len(f.updateErrs) > 0 {
+		err := f.updateErrs[0]
+		f.updateErrs = f.updateErrs[1:]
+		if err != nil {
+			if f.updateHook != nil {
+				f.updateHook(f)
+			}
+			return err
+		}
+	}
 	if f.updateErr != nil {
 		return f.updateErr
 	}
@@ -286,7 +300,10 @@ func hostedGenesisWorkerSQSMessage(t *testing.T, msg hostedgenesis.QueueMessage)
 	if err != nil {
 		t.Fatalf("marshal queue message: %v", err)
 	}
-	return events.SQSMessage{Body: string(body)}
+	return events.SQSMessage{
+		Body:       string(body),
+		Attributes: map[string]string{hostedGenesisSQSApproximateReceiveCount: "1"},
+	}
 }
 
 func TestHostedGenesisQueueMessageDispatchesDurableKinds(t *testing.T) {
@@ -317,6 +334,125 @@ func TestHostedGenesisQueueMessageDispatchesDurableKinds(t *testing.T) {
 	}
 }
 
+func TestHostedGenesisQueueDeliveryCountTerminalizesLifecyclePersistence(t *testing.T) {
+	t.Parallel()
+
+	transientErr := errors.New("dynamodb unavailable")
+	for _, receiveCount := range []int{1, hostedGenesisQueueMaxReceiveCount - 1} {
+		st := newHostedGenesisWorkerStore("turn-worker")
+		st.updateErrs = []error{transientErr}
+		srv := NewServer(config.Config{}, st, artifacts.New(""), fakeComprehend{}, fakeRekognition{})
+		srv.hostedGenesisMicroVMDispatcher = &stubHostedGenesisWorkerMicroVMDispatcher{t: t}
+		msg := hostedGenesisWorkerSQSMessage(t, hostedGenesisWorkerQueueMessage(hostedgenesis.StepMicroVMDispatch, "turn-worker"))
+		msg.Attributes[hostedGenesisSQSApproximateReceiveCount] = strconv.Itoa(receiveCount)
+
+		err := srv.handleHostedGenesisQueueMessage(&apptheory.EventContext{RequestID: "worker-req"}, msg)
+		if !errors.Is(err, transientErr) {
+			t.Fatalf("receive count %d must remain retryable, got %v", receiveCount, err)
+		}
+		if st.putCount != 0 || hostedgenesis.NormalizeStatus(st.session.Status) != hostedgenesis.StatusInProgress {
+			t.Fatalf("receive count %d prematurely terminalized state: session=%#v putCount=%d", receiveCount, st.session, st.putCount)
+		}
+	}
+
+	st := newHostedGenesisWorkerStore("turn-worker")
+	st.updateErrs = []error{transientErr}
+	srv := NewServer(config.Config{}, st, artifacts.New(""), fakeComprehend{}, fakeRekognition{})
+	srv.hostedGenesisMicroVMDispatcher = &stubHostedGenesisWorkerMicroVMDispatcher{t: t}
+	msg := hostedGenesisWorkerSQSMessage(t, hostedGenesisWorkerQueueMessage(hostedgenesis.StepMicroVMDispatch, "turn-worker"))
+	msg.Attributes[hostedGenesisSQSApproximateReceiveCount] = strconv.Itoa(hostedGenesisQueueMaxReceiveCount)
+
+	if err := srv.handleHostedGenesisQueueMessage(&apptheory.EventContext{RequestID: "worker-req"}, msg); err != nil {
+		t.Fatalf("final delivery terminal projection failed: %v", err)
+	}
+	assertHostedGenesisWorkerFailure(t, st, hostedGenesisFailureInvalidCompletionState)
+}
+
+func TestHostedGenesisQueueReceiveCountMatchesCDKRedriveContract(t *testing.T) {
+	t.Parallel()
+
+	stack, err := os.ReadFile("../../cdk/lib/lesser-host-stack.ts")
+	if err != nil {
+		t.Fatalf("read CDK stack: %v", err)
+	}
+	queueStart := strings.Index(string(stack), `const hostedGenesisQueue = new sqs.Queue`)
+	if queueStart < 0 {
+		t.Fatal("CDK hosted-genesis queue definition is missing")
+	}
+	queueDefinition := string(stack[queueStart:])
+	queueEnd := strings.Index(queueDefinition, `const provisionDLQ`)
+	if queueEnd < 0 {
+		t.Fatal("CDK hosted-genesis queue definition boundary is missing")
+	}
+	queueDefinition = queueDefinition[:queueEnd]
+	want := "maxReceiveCount: " + strconv.Itoa(hostedGenesisQueueMaxReceiveCount)
+	if !strings.Contains(queueDefinition, want) {
+		t.Fatalf("worker final-delivery limit diverges from CDK redrive contract; want %q in %q", want, queueDefinition)
+	}
+}
+
+func TestHostedGenesisMicroVMDispatchPermanentValidationFailureProjectsOnce(t *testing.T) {
+	t.Parallel()
+
+	st := newHostedGenesisWorkerStore("turn-worker")
+	candidate, err := hostedgenesis.NewDeclarationCandidate(hostedgenesis.DeclarationCandidateBinding{
+		InstanceSlug: st.session.InstanceSlug, RegistrationID: st.session.RegistrationID,
+		AgentID: st.session.AgentID, ConversationID: st.session.ConversationID,
+		SourceTurnID: st.session.LatestTurnID, Model: st.session.Model,
+	}, st.session.CreatedAt)
+	if err != nil {
+		t.Fatalf("build declaration candidate: %v", err)
+	}
+	candidate.CandidateHash = "sha256:" + strings.Repeat("f", 64)
+	st.session.DeclarationCandidate = candidate
+	srv := NewServer(config.Config{}, st, artifacts.New(""), fakeComprehend{}, fakeRekognition{})
+	dispatcher := &stubHostedGenesisWorkerMicroVMDispatcher{t: t}
+	srv.hostedGenesisMicroVMDispatcher = dispatcher
+
+	err = srv.processHostedGenesisMicroVMDispatch(
+		context.Background(),
+		"worker-req",
+		hostedGenesisWorkerQueueMessage(hostedgenesis.StepMicroVMDispatch, "turn-worker"),
+		1,
+	)
+	if err != nil {
+		t.Fatalf("permanent validation failure projection failed: %v", err)
+	}
+	if dispatcher.startCalls != 1 || dispatcher.invokeCalls != 0 {
+		t.Fatalf("permanent lifecycle validation failure must stop before invoke, got start=%d invoke=%d", dispatcher.startCalls, dispatcher.invokeCalls)
+	}
+	assertHostedGenesisWorkerFailure(t, st, hostedGenesisFailureInvalidCompletionState)
+}
+
+func TestHostedGenesisMicroVMDispatchFinalDeliveryDoesNotOverwriteAdvancedLane(t *testing.T) {
+	t.Parallel()
+
+	st := newHostedGenesisWorkerStore("turn-worker")
+	st.updateErrs = []error{theoryErrors.ErrConditionFailed}
+	st.updateHook = func(store *fakeHostedGenesisStore) {
+		store.session.Version++
+		store.session.Status = string(hostedgenesis.StatusAssistantTurnReady)
+		store.conv.Status = models.SoulMintConversationStatusAssistantTurnReady
+	}
+	srv := NewServer(config.Config{}, st, artifacts.New(""), fakeComprehend{}, fakeRekognition{})
+	srv.hostedGenesisMicroVMDispatcher = &stubHostedGenesisWorkerMicroVMDispatcher{t: t}
+
+	err := srv.processHostedGenesisMicroVMDispatch(
+		context.Background(),
+		"worker-req",
+		hostedGenesisWorkerQueueMessage(hostedgenesis.StepMicroVMDispatch, "turn-worker"),
+		hostedGenesisQueueMaxReceiveCount,
+	)
+	if !errors.Is(err, theoryErrors.ErrConditionFailed) {
+		t.Fatalf("stale final delivery must preserve the atomic condition failure, got %v", err)
+	}
+	if st.putCount != 0 || st.session.Version != 1 ||
+		hostedgenesis.NormalizeStatus(st.session.Status) != hostedgenesis.StatusAssistantTurnReady ||
+		st.conv.Status != models.SoulMintConversationStatusAssistantTurnReady {
+		t.Fatalf("stale final delivery overwrote advanced lane: session=%#v conversation=%#v putCount=%d", st.session, st.conv, st.putCount)
+	}
+}
+
 func TestHostedGenesisMicroVMDispatchStartsPersistsLifecycleAndInvokes(t *testing.T) {
 	t.Parallel()
 
@@ -325,7 +461,7 @@ func TestHostedGenesisMicroVMDispatchStartsPersistsLifecycleAndInvokes(t *testin
 	dispatcher := &stubHostedGenesisWorkerMicroVMDispatcher{t: t}
 	srv.hostedGenesisMicroVMDispatcher = dispatcher
 
-	err := srv.processHostedGenesisMicroVMDispatch(context.Background(), "worker-req", hostedGenesisWorkerQueueMessage(hostedgenesis.StepMicroVMDispatch, "turn-worker"))
+	err := srv.processHostedGenesisMicroVMDispatch(context.Background(), "worker-req", hostedGenesisWorkerQueueMessage(hostedgenesis.StepMicroVMDispatch, "turn-worker"), 1)
 	if err != nil {
 		t.Fatalf("unexpected microvm dispatch error: %v", err)
 	}
@@ -369,7 +505,7 @@ func TestHostedGenesisMicroVMDispatchReusesValidatedPriorLifecycle(t *testing.T)
 	dispatcher := &stubHostedGenesisWorkerMicroVMDispatcher{t: t}
 	srv.hostedGenesisMicroVMDispatcher = dispatcher
 
-	err = srv.processHostedGenesisMicroVMDispatch(context.Background(), "worker-req", hostedGenesisWorkerQueueMessage(hostedgenesis.StepMicroVMDispatch, "turn-worker"))
+	err = srv.processHostedGenesisMicroVMDispatch(context.Background(), "worker-req", hostedGenesisWorkerQueueMessage(hostedgenesis.StepMicroVMDispatch, "turn-worker"), 1)
 	if err != nil {
 		t.Fatalf("unexpected microvm dispatch error: %v", err)
 	}
@@ -404,7 +540,7 @@ func TestHostedGenesisMicroVMDispatchRelaunchesWhenPriorLifecycleExpired(t *test
 	dispatcher := &stubHostedGenesisWorkerMicroVMDispatcher{t: t, ensureErr: hostedgenesis.ErrMicroVMRelaunchRequired}
 	srv.hostedGenesisMicroVMDispatcher = dispatcher
 
-	err = srv.processHostedGenesisMicroVMDispatch(context.Background(), "worker-req", hostedGenesisWorkerQueueMessage(hostedgenesis.StepMicroVMDispatch, "turn-worker"))
+	err = srv.processHostedGenesisMicroVMDispatch(context.Background(), "worker-req", hostedGenesisWorkerQueueMessage(hostedgenesis.StepMicroVMDispatch, "turn-worker"), 1)
 	if err != nil {
 		t.Fatalf("unexpected microvm relaunch dispatch error: %v", err)
 	}
@@ -432,7 +568,7 @@ func TestHostedGenesisMicroVMDispatchAllowsManagedStageAliasBoundary(t *testing.
 	dispatcher := &stubHostedGenesisWorkerMicroVMDispatcher{t: t}
 	srv.hostedGenesisMicroVMDispatcher = dispatcher
 
-	err := srv.processHostedGenesisMicroVMDispatch(context.Background(), "worker-req", hostedGenesisWorkerQueueMessage(hostedgenesis.StepMicroVMDispatch, "turn-worker"))
+	err := srv.processHostedGenesisMicroVMDispatch(context.Background(), "worker-req", hostedGenesisWorkerQueueMessage(hostedgenesis.StepMicroVMDispatch, "turn-worker"), 1)
 	if err != nil {
 		t.Fatalf("unexpected managed-stage alias dispatch error: %v", err)
 	}
@@ -516,7 +652,7 @@ func TestHostedGenesisMicroVMDispatchFallbackDispatcherPersistsLifecycle(t *test
 	dispatcher := &legacyOnlyHostedGenesisWorkerMicroVMDispatcher{t: t}
 	srv.hostedGenesisMicroVMDispatcher = dispatcher
 
-	err := srv.processHostedGenesisMicroVMDispatch(context.Background(), "worker-req", hostedGenesisWorkerQueueMessage(hostedgenesis.StepMicroVMDispatch, "turn-worker"))
+	err := srv.processHostedGenesisMicroVMDispatch(context.Background(), "worker-req", hostedGenesisWorkerQueueMessage(hostedgenesis.StepMicroVMDispatch, "turn-worker"), 1)
 	if err != nil {
 		t.Fatalf("unexpected fallback microvm dispatch error: %v", err)
 	}
@@ -617,7 +753,7 @@ func TestHostedGenesisMicroVMDispatchFailsClosedWhenDispatcherUnavailable(t *tes
 	st := newHostedGenesisWorkerStore("turn-worker")
 	srv := NewServer(config.Config{}, st, artifacts.New(""), fakeComprehend{}, fakeRekognition{})
 
-	err := srv.processHostedGenesisMicroVMDispatch(context.Background(), "worker-req", hostedGenesisWorkerQueueMessage(hostedgenesis.StepMicroVMDispatch, "turn-worker"))
+	err := srv.processHostedGenesisMicroVMDispatch(context.Background(), "worker-req", hostedGenesisWorkerQueueMessage(hostedgenesis.StepMicroVMDispatch, "turn-worker"), 1)
 	if err != nil {
 		t.Fatalf("unexpected microvm-unavailable handling error: %v", err)
 	}
@@ -632,7 +768,7 @@ func TestHostedGenesisMicroVMDispatchFailsClosedOnInvokeError(t *testing.T) {
 	dispatcher := &stubHostedGenesisWorkerMicroVMDispatcher{t: t, invokeErr: errors.New("invoke unavailable")}
 	srv.hostedGenesisMicroVMDispatcher = dispatcher
 
-	err := srv.processHostedGenesisMicroVMDispatch(context.Background(), "worker-req", hostedGenesisWorkerQueueMessage(hostedgenesis.StepMicroVMDispatch, "turn-worker"))
+	err := srv.processHostedGenesisMicroVMDispatch(context.Background(), "worker-req", hostedGenesisWorkerQueueMessage(hostedgenesis.StepMicroVMDispatch, "turn-worker"), 1)
 	if err != nil {
 		t.Fatalf("unexpected invoke failure handling error: %v", err)
 	}
@@ -659,7 +795,7 @@ func TestHostedGenesisMicroVMDispatchRetriesWhenFailurePersistenceFails(t *testi
 	dispatcher := &stubHostedGenesisWorkerMicroVMDispatcher{t: t, invokeErr: errors.New("workload preflight failed")}
 	srv.hostedGenesisMicroVMDispatcher = dispatcher
 
-	err = srv.processHostedGenesisMicroVMDispatch(context.Background(), "worker-req", hostedGenesisWorkerQueueMessage(hostedgenesis.StepMicroVMDispatch, "turn-worker"))
+	err = srv.processHostedGenesisMicroVMDispatch(context.Background(), "worker-req", hostedGenesisWorkerQueueMessage(hostedgenesis.StepMicroVMDispatch, "turn-worker"), 1)
 	if err == nil {
 		t.Fatal("expected lifecycle-persistence error so SQS retries the dispatch message")
 	}
@@ -707,7 +843,7 @@ func TestHostedGenesisMicroVMDispatchRetriesAuthoritativeReadFailures(t *testing
 			dispatcher := &stubHostedGenesisWorkerMicroVMDispatcher{t: t}
 			srv.hostedGenesisMicroVMDispatcher = dispatcher
 
-			err := srv.processHostedGenesisMicroVMDispatch(context.Background(), "worker-req", hostedGenesisWorkerQueueMessage(hostedgenesis.StepMicroVMDispatch, "turn-worker"))
+			err := srv.processHostedGenesisMicroVMDispatch(context.Background(), "worker-req", hostedGenesisWorkerQueueMessage(hostedgenesis.StepMicroVMDispatch, "turn-worker"), 1)
 			if !errors.Is(err, readErr) {
 				t.Fatalf("expected authoritative %s read error to remain retryable, got %v", tt.name, err)
 			}
@@ -736,7 +872,7 @@ func TestHostedGenesisMicroVMDispatchFailurePersistenceIsAtomic(t *testing.T) {
 	dispatcher := &stubHostedGenesisWorkerMicroVMDispatcher{t: t, invokeErr: errors.New("workload preflight failed")}
 	srv.hostedGenesisMicroVMDispatcher = dispatcher
 
-	err = srv.processHostedGenesisMicroVMDispatch(context.Background(), "worker-req", hostedGenesisWorkerQueueMessage(hostedgenesis.StepMicroVMDispatch, "turn-worker"))
+	err = srv.processHostedGenesisMicroVMDispatch(context.Background(), "worker-req", hostedGenesisWorkerQueueMessage(hostedgenesis.StepMicroVMDispatch, "turn-worker"), 1)
 	if err == nil {
 		t.Fatal("expected atomic failure-persistence error so SQS retries the dispatch message")
 	}
@@ -754,7 +890,7 @@ func TestHostedGenesisMicroVMDispatchFailsSessionWhenConversationIsMissing(t *te
 	dispatcher := &stubHostedGenesisWorkerMicroVMDispatcher{t: t}
 	srv.hostedGenesisMicroVMDispatcher = dispatcher
 
-	err := srv.processHostedGenesisMicroVMDispatch(context.Background(), "worker-req", hostedGenesisWorkerQueueMessage(hostedgenesis.StepMicroVMDispatch, "turn-worker"))
+	err := srv.processHostedGenesisMicroVMDispatch(context.Background(), "worker-req", hostedGenesisWorkerQueueMessage(hostedgenesis.StepMicroVMDispatch, "turn-worker"), 1)
 	if err != nil {
 		t.Fatalf("unexpected missing-conversation failure projection error: %v", err)
 	}
@@ -775,7 +911,7 @@ func TestHostedGenesisMicroVMDispatchRetriesWhenLifecyclePersistenceFails(t *tes
 	dispatcher := &stubHostedGenesisWorkerMicroVMDispatcher{t: t}
 	srv.hostedGenesisMicroVMDispatcher = dispatcher
 
-	err := srv.processHostedGenesisMicroVMDispatch(context.Background(), "worker-req", hostedGenesisWorkerQueueMessage(hostedgenesis.StepMicroVMDispatch, "turn-worker"))
+	err := srv.processHostedGenesisMicroVMDispatch(context.Background(), "worker-req", hostedGenesisWorkerQueueMessage(hostedgenesis.StepMicroVMDispatch, "turn-worker"), 1)
 	if err == nil {
 		t.Fatal("expected lifecycle-persistence error so SQS retries the dispatch message")
 	}

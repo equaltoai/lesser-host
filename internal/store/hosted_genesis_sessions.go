@@ -32,6 +32,9 @@ func (s *Store) GetHostedGenesisSession(ctx context.Context, instanceSlug string
 	); err != nil {
 		return nil, err
 	}
+	if err := hostedgenesis.NormalizePersistedDeclarationCandidate(item.DeclarationCandidate); err != nil {
+		return nil, fmt.Errorf("normalize hosted genesis declaration candidate: %w", err)
+	}
 	return &item, nil
 }
 
@@ -241,7 +244,7 @@ func (s *Store) FailHostedGenesisSessionAndConversation(ctx context.Context, ses
 		strings.TrimSpace(session.ConversationID) != strings.TrimSpace(conversation.ConversationID) {
 		return fmt.Errorf("hosted genesis failure transaction requires matching session and conversation identity")
 	}
-	expectedStatus, err := validateHostedGenesisSessionUpdate(session, expectedVersion, expectedStatus)
+	expectedStatus, err := validateHostedGenesisFailureUpdate(session, expectedVersion, expectedStatus)
 	if err != nil {
 		return err
 	}
@@ -253,7 +256,7 @@ func (s *Store) FailHostedGenesisSessionAndConversation(ctx context.Context, ses
 		return err
 	}
 	return s.DB.TransactWrite(ctx, func(tx core.TransactionBuilder) error {
-		addHostedGenesisSessionUpdate(tx, session, expectedVersion, expectedStatus,
+		addHostedGenesisSessionFailureUpdate(tx, session, expectedVersion, expectedStatus,
 			tabletheory.Condition("LatestTurnID", "=", strings.TrimSpace(session.LatestTurnID)))
 		tx.UpdateWithBuilder(conversation, func(ub core.UpdateBuilder) error {
 			ub.Set("Status", conversation.Status)
@@ -286,6 +289,57 @@ func (s *Store) FailHostedGenesisSessionAndConversation(ctx context.Context, ses
 		}
 		return nil
 	})
+}
+
+// validateHostedGenesisFailureUpdate validates only the bounded terminal fields
+// that FailHostedGenesisSessionAndConversation writes. The candidate and other
+// unchanged durable state remain authoritative in DynamoDB and are deliberately
+// not reserialized, so a permanently invalid candidate can be terminalized
+// without weakening candidate validation on any candidate-mutating path.
+func validateHostedGenesisFailureUpdate(item *models.HostedGenesisSession, expectedVersion int64, expectedStatus hostedgenesis.Status) (hostedgenesis.Status, error) {
+	if item == nil || expectedVersion < 0 {
+		return "", fmt.Errorf("expected version must be non-negative")
+	}
+	expectedStatus = hostedgenesis.NormalizeStatus(string(expectedStatus))
+	if !hostedgenesis.IsAllowedStatus(expectedStatus) {
+		return "", hostedgenesis.ErrInvalidStatusTransition
+	}
+	if hostedgenesis.NormalizeStatus(item.Status) != hostedgenesis.StatusFailed || item.Failure == nil {
+		return "", fmt.Errorf("hosted genesis failure update requires bounded failed state")
+	}
+	if err := item.Failure.Validate(); err != nil {
+		return "", err
+	}
+	if err := hostedgenesis.ValidateTransition(expectedStatus, hostedgenesis.StatusFailed); err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(item.InstanceSlug) == "" || strings.TrimSpace(item.RegistrationID) == "" ||
+		strings.TrimSpace(item.AgentID) == "" || strings.TrimSpace(item.ConversationID) == "" {
+		return "", fmt.Errorf("hosted genesis failure update identity is incomplete")
+	}
+	if item.PK != models.HostedGenesisSessionPK(item.InstanceSlug) ||
+		item.SK != models.HostedGenesisSessionSK(item.ConversationID) {
+		return "", fmt.Errorf("hosted genesis failure update keys do not match session identity")
+	}
+	return expectedStatus, nil
+}
+
+func addHostedGenesisSessionFailureUpdate(tx core.TransactionBuilder, item *models.HostedGenesisSession, expectedVersion int64, expectedStatus hostedgenesis.Status, extraConditions ...core.TransactCondition) {
+	conditions := []core.TransactCondition{
+		tabletheory.IfExists(),
+		tabletheory.AtVersion(expectedVersion),
+		tabletheory.Condition("Status", "=", string(expectedStatus)),
+	}
+	conditions = append(conditions, extraConditions...)
+	tx.UpdateWithBuilder(item, func(ub core.UpdateBuilder) error {
+		ub.Set("Status", item.Status)
+		ub.Set("Failure", item.Failure)
+		ub.Set("RequestID", item.RequestID)
+		ub.Set("UpdatedAt", item.UpdatedAt)
+		ub.Set("CompletedAt", item.CompletedAt)
+		ub.Add("Version", int64(1))
+		return nil
+	}, conditions...)
 }
 
 func hostedGenesisFailureIdempotency(session *models.HostedGenesisSession) (*models.SoulMintConversationIdempotency, error) {
