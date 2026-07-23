@@ -92,10 +92,14 @@ func runMintConversationPhaseOpenAI(ctx context.Context, apiKey string, in MintC
 			Model: openai.ChatModel(model), Messages: messages,
 			MaxCompletionTokens: openai.Int(mintConversationOpenAIMaxCompletionTokens),
 			ParallelToolCalls:   openai.Bool(false),
+			Tools:               []openai.ChatCompletionToolParam{tool},
 		}
 		if toolEnabled {
-			params.Tools = []openai.ChatCompletionToolParam{tool}
 			params.ToolChoice = openai.ChatCompletionToolChoiceOptionUnionParam{OfAuto: openai.String("auto")}
+		} else {
+			// Keep the prior assistant tool call and result valid in the
+			// continuation request while forbidding another section mutation.
+			params.ToolChoice = openai.ChatCompletionToolChoiceOptionUnionParam{OfAuto: openai.String("none")}
 		}
 		chat, callErr := client.Chat.Completions.New(ctx, params)
 		if callErr != nil {
@@ -184,10 +188,15 @@ func runMintConversationPhaseAnthropic(ctx context.Context, apiKey string, in Mi
 			Model: model, MaxTokens: 4096,
 			System:   []anthropic.TextBlockParam{{Text: mintConversationPhaseSystemPrompt(in)}},
 			Messages: messages,
+			Tools:    []anthropic.ToolUnionParam{anthropicMintConversationPhaseTool(in.Section)},
 		}
 		if toolEnabled {
-			params.Tools = []anthropic.ToolUnionParam{anthropicMintConversationPhaseTool(in.Section)}
 			params.ToolChoice = anthropic.ToolChoiceUnionParam{OfAuto: &anthropic.ToolChoiceAutoParam{DisableParallelToolUse: anthropic.Bool(true)}}
+		} else {
+			// Anthropic likewise requires the referenced tool declaration to
+			// remain present even though the post-checkpoint turn is text-only.
+			none := anthropic.NewToolChoiceNoneParam()
+			params.ToolChoice = anthropic.ToolChoiceUnionParam{OfNone: &none}
 		}
 		message, callErr := client.Messages.New(ctx, params)
 		if callErr != nil {
