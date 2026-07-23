@@ -21,6 +21,8 @@ const (
 	hostedGenesisWorkerMicroVMRunTimeout            = 90 * time.Second
 )
 
+var errHostedGenesisPermanentStateValidation = errors.New("hosted genesis permanent state validation")
+
 type hostedGenesisWorkerMicroVMDispatcherOptions struct {
 	httpClient      *http.Client
 	authToken       string
@@ -98,7 +100,10 @@ func newHostedGenesisWorkerMicroVMDispatcher(ctx context.Context, cfg config.Con
 	return dispatcher
 }
 
-func (s *Server) processHostedGenesisMicroVMDispatch(ctx context.Context, workerRequestID string, msg hostedgenesis.QueueMessage) error {
+func (s *Server) processHostedGenesisMicroVMDispatch(ctx context.Context, workerRequestID string, msg hostedgenesis.QueueMessage, receiveCount int) error {
+	if receiveCount < 1 {
+		return fmt.Errorf("hosted genesis SQS receive count is invalid")
+	}
 	st, ok := s.hostedGenesisStore()
 	if !ok {
 		return fmt.Errorf("hosted genesis store not initialized")
@@ -140,7 +145,7 @@ func (s *Server) processHostedGenesisMicroVMDispatch(ctx context.Context, worker
 		progressed, persistErr := persistHostedGenesisMicroVMDispatchLifecycle(ctx, st, session, dispatch, requestID, time.Now().UTC())
 		if persistErr != nil {
 			log.Printf("aiworker: hosted genesis microvm lifecycle persist failed agent_hash=%s conversation_hash=%s err=%v", hostedGenesisAuditHash(msg.AgentID), hostedGenesisAuditHash(msg.ConversationID), persistErr)
-			return persistErr
+			return s.handleHostedGenesisLifecyclePersistFailure(ctx, st, conv, session, requestID, receiveCount, persistErr)
 		}
 		session = progressed
 		if invokeWithWait {
@@ -163,7 +168,38 @@ func (s *Server) processHostedGenesisMicroVMDispatch(ctx context.Context, worker
 		return s.markHostedGenesisConversationFailed(ctx, st, conv, session, hostedGenesisFailureMicroVMUnavailable, requestID)
 	}
 	_, persistErr := persistHostedGenesisMicroVMDispatchLifecycle(ctx, st, session, dispatch, requestID, time.Now().UTC())
-	return persistErr
+	if persistErr != nil {
+		log.Printf("aiworker: hosted genesis microvm lifecycle persist failed agent_hash=%s conversation_hash=%s err=%v", hostedGenesisAuditHash(msg.AgentID), hostedGenesisAuditHash(msg.ConversationID), persistErr)
+		return s.handleHostedGenesisLifecyclePersistFailure(ctx, st, conv, session, requestID, receiveCount, persistErr)
+	}
+	return nil
+}
+
+func (s *Server) handleHostedGenesisLifecyclePersistFailure(
+	ctx context.Context,
+	st hostedGenesisStore,
+	conv *models.SoulAgentMintConversation,
+	session *models.HostedGenesisSession,
+	requestID string,
+	receiveCount int,
+	persistErr error,
+) error {
+	permanent := errors.Is(persistErr, errHostedGenesisPermanentStateValidation)
+	if !permanent && receiveCount < hostedGenesisQueueMaxReceiveCount {
+		return persistErr
+	}
+	if err := s.markHostedGenesisConversationFailedWithDetail(
+		ctx,
+		st,
+		conv,
+		session,
+		hostedGenesisFailureInvalidCompletionState,
+		"",
+		requestID,
+	); err != nil {
+		return fmt.Errorf("terminalize hosted genesis lifecycle persistence failure: %w", err)
+	}
+	return nil
 }
 
 func ensureOrStartHostedGenesisMicroVMTurn(ctx context.Context, controller hostedGenesisMicroVMTurnController, requestID string, binding hostedgenesis.MicroVMSessionBinding, session *models.HostedGenesisSession) (hostedgenesis.MicroVMDispatchResult, bool, error) {
@@ -202,12 +238,16 @@ func persistHostedGenesisMicroVMDispatchLifecycle(ctx context.Context, st hosted
 	}
 	progressed := cloneHostedGenesisSessionForWorker(session)
 	if err := progressed.ApplyMicroVMLifecycleRef(dispatch.LifecycleRef); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %v", errHostedGenesisPermanentStateValidation, err)
 	}
 	progressed.Status = string(hostedgenesis.StatusInProgress)
 	progressed.RequestID = strings.TrimSpace(requestID)
 	progressed.UpdatedAt = now.UTC()
 	progressed.CompletedAt = time.Time{}
+	validation := cloneHostedGenesisSessionForWorker(progressed)
+	if err := validation.BeforeUpdate(); err != nil {
+		return nil, fmt.Errorf("%w: %v", errHostedGenesisPermanentStateValidation, err)
+	}
 	if err := st.UpdateHostedGenesisSession(ctx, progressed, session.Version, hostedgenesis.StatusInProgress); err != nil {
 		return nil, err
 	}

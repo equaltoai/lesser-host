@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -27,6 +28,12 @@ const (
 	hostedGenesisFailureInvalidProducedDeclarations = "invalid_produced_declarations"
 	hostedGenesisFailureTenantBoundaryViolation     = "tenant_boundary_violation"
 	hostedGenesisFailureOperatorActionRequired      = "operator_action_required"
+
+	hostedGenesisSQSApproximateReceiveCount = "ApproximateReceiveCount"
+	// Keep this limit contract-tested against HostedGenesisQueue's CDK redrive
+	// policy. The final source-queue delivery must terminalize durable state
+	// before SQS transfers the message to the alarm-only DLQ.
+	hostedGenesisQueueMaxReceiveCount = 3
 )
 
 type hostedGenesisStore interface {
@@ -57,10 +64,23 @@ func (s *Server) handleHostedGenesisQueueMessage(ctx *apptheory.EventContext, ms
 	}
 	switch strings.TrimSpace(qm.Step) {
 	case hostedgenesis.StepMicroVMDispatch:
-		return s.processHostedGenesisMicroVMDispatch(ctx.Context(), ctx.RequestID, qm)
+		receiveCount, err := hostedGenesisSQSReceiveCount(msg)
+		if err != nil {
+			return err
+		}
+		return s.processHostedGenesisMicroVMDispatch(ctx.Context(), ctx.RequestID, qm, receiveCount)
 	default:
 		return nil
 	}
+}
+
+func hostedGenesisSQSReceiveCount(msg events.SQSMessage) (int, error) {
+	raw := strings.TrimSpace(msg.Attributes[hostedGenesisSQSApproximateReceiveCount])
+	receiveCount, err := strconv.Atoi(raw)
+	if err != nil || receiveCount < 1 {
+		return 0, fmt.Errorf("hosted genesis SQS receive count is invalid")
+	}
+	return receiveCount, nil
 }
 
 func (s *Server) hostedGenesisStore() (hostedGenesisStore, bool) {
