@@ -265,8 +265,9 @@ const (
 // FailureClass is a content-free, bounded explanation of where a provider-backed
 // declaration phase failed. It is deliberately separate from FailureCode:
 // the code drives recovery while the class lets operators distinguish timeout,
-// provider API, provider-output, and parse/validation boundaries without ever
-// persisting SDK error text, prompts, transcripts, tool arguments, or output.
+// provider API, provider-output, parse/validation, and persistence boundaries
+// without ever persisting SDK or store error text, prompts, transcripts, tool
+// arguments, or output.
 type FailureClass string
 
 const (
@@ -275,6 +276,8 @@ const (
 	FailureClassProviderAPIFailure    FailureClass = "provider_api_failure"
 	FailureClassInvalidProviderOutput FailureClass = "invalid_provider_output"
 	FailureClassParseValidation       FailureClass = "parse_validation_failure"
+	FailureClassProviderEvidenceStore FailureClass = "provider_evidence_persistence_failure"
+	FailureClassAssistantTurnStore    FailureClass = "assistant_turn_persistence_failure"
 )
 
 // Recovery is the typed recovery envelope exposed on failed compact projections.
@@ -366,7 +369,9 @@ func isAllowedFailureClass(class FailureClass) bool {
 		FailureClassProviderCanceled,
 		FailureClassProviderAPIFailure,
 		FailureClassInvalidProviderOutput,
-		FailureClassParseValidation:
+		FailureClassParseValidation,
+		FailureClassProviderEvidenceStore,
+		FailureClassAssistantTurnStore:
 		return true
 	default:
 		return false

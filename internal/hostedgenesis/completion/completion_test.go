@@ -123,6 +123,8 @@ func TestRecordFailurePersistsOnlyCanonicalContentFreeProviderClasses(t *testing
 		hostedgenesis.FailureClassProviderAPIFailure,
 		hostedgenesis.FailureClassInvalidProviderOutput,
 		hostedgenesis.FailureClassParseValidation,
+		hostedgenesis.FailureClassProviderEvidenceStore,
+		hostedgenesis.FailureClassAssistantTurnStore,
 	} {
 		t.Run(string(class), func(t *testing.T) {
 			store := &fakeCompletionStore{session: newFakeSession("acme", "conv-1", "turn-1", hostedgenesis.StatusInProgress, 3)}
