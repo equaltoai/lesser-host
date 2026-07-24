@@ -24,6 +24,11 @@ const (
 	mintConversationPhaseRefusalsMinItems     = 3
 	mintConversationPhaseRefusalsMaxItems     = 8
 	mintConversationPhaseRefusalFieldMaxRunes = 480
+	// The soul tool combines its bounded five-body section with typed
+	// satellites. OpenAI counts hidden reasoning and visible tool JSON against
+	// MaxCompletionTokens, and a valid long six-refusal payload can exhaust the
+	// generic 4096-token conversation cap.
+	mintConversationOpenAISoulMaxCompletionTokens int64 = 8192
 )
 
 // MintConversationPhaseInput exposes exactly one typed declaration tool for
@@ -98,7 +103,7 @@ func runMintConversationPhaseOpenAI(ctx context.Context, apiKey string, in MintC
 		recorder.emit(ProviderTelemetryEvent{EventType: "request_start"})
 		params := openai.ChatCompletionNewParams{
 			Model: openai.ChatModel(model), Messages: messages,
-			MaxCompletionTokens: openai.Int(mintConversationOpenAIMaxCompletionTokens),
+			MaxCompletionTokens: openai.Int(mintConversationPhaseOpenAIMaxCompletionTokens(in.Section)),
 			ParallelToolCalls:   openai.Bool(false),
 			Tools:               []openai.ChatCompletionToolParam{tool},
 		}
@@ -139,6 +144,16 @@ func handleOpenAIMintConversationPhaseResponse(ctx context.Context, chat *openai
 	if len(chat.Choices) != 1 {
 		return mintConversationPhaseRoundOutcome{}, errors.New("openai declaration phase returned invalid choices")
 	}
+	stopReason := strings.TrimSpace(chat.Choices[0].FinishReason)
+	if stopReason == "length" {
+		err := withProviderFailureClass(errors.New("openai declaration phase returned incomplete output"), string(hostedgenesis.FailureClassInvalidProviderOutput))
+		recorder.emit(ProviderTelemetryEvent{
+			EventType: "provider_call_failed", LastEvent: true,
+			FailureClass: ProviderFailureClass(err), StopReason: stopReason,
+			InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens, TotalTokens: usage.TotalTokens,
+		})
+		return mintConversationPhaseRoundOutcome{}, err
+	}
 	message := chat.Choices[0].Message
 	*messages = append(*messages, message.ToParam())
 	if len(message.ToolCalls) == 0 {
@@ -159,6 +174,13 @@ func handleOpenAIMintConversationPhaseResponse(ctx context.Context, chat *openai
 	}
 	*messages = append(*messages, openai.ToolMessage(string(body), call.ID))
 	return acceptedMintConversationPhaseOutcome(section, result.Accepted, recorder, usage), nil
+}
+
+func mintConversationPhaseOpenAIMaxCompletionTokens(section hostedgenesis.DeclarationSection) int64 {
+	if section == hostedgenesis.DeclarationSectionSoul {
+		return mintConversationOpenAISoulMaxCompletionTokens
+	}
+	return mintConversationOpenAIMaxCompletionTokens
 }
 
 func finishOpenAIMintConversationPhaseText(chat *openai.ChatCompletion, recorder *providerTelemetryRecorder, usage models.AIUsage) (mintConversationPhaseRoundOutcome, error) {
