@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -23,10 +25,12 @@ var (
 )
 
 type fakeTurnStore struct {
-	session    *models.HostedGenesisSession
-	conv       *models.SoulAgentMintConversation
-	reg        *models.SoulAgentRegistration
-	completion *fakeCompletionStore
+	session       *models.HostedGenesisSession
+	conv          *models.SoulAgentMintConversation
+	reg           *models.SoulAgentRegistration
+	completion    *fakeCompletionStore
+	checkpointErr error
+	assistantErr  error
 }
 
 func (f *fakeTurnStore) GetHostedGenesisSession(_ context.Context, _, _ string) (*models.HostedGenesisSession, error) {
@@ -50,6 +54,9 @@ func (f *fakeTurnStore) GetSoulAgentRegistration(_ context.Context, _ string) (*
 	return &copy, nil
 }
 func (f *fakeTurnStore) CheckpointHostedGenesisCandidate(_ context.Context, item *models.HostedGenesisSession, expectedVersion int64, expectedStatus hostedgenesis.Status, turnID string, revision int64, hash string) error {
+	if f.checkpointErr != nil {
+		return f.checkpointErr
+	}
 	current := f.session
 	if current == nil || current.Version != expectedVersion || hostedgenesis.NormalizeStatus(current.Status) != expectedStatus || current.LatestTurnID != turnID || current.CandidateRevision != revision || current.CandidateHash != hash {
 		return errConflict
@@ -66,6 +73,9 @@ func (f *fakeTurnStore) CheckpointHostedGenesisCandidate(_ context.Context, item
 	return nil
 }
 func (f *fakeTurnStore) RecordHostedGenesisAssistantTurnAndConversation(_ context.Context, item *models.HostedGenesisSession, expectedVersion int64, expectedStatus hostedgenesis.Status, turnID string, revision int64, hash string, conversation *models.SoulAgentMintConversation) error {
+	if f.assistantErr != nil {
+		return f.assistantErr
+	}
 	current := f.session
 	if current == nil || conversation == nil || current.Version != expectedVersion || hostedgenesis.NormalizeStatus(current.Status) != expectedStatus || current.LatestTurnID != turnID || current.CandidateRevision != revision || current.CandidateHash != hash || current.CandidatePhase != string(current.DeclarationCandidate.Phase) {
 		return errConflict
@@ -221,6 +231,55 @@ func TestProviderFailurePreservesAcceptedSectionForRecovery(t *testing.T) {
 	}
 }
 
+func TestProviderKeyFailurePersistsSafeClass(t *testing.T) {
+	setFiveBodyContractEnv(t)
+	clearProviderEnv(t)
+	setProviderSSMLoader(t, "openai", nil)
+	store, comp, turn := baseTurnInput()
+	phaseCalls := 0
+	runner := &turnRunner{store: store, writer: completion.NewCompletionWriter(comp, fixedClock), nowFunc: fixedClock,
+		phaseRunner: func(context.Context, string, llm.MintConversationPhaseInput, llm.MintConversationPhaseToolHandler, llm.ProviderTelemetrySink) (llm.MintConversationPhaseOutput, error) {
+			phaseCalls++
+			return llm.MintConversationPhaseOutput{}, nil
+		}}
+	if err := runner.runTurnAndPersist(t.Context(), turn); err != nil {
+		t.Fatal(err)
+	}
+	if phaseCalls != 0 || comp.session.Failure == nil ||
+		comp.session.Failure.Code != hostedgenesis.FailureCodeAssistantTurnFailed ||
+		comp.session.Failure.Class != hostedgenesis.FailureClassProviderAPIFailure {
+		t.Fatalf("provider key failure was not safely classified before dispatch: calls=%d failure=%#v", phaseCalls, comp.session.Failure)
+	}
+}
+
+func TestAssistantTurnPersistenceFailurePersistsSafeClass(t *testing.T) {
+	setFiveBodyContractEnv(t)
+	t.Setenv("OPENAI_API_KEY", "test-key")
+	store, comp, turn := baseTurnInput()
+	store.assistantErr = errors.New("injected assistant turn persistence failure")
+	runner := &turnRunner{store: store, writer: completion.NewCompletionWriter(comp, fixedClock), nowFunc: fixedClock,
+		phaseRunner: func(ctx context.Context, _ string, input llm.MintConversationPhaseInput, handler llm.MintConversationPhaseToolHandler, _ llm.ProviderTelemetrySink) (llm.MintConversationPhaseOutput, error) {
+			result, err := handler(ctx, llm.MintConversationPhaseToolCall{
+				Name: hostedgenesis.DeclarationToolIdentityPut, CallID: "accepted",
+				Arguments: boundPhaseToolArgs(t, input, `{"section":{"summary":"I am the tenant-bound conversation actor.","notes":[]}}`),
+			})
+			if err != nil || !result.Accepted {
+				t.Fatalf("checkpoint rejected before assistant persistence failure: %#v err=%v", result, err)
+			}
+			return llm.MintConversationPhaseOutput{AssistantContent: "Let us construct philosophy next."}, nil
+		}}
+	if err := runner.runTurnAndPersist(t.Context(), turn); err != nil {
+		t.Fatal(err)
+	}
+	if comp.session.Failure == nil ||
+		comp.session.Failure.Code != hostedgenesis.FailureCodeAssistantTurnFailed ||
+		comp.session.Failure.Class != hostedgenesis.FailureClassAssistantTurnStore ||
+		comp.session.DeclarationCandidate == nil ||
+		comp.session.DeclarationCandidate.Revision != 1 {
+		t.Fatalf("assistant persistence failure was not safely classified without losing the checkpoint: %#v", comp.session)
+	}
+}
+
 func TestReviewCheckpointRecoveryRendersStoredReviewWithoutProvider(t *testing.T) {
 	setFiveBodyContractEnv(t)
 	store, comp, turn := baseTurnInput()
@@ -265,6 +324,257 @@ func TestDeclarationPhasePersistsContentFreeProviderAttemptEvidence(t *testing.T
 		t.Fatalf("post-tool provider continuation did not reach assistant-ready: %#v", comp.session)
 	}
 	assertContentFreeProviderAttemptEvidence(t, comp.session.DeclarationCandidate.ProviderAttempts)
+}
+
+func TestSoulPhaseTruncatedSixRefusalOutputClassifiesEvidencePersistenceFailure(t *testing.T) {
+	setFiveBodyContractEnv(t)
+	t.Setenv("OPENAI_API_KEY", "test-key")
+	store, comp, turn := baseTurnInput()
+	candidate := runnerCandidateAtSoul(t, store.session.DeclarationCandidate)
+	store.session.DeclarationCandidate = candidate
+	store.session.CandidateRevision, store.session.CandidateHash, store.session.CandidatePhase = candidate.Revision, candidate.CandidateHash, string(candidate.Phase)
+	comp.session = cloneSessionForRunner(store.session)
+	store.checkpointErr = errors.New("injected provider attempt checkpoint failure")
+
+	fullArguments := longSixRefusalSoulArguments(t, candidate)
+	if len(fullArguments) <= 4096 {
+		t.Fatalf("six-refusal soul arguments must exercise the long-output boundary, got %d bytes", len(fullArguments))
+	}
+	truncatedArguments := fullArguments[:4096]
+
+	requests := make(chan map[string]any, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			requests <- map[string]any{"decode_error": err.Error()}
+		} else {
+			requests <- body
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("x-request-id", "req_soul_length")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id": "chatcmpl-soul-length", "object": "chat.completion", "created": 1, "model": "gpt-test",
+			"choices": []any{map[string]any{
+				"index": 0, "finish_reason": "length",
+				"message": map[string]any{
+					"role": "assistant", "content": "",
+					"tool_calls": []any{map[string]any{
+						"id": "call-soul-length", "type": "function",
+						"function": map[string]any{"name": hostedgenesis.DeclarationToolSoulPut, "arguments": string(truncatedArguments)},
+					}},
+				},
+			}},
+			"usage": map[string]any{
+				"prompt_tokens": 100, "completion_tokens": 4096, "total_tokens": 4196,
+				"completion_tokens_details": map[string]any{"reasoning_tokens": 1024},
+			},
+		})
+	}))
+	defer server.Close()
+	t.Setenv("OPENAI_BASE_URL", server.URL)
+	if err := llm.ConfigureProviderHTTPTimeout(5 * time.Second); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { llm.ConfigureProviderHTTPClient(nil) })
+
+	runner := &turnRunner{store: store, writer: completion.NewCompletionWriter(comp, fixedClock), nowFunc: fixedClock}
+	if err := runner.runTurnAndPersist(context.Background(), turn); err != nil {
+		t.Fatal(err)
+	}
+
+	request := <-requests
+	if decodeErr := request["decode_error"]; decodeErr != nil {
+		t.Fatalf("decode OpenAI request: %v", decodeErr)
+	}
+	assertStrictSoulPhaseRequest(t, request)
+	if comp.session.Failure == nil ||
+		comp.session.Failure.Code != hostedgenesis.FailureCodeAssistantTurnFailed ||
+		comp.session.Failure.Class != hostedgenesis.FailureClassProviderEvidenceStore {
+		t.Fatalf("provider evidence persistence failure was not safely classified: %#v", comp.session.Failure)
+	}
+	if comp.session.DeclarationCandidate == nil ||
+		comp.session.DeclarationCandidate.Revision != 4 ||
+		comp.session.DeclarationCandidate.CurrentSection != hostedgenesis.DeclarationSectionSoul ||
+		len(comp.session.DeclarationCandidate.ProviderAttempts) != 0 {
+		t.Fatalf("failed soul phase changed the pinned candidate: %#v", comp.session.DeclarationCandidate)
+	}
+}
+
+func TestSoulPhaseLongSixRefusalOutputCompletesWithSizedBudget(t *testing.T) {
+	setFiveBodyContractEnv(t)
+	t.Setenv("OPENAI_API_KEY", "test-key")
+	store, comp, turn := baseTurnInput()
+	candidate := runnerCandidateAtSoul(t, store.session.DeclarationCandidate)
+	store.session.DeclarationCandidate = candidate
+	store.session.CandidateRevision, store.session.CandidateHash, store.session.CandidatePhase = candidate.Revision, candidate.CandidateHash, string(candidate.Phase)
+	comp.session = cloneSessionForRunner(store.session)
+
+	fullArguments := longSixRefusalSoulArguments(t, candidate)
+	requests := make(chan map[string]any, 4)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			requests <- map[string]any{"decode_error": err.Error()}
+			return
+		}
+		requests <- body
+		maxTokens, _ := body["max_completion_tokens"].(float64)
+		arguments, finishReason, completionTokens := fullArguments, "tool_calls", 6500
+		if maxTokens < 8192 {
+			arguments, finishReason, completionTokens = fullArguments[:4096], "length", 4096
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("x-request-id", "req_soul_sized")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id": "chatcmpl-soul-sized", "object": "chat.completion", "created": 1, "model": "gpt-test",
+			"choices": []any{map[string]any{
+				"index": 0, "finish_reason": finishReason,
+				"message": map[string]any{
+					"role": "assistant", "content": "",
+					"tool_calls": []any{map[string]any{
+						"id": "call-soul-sized", "type": "function",
+						"function": map[string]any{"name": hostedgenesis.DeclarationToolSoulPut, "arguments": string(arguments)},
+					}},
+				},
+			}},
+			"usage": map[string]any{
+				"prompt_tokens": 100, "completion_tokens": completionTokens, "total_tokens": 100 + completionTokens,
+				"completion_tokens_details": map[string]any{"reasoning_tokens": 1024},
+			},
+		})
+	}))
+	defer server.Close()
+	t.Setenv("OPENAI_BASE_URL", server.URL)
+	if err := llm.ConfigureProviderHTTPTimeout(5 * time.Second); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { llm.ConfigureProviderHTTPClient(nil) })
+
+	runner := &turnRunner{store: store, writer: completion.NewCompletionWriter(comp, fixedClock), nowFunc: fixedClock}
+	if err := runner.runTurnAndPersist(context.Background(), turn); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(requests); got != 1 {
+		t.Fatalf("sized soul phase made %d provider requests", got)
+	}
+	request := <-requests
+	if decodeErr := request["decode_error"]; decodeErr != nil {
+		t.Fatalf("decode OpenAI request: %v", decodeErr)
+	}
+	assertStrictSoulPhaseRequest(t, request)
+	if hostedgenesis.NormalizeStatus(comp.session.Status) != hostedgenesis.StatusAssistantTurnReady ||
+		comp.session.Failure != nil ||
+		comp.session.DeclarationCandidate == nil ||
+		comp.session.DeclarationCandidate.Revision != 5 ||
+		comp.session.DeclarationCandidate.Phase != hostedgenesis.DeclarationCandidatePhaseReview ||
+		len(comp.session.DeclarationCandidate.FiveBodies.Soul.Refusals) != 6 ||
+		len(comp.session.DeclarationCandidate.ProviderAttempts) != 1 {
+		t.Fatalf("long six-refusal soul phase did not reach durable review: %#v", comp.session)
+	}
+}
+
+func TestProviderAttemptEvidenceCanRetryAfterCheckpointFailure(t *testing.T) {
+	setFiveBodyContractEnv(t)
+	store, _, turn := baseTurnInput()
+	candidate := runnerCandidateAtSoul(t, store.session.DeclarationCandidate)
+	store.session.DeclarationCandidate = candidate
+	store.session.CandidateRevision, store.session.CandidateHash, store.session.CandidatePhase = candidate.Revision, candidate.CandidateHash, string(candidate.Phase)
+	in := turnInput{session: cloneSessionForRunner(store.session)}
+	runner := &turnRunner{store: store, nowFunc: fixedClock}
+	event := llm.ProviderTelemetryEvent{
+		Provider: "openai", Model: "gpt-test", Phase: "declaration_phase", EventType: "sdk_http_attempt",
+		SDKAttemptOrdinal: 1, SDKRetryBudget: llm.DefaultProviderSDKRetryBudget, HTTPStatus: 200,
+		ProviderRequestID: "req_provider_recovery", DurationMS: 17,
+	}
+
+	store.checkpointErr = errors.New("injected provider evidence checkpoint failure")
+	err := runner.checkpointProviderAttemptEvidence(t.Context(), &in, turn, candidate.CurrentSection, candidate.Revision, candidate.CandidateHash, event)
+	if err == nil {
+		t.Fatal("expected injected provider evidence checkpoint failure")
+	}
+	if len(in.session.DeclarationCandidate.ProviderAttempts) != 0 || len(store.session.DeclarationCandidate.ProviderAttempts) != 0 {
+		t.Fatalf("failed evidence checkpoint mutated candidate state: in=%#v store=%#v", in.session.DeclarationCandidate.ProviderAttempts, store.session.DeclarationCandidate.ProviderAttempts)
+	}
+
+	store.checkpointErr = nil
+	if err := runner.checkpointProviderAttemptEvidence(t.Context(), &in, turn, candidate.CurrentSection, candidate.Revision, candidate.CandidateHash, event); err != nil {
+		t.Fatalf("provider evidence retry did not recover: %v", err)
+	}
+	if len(in.session.DeclarationCandidate.ProviderAttempts) != 1 ||
+		len(store.session.DeclarationCandidate.ProviderAttempts) != 1 ||
+		store.session.DeclarationCandidate.ProviderAttempts[0].SDKAttemptOrdinal != 1 {
+		t.Fatalf("provider evidence retry did not persist exactly once: in=%#v store=%#v", in.session.DeclarationCandidate.ProviderAttempts, store.session.DeclarationCandidate.ProviderAttempts)
+	}
+}
+
+func assertStrictSoulPhaseRequest(t *testing.T, request map[string]any) {
+	t.Helper()
+	if got, ok := request["max_completion_tokens"].(float64); !ok || got != 8192 {
+		t.Fatalf("OpenAI soul phase completion cap changed: %#v", request["max_completion_tokens"])
+	}
+	tools, ok := request["tools"].([]any)
+	if !ok || len(tools) != 1 {
+		t.Fatalf("soul phase must expose exactly one tool: %#v", request["tools"])
+	}
+	tool, _ := tools[0].(map[string]any)
+	function, _ := tool["function"].(map[string]any)
+	if function["name"] != hostedgenesis.DeclarationToolSoulPut || function["strict"] != true {
+		t.Fatalf("soul phase tool is not strict: %#v", function)
+	}
+	parameters, _ := function["parameters"].(map[string]any)
+	properties, _ := parameters["properties"].(map[string]any)
+	section, _ := properties["section"].(map[string]any)
+	sectionProperties, _ := section["properties"].(map[string]any)
+	refusals, _ := sectionProperties["refusals"].(map[string]any)
+	if refusals["minItems"] != float64(3) || refusals["maxItems"] != float64(8) {
+		t.Fatalf("soul refusal bounds changed: %#v", refusals)
+	}
+}
+
+func longSixRefusalSoulArguments(t *testing.T, candidate *hostedgenesis.DeclarationCandidate) []byte {
+	t.Helper()
+	refusals := make([]map[string]string, 0, 6)
+	for i := 1; i <= 6; i++ {
+		refusals = append(refusals, map[string]string{
+			"bypass":          fmt.Sprintf("Bypass %d: %s", i, strings.Repeat("skip the tenant-bound durable candidate guard; ", 7)),
+			"invariant":       fmt.Sprintf("Invariant %d: %s", i, strings.Repeat("exact reviewed state and authority remain load-bearing; ", 7)),
+			"closestSafePath": fmt.Sprintf("Safe path %d: %s", i, strings.Repeat("return to the guarded owner review and submit bounded evidence; ", 7)),
+		})
+	}
+	payload := map[string]any{
+		"candidateRevision": candidate.Revision,
+		"candidateHash":     candidate.CandidateHash,
+		"section": map[string]any{
+			"summary": strings.Repeat("Exact tenant-bound reviewed truth remains authoritative. ", 24),
+			"notes": []string{
+				strings.Repeat("Every mutation remains bound to the current turn, revision, and candidate hash. ", 5),
+				strings.Repeat("Provider output is validated before any candidate checkpoint is accepted. ", 5),
+			},
+			"refusals": refusals,
+		},
+		"selfDescription": map[string]any{
+			"purpose":      "Construct the exact typed Hosted Genesis declaration with the owner.",
+			"constraints":  "Remain tenant-bound and preserve candidate validation.",
+			"commitments":  "Keep reviewed durable truth authoritative at every checkpoint.",
+			"limitations":  "Cannot bypass owner authority, candidate bindings, or validation.",
+			"authoredBy":   "agent",
+			"mintingModel": "openai:gpt-test",
+		},
+		"capabilities": []any{map[string]any{
+			"capability": "hosted_genesis", "scope": "Construct a typed declaration.",
+			"claimLevel": "self-declared", "lastValidated": "", "validationRef": "", "degradesTo": "",
+		}},
+		"transparency": map[string]any{
+			"modelProviderUncertainty": "Provider output is self-declared.",
+			"operationalNotes":         "Host validates every section and binding.",
+			"selfDeclaredNotice":       "Self-declared until exact owner affirmation and publication.",
+		},
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return body
 }
 
 func postToolProviderContinuationPhaseRunner(t *testing.T) declarationPhaseRunner {
@@ -400,6 +710,31 @@ func completeRunnerCandidate(t *testing.T, candidate *hostedgenesis.DeclarationC
 		}, fixedClock().Add(time.Duration(i)*time.Second))
 		if err != nil || !result.Accepted || next == nil {
 			t.Fatalf("complete candidate tool %s failed: result=%#v err=%v", call.name, result, err)
+		}
+		candidate = next
+	}
+	return candidate
+}
+
+func runnerCandidateAtSoul(t *testing.T, candidate *hostedgenesis.DeclarationCandidate) *hostedgenesis.DeclarationCandidate {
+	t.Helper()
+	calls := []struct {
+		name string
+		body string
+	}{
+		{hostedgenesis.DeclarationToolIdentityPut, `{"section":{"summary":"I am the tenant-bound Hosted Genesis actor.","notes":[]}}`},
+		{hostedgenesis.DeclarationToolPhilosophyPut, `{"section":{"summary":"I prefer auditable durable truth over implicit authority.","notes":[]}}`},
+		{hostedgenesis.DeclarationToolDisciplinePut, `{"section":{"summary":"I ground, act, record, and re-ground at each checkpoint.","notes":[]}}`},
+		{hostedgenesis.DeclarationToolBoundariesPut, `{"section":{"summary":"I remain within the managed instance and require owner authority.","notes":[]}}`},
+	}
+	for i, call := range calls {
+		payload := bindCandidateToolPayload(t, candidate, call.body)
+		next, result, err := hostedgenesis.ApplyDeclarationTool(candidate, hostedgenesis.DeclarationToolRequest{
+			ToolName: call.name, ToolCallID: fmt.Sprintf("soul-boundary-%d", i), ExpectedRevision: candidate.Revision,
+			ExpectedHash: candidate.CandidateHash, SourceTurnID: "turn-1", Payload: payload,
+		}, fixedClock().Add(time.Duration(i)*time.Second))
+		if err != nil || !result.Accepted || next == nil {
+			t.Fatalf("advance candidate to soul with %s: result=%#v err=%v", call.name, result, err)
 		}
 		candidate = next
 	}
