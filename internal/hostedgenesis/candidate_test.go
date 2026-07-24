@@ -571,6 +571,37 @@ func completeTestDeclarationCandidateWithSoul(t *testing.T, soulPayload declarat
 	return acceptCandidateSection(t, candidate, DeclarationToolSoulPut, "soul", soulPayload, 5)
 }
 
+func TestSoulToolAcceptsLongSixRefusalPayload(t *testing.T) {
+	candidate := testDeclarationCandidate(t)
+	candidate = acceptCandidateSection(t, candidate, DeclarationToolIdentityPut, "identity", declarationSectionPayload{Section: testFiveBody().Identity}, 1)
+	candidate = acceptCandidateSection(t, candidate, DeclarationToolPhilosophyPut, "philosophy", declarationSectionPayload{Section: testFiveBody().Philosophy}, 2)
+	candidate = acceptCandidateSection(t, candidate, DeclarationToolDisciplinePut, "discipline", declarationSectionPayload{Section: testFiveBody().Discipline}, 3)
+	candidate = acceptCandidateSection(t, candidate, DeclarationToolBoundariesPut, "boundaries", declarationSectionPayload{Section: testFiveBody().Boundaries}, 4)
+
+	payload := testSoulPayload()
+	payload.Section.Summary = strings.Repeat("Exact tenant-bound reviewed truth remains authoritative. ", 24)
+	payload.Section.Notes = []string{
+		strings.Repeat("Every mutation remains bound to the current turn, revision, and candidate hash. ", 5),
+		strings.Repeat("Provider output is validated before any candidate checkpoint is accepted. ", 5),
+	}
+	payload.Section.Refusals = make([]FiveBodyRefusalRule, 0, 6)
+	for i := 1; i <= 6; i++ {
+		payload.Section.Refusals = append(payload.Section.Refusals, FiveBodyRefusalRule{
+			Bypass:          fmt.Sprintf("Bypass %d: %s", i, strings.Repeat("skip the tenant-bound durable candidate guard; ", 7)),
+			Invariant:       fmt.Sprintf("Invariant %d: %s", i, strings.Repeat("exact reviewed state and authority remain load-bearing; ", 7)),
+			ClosestSafePath: fmt.Sprintf("Safe path %d: %s", i, strings.Repeat("return to the guarded owner review and submit bounded evidence; ", 7)),
+		})
+	}
+	body := mustJSON(t, payload)
+	if len(body) <= 4096 {
+		t.Fatalf("six-refusal payload must exercise the long-output boundary, got %d bytes", len(body))
+	}
+	candidate = acceptCandidateSection(t, candidate, DeclarationToolSoulPut, "long-six-refusal-soul", payload, 5)
+	if candidate.Phase != DeclarationCandidatePhaseReview || len(candidate.FiveBodies.Soul.Refusals) != 6 {
+		t.Fatalf("valid six-refusal soul payload was not accepted exactly: %#v", candidate)
+	}
+}
+
 func acceptCandidateSection(t *testing.T, candidate *DeclarationCandidate, tool, callID string, payload any, wantRevision int64) *DeclarationCandidate {
 	t.Helper()
 	got := applyCandidatePayload(t, candidate, tool, callID, payload, time.Unix(100+wantRevision, 0))
