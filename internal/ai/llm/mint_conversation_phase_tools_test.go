@@ -27,6 +27,60 @@ func TestMintConversationPhaseProviderLoopsRepairCurrentSectionAndReachText(t *t
 	}
 }
 
+func TestOpenAIMintConversationSoulPhaseRejectsLengthAsInvalidProviderOutput(t *testing.T) {
+	response := mustJSONBytes(t, map[string]any{
+		"id": "chatcmpl-soul-length", "object": "chat.completion", "created": 1, "model": "gpt-test",
+		"choices": []any{map[string]any{
+			"index": 0, "finish_reason": "length",
+			"message": map[string]any{
+				"role": "assistant", "content": "",
+				"tool_calls": []any{map[string]any{
+					"id": "call-soul-length", "type": "function",
+					"function": map[string]any{"name": hostedgenesis.DeclarationToolSoulPut, "arguments": `{"candidateRevision":4`},
+				}},
+			},
+		}},
+		"usage": map[string]any{
+			"prompt_tokens": 100, "completion_tokens": 4096, "total_tokens": 4196,
+			"completion_tokens_details": map[string]any{"reasoning_tokens": 1024},
+		},
+	})
+	requestCount, requests := installMintConversationPhaseProvider(t, "openai", [][]byte{response})
+	handlerCalls := 0
+	var events []ProviderTelemetryEvent
+	_, err := RunMintConversationPhase(t.Context(), "provider-test-key", MintConversationPhaseInput{
+		ModelSet: "openai:gpt-test", SystemPrompt: "Construct the current section.",
+		Messages: []MintConversationMessage{{Role: "user", Content: "Preserve all six refusal rules."}},
+		Section:  hostedgenesis.DeclarationSectionSoul, CandidateRevision: 4,
+		CandidateHash: "sha256:" + strings.Repeat("a", 64), SourceTurnID: "turn-soul",
+	}, func(context.Context, MintConversationPhaseToolCall) (hostedgenesis.DeclarationToolResult, error) {
+		handlerCalls++
+		return hostedgenesis.DeclarationToolResult{Accepted: true}, nil
+	}, func(event ProviderTelemetryEvent) {
+		events = append(events, event)
+	})
+	if err == nil || ProviderFailureClass(err) != string(hostedgenesis.FailureClassInvalidProviderOutput) {
+		t.Fatalf("length finish reason was not classified as invalid provider output: class=%q err=%v", ProviderFailureClass(err), err)
+	}
+	if handlerCalls != 0 || *requestCount != 1 {
+		t.Fatalf("incomplete tool output reached validation or retried: handler=%d requests=%d", handlerCalls, *requestCount)
+	}
+	if len(events) == 0 || events[len(events)-1].EventType != "provider_call_failed" ||
+		events[len(events)-1].FailureClass != string(hostedgenesis.FailureClassInvalidProviderOutput) ||
+		events[len(events)-1].StopReason != "length" {
+		t.Fatalf("incomplete output telemetry was not content-free and classified: %#v", events)
+	}
+	var request struct {
+		MaxCompletionTokens int64 `json:"max_completion_tokens"`
+	}
+	if err := json.Unmarshal((*requests)[0], &request); err != nil {
+		t.Fatal(err)
+	}
+	if request.MaxCompletionTokens != mintConversationOpenAISoulMaxCompletionTokens {
+		t.Fatalf("soul output budget drifted: got=%d want=%d", request.MaxCompletionTokens, mintConversationOpenAISoulMaxCompletionTokens)
+	}
+}
+
 func assertMintConversationPhaseProviderRepair(t *testing.T, modelSet string, provider string, responses [][]byte) {
 	t.Helper()
 	requestCount, requests := installMintConversationPhaseProvider(t, provider, responses)
