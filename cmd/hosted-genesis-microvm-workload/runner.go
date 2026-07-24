@@ -218,7 +218,7 @@ func (r *turnRunner) runDeclarationPhaseAndPersist(ctx context.Context, turn com
 	}
 	apiKey, err := providerAPIKey(ctx, in.modelSet)
 	if err != nil {
-		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeAssistantTurnFailed, providerFailureMessage("declaration_phase", err), telemetry)
+		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeAssistantTurnFailed, providerFailureMessage("declaration_phase", err), telemetry, hostedgenesis.FailureClassProviderAPIFailure)
 	}
 	providerCtx, cancel := context.WithTimeout(ctx, r.providerTimeout())
 	defer cancel()
@@ -236,7 +236,8 @@ func (r *turnRunner) runDeclarationPhaseAndPersist(ctx context.Context, turn com
 		Section: candidate.CurrentSection, CandidateRevision: candidate.Revision, CandidateHash: candidate.CandidateHash, SourceTurnID: turn.TurnID,
 	}, r.declarationPhaseToolHandler(in, turn, evidence), r.declarationProviderObserver(providerCtx, in, turn, candidate, providerTelemetry, evidence))
 	if evidence.errValue() != nil {
-		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeAssistantTurnFailed, "persist provider attempt evidence", telemetry)
+		telemetry.emit("declaration_phase", "provider_evidence_persist_failed", string(decision.action), string(hostedgenesis.FailureClassProviderEvidenceStore))
+		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeAssistantTurnFailed, "persist provider attempt evidence", telemetry, hostedgenesis.FailureClassProviderEvidenceStore)
 	}
 	if err != nil || strings.TrimSpace(output.AssistantContent) == "" {
 		failureClass := hostedgenesis.NormalizeFailureClass(llm.ProviderFailureClass(err))
@@ -328,7 +329,7 @@ func (r *turnRunner) persistDeclarationPhaseOutput(ctx context.Context, turn com
 	}
 	if err := r.persistAssistantTurnAtomically(ctx, in, turn, postTurnMessages, output.Usage, checkpoint); err != nil {
 		telemetry.emit("persist", "persist_failed", string(decision.action), "store_error")
-		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeAssistantTurnFailed, "persist assistant turn", telemetry)
+		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeAssistantTurnFailed, "persist assistant turn", telemetry, hostedgenesis.FailureClassAssistantTurnStore)
 	}
 	telemetry.emit("persist", "persist_completed", string(decision.action), "")
 	return nil
@@ -574,7 +575,11 @@ func (r *turnRunner) recordFailure(ctx context.Context, turn completion.Completi
 	if len(classes) > 0 {
 		failureClass = classes[0]
 	}
-	telemetry.emit("failure_persist", "failure_persist_started", "", string(code))
+	telemetryClass := string(failureClass)
+	if telemetryClass == "" {
+		telemetryClass = string(code)
+	}
+	telemetry.emit("failure_persist", "failure_persist_started", "", telemetryClass)
 	_, err := r.writer.RecordFailure(ctx, turn, completion.CompletionFailure{
 		Code:      code,
 		Class:     failureClass,
@@ -588,7 +593,7 @@ func (r *turnRunner) recordFailure(ctx context.Context, turn completion.Completi
 		},
 	})
 	if err == nil {
-		telemetry.emit("failure_persist", "failure_persist_completed", "", string(code))
+		telemetry.emit("failure_persist", "failure_persist_completed", "", telemetryClass)
 		return nil
 	}
 	telemetry.emit("failure_persist", "failure_persist_failed", "", "completion_conflict")
