@@ -27,6 +27,48 @@ func TestMintConversationPhaseProviderLoopsRepairCurrentSectionAndReachText(t *t
 	}
 }
 
+func TestSoulPhaseCapabilitySchemaMatchesHostValidationContract(t *testing.T) {
+	schema := producedCapabilitiesSchema()
+	items, ok := schema["items"].(map[string]any)
+	if !ok {
+		t.Fatalf("capability schema items missing: %#v", schema)
+	}
+	properties, ok := items["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("capability schema properties missing: %#v", items)
+	}
+	assertSchemaField := func(name string, want map[string]any) {
+		t.Helper()
+		field, ok := properties[name].(map[string]any)
+		if !ok {
+			t.Fatalf("capability field %s missing: %#v", name, properties)
+		}
+		for key, value := range want {
+			if field[key] != value {
+				t.Fatalf("capability field %s %s drifted: got=%#v want=%#v", name, key, field[key], value)
+			}
+		}
+		if description, _ := field["description"].(string); !strings.Contains(description, "Example:") {
+			t.Fatalf("capability field %s lacks a concrete example: %#v", name, field)
+		}
+	}
+	assertSchemaField("capability", map[string]any{
+		"minLength": 1, "maxLength": hostedgenesis.MaxProducedCapabilityIdentifierLength,
+		"pattern": hostedgenesis.ProducedCapabilityEvidencePattern,
+	})
+	assertSchemaField("scope", map[string]any{
+		"minLength": 1, "maxLength": hostedgenesis.MaxProducedCapabilityScopeLength,
+		"pattern": hostedgenesis.ProducedCapabilityNonWhitespacePattern,
+	})
+	assertSchemaField("claimLevel", map[string]any{"description": `Use exactly "self-declared". Example: "self-declared".`})
+	assertSchemaField("lastValidated", map[string]any{
+		"maxLength": hostedgenesis.MaxProducedCapabilityLastValidatedLength,
+		"pattern":   hostedgenesis.ProducedCapabilityOptionalRFC3339Pattern,
+	})
+	assertSchemaField("validationRef", map[string]any{"maxLength": hostedgenesis.MaxProducedCapabilityMetadataLength})
+	assertSchemaField("degradesTo", map[string]any{"maxLength": hostedgenesis.MaxProducedCapabilityMetadataLength})
+}
+
 func TestOpenAIMintConversationSoulPhaseRejectsLengthAsInvalidProviderOutput(t *testing.T) {
 	response := mustJSONBytes(t, map[string]any{
 		"id": "chatcmpl-soul-length", "object": "chat.completion", "created": 1, "model": "gpt-test",
