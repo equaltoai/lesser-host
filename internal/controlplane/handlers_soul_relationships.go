@@ -11,7 +11,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/cyberphone/json-canonicalization/go/src/webpki.org/jsoncanonicalizer"
 	"github.com/ethereum/go-ethereum/crypto"
-	apptheory "github.com/theory-cloud/apptheory/runtime"
+	apptheory "github.com/theory-cloud/apptheory/v2/runtime"
 	"github.com/theory-cloud/tabletheory/v2/pkg/core"
 	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
 	ttquery "github.com/theory-cloud/tabletheory/v2/pkg/query"

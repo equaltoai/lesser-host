@@ -7,7 +7,7 @@ import (
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-lambda-go/lambda"
 	"github.com/aws/aws-lambda-go/lambdacontext"
-	apptheory "github.com/theory-cloud/apptheory/runtime"
+	apptheory "github.com/theory-cloud/apptheory/v2/runtime"
 
 	"github.com/equaltoai/lesser-host/internal/emailingress"
 	"github.com/equaltoai/lesser-host/internal/observability"

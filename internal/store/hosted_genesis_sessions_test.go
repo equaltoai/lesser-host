@@ -10,7 +10,7 @@ import (
 
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
-	runtimemicrovm "github.com/theory-cloud/apptheory/runtime/microvm"
+	runtimemicrovm "github.com/theory-cloud/apptheory/v2/runtime/microvm"
 	"github.com/theory-cloud/tabletheory/v2"
 	"github.com/theory-cloud/tabletheory/v2/pkg/core"
 	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"

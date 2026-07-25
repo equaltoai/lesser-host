@@ -12,8 +12,8 @@ import (
 	"time"
 
 	"github.com/aws/aws-lambda-go/events"
-	apptheory "github.com/theory-cloud/apptheory/runtime"
-	"github.com/theory-cloud/apptheory/testkit"
+	apptheory "github.com/theory-cloud/apptheory/v2/runtime"
+	"github.com/theory-cloud/apptheory/v2/testkit"
 
 	"github.com/equaltoai/lesser-host/internal/config"
 	"github.com/equaltoai/lesser-host/internal/rendering"

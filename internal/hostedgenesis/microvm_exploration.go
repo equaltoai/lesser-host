@@ -4,7 +4,7 @@ import (
 	"errors"
 	"strings"
 
-	runtimemicrovm "github.com/theory-cloud/apptheory/runtime/microvm"
+	runtimemicrovm "github.com/theory-cloud/apptheory/v2/runtime/microvm"
 )
 
 const (

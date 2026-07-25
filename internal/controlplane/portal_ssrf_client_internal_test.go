@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	apptheory "github.com/theory-cloud/apptheory/runtime"
+	apptheory "github.com/theory-cloud/apptheory/v2/runtime"
 
 	"github.com/stretchr/testify/require"
 

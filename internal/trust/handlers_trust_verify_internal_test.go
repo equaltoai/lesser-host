@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	apptheory "github.com/theory-cloud/apptheory/runtime"
+	apptheory "github.com/theory-cloud/apptheory/v2/runtime"
 )
 
 func TestHandleTrustAuthVerify_RequiresInstanceAuth(t *testing.T) {

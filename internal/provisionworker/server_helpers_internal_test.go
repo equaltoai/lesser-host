@@ -17,7 +17,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 	ststypes "github.com/aws/aws-sdk-go-v2/service/sts/types"
-	apptheory "github.com/theory-cloud/apptheory/runtime"
+	apptheory "github.com/theory-cloud/apptheory/v2/runtime"
 	"github.com/theory-cloud/tabletheory/v2/pkg/core"
 	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
 	ttmocks "github.com/theory-cloud/tabletheory/v2/pkg/mocks"

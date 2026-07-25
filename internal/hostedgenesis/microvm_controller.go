@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	runtimemicrovm "github.com/theory-cloud/apptheory/runtime/microvm"
+	runtimemicrovm "github.com/theory-cloud/apptheory/v2/runtime/microvm"
 )
 
 const (
@@ -57,8 +57,13 @@ type MicroVMControllerRuntimeConfig struct {
 	ControllerID                string
 	Clock                       runtimemicrovm.Clock
 	IDGenerator                 runtimemicrovm.IDGenerator
-	SessionTTL                  time.Duration
-	ReconstructionStaleAfter    time.Duration
+	// Logging optionally overrides AppTheory's deployment-owned
+	// APPTHEORY_MICROVM_LOGGING setting. Production leaves this nil so the CDK
+	// construct's explicit CloudWatch configuration remains the source of truth;
+	// deterministic tests use an explicitly disabled logger.
+	Logging                  *runtimemicrovm.ProviderLogging
+	SessionTTL               time.Duration
+	ReconstructionStaleAfter time.Duration
 	// MaximumDurationSeconds caps each dispatched MicroVM run session duration,
 	// sized for the longest provider-backed typed-section phase. Non-positive
 	// leaves the AppTheory provider default in place.
@@ -94,6 +99,9 @@ func NewMicroVMControllerRuntime(cfg MicroVMControllerRuntimeConfig) (*MicroVMCo
 	}
 	if cfg.IDGenerator != nil {
 		opts = append(opts, runtimemicrovm.WithControllerIDGenerator(cfg.IDGenerator))
+	}
+	if cfg.Logging != nil {
+		opts = append(opts, runtimemicrovm.WithControllerLogging(*cfg.Logging))
 	}
 	if cfg.SessionTTL > 0 {
 		opts = append(opts, runtimemicrovm.WithControllerSessionTTL(cfg.SessionTTL))

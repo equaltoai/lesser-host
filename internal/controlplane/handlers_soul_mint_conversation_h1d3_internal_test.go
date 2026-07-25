@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/mock"
-	runtimemicrovm "github.com/theory-cloud/apptheory/runtime/microvm"
+	runtimemicrovm "github.com/theory-cloud/apptheory/v2/runtime/microvm"
 	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
 	ttmocks "github.com/theory-cloud/tabletheory/v2/pkg/mocks"
 

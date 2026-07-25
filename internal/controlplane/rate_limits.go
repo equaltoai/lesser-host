@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/theory-cloud/apptheory/pkg/limited"
-	apptheory "github.com/theory-cloud/apptheory/runtime"
+	"github.com/theory-cloud/apptheory/v2/pkg/limited"
+	apptheory "github.com/theory-cloud/apptheory/v2/runtime"
 	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/httpx"
