@@ -14,7 +14,7 @@ export interface HostedGenesisMicrovmCdkMapping {
   readonly nonAuthoritativeState: typeof HOSTED_GENESIS_MICROVM_SOURCE_OF_TRUTH;
 }
 
-// Compile-only AppTheory v1.14 MicroVM CDK API mapping for Project 49. This
+// Compile-only AppTheory v2.0 MicroVM CDK API mapping for Project 49. This
 // file intentionally creates no constructs and is not imported by the stack, so
 // `cdk synth` remains a non-deploying dependency/API proof for the exploration.
 export const hostedGenesisMicrovmCdkMapping: HostedGenesisMicrovmCdkMapping = {

@@ -814,6 +814,16 @@ test("P52 H1.5 corrective: host-owned MicroVM execution role propagates to RunMi
       execRoleArnStr.includes(execRoleLogicalId),
     "expected APPTHEORY_MICROVM_EXECUTION_ROLE_ARN to reference the host-owned execution role via Fn::GetAtt",
   );
+  assert.equal(
+    controllerEnv.APPTHEORY_MICROVM_LOGGING,
+    JSON.stringify({
+      cloud_watch: {
+        log_group:
+          "/aws/lambda/microvms/lesser-host-lab_hosted_genesis",
+      },
+    }),
+    "expected AppTheory v2 to propagate the image CloudWatch contract into every provider run",
+  );
 
   // iam:PassRole on the execution role is granted to the controller Lambda's
   // role (AppTheory construct does this in grantMicrovmControlPlane when
