@@ -602,6 +602,73 @@ func TestSoulToolAcceptsLongSixRefusalPayload(t *testing.T) {
 	}
 }
 
+func TestSoulToolAcceptsCapabilityValidationContract(t *testing.T) {
+	tests := []struct{ name, lastValidated string }{
+		{name: "self-declared prototype", lastValidated: ""},
+		{name: "RFC3339 validation evidence", lastValidated: "2026-07-25T17:22:19Z"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, next, result := applyTestSoulCapability(t, test.name, test.lastValidated)
+			if !result.Accepted || next == nil || next.Revision != 5 || len(next.Capabilities) != 1 ||
+				next.Capabilities[0].ClaimLevel != "self-declared" || next.Capabilities[0].LastValidated != test.lastValidated {
+				t.Fatalf("contract-valid soul capability was rejected: next=%#v result=%#v", next, result)
+			}
+		})
+	}
+}
+
+func TestSoulToolRejectsMalformedCapabilityValidationEvidence(t *testing.T) {
+	candidate, next, result := applyTestSoulCapability(t, "malformed-validation-evidence", "validated last week")
+	if next != nil || result.Accepted || len(result.Errors) != 1 {
+		t.Fatalf("malformed soul capability did not fail closed: next=%#v result=%#v", next, result)
+	}
+	if got := result.Errors[0]; got.Section != DeclarationSectionSoul || got.Path != "capabilities" || got.Code != DeclarationCodeCapabilityLastValidated {
+		t.Fatalf("malformed soul capability returned the wrong classified error: %#v", got)
+	}
+	if candidate.Revision != 4 || len(candidate.Capabilities) != 0 {
+		t.Fatalf("malformed soul capability mutated the candidate: %#v", candidate)
+	}
+}
+
+func applyTestSoulCapability(t *testing.T, callID, lastValidated string) (*DeclarationCandidate, *DeclarationCandidate, DeclarationToolResult) {
+	t.Helper()
+	candidate := testDeclarationCandidate(t)
+	candidate = acceptCandidateSection(t, candidate, DeclarationToolIdentityPut, "identity", declarationSectionPayload{Section: testFiveBody().Identity}, 1)
+	candidate = acceptCandidateSection(t, candidate, DeclarationToolPhilosophyPut, "philosophy", declarationSectionPayload{Section: testFiveBody().Philosophy}, 2)
+	candidate = acceptCandidateSection(t, candidate, DeclarationToolDisciplinePut, "discipline", declarationSectionPayload{Section: testFiveBody().Discipline}, 3)
+	candidate = acceptCandidateSection(t, candidate, DeclarationToolBoundariesPut, "boundaries", declarationSectionPayload{Section: testFiveBody().Boundaries}, 4)
+
+	revision := candidate.Revision
+	payload := testSoulPayload()
+	payload.CandidateRevision = &revision
+	payload.CandidateHash = candidate.CandidateHash
+	payload.SelfDescription.AuthoredBy = "agent"
+	payload.SelfDescription.MintingModel = "openai:gpt-5"
+	var providerPayload map[string]any
+	if err := json.Unmarshal(mustJSON(t, payload), &providerPayload); err != nil {
+		t.Fatal(err)
+	}
+	providerPayload["capabilities"] = []any{map[string]any{
+		"capability":    "operator_support",
+		"scope":         "Help operators inspect hosted genesis status.",
+		"claimLevel":    "self-declared",
+		"lastValidated": lastValidated,
+		"validationRef": "",
+		"degradesTo":    "",
+	}}
+
+	next, result, err := ApplyDeclarationTool(candidate, DeclarationToolRequest{
+		ToolName: DeclarationToolSoulPut, ToolCallID: "soul-capability-" + callID,
+		ExpectedRevision: candidate.Revision, ExpectedHash: candidate.CandidateHash,
+		SourceTurnID: candidate.SourceTurnID, Payload: mustJSON(t, providerPayload),
+	}, time.Unix(105, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return candidate, next, result
+}
+
 func acceptCandidateSection(t *testing.T, candidate *DeclarationCandidate, tool, callID string, payload any, wantRevision int64) *DeclarationCandidate {
 	t.Helper()
 	got := applyCandidatePayload(t, candidate, tool, callID, payload, time.Unix(100+wantRevision, 0))
