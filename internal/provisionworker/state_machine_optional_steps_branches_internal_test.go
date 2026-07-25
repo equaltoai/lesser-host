@@ -44,12 +44,12 @@ func newProvisionServerWithStore(t *testing.T) *Server {
 	return &Server{
 		cfg: config.Config{
 			Stage:                           "lab",
-			ManagedLesserBodyDefaultVersion: "v0.2.3",
+			ManagedLesserBodyDefaultVersion: "v1.0.8",
 			ManagedLesserBodyGitHubOwner:    "equaltoai",
 			ManagedLesserBodyGitHubRepo:     "lesser-body",
 		},
 		store:             st,
-		releaseHTTPClient: newHappyManagedLesserBodyReleaseClient(t, managedStageDev, "v0.2.3"),
+		releaseHTTPClient: newHappyManagedLesserBodyReleaseClient(t, managedStageDev, "v1.0.8"),
 	}
 }
 

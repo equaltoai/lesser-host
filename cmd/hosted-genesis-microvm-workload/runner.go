@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/equaltoai/lesser-host/internal/ai/llm"
@@ -14,46 +15,35 @@ import (
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis/completion"
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis/mintprompt"
 	"github.com/equaltoai/lesser-host/internal/secrets"
-	"github.com/equaltoai/lesser-host/internal/soul"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
-// turnStore is the minimal HostedGenesisSession + transcript + registration
-// surface the workload needs to load prompt-ready turn input. It is satisfied by
-// *store.Store; the workload never receives a raw AWS SDK client.
+// turnStore is the TableTheory-backed authority available inside the AppTheory
+// MicroVM workload. Candidate checkpoints and finalization are guarded
+// transactions; no raw AWS SDK client or custom persistence layer is exposed.
 type turnStore interface {
-	GetHostedGenesisSession(ctx context.Context, instanceSlug string, conversationID string) (*models.HostedGenesisSession, error)
-	GetSoulAgentMintConversation(ctx context.Context, agentID string, conversationID string) (*models.SoulAgentMintConversation, error)
-	PutSoulAgentMintConversation(ctx context.Context, item *models.SoulAgentMintConversation) error
-	GetSoulAgentRegistration(ctx context.Context, id string) (*models.SoulAgentRegistration, error)
+	GetHostedGenesisSession(context.Context, string, string) (*models.HostedGenesisSession, error)
+	GetSoulAgentMintConversation(context.Context, string, string) (*models.SoulAgentMintConversation, error)
+	GetSoulAgentRegistration(context.Context, string) (*models.SoulAgentRegistration, error)
+	CheckpointHostedGenesisCandidate(context.Context, *models.HostedGenesisSession, int64, hostedgenesis.Status, string, int64, string) error
+	RecordHostedGenesisAssistantTurnAndConversation(context.Context, *models.HostedGenesisSession, int64, hostedgenesis.Status, string, int64, string, *models.SoulAgentMintConversation) error
+	FinalizeHostedGenesisCandidateAndConversation(context.Context, *models.HostedGenesisSession, int64, hostedgenesis.Status, string, int64, string, *models.SoulAgentMintConversation) error
 }
 
-// turnRunner is the in-VM hosted-genesis workload's assistant-turn and
-// declaration-extraction executor. It loads the authoritative conversation
-// transcript + registration through the existing store layer, runs exactly the
-// step represented by HostedGenesisSession truth (in_progress => assistant turn,
-// declaration_extraction_pending => declaration extraction) through the existing
-// internal/ai/llm clients (which carry an explicit HTTP timeout configured at
-// process startup), and durably records the outcome through the completion
-// writer. It never receives a raw AWS SDK client, a bearer token, or a raw
-// lifecycle hook payload.
-//
-// The runner is fail-closed: a missing session/conversation/registration, a
-// missing provider key, an empty assistant response, or a declaration-extraction
-// failure surfaces as a typed completion failure written to session truth —
-// never as a silent HTTP 200 or a swallowed error.
 type turnStoreFactory func(context.Context) (turnStore, *completion.CompletionWriter, error)
+type declarationPhaseRunner func(context.Context, string, llm.MintConversationPhaseInput, llm.MintConversationPhaseToolHandler, llm.ProviderTelemetrySink) (llm.MintConversationPhaseOutput, error)
 
 type turnRunner struct {
-	store        turnStore
-	writer       *completion.CompletionWriter
-	storeFactory turnStoreFactory
-	nowFunc      func() time.Time
+	store                     turnStore
+	writer                    *completion.CompletionWriter
+	storeFactory              turnStoreFactory
+	phaseRunner               declarationPhaseRunner
+	nowFunc                   func() time.Time
+	providerCallTimeout       time.Duration
+	workloadExecutionTimeout  time.Duration
+	providerHeartbeatInterval time.Duration
 }
 
-// turnInput is the resolved, prompt-ready input for one assistant turn. It is
-// loaded from HostedGenesisSession + SoulAgentMintConversation +
-// SoulAgentRegistration truth.
 type turnInput struct {
 	modelSet     string
 	systemPrompt string
@@ -64,8 +54,6 @@ type turnInput struct {
 	session      *models.HostedGenesisSession
 }
 
-// loadTurnInput loads the authoritative transcript and registration context for
-// a completion turn. Failures are loud — there is no degraded mode.
 func (r *turnRunner) loadTurnInput(ctx context.Context, turn completion.CompletionTurn) (turnInput, error) {
 	session, err := r.store.GetHostedGenesisSession(ctx, turn.InstanceSlug, turn.ConversationID)
 	if err != nil || session == nil {
@@ -79,7 +67,6 @@ func (r *turnRunner) loadTurnInput(ctx context.Context, turn completion.Completi
 	if err != nil || reg == nil {
 		return turnInput{}, fmt.Errorf("load agent registration: %w", err)
 	}
-
 	messages, err := decodeMintConversationMessages(conv.Messages)
 	if err != nil {
 		return turnInput{}, fmt.Errorf("decode mint conversation messages: %w", err)
@@ -88,109 +75,66 @@ func (r *turnRunner) loadTurnInput(ctx context.Context, turn completion.Completi
 	if modelSet == "" {
 		return turnInput{}, errors.New("mint conversation has no model set")
 	}
-	contract := hostedgenesis.DeclarationContractFromEnv()
-
-	return turnInput{
-		modelSet:     modelSet,
-		systemPrompt: mintprompt.MintConversationSystemPromptForContract(reg, contract),
-		messages:     messages,
-		contract:     contract,
-		registration: reg,
-		conv:         conv,
-		session:      session,
-	}, nil
-}
-
-// runAssistantTurn executes the assistant turn for the loaded transcript and
-// returns the full trimmed assistant response + usage. The provider is selected
-// by model-set prefix, mirroring the control-plane runner. Provider keys come
-// from the process environment (the image is provisioned with them at deploy
-// time); a missing key fails closed.
-func (r *turnRunner) runAssistantTurn(ctx context.Context, in turnInput) (string, models.AIUsage, error) {
-	apiKey, err := providerAPIKey(ctx, in.modelSet)
+	contract, err := hostedgenesis.RequireFiveBodyDeclarationContractFromEnv()
 	if err != nil {
-		return "", models.AIUsage{}, err
+		return turnInput{}, fmt.Errorf("resolve hosted genesis declaration contract: %w", err)
 	}
-	modelSet := strings.ToLower(strings.TrimSpace(in.modelSet))
-	switch {
-	case strings.HasPrefix(modelSet, "openai:"):
-		return llm.StreamMintConversationOpenAI(ctx, apiKey, in.modelSet, in.systemPrompt, in.messages, func(string) {})
-	case strings.HasPrefix(modelSet, "anthropic:"):
-		return llm.StreamMintConversationAnthropic(ctx, apiKey, in.modelSet, in.systemPrompt, in.messages, func(string) {})
-	default:
-		return "", models.AIUsage{}, fmt.Errorf("unsupported model set %q", in.modelSet)
+	if !contract.IsFiveBody() {
+		return turnInput{}, hostedgenesis.ErrDeclarationContractUnconfigured
 	}
-}
-
-// runDeclarationExtraction extracts structured declarations from the supplied
-// post-turn transcript (accepted user messages + produced assistant message)
-// through the existing internal/ai/llm declaration clients.
-func (r *turnRunner) runDeclarationExtraction(ctx context.Context, in turnInput, messages []llm.MintConversationMessage) (llm.MintConversationDeclarationsDraft, models.AIUsage, error) {
-	apiKey, err := providerAPIKey(ctx, in.modelSet)
+	systemPrompt, err := mintprompt.MintConversationSystemPromptForContract(reg, contract)
 	if err != nil {
-		return llm.MintConversationDeclarationsDraft{}, models.AIUsage{}, err
+		return turnInput{}, fmt.Errorf("build hosted genesis system prompt: %w", err)
 	}
-	declInput := llm.MintConversationDeclarationsInput{
-		SchemaVersion:   inputSchemaVersion(in.contract),
-		GuidanceVersion: inputGuidanceVersion(in.contract),
-		Registration: llm.MintConversationRegistrationContext{
-			Domain:               in.registration.DomainNormalized,
-			LocalID:              in.registration.LocalID,
-			AgentID:              in.registration.AgentID,
-			DeclaredCapabilities: hostedgenesis.FilterDeclaredCapabilitiesForPrompt(in.registration.Capabilities),
-		},
-		Messages: append([]llm.MintConversationMessage(nil), messages...),
+	if err := validateTurnInputCandidate(session, modelSet, contract); err != nil {
+		return turnInput{}, err
 	}
-	modelSet := strings.ToLower(strings.TrimSpace(in.modelSet))
-	switch {
-	case strings.HasPrefix(modelSet, "openai:"):
-		return llm.MintConversationDeclarationsOpenAI(ctx, apiKey, in.modelSet, declInput)
-	case strings.HasPrefix(modelSet, "anthropic:"):
-		return llm.MintConversationDeclarationsAnthropic(ctx, apiKey, in.modelSet, declInput)
-	default:
-		return llm.MintConversationDeclarationsDraft{}, models.AIUsage{}, fmt.Errorf("unsupported model set %q", in.modelSet)
-	}
+	return turnInput{modelSet: modelSet, systemPrompt: systemPrompt, messages: messages, contract: contract, registration: reg, conv: conv, session: session}, nil
 }
 
-func inputSchemaVersion(contract hostedgenesis.DeclarationContract) string {
-	contract = contract.Normalize()
-	if !contract.IsFiveBody() {
-		return ""
+func validateTurnInputCandidate(session *models.HostedGenesisSession, modelSet string, contract hostedgenesis.DeclarationContract) error {
+	if session.DeclarationCandidate == nil {
+		return nil
 	}
-	return contract.SchemaVersion
+	candidate := session.DeclarationCandidate
+	if err := candidate.Validate(); err != nil {
+		return fmt.Errorf("validate typed declaration candidate: %w", err)
+	}
+	if err := hostedgenesis.ValidateDeclarationContractVersions(candidate.SchemaVersion, candidate.GuidanceVersion, contract); err != nil {
+		return fmt.Errorf("validate typed declaration candidate contract: %w", err)
+	}
+	if !declarationCandidateMatchesTurnSession(candidate, session, modelSet) {
+		return errors.New("typed declaration candidate binding mismatch")
+	}
+	return nil
 }
 
-func inputGuidanceVersion(contract hostedgenesis.DeclarationContract) string {
-	contract = contract.Normalize()
-	if !contract.IsFiveBody() {
-		return ""
-	}
-	return contract.GuidanceVersion
+func declarationCandidateMatchesTurnSession(candidate *hostedgenesis.DeclarationCandidate, session *models.HostedGenesisSession, modelSet string) bool {
+	return candidate.InstanceSlug == strings.ToLower(strings.TrimSpace(session.InstanceSlug)) &&
+		candidate.RegistrationID == strings.TrimSpace(session.RegistrationID) && strings.EqualFold(candidate.AgentID, session.AgentID) &&
+		candidate.ConversationID == session.ConversationID && candidate.Model == modelSet
 }
 
-// runTurnAndPersist is the run-hook's durable execution path. It executes one
-// step according to HostedGenesisSession truth: assistant turn for in_progress,
-// declaration extraction for declaration_extraction_pending. Every completion
-// write is idempotent per turn ID and conditional on the session's status +
-// version; a replay against an already-advanced session is recorded as a
-// conflict (not a silent re-apply).
 func (r *turnRunner) runTurnAndPersist(ctx context.Context, turn completion.CompletionTurn) error {
+	telemetry := newTurnLifecycleTelemetry(turn)
+	telemetry.emit("accepted", "turn_accepted", "", "")
+	telemetry.emit("store_preflight", "store_preflight_started", "", "")
 	runner, in, err := r.prepareTurn(ctx, turn)
 	if err != nil {
+		telemetry.emit("store_preflight", "store_preflight_failed", "", "store_error")
 		if runner == nil {
 			return fmt.Errorf("initialize hosted genesis microvm turn store: %w", err)
 		}
-		return runner.recordFailure(ctx, turn, hostedgenesis.FailureCodeInvalidCompletionState, err.Error())
+		if errors.Is(err, hostedgenesis.ErrDeclarationContractUnconfigured) {
+			return runner.recordFailure(ctx, turn, hostedgenesis.FailureCodeOperatorActionRequired, err.Error(), telemetry)
+		}
+		return runner.recordFailure(ctx, turn, hostedgenesis.FailureCodeInvalidCompletionState, "typed candidate preflight failed", telemetry)
 	}
-	return runner.runPreparedTurnAndPersist(ctx, turn, in)
+	telemetry.bind(in)
+	telemetry.emit("store_preflight", "store_preflight_completed", "", "")
+	return runner.runPreparedTurnAndPersist(ctx, turn, in, telemetry)
 }
 
-// prepareTurn initializes a fresh turn-scoped store and performs the first
-// authoritative DynamoDB reads before the controller acknowledges the workload
-// invocation. AWS credential providers retrieve lazily, so constructing the
-// TableTheory client alone is not a sufficient readiness check. Returning the
-// prepared runner + input lets the endpoint detach only provider work, while a
-// credential/store failure remains visible to the controller and AI worker.
 func (r *turnRunner) prepareTurn(ctx context.Context, turn completion.CompletionTurn) (*turnRunner, turnInput, error) {
 	runner, err := r.withTurnStore(ctx)
 	if err != nil {
@@ -203,17 +147,47 @@ func (r *turnRunner) prepareTurn(ctx context.Context, turn completion.Completion
 	return runner, in, nil
 }
 
-func (r *turnRunner) runPreparedTurnAndPersist(ctx context.Context, turn completion.CompletionTurn, in turnInput) error {
-	switch hostedgenesis.NormalizeStatus(in.session.Status) {
-	case hostedgenesis.StatusInProgress:
-		return r.runAssistantTurnAndPersist(ctx, turn, in)
-	case hostedgenesis.StatusDeclarationExtractionPending:
-		return r.runDeclarationExtractionAndPersist(ctx, turn, in)
-	case hostedgenesis.StatusAssistantTurnReady, hostedgenesis.StatusDeclarationReady:
+func (r *turnRunner) runPreparedTurnAndPersist(ctx context.Context, turn completion.CompletionTurn, in turnInput, telemetry *turnLifecycleTelemetry) error {
+	telemetry.bind(in)
+	actor := newConversationActor()
+	decision := actor.decideBeforeProvider(in)
+	telemetry.emit("actor_decision", "actor_decision_completed", string(decision.action), "")
+	switch decision.action {
+	case actorActionConstructSection:
+		return r.runDeclarationPhaseAndPersist(ctx, turn, &in, actor, decision, telemetry)
+	case actorActionRenderReview:
+		return r.runDeterministicReviewAndPersist(ctx, turn, &in, actor, decision, telemetry)
+	case actorActionFinalize:
+		return r.runDeterministicFinalizationAndPersist(ctx, turn, &in, actor, decision, telemetry)
+	case actorActionWait:
 		return nil
+	case actorActionFailRecoverably:
+		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeInvalidCompletionState, decision.reason, telemetry)
 	default:
-		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeInvalidCompletionState, "session is not ready for hosted genesis microvm work")
+		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeInvalidCompletionState, "unknown hosted genesis actor decision", telemetry)
 	}
+}
+
+func (r *turnRunner) runDeterministicReviewAndPersist(ctx context.Context, turn completion.CompletionTurn, in *turnInput, actor conversationActor, decision actorDecision, telemetry *turnLifecycleTelemetry) error {
+	if in == nil || in.session == nil || in.session.DeclarationCandidate == nil || in.conv == nil {
+		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeInvalidCompletionState, "typed review candidate required", telemetry)
+	}
+	candidate := in.session.DeclarationCandidate
+	if candidate.Phase != hostedgenesis.DeclarationCandidatePhaseReview || candidate.Review == nil {
+		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeInvalidCompletionState, "deterministic owner review required", telemetry)
+	}
+	postTurnMessages := append(append([]llm.MintConversationMessage(nil), in.messages...), llm.MintConversationMessage{Role: "assistant", Content: candidate.Review.ReviewText})
+	checkpoint, err := actor.checkpoint(*in, completionTurnView{turnID: turn.TurnID, requestID: turn.RequestID}, decision, candidate.CandidateHash)
+	if err != nil {
+		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeInvalidCompletionState, "build owner review checkpoint", telemetry)
+	}
+	telemetry.emit("persist", "persist_started", string(decision.action), "")
+	if err := r.persistAssistantTurnAtomically(ctx, in, turn, postTurnMessages, models.AIUsage{}, checkpoint); err != nil {
+		telemetry.emit("persist", "persist_failed", string(decision.action), "store_error")
+		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeInvalidCompletionState, "persist owner review", telemetry)
+	}
+	telemetry.emit("persist", "persist_completed", string(decision.action), "")
+	return nil
 }
 
 func (r *turnRunner) withTurnStore(ctx context.Context) (*turnRunner, error) {
@@ -234,94 +208,280 @@ func (r *turnRunner) withTurnStore(ctx context.Context) (*turnRunner, error) {
 		return nil, errors.New("turn store factory returned incomplete store")
 	}
 	copy := *r
-	copy.store = st
-	copy.writer = writer
+	copy.store, copy.writer = st, writer
 	return &copy, nil
 }
 
-func (r *turnRunner) runAssistantTurnAndPersist(ctx context.Context, turn completion.CompletionTurn, in turnInput) error {
-	assistantContent, assistantUsage, err := r.runAssistantTurn(ctx, in)
-	if err != nil || strings.TrimSpace(assistantContent) == "" {
-		msg := "assistant turn failed"
-		if err != nil {
-			msg = err.Error()
+func (r *turnRunner) runDeclarationPhaseAndPersist(ctx context.Context, turn completion.CompletionTurn, in *turnInput, actor conversationActor, decision actorDecision, telemetry *turnLifecycleTelemetry) error {
+	if in == nil || in.session == nil || in.session.DeclarationCandidate == nil {
+		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeInvalidCompletionState, "typed candidate required", telemetry)
+	}
+	apiKey, err := providerAPIKey(ctx, in.modelSet)
+	if err != nil {
+		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeAssistantTurnFailed, providerFailureMessage("declaration_phase", err), telemetry, hostedgenesis.FailureClassProviderAPIFailure)
+	}
+	providerCtx, cancel := context.WithTimeout(ctx, r.providerTimeout())
+	defer cancel()
+	providerTelemetry := newProviderCallTelemetry(turn, *in, "declaration_phase")
+	stopHeartbeat := providerTelemetry.startHeartbeat(providerCtx, r.providerHeartbeat())
+	defer stopHeartbeat()
+	phaseRunner := r.phaseRunner
+	if phaseRunner == nil {
+		phaseRunner = llm.RunMintConversationPhase
+	}
+	candidate := in.session.DeclarationCandidate
+	providerAttemptOrdinalBase := declarationProviderAttemptOrdinalBase(
+		candidate.ProviderAttempts,
+		turn.TurnID,
+		candidate.CurrentSection,
+		candidate.Revision,
+		candidate.CandidateHash,
+	)
+	evidence := &providerEvidenceTracker{}
+	output, err := phaseRunner(providerCtx, apiKey, llm.MintConversationPhaseInput{
+		ModelSet: in.modelSet, SystemPrompt: in.systemPrompt, Messages: append([]llm.MintConversationMessage(nil), in.messages...),
+		Section: candidate.CurrentSection, CandidateRevision: candidate.Revision, CandidateHash: candidate.CandidateHash, SourceTurnID: turn.TurnID,
+	}, r.declarationPhaseToolHandler(in, turn, evidence), r.declarationProviderObserver(providerCtx, in, turn, candidate, providerAttemptOrdinalBase, providerTelemetry, evidence))
+	if evidence.errValue() != nil {
+		telemetry.emit("declaration_phase", "provider_evidence_persist_failed", string(decision.action), string(hostedgenesis.FailureClassProviderEvidenceStore))
+		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeAssistantTurnFailed, "persist provider attempt evidence", telemetry, hostedgenesis.FailureClassProviderEvidenceStore)
+	}
+	if err != nil || strings.TrimSpace(output.AssistantContent) == "" {
+		failureClass := hostedgenesis.NormalizeFailureClass(llm.ProviderFailureClass(err))
+		telemetry.emit("declaration_phase", "provider_call_failed", string(decision.action), string(failureClass))
+		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeAssistantTurnFailed, providerFailureMessage("declaration_phase", err), telemetry, failureClass)
+	}
+	return r.persistDeclarationPhaseOutput(ctx, turn, in, actor, decision, telemetry, output)
+}
+
+type providerEvidenceTracker struct {
+	mu  sync.Mutex
+	err error
+}
+
+func (tracker *providerEvidenceTracker) record(err error) {
+	if err == nil {
+		return
+	}
+	tracker.mu.Lock()
+	defer tracker.mu.Unlock()
+	if tracker.err == nil {
+		tracker.err = err
+	}
+}
+
+func (tracker *providerEvidenceTracker) errValue() error {
+	tracker.mu.Lock()
+	defer tracker.mu.Unlock()
+	return tracker.err
+}
+
+func (r *turnRunner) declarationProviderObserver(ctx context.Context, in *turnInput, turn completion.CompletionTurn, candidate *hostedgenesis.DeclarationCandidate, ordinalBase int64, telemetry *providerCallTelemetry, evidence *providerEvidenceTracker) llm.ProviderTelemetrySink {
+	return func(event llm.ProviderTelemetryEvent) {
+		telemetry.observe(event)
+		if !providerAttemptEvidenceEvent(event.EventType) {
+			return
 		}
-		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeAssistantTurnFailed, msg)
+		if event.SDKAttemptOrdinal > 0 {
+			event.SDKAttemptOrdinal += ordinalBase
+		}
+		evidence.record(r.checkpointProviderAttemptEvidence(ctx, in, turn, candidate.CurrentSection, candidate.Revision, candidate.CandidateHash, event))
 	}
+}
 
-	postTurnMessageCount := len(in.messages) + 1
-	postTurnMessages := append(append([]llm.MintConversationMessage(nil), in.messages...), llm.MintConversationMessage{
-		Role:    "assistant",
-		Content: strings.TrimSpace(assistantContent),
-	})
-	if persistErr := r.persistConversationAssistantTurn(ctx, &in, turn, postTurnMessages, assistantUsage); persistErr != nil {
-		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeAssistantTurnFailed, "persist assistant turn: "+persistErr.Error())
+func (r *turnRunner) declarationPhaseToolHandler(in *turnInput, turn completion.CompletionTurn, evidence *providerEvidenceTracker) llm.MintConversationPhaseToolHandler {
+	return func(ctx context.Context, call llm.MintConversationPhaseToolCall) (hostedgenesis.DeclarationToolResult, error) {
+		if err := evidence.errValue(); err != nil {
+			return hostedgenesis.DeclarationToolResult{}, err
+		}
+		current := in.session
+		if current == nil || current.DeclarationCandidate == nil {
+			return hostedgenesis.DeclarationToolResult{}, errors.New("typed declaration candidate disappeared")
+		}
+		next, result, err := hostedgenesis.ApplyDeclarationTool(current.DeclarationCandidate, hostedgenesis.DeclarationToolRequest{
+			ToolName: call.Name, ToolCallID: call.CallID, ExpectedRevision: current.DeclarationCandidate.Revision,
+			ExpectedHash: current.DeclarationCandidate.CandidateHash, SourceTurnID: turn.TurnID, Payload: call.Arguments,
+		}, r.now())
+		if err != nil || !result.Accepted || result.Idempotent {
+			return result, err
+		}
+		if err := r.checkpointDeclarationPhaseTool(ctx, in, turn, current, next); err != nil {
+			return hostedgenesis.DeclarationToolResult{}, err
+		}
+		return result, nil
 	}
-	if _, werr := r.writer.RecordAssistantTurnReady(ctx, turn, completion.AssistantTurnCompletion{
-		AssistantContent: assistantContent,
-		MessageCount:     postTurnMessageCount,
-	}); werr != nil {
-		// A conflict here means the session already advanced (e.g. a replay or
-		// a concurrent recovery). Do not overwrite; surface the conflict.
-		return fmt.Errorf("record assistant turn ready: %w", werr)
+}
+
+func (r *turnRunner) checkpointDeclarationPhaseTool(ctx context.Context, in *turnInput, turn completion.CompletionTurn, current *models.HostedGenesisSession, next *hostedgenesis.DeclarationCandidate) error {
+	progressed := cloneSessionForRunner(current)
+	progressed.DeclarationCandidate = next
+	progressed.RequestID = strings.TrimSpace(turn.RequestID)
+	progressed.UpdatedAt = r.now()
+	if err := r.store.CheckpointHostedGenesisCandidate(ctx, progressed, current.Version, hostedgenesis.StatusInProgress, turn.TurnID, current.DeclarationCandidate.Revision, current.DeclarationCandidate.CandidateHash); err != nil {
+		return fmt.Errorf("checkpoint typed declaration candidate: %w", err)
 	}
+	progressed.Version = current.Version + 1
+	in.session = progressed
 	return nil
 }
 
-func (r *turnRunner) runDeclarationExtractionAndPersist(ctx context.Context, turn completion.CompletionTurn, in turnInput) error {
-	if !hasAssistantMessage(in.messages) {
-		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeInvalidCompletionState, "declaration extraction requires an assistant transcript")
+func (r *turnRunner) persistDeclarationPhaseOutput(ctx context.Context, turn completion.CompletionTurn, in *turnInput, actor conversationActor, decision actorDecision, telemetry *turnLifecycleTelemetry, output llm.MintConversationPhaseOutput) error {
+	assistantContent := strings.TrimSpace(output.AssistantContent)
+	candidate := in.session.DeclarationCandidate
+	if candidate != nil && candidate.Phase == hostedgenesis.DeclarationCandidatePhaseReview && candidate.Review != nil {
+		assistantContent = candidate.Review.ReviewText
 	}
-	draft, declarationUsage, err := r.runDeclarationExtraction(ctx, in, in.messages)
+	postTurnMessages := append(append([]llm.MintConversationMessage(nil), in.messages...), llm.MintConversationMessage{Role: "assistant", Content: assistantContent})
+	telemetry.emit("persist", "persist_started", string(decision.action), "")
+	checkpoint, err := actor.checkpoint(*in, completionTurnView{turnID: turn.TurnID, requestID: turn.RequestID}, decision, candidate.CandidateHash)
 	if err != nil {
-		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeDeclarationExtractionFailed, err.Error())
+		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeInvalidCompletionState, "build phase checkpoint", telemetry)
 	}
-	declarationsJSON, err := r.buildProducedDeclarationsJSON(draft, in.modelSet, in.contract)
-	if err != nil {
-		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeInvalidProducedDeclarations, string(hostedgenesis.DeclarationValidationCodeFromError(err)))
+	if err := r.persistAssistantTurnAtomically(ctx, in, turn, postTurnMessages, output.Usage, checkpoint); err != nil {
+		telemetry.emit("persist", "persist_failed", string(decision.action), "store_error")
+		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeAssistantTurnFailed, "persist assistant turn", telemetry, hostedgenesis.FailureClassAssistantTurnStore)
 	}
-	if persistErr := r.persistConversationDeclarationReady(ctx, &in, turn, declarationsJSON, declarationUsage); persistErr != nil {
-		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeInvalidProducedDeclarations, "persist declarations: "+persistErr.Error())
-	}
-	checkpoint, err := r.buildDeclarationCheckpoint(turn, in, declarationsJSON)
-	if err != nil {
-		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeInvalidProducedDeclarations, err.Error())
-	}
-	if _, werr := r.writer.RecordDeclarationReady(ctx, turn, checkpoint); werr != nil {
-		return fmt.Errorf("record declaration ready: %w", werr)
-	}
+	telemetry.emit("persist", "persist_completed", string(decision.action), "")
 	return nil
 }
 
-func hasAssistantMessage(messages []llm.MintConversationMessage) bool {
-	for _, msg := range messages {
-		if strings.EqualFold(strings.TrimSpace(msg.Role), "assistant") && strings.TrimSpace(msg.Content) != "" {
+func providerAttemptEvidenceEvent(eventType string) bool {
+	switch strings.TrimSpace(eventType) {
+	case "sdk_http_attempt", "tool_validation_completed", "provider_call_completed", "provider_call_failed":
+		return true
+	default:
+		return false
+	}
+}
+
+func (r *turnRunner) checkpointProviderAttemptEvidence(ctx context.Context, in *turnInput, turn completion.CompletionTurn, section hostedgenesis.DeclarationSection, revision int64, candidateHash string, event llm.ProviderTelemetryEvent) error {
+	if r == nil || r.store == nil || in == nil || in.session == nil || in.session.DeclarationCandidate == nil {
+		return errors.New("typed candidate provider evidence store is unavailable")
+	}
+	if event.SDKAttemptOrdinal == 0 {
+		// Tests and explicitly injected clients may not use Host's production
+		// attempt-observing transport. In production, every non-SDK observation
+		// follows the sdk_http_attempt record emitted by that transport.
+		if !hasProviderAttemptBinding(in.session.DeclarationCandidate.ProviderAttempts, turn.TurnID, section, revision, candidateHash) {
+			return nil
+		}
+	}
+	codes := make([]hostedgenesis.DeclarationValidationCode, 0, len(event.ValidationCodes))
+	for _, code := range event.ValidationCodes {
+		codes = append(codes, hostedgenesis.DeclarationValidationCode(code))
+	}
+	nextCandidate, err := hostedgenesis.ApplyDeclarationProviderAttempt(in.session.DeclarationCandidate, hostedgenesis.DeclarationProviderAttemptUpdate{
+		Provider: event.Provider, Model: event.Model, Phase: event.Phase, Section: section,
+		SourceTurnID: turn.TurnID, CandidateRevision: revision, CandidateHash: candidateHash,
+		SDKAttemptOrdinal: event.SDKAttemptOrdinal, SDKRetryBudget: event.SDKRetryBudget,
+		HTTPStatus: event.HTTPStatus, ProviderRequestID: event.ProviderRequestID,
+		ToolName: event.ToolName, ToolCallHash: event.ToolCallHash, ValidationCodes: codes,
+		ValidationPaths: append([]string(nil), event.ValidationPaths...), Accepted: event.Accepted,
+		OutputBytes: event.OutputBytes, OutputSHA256: event.OutputSHA256,
+		InputTokens: event.InputTokens, OutputTokens: event.OutputTokens, TotalTokens: event.TotalTokens,
+		ToolCalls: event.ToolCalls, StopReason: event.StopReason,
+		FailureClass: hostedgenesis.FailureClass(event.FailureClass), DurationMS: maxInt64Runner(event.DurationMS, event.ElapsedMS),
+	}, r.now())
+	if err != nil {
+		return err
+	}
+	current := in.session
+	progressed := cloneSessionForRunner(current)
+	progressed.DeclarationCandidate = nextCandidate
+	progressed.RequestID = strings.TrimSpace(turn.RequestID)
+	progressed.UpdatedAt = r.now()
+	if err := r.store.CheckpointHostedGenesisCandidate(ctx, progressed, current.Version, hostedgenesis.StatusInProgress, turn.TurnID, current.DeclarationCandidate.Revision, current.DeclarationCandidate.CandidateHash); err != nil {
+		return fmt.Errorf("checkpoint provider attempt evidence: %w", err)
+	}
+	progressed.Version = current.Version + 1
+	in.session = progressed
+	return nil
+}
+
+func hasProviderAttemptBinding(attempts []hostedgenesis.DeclarationProviderAttempt, turnID string, section hostedgenesis.DeclarationSection, revision int64, candidateHash string) bool {
+	for index := len(attempts) - 1; index >= 0; index-- {
+		attempt := attempts[index]
+		if attempt.SourceTurnID == strings.TrimSpace(turnID) && attempt.Section == section &&
+			attempt.CandidateRevision == revision && attempt.CandidateHash == strings.TrimSpace(candidateHash) {
 			return true
 		}
 	}
 	return false
 }
 
-type producedDeclarations struct {
-	SchemaVersion     string                             `json:"schemaVersion,omitempty"`
-	GuidanceVersion   string                             `json:"guidanceVersion,omitempty"`
-	FiveBodies        *hostedgenesis.FiveBodyDeclaration `json:"fiveBodies,omitempty"`
-	SelfDescription   soul.SelfDescriptionV2             `json:"selfDescription"`
-	Capabilities      []soul.CapabilityV2                `json:"capabilities"`
-	Boundaries        []soul.BoundaryV2                  `json:"boundaries"`
-	Transparency      map[string]any                     `json:"transparency"`
-	AdversarialReview *hostedgenesis.AdversarialReview   `json:"adversarialReview,omitempty"`
+func declarationProviderAttemptOrdinalBase(attempts []hostedgenesis.DeclarationProviderAttempt, turnID string, section hostedgenesis.DeclarationSection, revision int64, candidateHash string) int64 {
+	turnID = strings.TrimSpace(turnID)
+	candidateHash = strings.TrimSpace(candidateHash)
+	var base int64
+	for _, attempt := range attempts {
+		if attempt.SourceTurnID == turnID && attempt.Section == section &&
+			attempt.CandidateRevision == revision && attempt.CandidateHash == candidateHash &&
+			attempt.SDKAttemptOrdinal > base {
+			base = attempt.SDKAttemptOrdinal
+		}
+	}
+	return base
 }
 
-func (r *turnRunner) persistConversationAssistantTurn(ctx context.Context, in *turnInput, turn completion.CompletionTurn, messages []llm.MintConversationMessage, usage models.AIUsage) error {
-	if r == nil || r.store == nil || in.conv == nil {
+func maxInt64Runner(a, b int64) int64 {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func (r *turnRunner) runDeterministicFinalizationAndPersist(ctx context.Context, turn completion.CompletionTurn, in *turnInput, actor conversationActor, decision actorDecision, telemetry *turnLifecycleTelemetry) error {
+	if in == nil || in.session == nil || in.session.DeclarationCandidate == nil || in.conv == nil {
+		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeInvalidCompletionState, "typed affirmed candidate required", telemetry)
+	}
+	current := in.session
+	candidate := current.DeclarationCandidate
+	finalizedAt := candidate.Affirmation.AffirmedAt
+	finalized, err := hostedgenesis.FinalizeDeclarationCandidate(candidate, turn.TurnID, finalizedAt)
+	if err != nil {
+		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeInvalidProducedDeclarations, "candidate finalization rejected", telemetry)
+	}
+	checkpoint, err := r.buildCandidateDeclarationCheckpoint(turn, *in, finalized)
+	if err != nil {
+		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeInvalidProducedDeclarations, "candidate checkpoint rejected", telemetry)
+	}
+	progressed := cloneSessionForRunner(current)
+	progressed.Status = string(hostedgenesis.StatusDeclarationReady)
+	progressed.DeclarationCandidate = finalized
+	progressed.DeclarationCheckpoint = &checkpoint
+	progressed.Failure = nil
+	progressed.RequestID = strings.TrimSpace(turn.RequestID)
+	progressed.UpdatedAt = finalizedAt
+	progressed.CompletedAt = finalizedAt
+	vmCheckpoint, err := actor.checkpoint(*in, completionTurnView{turnID: turn.TurnID, requestID: turn.RequestID}, decision, finalized.CandidateHash)
+	if err != nil {
+		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeInvalidCompletionState, "build finalization checkpoint", telemetry)
+	}
+	progressed.VMCheckpoint = vmCheckpoint
+	conv := *in.conv
+	conv.ProducedDeclarations = models.EncodeSoulMintConversationBlob(finalized.CanonicalJSON)
+	conv.Status = models.SoulMintConversationStatusDeclarationReady
+	conv.StatusReason = ""
+	conv.LatestTurnID = strings.TrimSpace(turn.TurnID)
+	conv.RequestID = strings.TrimSpace(turn.RequestID)
+	conv.UpdatedAt = finalizedAt
+	conv.CompletedAt = finalizedAt
+	if err := r.store.FinalizeHostedGenesisCandidateAndConversation(ctx, progressed, current.Version, hostedgenesis.StatusInProgress, turn.TurnID, candidate.Revision, candidate.CandidateHash, &conv); err != nil {
+		return fmt.Errorf("finalize typed declaration candidate: %w", err)
+	}
+	in.session, in.conv = progressed, &conv
+	telemetry.emit("persist", "persist_completed", string(decision.action), "")
+	return nil
+}
+
+func (r *turnRunner) persistAssistantTurnAtomically(ctx context.Context, in *turnInput, turn completion.CompletionTurn, messages []llm.MintConversationMessage, usage models.AIUsage, checkpoint *hostedgenesis.VMCheckpointMetadata) error {
+	if r == nil || r.store == nil || in == nil || in.conv == nil {
 		return errors.New("conversation store is not initialized")
 	}
 	body, err := json.Marshal(messages)
 	if err != nil {
 		return fmt.Errorf("marshal assistant transcript: %w", err)
 	}
-	now := r.now()
 	conv := *in.conv
 	conv.Messages = models.EncodeSoulMintConversationBlob(string(body))
 	conv.Usage = addAIUsage(conv.Usage, usage)
@@ -329,214 +489,81 @@ func (r *turnRunner) persistConversationAssistantTurn(ctx context.Context, in *t
 	conv.StatusReason = ""
 	conv.LatestTurnID = strings.TrimSpace(turn.TurnID)
 	conv.RequestID = firstNonEmpty(strings.TrimSpace(turn.RequestID), conv.RequestID)
-	conv.UpdatedAt = now
-	if err := conv.UpdateKeys(); err != nil {
+	conv.UpdatedAt = r.now()
+	current := in.session
+	progressed := cloneSessionForRunner(current)
+	progressed.Status = string(hostedgenesis.StatusAssistantTurnReady)
+	progressed.MessageCount = maxIntRunner(progressed.MessageCount, len(messages))
+	progressed.AssistantCheckpointRef = hostedgenesis.CheckpointRef("assistant", progressed.ConversationID, turn.TurnID)
+	progressed.VMCheckpoint = checkpoint
+	progressed.Failure = nil
+	progressed.RequestID = strings.TrimSpace(turn.RequestID)
+	progressed.UpdatedAt = conv.UpdatedAt
+	progressed.CompletedAt = time.Time{}
+	if err := r.store.RecordHostedGenesisAssistantTurnAndConversation(ctx, progressed, current.Version, hostedgenesis.StatusInProgress, turn.TurnID, current.DeclarationCandidate.Revision, current.DeclarationCandidate.CandidateHash, &conv); err != nil {
 		return err
 	}
-	if err := r.store.PutSoulAgentMintConversation(ctx, &conv); err != nil {
-		return err
-	}
-	in.conv = &conv
+	progressed.Version = current.Version + 1
+	in.session, in.conv = progressed, &conv
 	return nil
 }
 
-func (r *turnRunner) persistConversationDeclarationReady(ctx context.Context, in *turnInput, turn completion.CompletionTurn, declarationsJSON string, usage models.AIUsage) error {
-	if r == nil || r.store == nil || in.conv == nil {
-		return errors.New("conversation store is not initialized")
+func maxIntRunner(a int, b int) int {
+	if a > b {
+		return a
 	}
-	now := r.now()
-	conv := *in.conv
-	conv.ProducedDeclarations = models.EncodeSoulMintConversationBlob(strings.TrimSpace(declarationsJSON))
-	conv.Usage = addAIUsage(conv.Usage, usage)
-	conv.Status = models.SoulMintConversationStatusDeclarationReady
-	conv.StatusReason = ""
-	conv.LatestTurnID = strings.TrimSpace(turn.TurnID)
-	conv.RequestID = firstNonEmpty(strings.TrimSpace(turn.RequestID), conv.RequestID)
-	conv.CompletedAt = now
-	conv.UpdatedAt = now
-	if err := conv.UpdateKeys(); err != nil {
-		return err
-	}
-	if err := r.store.PutSoulAgentMintConversation(ctx, &conv); err != nil {
-		return err
-	}
-	in.conv = &conv
-	return nil
+	return b
 }
 
-// buildProducedDeclarationsJSON builds the instance-trust hosted/off-chain
-// declaration payload. Registration-declared capabilities are model context,
-// not produced evidence; an empty extracted capabilities array is valid.
-// The optional contract lets production callers bind validation to the
-// Host-selected schema/guidance lane; older unit callers fall back to draft
-// version detection for compatibility.
-func (r *turnRunner) buildProducedDeclarationsJSON(draft llm.MintConversationDeclarationsDraft, modelSet string, contracts ...hostedgenesis.DeclarationContract) (string, error) {
-	now := r.now()
-	contract := producedDeclarationContract(draft, contracts...).Normalize()
-	if contract.IsFiveBody() {
-		return r.buildFiveBodyProducedDeclarationsJSON(draft, modelSet, contract)
+func (r *turnRunner) buildCandidateDeclarationCheckpoint(turn completion.CompletionTurn, in turnInput, candidate *hostedgenesis.DeclarationCandidate) (hostedgenesis.DeclarationCheckpoint, error) {
+	if candidate == nil || candidate.Affirmation == nil || candidate.Phase != hostedgenesis.DeclarationCandidatePhaseFinalized {
+		return hostedgenesis.DeclarationCheckpoint{}, errors.New("finalized declaration candidate required")
 	}
-	decl := producedDeclarations{
-		SelfDescription: draft.SelfDescription,
-		Capabilities:    []soul.CapabilityV2{},
-		Boundaries:      []soul.BoundaryV2{},
-		Transparency:    draft.Transparency,
-	}
-	decl.SelfDescription.AuthoredBy = "agent"
-	decl.SelfDescription.MintingModel = strings.TrimSpace(modelSet)
-	if err := decl.SelfDescription.Validate(); err != nil {
-		return "", hostedgenesis.NewDeclarationValidationError(hostedgenesis.DeclarationCodeSelfDescription)
-	}
-	var capErr error
-	decl.Capabilities, capErr = hostedgenesis.ValidateAndNormalizeProducedCapabilities(draft.Capabilities)
-	if capErr != nil {
-		return "", capErr
-	}
-	invalidBoundary := false
-	for i, b := range draft.Boundaries {
-		entry := soul.BoundaryV2{
-			ID:             fmt.Sprintf("mint-%d-%02d", now.Unix(), i+1),
-			Category:       strings.ToLower(strings.TrimSpace(b.Category)),
-			Statement:      strings.TrimSpace(b.Statement),
-			Rationale:      strings.TrimSpace(b.Rationale),
-			AddedAt:        now.UTC().Format(time.RFC3339),
-			AddedInVersion: "1",
-			Signature:      "0x00",
-		}
-		if err := entry.Validate(); err != nil {
-			invalidBoundary = true
-			continue
-		}
-		decl.Boundaries = append(decl.Boundaries, entry)
-	}
-	if invalidBoundary {
-		return "", hostedgenesis.NewDeclarationValidationError(hostedgenesis.DeclarationCodeBoundariesBad)
-	}
-	if len(decl.Boundaries) == 0 {
-		if len(draft.Boundaries) > 0 {
-			return "", hostedgenesis.NewDeclarationValidationError(hostedgenesis.DeclarationCodeBoundariesBad)
-		}
-		return "", hostedgenesis.NewDeclarationValidationError(hostedgenesis.DeclarationCodeBoundaries)
-	}
-	if decl.Transparency == nil {
-		decl.Transparency = map[string]any{}
-	}
-	body, err := json.Marshal(decl)
-	if err != nil {
-		return "", hostedgenesis.NewDeclarationValidationError(hostedgenesis.DeclarationCodeInvalid)
-	}
-	return string(body), nil
-}
-
-func (r *turnRunner) buildFiveBodyProducedDeclarationsJSON(draft llm.MintConversationDeclarationsDraft, modelSet string, contract hostedgenesis.DeclarationContract) (string, error) {
-	now := r.now()
-	if err := hostedgenesis.ValidateDeclarationContractVersions(draft.SchemaVersion, draft.GuidanceVersion, contract); err != nil {
-		return "", err
-	}
-	fiveBodies := hostedgenesis.NormalizeFiveBodyDeclaration(draft.FiveBodies)
-	if err := hostedgenesis.ValidateFiveBodyDeclaration(fiveBodies); err != nil {
-		return "", err
-	}
-	review, reviewErr := hostedgenesis.BuildAdversarialReviewV2(fiveBodies)
-	if reviewErr != nil {
-		return "", reviewErr
-	}
-	decl := producedDeclarations{
-		SchemaVersion:     contract.SchemaVersion,
-		GuidanceVersion:   contract.GuidanceVersion,
-		FiveBodies:        &fiveBodies,
-		SelfDescription:   fiveBodySelfDescription(draft.SelfDescription, fiveBodies, modelSet),
-		Capabilities:      []soul.CapabilityV2{},
-		Boundaries:        hostedgenesis.FiveBodyBoundaries(fiveBodies.Soul.Refusals, now),
-		Transparency:      draft.Transparency,
-		AdversarialReview: &review,
-	}
-	if selfDescriptionErr := decl.SelfDescription.Validate(); selfDescriptionErr != nil {
-		return "", hostedgenesis.NewDeclarationValidationError(hostedgenesis.DeclarationCodeSelfDescription)
-	}
-	var capErr error
-	decl.Capabilities, capErr = hostedgenesis.ValidateAndNormalizeProducedCapabilities(draft.Capabilities)
-	if capErr != nil {
-		return "", capErr
-	}
-	if len(decl.Boundaries) < 3 {
-		return "", hostedgenesis.NewDeclarationValidationError(hostedgenesis.DeclarationCodeSoulRefusals)
-	}
-	for i := range decl.Boundaries {
-		if boundaryErr := decl.Boundaries[i].Validate(); boundaryErr != nil {
-			return "", hostedgenesis.NewDeclarationValidationError(hostedgenesis.DeclarationCodeBoundariesBad)
-		}
-	}
-	if decl.Transparency == nil {
-		decl.Transparency = map[string]any{}
-	}
-	if reviewValidationErr := hostedgenesis.ValidateAdversarialReview(review); reviewValidationErr != nil {
-		return "", reviewValidationErr
-	}
-	body, err := json.Marshal(decl)
-	if err != nil {
-		return "", hostedgenesis.NewDeclarationValidationError(hostedgenesis.DeclarationCodeInvalid)
-	}
-	return string(body), nil
-}
-
-func producedDeclarationContract(draft llm.MintConversationDeclarationsDraft, contracts ...hostedgenesis.DeclarationContract) hostedgenesis.DeclarationContract {
-	if len(contracts) > 0 {
-		return contracts[0]
-	}
-	return hostedgenesis.DeclarationContractFromVersions(draft.SchemaVersion, draft.GuidanceVersion)
-}
-
-func fiveBodySelfDescription(source soul.SelfDescriptionV2, fiveBodies hostedgenesis.FiveBodyDeclaration, modelSet string) soul.SelfDescriptionV2 {
-	source.Purpose = firstNonEmpty(source.Purpose, fiveBodies.Identity.Summary)
-	source.Constraints = firstNonEmpty(source.Constraints, fiveBodies.Boundaries.Summary)
-	source.Commitments = firstNonEmpty(source.Commitments, fiveBodies.Philosophy.Summary)
-	source.Limitations = firstNonEmpty(source.Limitations, fiveBodies.Soul.Summary)
-	source.AuthoredBy = "agent"
-	source.MintingModel = strings.TrimSpace(modelSet)
-	return source
-}
-
-// buildDeclarationCheckpoint assembles a publish-ready DeclarationCheckpoint
-// over the exact ProducedDeclarations JSON persisted to the conversation. The
-// checkpoint hash must match that stored blob byte-for-byte; otherwise the
-// instance API correctly refuses to project declarations.
-func (r *turnRunner) buildDeclarationCheckpoint(turn completion.CompletionTurn, in turnInput, declarationsJSON string) (hostedgenesis.DeclarationCheckpoint, error) {
-	now := r.now()
-	declarationHash, hashHex, err := hashDeclarationJSON(declarationsJSON)
-	if err != nil {
-		return hostedgenesis.DeclarationCheckpoint{}, err
+	declarationHash, hashHex, err := hashDeclarationJSON(candidate.CanonicalJSON)
+	if err != nil || declarationHash != candidate.CandidateHash {
+		return hostedgenesis.DeclarationCheckpoint{}, errors.New("candidate canonical hash mismatch")
 	}
 	return hostedgenesis.DeclarationCheckpoint{
-		DeclarationID:   "decl_" + hashHex[:16],
-		DeclarationHash: declarationHash,
-		CheckpointRef:   hostedgenesis.CheckpointRef("declaration", in.session.ConversationID, hashHex[:16]),
-		ProducedAt:      now,
-		RegistrationID:  in.session.RegistrationID,
-		ConversationID:  in.session.ConversationID,
-		AgentID:         in.session.AgentID,
-		MessageCount:    len(in.messages) + 1,
-		Model:           in.modelSet,
-		SchemaVersion:   checkpointSchemaVersion(in.contract),
-		GuidanceVersion: checkpointGuidanceVersion(in.contract),
-		RequestID:       turn.RequestID,
+		DeclarationID: "decl_" + hashHex[:16], DeclarationHash: declarationHash,
+		CheckpointRef: hostedgenesis.CheckpointRef("declaration", in.session.ConversationID, hashHex[:16]),
+		ProducedAt:    candidate.Affirmation.AffirmedAt, RegistrationID: in.session.RegistrationID,
+		ConversationID: in.session.ConversationID, AgentID: in.session.AgentID, MessageCount: len(in.messages),
+		Model: in.modelSet, SchemaVersion: candidate.SchemaVersion, GuidanceVersion: candidate.GuidanceVersion, RequestID: turn.RequestID,
 	}, nil
 }
 
-func checkpointSchemaVersion(contract hostedgenesis.DeclarationContract) string {
-	contract = contract.Normalize()
-	if !contract.IsFiveBody() {
-		return ""
+func cloneSessionForRunner(session *models.HostedGenesisSession) *models.HostedGenesisSession {
+	if session == nil {
+		return nil
 	}
-	return contract.SchemaVersion
-}
-
-func checkpointGuidanceVersion(contract hostedgenesis.DeclarationContract) string {
-	contract = contract.Normalize()
-	if !contract.IsFiveBody() {
-		return ""
+	copy := *session
+	copy.TurnLedger = append([]hostedgenesis.TurnLedgerEntry(nil), session.TurnLedger...)
+	copy.DeclarationCandidate = session.DeclarationCandidate.Clone()
+	if session.MicroVMLifecycleRef != nil {
+		v := *session.MicroVMLifecycleRef
+		copy.MicroVMLifecycleRef = &v
 	}
-	return contract.GuidanceVersion
+	if session.DeclarationCheckpoint != nil {
+		v := *session.DeclarationCheckpoint
+		copy.DeclarationCheckpoint = &v
+	}
+	if session.Publication != nil {
+		v := *session.Publication
+		copy.Publication = &v
+	}
+	if session.Failure != nil {
+		v := *session.Failure
+		copy.Failure = &v
+	}
+	if session.TraceIDs != nil {
+		v := *session.TraceIDs
+		copy.TraceIDs = &v
+	}
+	if session.VMCheckpoint != nil {
+		v := *session.VMCheckpoint
+		copy.VMCheckpoint = &v
+	}
+	return &copy
 }
 
 func addAIUsage(existing models.AIUsage, delta models.AIUsage) models.AIUsage {
@@ -558,7 +585,6 @@ func addAIUsage(existing models.AIUsage, delta models.AIUsage) models.AIUsage {
 	out.ToolCalls += delta.ToolCalls
 	return out
 }
-
 func firstNonEmpty(values ...string) string {
 	for _, value := range values {
 		if trimmed := strings.TrimSpace(value); trimmed != "" {
@@ -568,9 +594,19 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
-func (r *turnRunner) recordFailure(ctx context.Context, turn completion.CompletionTurn, code hostedgenesis.FailureCode, message string) error {
+func (r *turnRunner) recordFailure(ctx context.Context, turn completion.CompletionTurn, code hostedgenesis.FailureCode, message string, telemetry *turnLifecycleTelemetry, classes ...hostedgenesis.FailureClass) error {
+	var failureClass hostedgenesis.FailureClass
+	if len(classes) > 0 {
+		failureClass = classes[0]
+	}
+	telemetryClass := string(failureClass)
+	if telemetryClass == "" {
+		telemetryClass = string(code)
+	}
+	telemetry.emit("failure_persist", "failure_persist_started", "", telemetryClass)
 	_, err := r.writer.RecordFailure(ctx, turn, completion.CompletionFailure{
 		Code:      code,
+		Class:     failureClass,
 		Message:   message,
 		Retryable: isRetryableFailureCode(code),
 		Recovery: hostedgenesis.Recovery{
@@ -581,8 +617,10 @@ func (r *turnRunner) recordFailure(ctx context.Context, turn completion.Completi
 		},
 	})
 	if err == nil {
+		telemetry.emit("failure_persist", "failure_persist_completed", "", telemetryClass)
 		return nil
 	}
+	telemetry.emit("failure_persist", "failure_persist_failed", "", "completion_conflict")
 	// A conflict recording failure means the session already reached a terminal
 	// state; report the original failure as the run error but do not mask the
 	// conflict.
@@ -599,11 +637,54 @@ func (r *turnRunner) now() time.Time {
 	return time.Now().UTC()
 }
 
+// providerTimeout is a whole-call deadline. The SDK-configured HTTP client
+// timeout is per request attempt; both provider SDKs retry by default, so that
+// transport timeout alone can outlive the MicroVM's maximum duration. The
+// call-scoped context bounds the complete retry lifecycle and leaves the outer
+// workload envelope time to persist a guarded typed failure.
+func (r *turnRunner) providerTimeout() time.Duration {
+	if r != nil && r.providerCallTimeout > 0 {
+		return r.providerCallTimeout
+	}
+	return llm.DefaultProviderHTTPTimeout
+}
+
+func (r *turnRunner) workloadTimeout() time.Duration {
+	if r != nil && r.workloadExecutionTimeout > 0 {
+		return r.workloadExecutionTimeout
+	}
+	return hostedgenesis.DefaultWorkloadExecutionTimeout
+}
+
+func (r *turnRunner) providerHeartbeat() time.Duration {
+	if r != nil && r.providerHeartbeatInterval > 0 {
+		return r.providerHeartbeatInterval
+	}
+	return defaultProviderHeartbeatInterval
+}
+
+// providerFailureMessage deliberately excludes SDK error text. Provider errors
+// may echo request/response bodies or headers, so this detail remains the
+// established content-free phase/kind message while Failure.Class carries the
+// canonical durable provider taxonomy.
+func providerFailureMessage(phase string, err error) string {
+	failureClass := llm.ProviderFailureClass(err)
+	failureKind := "provider_error"
+	switch failureClass {
+	case string(hostedgenesis.FailureClassProviderTimeout):
+		failureKind = "timeout"
+	case string(hostedgenesis.FailureClassProviderCanceled):
+		failureKind = "canceled"
+	case string(hostedgenesis.FailureClassInvalidProviderOutput), string(hostedgenesis.FailureClassParseValidation):
+		failureKind = failureClass
+	}
+	return strings.TrimSpace(phase) + " " + failureKind
+}
+
 func isRetryableFailureCode(code hostedgenesis.FailureCode) bool {
 	switch code {
 	case hostedgenesis.FailureCodeLLMUnavailable,
-		hostedgenesis.FailureCodeAssistantTurnFailed,
-		hostedgenesis.FailureCodeDeclarationExtractionFailed:
+		hostedgenesis.FailureCodeAssistantTurnFailed:
 		return true
 	default:
 		return false
@@ -613,7 +694,6 @@ func isRetryableFailureCode(code hostedgenesis.FailureCode) bool {
 func recoveryActionFor(code hostedgenesis.FailureCode) hostedgenesis.RecoveryAction {
 	switch code {
 	case hostedgenesis.FailureCodeAssistantTurnFailed,
-		hostedgenesis.FailureCodeDeclarationExtractionFailed,
 		hostedgenesis.FailureCodeLLMUnavailable:
 		return hostedgenesis.RecoveryActionRetrySameStep
 	case hostedgenesis.FailureCodeInvalidCompletionState,

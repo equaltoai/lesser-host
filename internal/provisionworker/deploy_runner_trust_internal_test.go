@@ -22,13 +22,15 @@ import (
 const (
 	testDeployRunnerRoleARN         = "arn:aws:iam::111122223333:role/lesser-host-lab-ProvisionRunnerProjectRole"
 	testManagementRootARN           = "arn:aws:iam::111122223333:root"
-	testExternalManagementRootTrust = `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":"arn:aws:iam::902552026581:root"},"Action":"sts:AssumeRole"}]}`
+	testExternalManagementRootARN   = "arn:aws:iam::902552026581:root"
+	testExternalManagementRootTrust = `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":"` + testExternalManagementRootARN + `"},"Action":"sts:AssumeRole"}]}`
 )
 
 type fakeIAM struct {
-	getOut *iam.GetRoleOutput
-	getErr error
-	updErr error
+	getOut                *iam.GetRoleOutput
+	getErr                error
+	updErr                error
+	keepPolicyAfterUpdate bool
 
 	getInputs    []*iam.GetRoleInput
 	updateInputs []*iam.UpdateAssumeRolePolicyInput
@@ -47,11 +49,14 @@ func (f *fakeIAM) UpdateAssumeRolePolicy(_ context.Context, in *iam.UpdateAssume
 	if f.updErr != nil {
 		return nil, f.updErr
 	}
+	if !f.keepPolicyAfterUpdate && f.getOut != nil && f.getOut.Role != nil {
+		f.getOut.Role.AssumeRolePolicyDocument = aws.String(aws.ToString(in.PolicyDocument))
+	}
 	return &iam.UpdateAssumeRolePolicyOutput{}, nil
 }
 
 func TestEnsureAssumeRolePolicyAllowsPrincipalAddsDeployRunner(t *testing.T) {
-	updated, changed, err := ensureAssumeRolePolicyAllowsPrincipal(testExternalManagementRootTrust, testDeployRunnerRoleARN, deployRunnerExternalID("demo"))
+	updated, changed, err := ensureAssumeRolePolicyAllowsPrincipal(testExternalManagementRootTrust, testDeployRunnerRoleARN, deployRunnerExternalID("demo"), testExternalManagementRootARN)
 	require.NoError(t, err)
 	require.True(t, changed)
 
@@ -59,17 +64,19 @@ func TestEnsureAssumeRolePolicyAllowsPrincipalAddsDeployRunner(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(updated), &doc))
 	statements, err := normalizedPolicyStatements(doc["Statement"])
 	require.NoError(t, err)
-	// The original root statement is preserved; a new conditioned statement is added.
-	require.GreaterOrEqual(t, len(statements), 2)
-	require.True(t, assumeRoleStatementAllowsPrincipal(statements[len(statements)-1], testDeployRunnerRoleARN))
-	require.True(t, assumeRoleStatementHasExternalID(statements[len(statements)-1], deployRunnerExternalID("demo")),
+	// The original root statement is preserved; exact allow and mismatch-deny
+	// statements are added for the deploy runner.
+	require.Len(t, statements, 3)
+	require.True(t, hasAssumeRoleAllowForPrincipal(statements, testExternalManagementRootARN, ""))
+	require.True(t, hasAssumeRoleAllowForPrincipal(statements, testDeployRunnerRoleARN, deployRunnerExternalID("demo")),
 		"new statement must carry the tenant-scoped external ID condition")
+	require.True(t, hasAssumeRoleExternalIDDenyForPrincipal(statements, testDeployRunnerRoleARN, deployRunnerExternalID("demo")))
 }
 
 func TestEnsureAssumeRolePolicyAllowsPrincipalPreservesManagementRootTrust(t *testing.T) {
 	policy := `{"Version":"2012-10-17","Statement":[{"Sid":"DirectHostRuntime","Effect":"Allow","Principal":{"AWS":"` + testManagementRootARN + `"},"Action":"sts:AssumeRole"}]}`
 
-	updated, changed, err := ensureAssumeRolePolicyAllowsPrincipal(policy, testDeployRunnerRoleARN, deployRunnerExternalID("demo"))
+	updated, changed, err := ensureAssumeRolePolicyAllowsPrincipal(policy, testDeployRunnerRoleARN, deployRunnerExternalID("demo"), testManagementRootARN)
 	require.NoError(t, err)
 	require.True(t, changed)
 
@@ -88,7 +95,7 @@ func TestEnsureAssumeRolePolicyAllowsPrincipalPreservesManagementRootTrust(t *te
 func TestEnsureAssumeRolePolicyAllowsPrincipalHardensWildcardWithoutStrandingManagement(t *testing.T) {
 	policy := `{"Version":"2012-10-17","Statement":[{"Sid":"LegacyBroadTrust","Effect":"Allow","Principal":"*","Action":"sts:AssumeRole"}]}`
 
-	updated, changed, err := ensureAssumeRolePolicyAllowsPrincipal(policy, testDeployRunnerRoleARN, deployRunnerExternalID("theory"))
+	updated, changed, err := ensureAssumeRolePolicyAllowsPrincipal(policy, testDeployRunnerRoleARN, deployRunnerExternalID("theory"), testManagementRootARN)
 	require.NoError(t, err)
 	require.True(t, changed)
 
@@ -109,7 +116,7 @@ func TestEnsureAssumeRolePolicyAllowsPrincipalHardensWildcardWithoutStrandingMan
 func TestEnsureAssumeRolePolicyAllowsPrincipalHardensWildcardAndClonesNonExternalIDCondition(t *testing.T) {
 	policy := `{"Version":"2012-10-17","Statement":[{"Sid":"LegacyBroadTrust","Effect":"Allow","Principal":{"AWS":["*"]},"Action":"*","Condition":{"StringEquals":{"aws:PrincipalOrgID":"o-equaltoai"}}}]}`
 
-	updated, changed, err := ensureAssumeRolePolicyAllowsPrincipal(policy, testDeployRunnerRoleARN, deployRunnerExternalID("theory"))
+	updated, changed, err := ensureAssumeRolePolicyAllowsPrincipal(policy, testDeployRunnerRoleARN, deployRunnerExternalID("theory"), testManagementRootARN)
 	require.NoError(t, err)
 	require.True(t, changed)
 
@@ -136,7 +143,7 @@ func TestEnsureAssumeRolePolicyAllowsPrincipalHardensWildcardAndClonesNonExterna
 func TestEnsureAssumeRolePolicyAllowsPrincipalHardensWildcardWithoutDuplicatingExistingManagementTrust(t *testing.T) {
 	policy := `{"Version":"2012-10-17","Statement":[{"Sid":"DirectHostRuntime","Effect":"Allow","Principal":{"AWS":"` + testManagementRootARN + `"},"Action":"sts:AssumeRole"},{"Sid":"LegacyBroadTrust","Effect":"Allow","Principal":"*","Action":"sts:AssumeRole"}]}`
 
-	updated, changed, err := ensureAssumeRolePolicyAllowsPrincipal(policy, testDeployRunnerRoleARN, deployRunnerExternalID("demo"))
+	updated, changed, err := ensureAssumeRolePolicyAllowsPrincipal(policy, testDeployRunnerRoleARN, deployRunnerExternalID("demo"), testManagementRootARN)
 	require.NoError(t, err)
 	require.True(t, changed)
 
@@ -157,7 +164,7 @@ func TestEnsureAssumeRolePolicyAllowsPrincipalHardensWildcardWithoutDuplicatingE
 func TestEnsureAssumeRolePolicyAllowsPrincipalRejectsConditionedWildcardTrust(t *testing.T) {
 	policy := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":"*","Action":"sts:AssumeRole","Condition":{"StringEquals":{"sts:ExternalId":"lesser-host/deploy/demo"}}}]}`
 
-	_, changed, err := ensureAssumeRolePolicyAllowsPrincipal(policy, testDeployRunnerRoleARN, deployRunnerExternalID("demo"))
+	_, changed, err := ensureAssumeRolePolicyAllowsPrincipal(policy, testDeployRunnerRoleARN, deployRunnerExternalID("demo"), testManagementRootARN)
 	require.Error(t, err)
 	require.False(t, changed)
 	require.Contains(t, err.Error(), "refusing to synthesize direct management trust")
@@ -166,18 +173,26 @@ func TestEnsureAssumeRolePolicyAllowsPrincipalRejectsConditionedWildcardTrust(t 
 func TestEnsureAssumeRolePolicyAllowsPrincipalRejectsNestedConditionedWildcardTrust(t *testing.T) {
 	policy := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":"*","Action":"sts:AssumeRole","Condition":{"ForAnyValue:StringEquals":[{"sts:ExternalId":"lesser-host/deploy/demo"}]}}]}`
 
-	_, changed, err := ensureAssumeRolePolicyAllowsPrincipal(policy, testDeployRunnerRoleARN, deployRunnerExternalID("demo"))
+	_, changed, err := ensureAssumeRolePolicyAllowsPrincipal(policy, testDeployRunnerRoleARN, deployRunnerExternalID("demo"), testManagementRootARN)
 	require.Error(t, err)
 	require.False(t, changed)
 	require.Contains(t, err.Error(), "refusing to synthesize direct management trust")
 }
 
+func TestEnsureAssumeRolePolicyAllowsPrincipalRejectsMixedRunnerPrincipal(t *testing.T) {
+	policy := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":["` + testDeployRunnerRoleARN + `","arn:aws:iam::444455556666:role/other"]},"Action":"sts:AssumeRole"}]}`
+
+	_, changed, err := ensureAssumeRolePolicyAllowsPrincipal(policy, testDeployRunnerRoleARN, deployRunnerExternalID("demo"), testManagementRootARN)
+	require.ErrorContains(t, err, "shared with other principals")
+	require.False(t, changed)
+}
+
 func TestEnsureAssumeRolePolicyAllowsPrincipalAddsConditionToExistingStatement(t *testing.T) {
 	// An existing statement that allows the principal but lacks the
 	// external-ID condition must be replaced with a conditioned one.
-	policy := `{"Version":"2012-10-17","Statement":{"Effect":"Allow","Principal":{"AWS":["` + testDeployRunnerRoleARN + `"]},"Action":["sts:AssumeRole"]}}`
+	policy := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":"` + testManagementRootARN + `"},"Action":"sts:AssumeRole"},{"Effect":"Allow","Principal":{"AWS":["` + testDeployRunnerRoleARN + `"]},"Action":["sts:AssumeRole"]}]}`
 
-	updated, changed, err := ensureAssumeRolePolicyAllowsPrincipal(url.QueryEscape(policy), testDeployRunnerRoleARN, deployRunnerExternalID("demo"))
+	updated, changed, err := ensureAssumeRolePolicyAllowsPrincipal(url.QueryEscape(policy), testDeployRunnerRoleARN, deployRunnerExternalID("demo"), testManagementRootARN)
 	require.NoError(t, err)
 	require.True(t, changed)
 
@@ -185,27 +200,27 @@ func TestEnsureAssumeRolePolicyAllowsPrincipalAddsConditionToExistingStatement(t
 	require.NoError(t, json.Unmarshal([]byte(updated), &doc))
 	statements, err := normalizedPolicyStatements(doc["Statement"])
 	require.NoError(t, err)
-	require.Len(t, statements, 1)
-	require.True(t, assumeRoleStatementAllowsPrincipal(statements[0], testDeployRunnerRoleARN))
-	require.True(t, assumeRoleStatementHasExternalID(statements[0], deployRunnerExternalID("demo")),
+	require.Len(t, statements, 3)
+	require.True(t, hasAssumeRoleAllowForPrincipal(statements, testDeployRunnerRoleARN, deployRunnerExternalID("demo")))
+	require.True(t, assumeRoleStatementHasExternalID(statements[1], deployRunnerExternalID("demo")),
 		"existing statement must be upgraded to include the tenant-scoped external ID condition")
 }
 
-func TestEnsureAssumeRolePolicyAllowsPrincipalNoopsForExistingConditionedTrust(t *testing.T) {
-	// When the statement already carries the correct external-ID condition, no change.
-	policy := `{"Version":"2012-10-17","Statement":{"Effect":"Allow","Principal":{"AWS":"` + testDeployRunnerRoleARN + `"},"Action":"sts:AssumeRole","Condition":{"StringEquals":{"sts:ExternalId":"lesser-host/deploy/demo"}}}}`
+func TestEnsureAssumeRolePolicyAllowsPrincipalAddsMissingMismatchDeny(t *testing.T) {
+	// The external-ID allow alone is incomplete until the explicit mismatch deny exists.
+	policy := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":"` + testManagementRootARN + `"},"Action":"sts:AssumeRole"},{"Effect":"Allow","Principal":{"AWS":"` + testDeployRunnerRoleARN + `"},"Action":"sts:AssumeRole","Condition":{"StringEquals":{"sts:ExternalId":"lesser-host/deploy/demo"}}}]}`
 
-	updated, changed, err := ensureAssumeRolePolicyAllowsPrincipal(policy, testDeployRunnerRoleARN, deployRunnerExternalID("demo"))
+	updated, changed, err := ensureAssumeRolePolicyAllowsPrincipal(policy, testDeployRunnerRoleARN, deployRunnerExternalID("demo"), testManagementRootARN)
 	require.NoError(t, err)
-	require.False(t, changed)
-	require.JSONEq(t, policy, updated)
+	require.True(t, changed, "a conditioned allow without the mismatch deny is incomplete")
+	require.Contains(t, updated, "StringNotEquals")
 }
 
 func TestEnsureAssumeRolePolicyAllowsPrincipalNoopsForExistingUnconditionedWhenNoExternalID(t *testing.T) {
 	// When no external ID is required, an existing unconditioned statement is left alone.
 	policy := `{"Version":"2012-10-17","Statement":{"Effect":"Allow","Principal":{"AWS":["` + testDeployRunnerRoleARN + `"]},"Action":["sts:AssumeRole"]}}`
 
-	updated, changed, err := ensureAssumeRolePolicyAllowsPrincipal(url.QueryEscape(policy), testDeployRunnerRoleARN, "")
+	updated, changed, err := ensureAssumeRolePolicyAllowsPrincipal(url.QueryEscape(policy), testDeployRunnerRoleARN, "", testManagementRootARN)
 	require.NoError(t, err)
 	require.False(t, changed, "when external ID is empty, existing unconditioned statement should not be replaced")
 	require.JSONEq(t, policy, updated)
@@ -215,7 +230,7 @@ func TestEnsureAssumeRolePolicyAllowsPrincipalNoopsWhenDirectRunnerAndDenyTrustA
 	externalID := deployRunnerExternalID("demo")
 	policy := `{"Version":"2012-10-17","Statement":[{"Sid":"DirectHostRuntime","Effect":"Allow","Principal":{"AWS":"` + testManagementRootARN + `"},"Action":"sts:AssumeRole"},{"Sid":"DeployRunner","Effect":"Allow","Principal":{"AWS":"` + testDeployRunnerRoleARN + `"},"Action":"sts:AssumeRole","Condition":{"StringEquals":{"sts:ExternalId":"` + externalID + `"}}},{"Sid":"DenyRunnerExternalIDMismatch","Effect":"Deny","Principal":{"AWS":"` + testDeployRunnerRoleARN + `"},"Action":"sts:AssumeRole","Condition":{"StringNotEquals":{"sts:ExternalId":"` + externalID + `"}}}]}`
 
-	updated, changed, err := ensureAssumeRolePolicyAllowsPrincipal(policy, testDeployRunnerRoleARN, externalID)
+	updated, changed, err := ensureAssumeRolePolicyAllowsPrincipal(policy, testDeployRunnerRoleARN, externalID, testManagementRootARN)
 	require.NoError(t, err)
 	require.False(t, changed, "complete hardened trust should not be rewritten or grow duplicate deny statements")
 	require.JSONEq(t, policy, updated)
@@ -227,7 +242,10 @@ func TestEnsureDeployRunnerAssumeRoleTrustUpdatesTenantRole(t *testing.T) {
 	fake := &fakeIAM{getOut: &iam.GetRoleOutput{Role: &iamtypes.Role{AssumeRolePolicyDocument: aws.String(testExternalManagementRootTrust)}}}
 
 	srv := &Server{
-		cfg: config.Config{ManagedProvisionRunnerRoleARN: testDeployRunnerRoleARN},
+		cfg: config.Config{
+			ManagedProvisionRunnerRoleARN: testDeployRunnerRoleARN,
+			ManagedOrgVendingRoleARN:      "arn:aws:iam::902552026581:role/lesser-host-org-vending",
+		},
 		iamFactory: func(_ context.Context, accountID string, roleName string, region string, slug string, jobID string) (iamAPI, error) {
 			require.Equal(t, "123456789012", accountID)
 			require.Equal(t, "OrganizationAccountAccessRole", roleName)
@@ -240,11 +258,85 @@ func TestEnsureDeployRunnerAssumeRoleTrustUpdatesTenantRole(t *testing.T) {
 
 	err := srv.ensureDeployRunnerAssumeRoleTrust(context.Background(), "123456789012", "OrganizationAccountAccessRole", defaultManagedAWSRegion, "simulacrum", "job1")
 	require.NoError(t, err)
-	require.Len(t, fake.getInputs, 1)
+	require.Len(t, fake.getInputs, 2, "updated trust must be read back before CodeBuild may start")
 	require.Equal(t, "OrganizationAccountAccessRole", aws.ToString(fake.getInputs[0].RoleName))
 	require.Len(t, fake.updateInputs, 1)
 	require.Equal(t, "OrganizationAccountAccessRole", aws.ToString(fake.updateInputs[0].RoleName))
 	require.Contains(t, aws.ToString(fake.updateInputs[0].PolicyDocument), testDeployRunnerRoleARN)
+	require.NoError(t, verifyDeployRunnerAssumeRoleTrustPolicy(
+		aws.ToString(fake.getOut.Role.AssumeRolePolicyDocument),
+		testDeployRunnerRoleARN,
+		deployRunnerExternalID("simulacrum"),
+		testExternalManagementRootARN,
+	))
+
+	// A retry verifies the same policy without appending duplicate statements.
+	err = srv.ensureDeployRunnerAssumeRoleTrust(context.Background(), "123456789012", "OrganizationAccountAccessRole", defaultManagedAWSRegion, "simulacrum", "job1")
+	require.NoError(t, err)
+	require.Len(t, fake.getInputs, 3)
+	require.Len(t, fake.updateInputs, 1)
+}
+
+func TestEnsureDeployRunnerAssumeRoleTrustPreservesExistingExternalManagementRootWithoutVendingRoleConfig(t *testing.T) {
+	t.Parallel()
+
+	fake := &fakeIAM{getOut: &iam.GetRoleOutput{Role: &iamtypes.Role{AssumeRolePolicyDocument: aws.String(testExternalManagementRootTrust)}}}
+	srv := &Server{
+		cfg: config.Config{ManagedProvisionRunnerRoleARN: testDeployRunnerRoleARN},
+		iamFactory: func(context.Context, string, string, string, string, string) (iamAPI, error) {
+			return fake, nil
+		},
+	}
+
+	err := srv.ensureDeployRunnerAssumeRoleTrust(context.Background(), "123456789012", "OrganizationAccountAccessRole", defaultManagedAWSRegion, "trenchcoat", "job1")
+	require.NoError(t, err)
+	require.Len(t, fake.updateInputs, 1)
+	updated := aws.ToString(fake.updateInputs[0].PolicyDocument)
+	require.Contains(t, updated, testExternalManagementRootARN)
+	require.NotContains(t, updated, testManagementRootARN,
+		"the Organizations management root must come from existing trust, not the differently-accounted runner role")
+	require.NoError(t, verifyDeployRunnerAssumeRoleTrustPolicy(
+		updated,
+		testDeployRunnerRoleARN,
+		deployRunnerExternalID("trenchcoat"),
+		testExternalManagementRootARN,
+	))
+}
+
+func TestEnsureDeployRunnerAssumeRoleTrustRejectsMissingManagementRootIdentity(t *testing.T) {
+	t.Parallel()
+
+	policy := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":"` + testDeployRunnerRoleARN + `"},"Action":"sts:AssumeRole"}]}`
+	fake := &fakeIAM{getOut: &iam.GetRoleOutput{Role: &iamtypes.Role{AssumeRolePolicyDocument: aws.String(policy)}}}
+	srv := &Server{
+		cfg: config.Config{ManagedProvisionRunnerRoleARN: testDeployRunnerRoleARN},
+		iamFactory: func(context.Context, string, string, string, string, string) (iamAPI, error) {
+			return fake, nil
+		},
+	}
+
+	err := srv.ensureDeployRunnerAssumeRoleTrust(context.Background(), "123456789012", "OrganizationAccountAccessRole", defaultManagedAWSRegion, "demo", "job1")
+	require.ErrorContains(t, err, "management root trust")
+	require.Empty(t, fake.updateInputs, "a missing management identity must fail before mutating role trust")
+}
+
+func TestEnsureDeployRunnerAssumeRoleTrustRejectsConfiguredManagementRootMismatchBeforeWrite(t *testing.T) {
+	t.Parallel()
+
+	fake := &fakeIAM{getOut: &iam.GetRoleOutput{Role: &iamtypes.Role{AssumeRolePolicyDocument: aws.String(testExternalManagementRootTrust)}}}
+	srv := &Server{
+		cfg: config.Config{
+			ManagedProvisionRunnerRoleARN: testDeployRunnerRoleARN,
+			ManagedOrgVendingRoleARN:      "arn:aws:iam::111122223333:role/wrong-management-account",
+		},
+		iamFactory: func(context.Context, string, string, string, string, string) (iamAPI, error) {
+			return fake, nil
+		},
+	}
+
+	err := srv.ensureDeployRunnerAssumeRoleTrust(context.Background(), "123456789012", "OrganizationAccountAccessRole", defaultManagedAWSRegion, "demo", "job1")
+	require.ErrorContains(t, err, "management root trust is missing")
+	require.Empty(t, fake.updateInputs, "a mismatched configured root must fail before mutating the observed Organizations trust")
 }
 
 func TestEnsureDeployRunnerAssumeRoleTrustNoopsWhenRunnerRoleUnset(t *testing.T) {
@@ -265,7 +357,7 @@ func TestEnsureDeployRunnerAssumeRoleTrustUpdatesWhenExistingStatementLacksExter
 	t.Parallel()
 
 	// Runner is already allowed but the statement lacks the external-ID condition.
-	policy := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":"` + testDeployRunnerRoleARN + `"},"Action":"sts:AssumeRole"}]}`
+	policy := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":"` + testManagementRootARN + `"},"Action":"sts:AssumeRole"},{"Effect":"Allow","Principal":{"AWS":"` + testDeployRunnerRoleARN + `"},"Action":"sts:AssumeRole"}]}`
 	fake := &fakeIAM{getOut: &iam.GetRoleOutput{Role: &iamtypes.Role{AssumeRolePolicyDocument: aws.String(policy)}}}
 	srv := &Server{
 		cfg:        config.Config{ManagedProvisionRunnerRoleARN: testDeployRunnerRoleARN},
@@ -274,7 +366,7 @@ func TestEnsureDeployRunnerAssumeRoleTrustUpdatesWhenExistingStatementLacksExter
 
 	err := srv.ensureDeployRunnerAssumeRoleTrust(context.Background(), "123456789012", "OrganizationAccountAccessRole", defaultManagedAWSRegion, "demo", "job1")
 	require.NoError(t, err)
-	require.Len(t, fake.getInputs, 1)
+	require.Len(t, fake.getInputs, 2)
 	// Should update — the existing statement lacks the external-ID condition.
 	require.Len(t, fake.updateInputs, 1)
 	require.Contains(t, aws.ToString(fake.updateInputs[0].PolicyDocument), "lesser-host/deploy/demo")
@@ -283,8 +375,8 @@ func TestEnsureDeployRunnerAssumeRoleTrustUpdatesWhenExistingStatementLacksExter
 func TestEnsureDeployRunnerAssumeRoleTrustNoopsWhenAlreadyConditioned(t *testing.T) {
 	t.Parallel()
 
-	// Runner is already allowed with the correct external-ID condition.
-	policy := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":"` + testDeployRunnerRoleARN + `"},"Action":"sts:AssumeRole","Condition":{"StringEquals":{"sts:ExternalId":"lesser-host/deploy/demo"}}}]}`
+	// Root trust, exact runner allow, and mismatch deny are already present.
+	policy := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":"` + testManagementRootARN + `"},"Action":"sts:AssumeRole"},{"Effect":"Allow","Principal":{"AWS":"` + testDeployRunnerRoleARN + `"},"Action":"sts:AssumeRole","Condition":{"StringEquals":{"sts:ExternalId":"lesser-host/deploy/demo"}}},{"Effect":"Deny","Principal":{"AWS":"` + testDeployRunnerRoleARN + `"},"Action":"sts:AssumeRole","Condition":{"StringNotEquals":{"sts:ExternalId":"lesser-host/deploy/demo"}}}]}`
 	fake := &fakeIAM{getOut: &iam.GetRoleOutput{Role: &iamtypes.Role{AssumeRolePolicyDocument: aws.String(policy)}}}
 	srv := &Server{
 		cfg:        config.Config{ManagedProvisionRunnerRoleARN: testDeployRunnerRoleARN},
@@ -364,6 +456,27 @@ func TestEnsureDeployRunnerAssumeRoleTrustReportsPolicyReadAndWriteFailures(t *t
 		err := srv.ensureDeployRunnerAssumeRoleTrust(context.Background(), "123456789012", "OrganizationAccountAccessRole", defaultManagedAWSRegion, "demo", "job1")
 		require.ErrorIs(t, err, expectedErr)
 		require.Contains(t, err.Error(), "update managed instance role trust policy")
+		require.Len(t, fake.updateInputs, 1)
+	})
+
+	t.Run("updated policy cannot be verified", func(t *testing.T) {
+		t.Parallel()
+
+		fake := &fakeIAM{
+			getOut:                &iam.GetRoleOutput{Role: &iamtypes.Role{AssumeRolePolicyDocument: aws.String(testExternalManagementRootTrust)}},
+			keepPolicyAfterUpdate: true,
+		}
+		srv := &Server{
+			cfg: config.Config{
+				ManagedProvisionRunnerRoleARN: testDeployRunnerRoleARN,
+				ManagedOrgVendingRoleARN:      "arn:aws:iam::902552026581:role/lesser-host-org-vending",
+			},
+			iamFactory: func(context.Context, string, string, string, string, string) (iamAPI, error) { return fake, nil },
+		}
+
+		err := srv.ensureDeployRunnerAssumeRoleTrust(context.Background(), "123456789012", "OrganizationAccountAccessRole", defaultManagedAWSRegion, "demo", "job1")
+		require.ErrorContains(t, err, "exact deploy runner ExternalId allow is missing")
+		require.Len(t, fake.getInputs, 2)
 		require.Len(t, fake.updateInputs, 1)
 	})
 }

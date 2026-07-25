@@ -53,8 +53,14 @@ type HostedGenesisSession struct {
 	MicroVMLifecycleRef    *hostedgenesis.MicroVMLifecycleRef `theorydb:"attr:microVmLifecycleRef" json:"-"`
 
 	DeclarationCheckpoint *hostedgenesis.DeclarationCheckpoint `theorydb:"attr:declarationCheckpoint" json:"declaration_checkpoint,omitempty"`
+	DeclarationCandidate  *hostedgenesis.DeclarationCandidate  `theorydb:"attr:declarationCandidate" json:"declaration_candidate,omitempty"`
+	CandidateRevision     int64                                `theorydb:"attr:candidateRevision" json:"candidate_revision,omitempty"`
+	CandidateHash         string                               `theorydb:"attr:candidateHash" json:"candidate_hash,omitempty"`
+	CandidatePhase        string                               `theorydb:"attr:candidatePhase" json:"candidate_phase,omitempty"`
+	Publication           *hostedgenesis.PublicationCheckpoint `theorydb:"attr:publication" json:"publication,omitempty"`
 	Failure               *hostedgenesis.Failure               `theorydb:"attr:failure" json:"failure,omitempty"`
 	TraceIDs              *hostedgenesis.TraceIDs              `theorydb:"attr:traceIds" json:"trace_ids,omitempty"`
+	VMCheckpoint          *hostedgenesis.VMCheckpointMetadata  `theorydb:"attr:vmCheckpoint" json:"vm_checkpoint,omitempty"`
 
 	RequestID string `theorydb:"attr:requestId" json:"request_id,omitempty"`
 
@@ -106,11 +112,21 @@ func (s *HostedGenesisSession) UpdateKeys() error {
 	if s.DeclarationCheckpoint != nil {
 		s.DeclarationCheckpoint.CheckpointRef = hostedgenesis.NormalizeCheckpointRef(s.DeclarationCheckpoint.CheckpointRef)
 	}
+	if err := s.bindDeclarationCandidate(); err != nil {
+		return err
+	}
 	if s.MicroVMLifecycleRef != nil {
 		binding := s.MicroVMSessionBinding()
 		if err := s.MicroVMLifecycleRef.Validate(binding); err != nil {
 			return err
 		}
+	}
+	if s.VMCheckpoint != nil {
+		checkpoint := s.VMCheckpoint.Normalize()
+		if err := checkpoint.Validate(); err != nil {
+			return err
+		}
+		s.VMCheckpoint = &checkpoint
 	}
 	s.RequestID = strings.TrimSpace(s.RequestID)
 
@@ -121,6 +137,33 @@ func (s *HostedGenesisSession) UpdateKeys() error {
 	s.GSI2PK = HostedGenesisSessionAgentGSI2PK(s.InstanceSlug, s.AgentID)
 	s.GSI2SK = fmt.Sprintf("%s#%s", s.CreatedAt.UTC().Format(time.RFC3339Nano), s.ConversationID)
 	return nil
+}
+
+func (s *HostedGenesisSession) bindDeclarationCandidate() error {
+	if s.DeclarationCandidate == nil {
+		if s.CandidateRevision != 0 || strings.TrimSpace(s.CandidateHash) != "" || strings.TrimSpace(s.CandidatePhase) != "" {
+			return fmt.Errorf("declaration candidate checkpoint exists without candidate state")
+		}
+		return nil
+	}
+	candidate := s.DeclarationCandidate.Clone()
+	if err := candidate.Validate(); err != nil {
+		return fmt.Errorf("declaration candidate: %w", err)
+	}
+	if !s.declarationCandidateBindingMatches(candidate) {
+		return fmt.Errorf("declaration candidate binding does not match hosted genesis session")
+	}
+	s.DeclarationCandidate = candidate
+	s.CandidateRevision = candidate.Revision
+	s.CandidateHash = candidate.CandidateHash
+	s.CandidatePhase = string(candidate.Phase)
+	return nil
+}
+
+func (s *HostedGenesisSession) declarationCandidateBindingMatches(candidate *hostedgenesis.DeclarationCandidate) bool {
+	return candidate.InstanceSlug == s.InstanceSlug && candidate.RegistrationID == s.RegistrationID &&
+		strings.EqualFold(candidate.AgentID, s.AgentID) && candidate.ConversationID == s.ConversationID &&
+		candidate.Model == s.Model && candidate.SourceTurnID == s.LatestTurnID
 }
 
 func (s *HostedGenesisSession) validateAndUpdateKeys() error {
@@ -142,7 +185,18 @@ func (s *HostedGenesisSession) validateAndUpdateKeys() error {
 	if !hostedgenesis.IsAllowedStatus(hostedgenesis.Status(s.Status)) {
 		return fmt.Errorf("status is invalid")
 	}
-	if s.Status == string(hostedgenesis.StatusDeclarationReady) {
+	if err := s.validateDurableStatusContract(); err != nil {
+		return err
+	}
+	if err := s.validateTurnLedger(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *HostedGenesisSession) validateDurableStatusContract() error {
+	switch hostedgenesis.Status(s.Status) {
+	case hostedgenesis.StatusDeclarationReady:
 		if err := hostedgenesis.CanPublish(hostedgenesis.PublishGateInput{
 			Status:                hostedgenesis.Status(s.Status),
 			RegistrationID:        s.RegistrationID,
@@ -152,19 +206,43 @@ func (s *HostedGenesisSession) validateAndUpdateKeys() error {
 		}); err != nil {
 			return err
 		}
-	}
-	if s.Status == string(hostedgenesis.StatusFailed) {
+		if s.Publication != nil {
+			if err := s.Publication.ValidatePrepared(s.RegistrationID, s.ConversationID, s.AgentID); err != nil {
+				return err
+			}
+		}
+		return nil
+	case hostedgenesis.StatusPublished:
+		if s.Failure != nil {
+			return hostedgenesis.ErrInvalidPublicationCheckpoint
+		}
+		if err := hostedgenesis.CanPublish(hostedgenesis.PublishGateInput{
+			Status:                hostedgenesis.StatusDeclarationReady,
+			RegistrationID:        s.RegistrationID,
+			ConversationID:        s.ConversationID,
+			AgentID:               s.AgentID,
+			DeclarationCheckpoint: s.DeclarationCheckpoint,
+		}); err != nil {
+			return err
+		}
+		if s.Publication == nil {
+			return hostedgenesis.ErrInvalidPublicationCheckpoint
+		}
+		if err := s.Publication.ValidatePublished(s.RegistrationID, s.ConversationID, s.AgentID); err != nil {
+			return err
+		}
+		return nil
+	case hostedgenesis.StatusFailed:
 		if s.Failure == nil {
 			return hostedgenesis.ErrInvalidFailureRecovery
 		}
 		if err := s.Failure.Validate(); err != nil {
 			return err
 		}
+		return nil
+	default:
+		return nil
 	}
-	if err := s.validateTurnLedger(); err != nil {
-		return err
-	}
-	return nil
 }
 
 func (s *HostedGenesisSession) validateTurnLedger() error {
@@ -199,6 +277,7 @@ func (s *HostedGenesisSession) ToProjectionInput() hostedgenesis.ProjectionInput
 		MessageCount:          s.MessageCount,
 		DeclarationCheckpoint: s.DeclarationCheckpoint,
 		Failure:               s.Failure,
+		Publication:           s.Publication,
 		RequestID:             s.RequestID,
 		TraceIDs:              s.TraceIDs,
 		CreatedAt:             s.CreatedAt,
@@ -285,8 +364,14 @@ func HostedGenesisSessionUpdateFields() []string {
 		"MicroVMExecutionID",
 		"MicroVMLifecycleRef",
 		"DeclarationCheckpoint",
+		"DeclarationCandidate",
+		"CandidateRevision",
+		"CandidateHash",
+		"CandidatePhase",
+		"Publication",
 		"Failure",
 		"TraceIDs",
+		"VMCheckpoint",
 		"RequestID",
 		"UpdatedAt",
 		"CompletedAt",

@@ -2,7 +2,8 @@
 # SEC-10: Release-verification change-lock.
 #
 # Verifies that the two-channel release verification code paths remain
-# unchanged from origin/main. Runs git diff to detect any semantic changes
+# unchanged from the pull request's validated target branch (origin/main/main
+# outside pull-request contexts). Runs git diff to detect any semantic changes
 # to the locked files:
 #
 #   - internal/provisionworker/release_compatibility.go
@@ -65,7 +66,7 @@ source "${VERIFIER_DIR}/_resolve_base_ref.sh"
 
 BASE_REF=""
 if ! BASE_REF="$(resolve_base_ref)"; then
-  echo "BLOCKED: cannot resolve origin/main or main (fetch + local fallback exhausted)" >&2
+  echo "BLOCKED: cannot resolve required change-lock base ref" >&2
   exit 2
 fi
 
@@ -109,6 +110,18 @@ is_reviewed_release_verification_governance_event() {
     # fingerprint and fails SEC-10.
     d25674c5c67269e48c659449de25487efe6fcd3366c8f6329ed68f1cbf48df4e)
       echo "  reviewed governance event: Project 48 M10/H2 Body instance-plane release-verification hardening"
+      echo "  reviewed semantic diff sha256: ${fingerprint}"
+      return 0
+      ;;
+    # Project 17 M15 (lesser-host#960 / #964 / PR #965): reviewed
+    # release-verification hardening that raises the exact managed Body
+    # compatibility floor to v1.0.8 and updates fail-closed fixtures for the
+    # three-phase deployment contract. Checksum, manifest, template, and
+    # auxiliary-asset verification remain mandatory. Any additional
+    # locked-file drift changes the full semantic-diff fingerprint and fails
+    # SEC-10.
+    fd940a48f56dbcf6c99b92dd9ad493b447ddc2fe00ca85fc1b80dec70245e2df)
+      echo "  reviewed governance event: Project 17 M15 exact managed three-phase release-verification hardening (#960/#964, PR #965)"
       echo "  reviewed semantic diff sha256: ${fingerprint}"
       return 0
       ;;

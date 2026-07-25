@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	apptheory "github.com/theory-cloud/apptheory/runtime"
+	apptheory "github.com/theory-cloud/apptheory/v2/runtime"
 
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
 	"github.com/equaltoai/lesser-host/internal/store/models"
@@ -33,6 +33,7 @@ func buildHostedGenesisConversationResponseFromSession(session *models.HostedGen
 			Status:           hostedgenesis.StatusFailed,
 			MessageCount:     session.MessageCount,
 			Failure:          hostedGenesisInvalidProjectionFailure(),
+			PublishedVersion: 0,
 			RequestID:        session.RequestID,
 			PollAfterSeconds: 0,
 			CreatedAt:        session.CreatedAt,
@@ -60,12 +61,17 @@ func buildHostedGenesisConversationResponseFromSession(session *models.HostedGen
 		CreatedAt:        timePtrIfSet(projection.CreatedAt),
 		UpdatedAt:        timePtrIfSet(projection.UpdatedAt),
 		CompletedAt:      timePtrIfSet(projection.CompletedAt),
+		PublishedVersion: projection.PublishedVersion,
+		PublishedAt:      timePtrIfSet(projection.PublishedAt),
 	}
+	responseProjection.DeclarationCandidate = buildHostedGenesisCandidateProjection(session.DeclarationCandidate)
 	if hostedGenesisStatusIncludesMessages(string(projection.Status)) {
-		if messages, bounded := buildHostedGenesisConversationMessages(session, conv); len(messages) > 0 {
+		messages, bounded, redacted := buildHostedGenesisConversationMessages(session, conv)
+		if len(messages) > 0 {
 			responseProjection.Messages = messages
-			responseProjection.MessagesTruncated = bounded
 		}
+		responseProjection.MessagesTruncated = bounded
+		responseProjection.MessagesRedacted = redacted
 	}
 	if projection.Status == hostedgenesis.StatusDeclarationReady {
 		responseProjection.ProducedDeclarations = buildHostedGenesisProducedDeclarationsFromSession(session, conv, requestID)
@@ -78,6 +84,24 @@ func buildHostedGenesisConversationResponseFromSession(session *models.HostedGen
 		RequestID:    requestID,
 		Conversation: responseProjection,
 	}
+}
+
+func buildHostedGenesisCandidateProjection(candidate *hostedgenesis.DeclarationCandidate) *hostedGenesisCandidateProjection {
+	if candidate == nil {
+		return nil
+	}
+	out := &hostedGenesisCandidateProjection{
+		Version: candidate.Version, Phase: candidate.Phase, CurrentSection: candidate.CurrentSection,
+		CompletedSections: append([]hostedgenesis.DeclarationSection(nil), candidate.CompletedSections...),
+		Revision:          candidate.Revision, CandidateHash: candidate.CandidateHash,
+	}
+	if candidate.Review != nil {
+		out.Review = &hostedGenesisCandidateReview{
+			RendererVersion: candidate.Review.RendererVersion, CandidateRevision: candidate.Review.CandidateRevision,
+			CandidateHash: candidate.Review.CandidateHash, ReviewHash: candidate.Review.ReviewHash, ReviewText: candidate.Review.ReviewText,
+		}
+	}
+	return out
 }
 
 func hostedGenesisInvalidProjectionFailure() *hostedgenesis.Failure {
@@ -100,8 +124,8 @@ func hostedGenesisFailureFromSessionForSession(session *models.HostedGenesisSess
 	if failure == nil {
 		return hostedGenesisFailureFromReason(hostedGenesisFailureInvalidCompletionState)
 	}
-	if hostedGenesisDeclarationExtractionRetriesExhausted(session) {
-		failure = hostedGenesisExhaustedDeclarationExtractionFailure(failure)
+	if hostedGenesisAssistantTurnRetriesExhausted(session) {
+		failure = hostedGenesisExhaustedRetryFailure(failure, hostedGenesisFailureAssistantTurnFailed)
 	}
 	code := failure.Code
 	if hostedgenesis.IsDeclarationValidationCode(failure.Recovery.Reason) {
@@ -110,6 +134,7 @@ func hostedGenesisFailureFromSessionForSession(session *models.HostedGenesisSess
 	reason := hostedgenesis.SanitizeFailureReason(code, failure.Recovery.Reason)
 	return &hostedGenesisFailure{
 		Code:      string(code),
+		Class:     string(failure.Class),
 		Message:   hostedgenesis.FailureMessage(code),
 		Retryable: failure.Retryable,
 		Recovery: hostedGenesisFailureRecovery{
@@ -121,7 +146,7 @@ func hostedGenesisFailureFromSessionForSession(session *models.HostedGenesisSess
 	}
 }
 
-func hostedGenesisExhaustedDeclarationExtractionFailure(failure *hostedgenesis.Failure) *hostedgenesis.Failure {
+func hostedGenesisExhaustedRetryFailure(failure *hostedgenesis.Failure, reason string) *hostedgenesis.Failure {
 	if failure == nil {
 		return nil
 	}
@@ -130,7 +155,7 @@ func hostedGenesisExhaustedDeclarationExtractionFailure(failure *hostedgenesis.F
 	exhausted.Recovery.Action = hostedgenesis.RecoveryActionRestartSoulBootstrap
 	exhausted.Recovery.MaxAttempts = 0
 	exhausted.Recovery.RetryAfterSeconds = 0
-	exhausted.Recovery.Reason = hostedGenesisFailureDeclarationExtractionFailed
+	exhausted.Recovery.Reason = strings.TrimSpace(reason)
 	return &exhausted
 }
 

@@ -5,13 +5,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
 	anthropicconstant "github.com/anthropics/anthropic-sdk-go/shared/constant"
 
+	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
@@ -22,6 +25,7 @@ type anthropicToolBatchConfig struct {
 	SystemPrompt    string
 	Temperature     float64
 	MaxTokens       int64
+	Telemetry       ProviderTelemetrySink
 }
 
 type anthropicJSONTextBatchConfig struct {
@@ -49,7 +53,7 @@ func anthropicModelFromSet(modelSet string) (anthropic.Model, error) {
 
 func anthropicClientForKey(apiKey string) anthropic.Client {
 	apiKey = strings.TrimSpace(apiKey)
-	opts := []option.RequestOption{}
+	opts := []option.RequestOption{option.WithMaxRetries(DefaultProviderSDKRetryBudget)}
 	if apiKey != "" {
 		opts = append(opts, option.WithAPIKey(apiKey))
 	}
@@ -109,19 +113,60 @@ func anthropicToolInputSchemaFromJSONSchema(schema map[string]any) anthropic.Too
 	return out
 }
 
+const anthropicSchemaTypeObject = "object"
+
+// anthropicUnsupportedSchemaKeywords maps a JSON-schema node type to constraint
+// keywords Anthropic strict custom tools reject with a 400 (e.g. "For 'array'
+// type, property 'maxItems' is not supported"). Stripping them only relaxes
+// provider-side validation: Host re-enforces these limits locally after the
+// provider responds (the caller-supplied parser, hostedgenesis
+// five-body normalization/validation).
+var anthropicUnsupportedSchemaKeywords = map[string][]string{
+	"array":   {"minItems", "maxItems", "uniqueItems", "contains", "minContains", "maxContains"},
+	"string":  {"minLength", "maxLength"},
+	"number":  {"minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf"},
+	"integer": {"minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf"},
+}
+
+// Anthropic documents simple {n,m} regex quantifiers as supported but complex
+// quantifiers with large ranges as unsupported, without publishing a numeric
+// cutoff. Do not guess that cutoff: strip any ranged-quantifier pattern from
+// the provider schema and rely on the field description plus Host's original
+// post-response validation. Fixed quantifiers such as RFC3339's {4} and {2}
+// remain in the strict tool schema.
+var anthropicRangedRegexQuantifier = regexp.MustCompile(`\{[0-9]+,[0-9]+\}`)
+
+func anthropicSchemaKeywordUnsupported(nodeType, keyword string) bool {
+	for _, unsupported := range anthropicUnsupportedSchemaKeywords[nodeType] {
+		if keyword == unsupported {
+			return true
+		}
+	}
+	return false
+}
+
 func sanitizeAnthropicToolSchemaMap(schema map[string]any) map[string]any {
 	if len(schema) == 0 {
 		return nil
 	}
 	out := make(map[string]any, len(schema))
-	objType, _ := schema["type"].(string)
+	rawType, _ := schema["type"].(string)
+	nodeType := strings.ToLower(strings.TrimSpace(rawType))
 	for k, v := range schema {
-		if k == "additionalProperties" && strings.EqualFold(strings.TrimSpace(objType), "object") {
+		if k == "additionalProperties" && nodeType == anthropicSchemaTypeObject {
 			continue
+		}
+		if anthropicSchemaKeywordUnsupported(nodeType, k) {
+			continue
+		}
+		if nodeType == "string" && k == "pattern" {
+			if pattern, ok := v.(string); ok && anthropicRangedRegexQuantifier.MatchString(pattern) {
+				continue
+			}
 		}
 		out[k] = sanitizeAnthropicToolSchemaValue(v)
 	}
-	if strings.EqualFold(strings.TrimSpace(objType), "object") {
+	if nodeType == anthropicSchemaTypeObject {
 		if _, ok := out["properties"]; !ok {
 			out["properties"] = map[string]any{}
 		}
@@ -270,15 +315,21 @@ func anthropicToolBatch[Prompt any, Parsed any, Out any](
 	if err != nil {
 		return zero, models.AIUsage{}, err
 	}
+	recorder := newProviderTelemetryRecorder("anthropic", string(model), "json_text_batch", cfg.Telemetry)
 
 	payload, err := json.Marshal(prompt)
 	if err != nil {
+		recorder.emit(ProviderTelemetryEvent{EventType: "provider_call_failed", LastEvent: true, FailureClass: ProviderFailureClass(err)})
 		return zero, models.AIUsage{}, err
 	}
+	payloadBytes, payloadHash := providerPayloadMetadata(payload)
+	recorder.emit(ProviderTelemetryEvent{EventType: "request_start", PayloadBytes: payloadBytes, PayloadSHA256: payloadHash, ToolName: cfg.ToolName})
 
 	toolName := strings.TrimSpace(cfg.ToolName)
 	if toolName == "" {
-		return zero, models.AIUsage{}, fmt.Errorf("anthropic: tool name is required")
+		toolErr := fmt.Errorf("anthropic: tool name is required")
+		recorder.emit(ProviderTelemetryEvent{EventType: "provider_call_failed", LastEvent: true, FailureClass: ProviderFailureClass(toolErr)})
+		return zero, models.AIUsage{}, toolErr
 	}
 	if cfg.MaxTokens <= 0 {
 		cfg.MaxTokens = 2048
@@ -306,24 +357,42 @@ func anthropicToolBatch[Prompt any, Parsed any, Out any](
 		Temperature: anthropic.Float(cfg.Temperature),
 	})
 	if err != nil {
+		recorder.emit(ProviderTelemetryEvent{EventType: "provider_call_failed", LastEvent: true, FailureClass: ProviderFailureClass(err), PayloadBytes: payloadBytes, PayloadSHA256: payloadHash, ToolName: toolName})
 		return zero, models.AIUsage{}, err
 	}
+	usage := anthropicUsageFromMessage(message, start)
+	stopReason := strings.TrimSpace(string(message.StopReason))
+	recorder.emit(ProviderTelemetryEvent{EventType: "response_received", InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens, TotalTokens: usage.TotalTokens, ToolCalls: 1, OutputCount: int64(len(message.Content)), StopReason: stopReason, ToolName: toolName})
 	if stopErr := anthropicValidateStopReason(message, anthropic.StopReasonToolUse); stopErr != nil {
+		stopErr = withProviderFailureClass(stopErr, string(hostedgenesis.FailureClassInvalidProviderOutput))
+		recorder.emit(ProviderTelemetryEvent{EventType: "provider_call_failed", LastEvent: true, FailureClass: ProviderFailureClass(stopErr), StopReason: stopReason, ToolName: toolName})
 		return zero, models.AIUsage{}, stopErr
 	}
 
 	raw, err := anthropicToolUseInput(message, toolName)
 	if err != nil {
+		err = withProviderFailureClass(err, string(hostedgenesis.FailureClassInvalidProviderOutput))
+		recorder.emit(ProviderTelemetryEvent{EventType: "provider_call_failed", LastEvent: true, FailureClass: ProviderFailureClass(err), ToolName: toolName})
 		return zero, models.AIUsage{}, err
 	}
+	rawBytes, rawHash := providerPayloadMetadata(raw)
+	rawRunes := utf8.RuneCount(raw)
+	recorder.emit(ProviderTelemetryEvent{EventType: "tool_input_received", OutputBytes: rawBytes, OutputRunes: rawRunes, OutputSHA256: rawHash, OutputCount: 1, ToolCalls: 1, StopReason: stopReason, ToolName: toolName})
+	recorder.emit(ProviderTelemetryEvent{EventType: "parse_start", OutputBytes: rawBytes, OutputRunes: rawRunes, OutputSHA256: rawHash, ToolCalls: 1, StopReason: stopReason, ToolName: toolName})
 
 	parsed, err := parse(string(raw))
 	if err != nil {
+		err = withProviderFailureClass(err, string(hostedgenesis.FailureClassParseValidation))
+		recorder.emit(ProviderTelemetryEvent{EventType: "provider_call_failed", LastEvent: true, FailureClass: ProviderFailureClass(err), OutputBytes: rawBytes, OutputRunes: rawRunes, OutputSHA256: rawHash, ToolName: toolName})
 		return zero, models.AIUsage{}, err
 	}
+	recorder.emit(ProviderTelemetryEvent{EventType: "parse_completed", OutputBytes: rawBytes, OutputRunes: rawRunes, OutputSHA256: rawHash, ToolName: toolName})
 
+	recorder.emit(ProviderTelemetryEvent{EventType: "validation_start", OutputBytes: rawBytes, OutputRunes: rawRunes, OutputSHA256: rawHash, ToolName: toolName})
 	out := normalize(parsed)
-	return out, anthropicUsageFromMessage(message, start), nil
+	recorder.emit(ProviderTelemetryEvent{EventType: "validation_completed", OutputBytes: rawBytes, OutputRunes: rawRunes, OutputSHA256: rawHash, ToolName: toolName})
+	recorder.emit(ProviderTelemetryEvent{EventType: "provider_call_completed", LastEvent: true, OutputBytes: rawBytes, OutputRunes: rawRunes, OutputSHA256: rawHash, OutputCount: 1, InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens, TotalTokens: usage.TotalTokens, ToolCalls: 1, StopReason: stopReason, ToolName: toolName})
+	return out, usage, nil
 }
 
 func anthropicJSONTextBatch[Prompt any, Parsed any, Out any](

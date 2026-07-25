@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"strings"
 
-	apptheory "github.com/theory-cloud/apptheory/runtime"
+	apptheory "github.com/theory-cloud/apptheory/v2/runtime"
 
 	"github.com/equaltoai/lesser-host/internal/artifacts"
 	"github.com/equaltoai/lesser-host/internal/commmailbox"
@@ -57,22 +57,13 @@ type Server struct {
 	telnyxSendSMS       func(ctx context.Context, from string, to string, text string) (string, error)
 	telnyxCallVoice     func(ctx context.Context, from string, to string, texmlURL string, statusCallbackURL string) (string, error)
 
-	enqueueCommMessage           func(ctx context.Context, msg commworker.QueueMessage) error
-	enqueueHostedGenesisMessage  func(ctx context.Context, msg hostedgenesis.QueueMessage) error
-	hostedGenesisAssistantRunner func(ctx context.Context, in hostedGenesisAssistantRunInput) (hostedGenesisAssistantRunResult, error)
+	enqueueCommMessage          func(ctx context.Context, msg commworker.QueueMessage) error
+	enqueueHostedGenesisMessage func(ctx context.Context, msg hostedgenesis.QueueMessage) error
 	// hostedGenesisMicroVMDispatcher is the M16 controller run dispatch seam for
 	// the hosted genesis accept path. When wired, the accept path dispatches the
 	// MicroVM and returns 202 in_progress. When nil the accept path fails closed
-	// and loudly rather than falling back to a synchronous control-plane LLM
-	// call, unless hostedGenesisSyncAssistantFallbackEnabled is explicitly set
-	// true (a non-production/test-only guard that H2.1 deletes along with the
-	// sync runner). Production never sets that guard.
+	// and loudly; the Control plane has no provider-call compatibility path.
 	hostedGenesisMicroVMDispatcher hostedgenesis.MicroVMDispatcher
-	// hostedGenesisSyncAssistantFallbackEnabled is a non-production/test-only
-	// guard that keeps the retained synchronous assistant runner reachable until
-	// H2.1 deletes it. It defaults false; production must never enable it. When
-	// false (and no dispatcher is wired) the accept path fails closed and loudly.
-	hostedGenesisSyncAssistantFallbackEnabled bool
 
 	// paymentsProviderFactory is a test-injection hook. When non-nil, handlers
 	// use it instead of payments.NewProvider.
@@ -125,9 +116,7 @@ func NewServer(cfg config.Config, st *store.Store) *Server {
 	// via the Server's ssmGetParameter. When the config is disabled/incomplete,
 	// the SSM fetch fails, or construction fails, the dispatcher stays nil and
 	// the accept path fails closed and loudly with a typed 503
-	// microvm_unavailable — never a silent fallback to the synchronous
-	// control-plane LLM. The retained sync assistant runner stays behind its
-	// defaulted-false non-production guard (H2.1 deletes it). The control plane
+	// microvm_unavailable — never a Control plane provider call. The control plane
 	// never makes raw AWS RunMicrovm/GetMicrovm SDK calls: the controller Lambda
 	// is the single governed surface.
 	dispatcherCtx, dispatcherCancel := context.WithTimeout(context.Background(), hostedGenesisMicroVMDispatcherInitTimeout)

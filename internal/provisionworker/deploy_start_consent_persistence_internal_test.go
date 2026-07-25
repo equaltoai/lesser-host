@@ -234,7 +234,7 @@ func consentPersistDeployStartServer(st *store.Store, keyHex string, cb *fakeCod
 			ManagedLesserGitHubRepo:                 "lesser",
 			ManagedLesserBodyGitHubOwner:            "equaltoai",
 			ManagedLesserBodyGitHubRepo:             "lesser-body",
-			ManagedLesserBodyDefaultVersion:         "v0.2.3",
+			ManagedLesserBodyDefaultVersion:         "v1.0.8",
 			ManagedInstanceRoleName:                 "lesser-host-instance",
 			ArtifactBucketName:                      "bucket",
 		},

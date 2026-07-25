@@ -50,6 +50,15 @@ func updateMCPReceiptIngestInstanceUpdate(job *models.UpdateJob, mcpWiredAt time
 	}
 }
 
+func updateSoulBindingIntegrationInstanceUpdate(job *models.UpdateJob) func(core.UpdateBuilder) error {
+	return func(ub core.UpdateBuilder) error {
+		if job != nil {
+			setSoulBindingIntegrationInstanceARN(ub, job.SoulBindingIntegrationSecretARN)
+		}
+		return nil
+	}
+}
+
 type updatePhaseReceiptIngestSpec struct {
 	phase              string
 	receiptKey         string

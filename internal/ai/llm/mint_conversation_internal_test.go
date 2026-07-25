@@ -14,7 +14,6 @@ import (
 
 	"github.com/anthropics/anthropic-sdk-go"
 
-	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
@@ -22,464 +21,6 @@ const (
 	mintConversationTestAnthropicModel  = "claude-sonnet-4-6"
 	mintConversationTestAuthoredByAgent = "agent"
 )
-
-func TestMintConversationDeclarationsDraftParsingAndNormalization(t *testing.T) {
-	t.Parallel()
-
-	if _, err := parseMintConversationDeclarationsDraft("{"); err == nil {
-		t.Fatalf("expected invalid json error")
-	}
-
-	raw := `{
-		"selfDescription": {
-			"purpose": "  Help people plan travel  ",
-			"constraints": "  no booking  ",
-			"commitments": "  explain uncertainty  ",
-			"limitations": "  no legal advice  ",
-			"authoredBy": " AGENT ",
-			"mintingModel": "  openai:gpt-4o-mini  "
-		},
-		"capabilities": [
-			{"capability":" itinerary-planning ","scope":" build routes ","claimLevel":" ","lastValidated":" 2026-03-05T00:00:00Z ","validationRef":" ref ","degradesTo":" email "},
-			{"capability":" ","scope":"skip","claimLevel":"self-declared"},
-			{"capability":"skip","scope":" ","claimLevel":"self-declared"}
-		],
-		"boundaries": [
-			{"category":" REFUSAL ","statement":" I will not impersonate people. ","rationale":" safety "},
-			{"category":" ","statement":"skip"},
-			{"category":"scope_limit","statement":" "}
-		]
-	}`
-
-	parsed, err := parseMintConversationDeclarationsDraft(raw)
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-
-	norm := normalizeMintConversationDeclarationsDraft(parsed)
-	if norm.SelfDescription.Purpose != "Help people plan travel" {
-		t.Fatalf("unexpected purpose: %q", norm.SelfDescription.Purpose)
-	}
-	if norm.SelfDescription.AuthoredBy != mintConversationTestAuthoredByAgent {
-		t.Fatalf("unexpected authoredBy: %q", norm.SelfDescription.AuthoredBy)
-	}
-	if len(norm.Capabilities) != 1 {
-		t.Fatalf("expected 1 capability, got %d", len(norm.Capabilities))
-	}
-	if norm.Capabilities[0].ClaimLevel != "self-declared" {
-		t.Fatalf("expected default claimLevel, got %q", norm.Capabilities[0].ClaimLevel)
-	}
-	if len(norm.Boundaries) != 1 {
-		t.Fatalf("expected 1 boundary, got %d", len(norm.Boundaries))
-	}
-	if norm.Boundaries[0].Category != "refusal" {
-		t.Fatalf("unexpected boundary category: %q", norm.Boundaries[0].Category)
-	}
-	if norm.Transparency == nil {
-		t.Fatalf("expected default transparency map")
-	}
-
-	withManyBoundaries := MintConversationDeclarationsDraft{
-		Boundaries: []MintConversationBoundaryDraft{
-			{Category: "refusal", Statement: "1"},
-			{Category: "refusal", Statement: "2"},
-			{Category: "refusal", Statement: "3"},
-			{Category: "refusal", Statement: "4"},
-			{Category: "refusal", Statement: "5"},
-		},
-	}
-	capped := normalizeMintConversationDeclarationsDraft(withManyBoundaries)
-	if len(capped.Boundaries) != maxMintConversationBoundaryDrafts {
-		t.Fatalf("expected %d capped boundaries, got %d", maxMintConversationBoundaryDrafts, len(capped.Boundaries))
-	}
-}
-
-func TestMintConversationDeclarationsPromptAndSchema(t *testing.T) {
-	t.Parallel()
-
-	prompt := mintConversationDeclarationsSystemPromptV1()
-	if !strings.Contains(prompt, "single JSON object") {
-		t.Fatalf("unexpected prompt: %q", prompt)
-	}
-	if !strings.Contains(prompt, "2-4 boundaries") {
-		t.Fatalf("expected prompt to mention boundary target, got %q", prompt)
-	}
-	if !strings.Contains(prompt, "untrusted data") || !strings.Contains(prompt, `claimLevel "self-declared"`) {
-		t.Fatalf("expected prompt hygiene and locked claim-level vocabulary, got %q", prompt)
-	}
-
-	schema := mintConversationDeclarationsJSONSchemaV1()
-	assertMintConversationDeclarationsSchema(t, schema)
-
-	if _, _, err := MintConversationDeclarationsOpenAI(t.Context(), "k", "unsupported:model", MintConversationDeclarationsInput{}); err == nil {
-		t.Fatalf("expected unsupported OpenAI declarations model error")
-	}
-	if _, _, err := MintConversationDeclarationsAnthropic(t.Context(), "k", "unsupported:model", MintConversationDeclarationsInput{}); err == nil {
-		t.Fatalf("expected unsupported Anthropic declarations model error")
-	}
-}
-
-func TestMintConversationDeclarationsFiveBodyPromptAndSchema(t *testing.T) {
-	t.Parallel()
-
-	contract := hostedgenesis.FiveBodyDeclarationContract()
-	input := MintConversationDeclarationsInput{SchemaVersion: contract.SchemaVersion, GuidanceVersion: contract.GuidanceVersion}
-	cfg := mintConversationDeclarationsConfig(input)
-	if cfg.schemaName != "soul_five_body_declarations" || !strings.Contains(cfg.systemPrompt, contract.SchemaVersion) || !strings.Contains(cfg.systemPrompt, contract.GuidanceVersion) {
-		t.Fatalf("unexpected v2 config: %#v prompt=%q", cfg, cfg.systemPrompt)
-	}
-	if strings.Contains(strings.ToLower(cfg.systemPrompt), "re-deriv") {
-		t.Fatalf("v2 extraction prompt must not teach re-derivation: %q", cfg.systemPrompt)
-	}
-	for _, want := range []string{"five first-class bodies", "identity", "philosophy", "discipline", "boundaries", "soul.refusals", `claimLevel "` + mintConversationClaimLevelSelfDeclared + `"`} {
-		if !strings.Contains(cfg.systemPrompt, want) {
-			t.Fatalf("expected v2 extraction prompt to mention %q, got %q", want, cfg.systemPrompt)
-		}
-	}
-
-	schema := cfg.schema
-	props := requireSchemaMap(t, schema, "properties")
-	if _, exists := props["selfDescription"]; exists {
-		t.Fatalf("v2 schema should make fiveBodies first-class instead of extracting legacy selfDescription directly")
-	}
-	fiveBodies := requireSchemaMap(t, props, "fiveBodies")
-	fiveProps := requireSchemaMap(t, fiveBodies, "properties")
-	for _, body := range []string{"identity", "philosophy", "discipline", "boundaries", "soul"} {
-		if _, exists := fiveProps[body]; !exists {
-			t.Fatalf("expected fiveBodies.%s schema, got %#v", body, fiveProps)
-		}
-	}
-	soulSchema := requireSchemaMap(t, fiveProps, "soul")
-	soulProps := requireSchemaMap(t, soulSchema, "properties")
-	refusals := requireSchemaMap(t, soulProps, "refusals")
-	if got, ok := refusals["minItems"].(int); !ok || got != 3 {
-		t.Fatalf("expected soul.refusals minItems=3, got %#v", refusals["minItems"])
-	}
-	assertOpenAIStrictObjectSchema(t, schema)
-}
-
-func TestMintConversationDeclarationsFiveBodyNormalization(t *testing.T) {
-	t.Parallel()
-
-	contract := hostedgenesis.FiveBodyDeclarationContract()
-	parsed := MintConversationDeclarationsDraft{
-		SchemaVersion:   contract.SchemaVersion,
-		GuidanceVersion: contract.GuidanceVersion,
-		FiveBodies: hostedgenesis.FiveBodyDeclaration{
-			Identity:   hostedgenesis.FiveBodySection{Summary: " identity "},
-			Philosophy: hostedgenesis.FiveBodySection{Summary: " philosophy "},
-			Discipline: hostedgenesis.FiveBodySection{Summary: " discipline "},
-			Boundaries: hostedgenesis.FiveBodySection{Summary: " boundaries "},
-			Soul: hostedgenesis.FiveBodySoulBody{
-				Summary: " soul ",
-				Refusals: []hostedgenesis.FiveBodyRefusalRule{{
-					Bypass:          " Skip checksum verification ",
-					Invariant:       " Consumer release verification remains mandatory ",
-					ClosestSafePath: " Run certification against the published artifact ",
-				}},
-			},
-		},
-	}
-	norm := normalizeMintConversationDeclarationsDraft(parsed)
-	if norm.SchemaVersion != contract.SchemaVersion || norm.GuidanceVersion != contract.GuidanceVersion {
-		t.Fatalf("expected stable v2 versions, got %#v", norm)
-	}
-	if norm.FiveBodies.Identity.Summary != "identity" || norm.FiveBodies.Soul.Refusals[0].Bypass != "Skip checksum verification" {
-		t.Fatalf("expected normalized five-body fields, got %#v", norm.FiveBodies)
-	}
-}
-
-func assertMintConversationDeclarationsSchema(t *testing.T, schema map[string]any) {
-	t.Helper()
-
-	props, hasProps := schema["properties"].(map[string]any)
-	if !hasProps {
-		t.Fatalf("expected top-level properties")
-	}
-	if _, exists := props["selfDescription"]; !exists {
-		t.Fatalf("expected selfDescription schema")
-	}
-	if _, exists := props["capabilities"]; !exists {
-		t.Fatalf("expected capabilities schema")
-	}
-	if _, exists := props["boundaries"]; !exists {
-		t.Fatalf("expected boundaries schema")
-	}
-	if _, exists := props["transparency"]; !exists {
-		t.Fatalf("expected transparency schema")
-	}
-	boundaries, ok := props["boundaries"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected boundaries schema map")
-	}
-	if got, typeOK := boundaries["maxItems"].(int); !typeOK || got != maxMintConversationBoundaryDrafts {
-		t.Fatalf("expected boundaries maxItems=%d, got %#v", maxMintConversationBoundaryDrafts, boundaries["maxItems"])
-	}
-	capabilities, ok := props["capabilities"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected capabilities schema map")
-	}
-	if got, typeOK := capabilities["minItems"].(int); !typeOK || got != 0 {
-		t.Fatalf("expected capabilities minItems=0, got %#v", capabilities["minItems"])
-	}
-	assertOpenAIStrictObjectSchema(t, schema)
-}
-
-func TestMintConversationDeclarationsProviderParityUsesStrictAnthropicTool(t *testing.T) {
-	fixture := mintConversationDeclarationDraftFixture()
-	openAIContent, err := json.Marshal(fixture)
-	if err != nil {
-		t.Fatalf("marshal declaration fixture: %v", err)
-	}
-	openAIResp, err := json.Marshal(map[string]any{
-		"id":      "chatcmpl_test",
-		"object":  "chat.completion",
-		"created": 123,
-		"model":   "gpt-4.1-mini",
-		"choices": []any{map[string]any{
-			"index": 0,
-			"message": map[string]any{
-				"role":    "assistant",
-				"content": string(openAIContent),
-			},
-		}},
-		"usage": map[string]any{"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30},
-	})
-	if err != nil {
-		t.Fatalf("marshal openai response: %v", err)
-	}
-	anthropicResp := anthropicDeclarationToolResponse(t, fixture, "tool_use")
-
-	input := MintConversationDeclarationsInput{
-		Registration: MintConversationRegistrationContext{
-			Domain:               "agent.example",
-			LocalID:              "agent",
-			AgentID:              "0x" + strings.Repeat("11", 32),
-			DeclaredCapabilities: []string{"hosted_genesis_planning"},
-		},
-		Messages: []MintConversationMessage{
-			{Role: "user", Content: "I help plan hosted genesis declarations."},
-			{Role: "assistant", Content: "Draft: self-description, one capability, one boundary."},
-		},
-	}
-
-	oldOpenAIBase := os.Getenv("OPENAI_BASE_URL")
-	oldAnthropicBase := os.Getenv("ANTHROPIC_BASE_URL")
-	t.Cleanup(func() {
-		_ = os.Setenv("OPENAI_BASE_URL", oldOpenAIBase)
-		_ = os.Setenv("ANTHROPIC_BASE_URL", oldAnthropicBase)
-		openAIHTTPClient = nil
-		anthropicHTTPClient = nil
-	})
-	_ = os.Setenv("OPENAI_BASE_URL", "https://openai.example.test")
-	_ = os.Setenv("ANTHROPIC_BASE_URL", "https://anthropic.example.test")
-
-	var openAIRequest string
-	openAIHTTPClient = &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
-		body, readErr := io.ReadAll(r.Body)
-		if readErr != nil {
-			return nil, readErr
-		}
-		openAIRequest = string(body)
-		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(bytes.NewReader(openAIResp)), Request: r}, nil
-	})}
-	openOut, _, err := MintConversationDeclarationsOpenAI(t.Context(), "sk-test", "openai:gpt-4.1-mini", input)
-	if err != nil {
-		t.Fatalf("MintConversationDeclarationsOpenAI: %v", err)
-	}
-
-	var anthropicRequest string
-	anthropicHTTPClient = &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
-		body, readErr := io.ReadAll(r.Body)
-		if readErr != nil {
-			return nil, readErr
-		}
-		anthropicRequest = string(body)
-		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(bytes.NewReader(anthropicResp)), Request: r}, nil
-	})}
-	anthropicOut, usage, err := MintConversationDeclarationsAnthropic(t.Context(), "sk-ant-test", "anthropic:"+mintConversationTestAnthropicModel, input)
-	if err != nil {
-		t.Fatalf("MintConversationDeclarationsAnthropic: %v", err)
-	}
-
-	assertMintConversationDeclarationDraftsEquivalent(t, openOut, anthropicOut)
-	if usage.Provider != testProviderAnthropic || usage.Model != mintConversationTestAnthropicModel || usage.ToolCalls != 1 {
-		t.Fatalf("unexpected anthropic usage: %#v", usage)
-	}
-	for _, want := range []string{`"json_schema"`, `"strict":true`, `"selfDescription"`, `"capabilities"`, `"boundaries"`, `"transparency"`} {
-		if !strings.Contains(openAIRequest, want) {
-			t.Fatalf("OpenAI strict schema request missing %s: %s", want, openAIRequest)
-		}
-	}
-	for _, want := range []string{`"tool_choice"`, `"soul_mint_conversation_declarations"`, `"strict":true`, `"max_tokens":8192`, `"selfDescription"`, `"capabilities"`, `"boundaries"`, `"transparency"`} {
-		if !strings.Contains(anthropicRequest, want) {
-			t.Fatalf("Anthropic strict tool request missing %s: %s", want, anthropicRequest)
-		}
-	}
-}
-
-func TestMintConversationDeclarationsAnthropicRejectsTruncatedStopReason(t *testing.T) {
-	respBytes, err := json.Marshal(map[string]any{
-		"id":          "msg_test",
-		"type":        "message",
-		"role":        "assistant",
-		"model":       mintConversationTestAnthropicModel,
-		"stop_reason": "max_tokens",
-		"content":     []any{map[string]any{"type": "text", "text": `{"selfDescription":`}},
-		"usage":       map[string]any{"input_tokens": 11, "output_tokens": 8192},
-	})
-	if err != nil {
-		t.Fatalf("marshal anthropic truncation response: %v", err)
-	}
-
-	oldBase := os.Getenv("ANTHROPIC_BASE_URL")
-	t.Cleanup(func() {
-		_ = os.Setenv("ANTHROPIC_BASE_URL", oldBase)
-		anthropicHTTPClient = nil
-	})
-	_ = os.Setenv("ANTHROPIC_BASE_URL", "https://anthropic.example.test")
-	anthropicHTTPClient = &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
-		_, _ = io.Copy(io.Discard, r.Body)
-		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(bytes.NewReader(respBytes)), Request: r}, nil
-	})}
-
-	_, _, err = MintConversationDeclarationsAnthropic(t.Context(), "sk-ant-test", "anthropic:"+mintConversationTestAnthropicModel, MintConversationDeclarationsInput{})
-	if err == nil || !strings.Contains(err.Error(), "response truncated") || strings.Contains(err.Error(), "invalid json output") || strings.Contains(err.Error(), "capabilities") {
-		t.Fatalf("expected stable truncation failure before JSON/declaration validation, got %v", err)
-	}
-}
-
-func anthropicDeclarationToolResponse(t *testing.T, fixture map[string]any, stopReason string) []byte {
-	t.Helper()
-	respBytes, err := json.Marshal(map[string]any{
-		"id":          "msg_test",
-		"type":        "message",
-		"role":        "assistant",
-		"model":       mintConversationTestAnthropicModel,
-		"stop_reason": stopReason,
-		"content": []any{map[string]any{
-			"type":  "tool_use",
-			"id":    "toolu_1",
-			"name":  "soul_mint_conversation_declarations",
-			"input": fixture,
-		}},
-		"usage": map[string]any{"input_tokens": 11, "cache_creation_input_tokens": 2, "cache_read_input_tokens": 3, "output_tokens": 7},
-	})
-	if err != nil {
-		t.Fatalf("marshal anthropic response: %v", err)
-	}
-	return respBytes
-}
-
-func mintConversationDeclarationDraftFixture() map[string]any {
-	return map[string]any{
-		"selfDescription": map[string]any{
-			"purpose":      "Help operators prepare hosted genesis declarations.",
-			"constraints":  "Operate only inside Host genesis setup.",
-			"commitments":  "Stay scoped and explain uncertainty.",
-			"limitations":  "Cannot publish or sign without the human gate.",
-			"authoredBy":   mintConversationTestAuthoredByAgent,
-			"mintingModel": "host-populated",
-		},
-		"capabilities": []any{map[string]any{
-			"capability":    "hosted_genesis_planning",
-			"scope":         "Draft safe hosted genesis registration declarations.",
-			"claimLevel":    "self-declared",
-			"lastValidated": "",
-			"validationRef": "",
-			"degradesTo":    "",
-		}},
-		"boundaries": []any{map[string]any{
-			"category":  "scope_limit",
-			"statement": "I will not publish, sign, or deploy on behalf of the operator.",
-			"rationale": "Hosted genesis keeps a human publish gate.",
-		}},
-		"transparency": map[string]any{
-			"modelProviderUncertainty": "Provider chosen by Host model set.",
-			"operationalNotes":         "Generated from a bounded transcript fixture.",
-		},
-	}
-}
-
-func assertMintConversationDeclarationDraftsEquivalent(t *testing.T, openOut MintConversationDeclarationsDraft, anthropicOut MintConversationDeclarationsDraft) {
-	t.Helper()
-	if openOut.SelfDescription.Purpose != anthropicOut.SelfDescription.Purpose || openOut.SelfDescription.AuthoredBy != mintConversationTestAuthoredByAgent || anthropicOut.SelfDescription.AuthoredBy != mintConversationTestAuthoredByAgent {
-		t.Fatalf("self-description mismatch: openai=%#v anthropic=%#v", openOut.SelfDescription, anthropicOut.SelfDescription)
-	}
-	if len(openOut.Capabilities) != 1 || len(anthropicOut.Capabilities) != 1 || openOut.Capabilities[0].Capability != anthropicOut.Capabilities[0].Capability || anthropicOut.Capabilities[0].ClaimLevel != mintConversationClaimLevelSelfDeclared {
-		t.Fatalf("capability mismatch: openai=%#v anthropic=%#v", openOut.Capabilities, anthropicOut.Capabilities)
-	}
-	if len(openOut.Boundaries) != 1 || len(anthropicOut.Boundaries) != 1 || openOut.Boundaries[0].Category != anthropicOut.Boundaries[0].Category {
-		t.Fatalf("boundary mismatch: openai=%#v anthropic=%#v", openOut.Boundaries, anthropicOut.Boundaries)
-	}
-	if openOut.Transparency["operationalNotes"] != anthropicOut.Transparency["operationalNotes"] {
-		t.Fatalf("transparency mismatch: openai=%#v anthropic=%#v", openOut.Transparency, anthropicOut.Transparency)
-	}
-}
-
-func TestMintConversationDeclarationsOpenAI_OmitsTemperatureForGPT5(t *testing.T) {
-	outPayload := `{
-		"selfDescription":{"purpose":"Confirm hosted genesis","constraints":"stay scoped","commitments":"be concise","limitations":"test only","authoredBy":"agent","mintingModel":"openai:gpt-5-mini-2025-08-07"},
-		"capabilities":[{"capability":"hosted_genesis_confirmation","scope":"confirm API MicroVM turn","claimLevel":"self-declared","lastValidated":"","validationRef":"","degradesTo":""}],
-		"boundaries":[{"category":"scope_limit","statement":"Only confirm the API proof.","rationale":"test scope"}],
-		"transparency":{"modelProviderUncertainty":"unit-test","operationalNotes":"fake response"}
-	}`
-	respBytes, err := json.Marshal(map[string]any{
-		"id":      "chatcmpl_test",
-		"object":  "chat.completion",
-		"created": 123,
-		"model":   "gpt-5-mini-2025-08-07",
-		"choices": []any{map[string]any{
-			"index": 0,
-			"message": map[string]any{
-				"role":    "assistant",
-				"content": outPayload,
-			},
-		}},
-		"usage": map[string]any{
-			"prompt_tokens":     10,
-			"completion_tokens": 20,
-			"total_tokens":      30,
-		},
-	})
-	if err != nil {
-		t.Fatalf("marshal openai response: %v", err)
-	}
-
-	old := os.Getenv("OPENAI_BASE_URL")
-	t.Cleanup(func() { _ = os.Setenv("OPENAI_BASE_URL", old) })
-	_ = os.Setenv("OPENAI_BASE_URL", "https://openai.example.test")
-
-	var requestBody map[string]any
-	openAIHTTPClient = &http.Client{
-		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
-			if decodeErr := json.NewDecoder(r.Body).Decode(&requestBody); decodeErr != nil {
-				t.Fatalf("decode openai request: %v", decodeErr)
-			}
-			return &http.Response{
-				StatusCode: http.StatusOK,
-				Header:     http.Header{"Content-Type": []string{"application/json"}},
-				Body:       io.NopCloser(bytes.NewReader(respBytes)),
-				Request:    r,
-			}, nil
-		}),
-	}
-	t.Cleanup(func() { openAIHTTPClient = nil })
-
-	_, _, err = MintConversationDeclarationsOpenAI(t.Context(), "sk-test", "openai:gpt-5-mini-2025-08-07", MintConversationDeclarationsInput{
-		Registration: MintConversationRegistrationContext{AgentID: "agent_123"},
-		Messages: []MintConversationMessage{
-			{Role: "user", Content: "confirm"},
-			{Role: "assistant", Content: "confirmed"},
-		},
-	})
-	if err != nil {
-		t.Fatalf("MintConversationDeclarationsOpenAI: %v", err)
-	}
-	if _, exists := requestBody["temperature"]; exists {
-		t.Fatalf("gpt-5-family requests must omit unsupported temperature, got body %#v", requestBody)
-	}
-}
 
 func TestOpenAIModelSupportsTemperature(t *testing.T) {
 	t.Parallel()
@@ -495,41 +36,57 @@ func TestOpenAIModelSupportsTemperature(t *testing.T) {
 	}
 }
 
-func TestAnthropicToolInputSchemaSanitizesPermissiveAdditionalProperties(t *testing.T) {
+func TestSanitizeAnthropicToolSchemaMapKeepsConstraintLikePropertyNames(t *testing.T) {
 	t.Parallel()
 
-	schema := mintConversationDeclarationsJSONSchemaV1()
-	param := anthropicToolInputSchemaFromJSONSchema(schema)
-
-	raw, err := json.Marshal(param)
-	if err != nil {
-		t.Fatalf("marshal schema: %v", err)
-	}
-	if strings.Contains(string(raw), `"additionalProperties":true`) {
-		t.Fatalf("expected anthropic schema to strip additionalProperties=true, got %s", raw)
-	}
-	if !strings.Contains(string(raw), `"additionalProperties":false`) {
-		t.Fatalf("expected anthropic schema to preserve additionalProperties=false, got %s", raw)
-	}
-
-	var decoded map[string]any
-	if err := json.Unmarshal(raw, &decoded); err != nil {
-		t.Fatalf("unmarshal schema: %v", err)
+	schema := map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"maxItems":  map[string]any{"type": "integer", "minimum": 0, "maximum": 10},
+			"maxLength": map[string]any{"type": "string", "minLength": 1, "maxLength": 4},
+			"tags": map[string]any{
+				"type":     "array",
+				"minItems": 1,
+				"maxItems": 3,
+				"items":    map[string]any{"type": "string", "maxLength": 12},
+			},
+		},
+		"required": []string{"maxItems", "maxLength", "tags"},
 	}
 
-	props := requireSchemaMap(t, decoded, "properties")
-	transparency := requireSchemaMap(t, props, "transparency")
-	assertSchemaBool(t, transparency, "additionalProperties", false)
+	out := sanitizeAnthropicToolSchemaMap(schema)
+	props := requireSchemaMap(t, out, "properties")
 
-	capabilities := requireSchemaMap(t, props, "capabilities")
-	items := requireSchemaMap(t, capabilities, "items")
-	capProps := requireSchemaMap(t, items, "properties")
-	if _, exists := capProps["constraints"]; exists {
-		t.Fatalf("strict mint declarations capability schema must not expose free-form constraints")
+	maxItemsProp := requireSchemaMap(t, props, "maxItems")
+	for _, stripped := range []string{"minimum", "maximum"} {
+		if _, exists := maxItemsProp[stripped]; exists {
+			t.Fatalf("expected integer constraint %q stripped, got %#v", stripped, maxItemsProp)
+		}
 	}
 
-	selfDescription := requireSchemaMap(t, props, "selfDescription")
-	assertSchemaBool(t, selfDescription, "additionalProperties", false)
+	maxLengthProp := requireSchemaMap(t, props, "maxLength")
+	for _, stripped := range []string{"minLength", "maxLength"} {
+		if _, exists := maxLengthProp[stripped]; exists {
+			t.Fatalf("expected string constraint %q stripped, got %#v", stripped, maxLengthProp)
+		}
+	}
+
+	tags := requireSchemaMap(t, props, "tags")
+	for _, stripped := range []string{"minItems", "maxItems"} {
+		if _, exists := tags[stripped]; exists {
+			t.Fatalf("expected array constraint %q stripped, got %#v", stripped, tags)
+		}
+	}
+	items := requireSchemaMap(t, tags, "items")
+	if _, exists := items["maxLength"]; exists {
+		t.Fatalf("expected nested string constraint stripped, got %#v", items)
+	}
+
+	required, ok := out["required"].([]string)
+	if !ok || len(required) != 3 {
+		t.Fatalf("expected constraint-like property names preserved in required, got %#v", out["required"])
+	}
 }
 
 func TestExtractJSONObjectFromText(t *testing.T) {
@@ -737,82 +294,6 @@ func assertAnthropicUsage(t *testing.T, usage models.AIUsage) {
 	}
 }
 
-func assertOpenAIStrictObjectSchema(t *testing.T, schema map[string]any) {
-	t.Helper()
-	assertOpenAIStrictObjectSchemaAt(t, "root", schema)
-}
-
-func assertOpenAIStrictObjectSchemaAt(t *testing.T, path string, schema map[string]any) {
-	t.Helper()
-	if schema == nil {
-		return
-	}
-	if schemaType(schema) == "object" {
-		assertOpenAIStrictObjectRequired(t, path, schema)
-	}
-	for key, value := range schema {
-		assertOpenAIStrictSchemaValue(t, path, key, value)
-	}
-}
-
-func assertOpenAIStrictObjectRequired(t *testing.T, path string, schema map[string]any) {
-	t.Helper()
-	assertSchemaBool(t, schema, "additionalProperties", false)
-	props, _ := schema["properties"].(map[string]any)
-	required, ok := schemaRequiredSet(schema)
-	if !ok {
-		t.Fatalf("%s: object schema missing required list", path)
-	}
-	for name := range props {
-		if !required[name] {
-			t.Fatalf("%s: strict object property %q missing from required", path, name)
-		}
-	}
-}
-
-func assertOpenAIStrictSchemaValue(t *testing.T, path string, key string, value any) {
-	t.Helper()
-	switch typed := value.(type) {
-	case map[string]any:
-		assertOpenAIStrictObjectSchemaAt(t, path+"."+key, typed)
-	case []any:
-		for idx, item := range typed {
-			child, ok := item.(map[string]any)
-			if !ok {
-				continue
-			}
-			assertOpenAIStrictObjectSchemaAt(t, fmt.Sprintf("%s.%s[%d]", path, key, idx), child)
-		}
-	}
-}
-
-func schemaType(schema map[string]any) string {
-	typ, _ := schema["type"].(string)
-	return typ
-}
-
-func schemaRequiredSet(schema map[string]any) (map[string]bool, bool) {
-	switch req := schema["required"].(type) {
-	case []string:
-		out := make(map[string]bool, len(req))
-		for _, name := range req {
-			out[name] = true
-		}
-		return out, true
-	case []any:
-		out := make(map[string]bool, len(req))
-		for _, raw := range req {
-			name, ok := raw.(string)
-			if ok {
-				out[name] = true
-			}
-		}
-		return out, true
-	default:
-		return nil, false
-	}
-}
-
 func requireSchemaMap(t *testing.T, src map[string]any, key string) map[string]any {
 	t.Helper()
 	value, ok := src[key].(map[string]any)
@@ -820,14 +301,6 @@ func requireSchemaMap(t *testing.T, src map[string]any, key string) map[string]a
 		t.Fatalf("expected %s schema", key)
 	}
 	return value
-}
-
-func assertSchemaBool(t *testing.T, src map[string]any, key string, want bool) {
-	t.Helper()
-	got, ok := src[key].(bool)
-	if !ok || got != want {
-		t.Fatalf("expected %s=%t, got %#v", key, want, src[key])
-	}
 }
 
 func TestMintConversationStreamingHelpers(t *testing.T) {

@@ -184,9 +184,9 @@ func TestRunCertification_FullManagedFlowPasses(t *testing.T) {
 			case 1:
 				_, _ = w.Write([]byte(`{"id":"` + jobLesserUpdateID + `","kind":"lesser","status":"queued","step":"queued","lesser_version":"v1.2.6"}`))
 			case 2:
-				_, _ = w.Write([]byte(`{"id":"` + jobBodyUpdateID + `","kind":"lesser-body","status":"queued","step":"queued","body_only":true,"lesser_body_version":"v0.2.3"}`))
+				_, _ = w.Write([]byte(`{"id":"` + jobBodyUpdateID + `","kind":"lesser-body","status":"queued","step":"queued","body_only":true,"lesser_body_version":"v1.0.8"}`))
 			case 3:
-				_, _ = w.Write([]byte(`{"id":"` + jobMCPUpdateID + `","kind":"mcp","status":"queued","step":"queued","mcp_only":true,"lesser_body_version":"v0.2.3"}`))
+				_, _ = w.Write([]byte(`{"id":"` + jobMCPUpdateID + `","kind":"mcp","status":"queued","step":"queued","mcp_only":true,"lesser_body_version":"v1.0.8"}`))
 			default:
 				t.Fatalf("unexpected create update call: %d", call)
 			}
@@ -204,9 +204,9 @@ func TestRunCertification_FullManagedFlowPasses(t *testing.T) {
 			case 1:
 				_, _ = w.Write([]byte(`{"jobs":[{"id":"` + jobLesserUpdateID + `","kind":"lesser","status":"ok","step":"done","note":"updated","run_url":"https://example.com/builds/lesser","deploy_run_url":"https://example.com/builds/lesser","lesser_version":"v1.2.6"}]}`))
 			case 2:
-				_, _ = w.Write([]byte(`{"jobs":[{"id":"` + jobBodyUpdateID + `","kind":"lesser-body","status":"ok","step":"done","note":"lesser-body updated","run_url":"https://example.com/builds/body","body_run_url":"https://example.com/builds/body","lesser_body_version":"v0.2.3"}]}`))
+				_, _ = w.Write([]byte(`{"jobs":[{"id":"` + jobBodyUpdateID + `","kind":"lesser-body","status":"ok","step":"done","note":"lesser-body updated","run_url":"https://example.com/builds/body","body_run_url":"https://example.com/builds/body","lesser_body_version":"v1.0.8"}]}`))
 			default:
-				_, _ = w.Write([]byte(`{"jobs":[{"id":"` + jobMCPUpdateID + `","kind":"mcp","status":"ok","step":"done","note":"MCP updated","run_url":"https://example.com/builds/mcp","mcp_run_url":"https://example.com/builds/mcp","lesser_body_version":"v0.2.3"}]}`))
+				_, _ = w.Write([]byte(`{"jobs":[{"id":"` + jobMCPUpdateID + `","kind":"mcp","status":"ok","step":"done","note":"MCP updated","run_url":"https://example.com/builds/mcp","mcp_run_url":"https://example.com/builds/mcp","lesser_body_version":"v1.0.8"}]}`))
 			}
 			return
 		default:
@@ -220,7 +220,7 @@ func TestRunCertification_FullManagedFlowPasses(t *testing.T) {
 		Token:             "token",
 		InstanceSlug:      "simulacrum",
 		LesserVersion:     "v1.2.6",
-		LesserBodyVersion: "v0.2.3",
+		LesserBodyVersion: "v1.0.8",
 		RequireLesserBody: true,
 		RequireMCP:        true,
 		ManagedStage:      "dev",
@@ -241,8 +241,8 @@ func TestRunCertification_FullManagedFlowPasses(t *testing.T) {
 	mu.Lock()
 	require.Len(t, requests, 3)
 	require.Equal(t, createUpdateJobRequest{LesserVersion: "v1.2.6"}, requests[0])
-	require.Equal(t, createUpdateJobRequest{BodyOnly: true, LesserBodyVersion: "v0.2.3", BodyTemplateCertify: true}, requests[1])
-	require.Equal(t, createUpdateJobRequest{MCPOnly: true, LesserBodyVersion: "v0.2.3"}, requests[2])
+	require.Equal(t, createUpdateJobRequest{BodyOnly: true, LesserBodyVersion: "v1.0.8", BodyTemplateCertify: true}, requests[1])
+	require.Equal(t, createUpdateJobRequest{MCPOnly: true, LesserBodyVersion: "v1.0.8"}, requests[2])
 	mu.Unlock()
 
 	require.Len(t, report.Jobs, 3)
@@ -270,14 +270,14 @@ func TestWriteCertificationOutputs_WritesLesserBodyEvidenceBundle(t *testing.T) 
 		},
 		RequestedRelease: certificationRequested{
 			LesserVersion:     "v1.2.6",
-			LesserBodyVersion: "v0.2.3",
+			LesserBodyVersion: "v1.0.8",
 			RunLesser:         true,
 			RunLesserBody:     true,
 			RunMCP:            true,
 		},
 		Checks: []certificationCheck{
 			{ID: "compatibility_contract_valid", Status: statusPass},
-			{ID: "lesser_body_version_selected", Status: statusPass, Detail: "requested lesser-body release v0.2.3 will be validated for managed certification"},
+			{ID: "lesser_body_version_selected", Status: statusPass, Detail: "requested lesser-body release v1.0.8 will be validated for managed certification"},
 			{ID: "lesser_body_compatibility_contract_valid", Status: statusPass, Detail: "requested lesser-body release matches the published lesser-host managed compatibility contract"},
 			{ID: "lesser_body_template_preflight_valid", Status: statusPass, Detail: "published template " + testBodyTemplate + " passed lesser-host managed body template preflight"},
 			{ID: "lesser_body_template_changeset_valid", Status: statusPass, Detail: "published template " + testBodyTemplate + " passed cloudformation_deploy_no_execute_changeset and is recorded at " + testBodyTemplateCertificationKey},
@@ -294,7 +294,7 @@ func TestWriteCertificationOutputs_WritesLesserBodyEvidenceBundle(t *testing.T) 
 				RunURL:                   "https://example.com/builds/body",
 				BodyRunURL:               "https://example.com/builds/body",
 				ReceiptKey:               "managed/updates/simulacrum/" + jobBodyUpdateID + "/body-state.json",
-				RequestedVersion:         "v0.2.3",
+				RequestedVersion:         "v1.0.8",
 				TemplatePath:             testBodyTemplate,
 				TemplateCertificationKey: testBodyTemplateCertificationKey,
 				TemplateVerificationMode: lesserBodyTemplateVerificationMode,
@@ -312,7 +312,7 @@ func TestWriteCertificationOutputs_WritesLesserBodyEvidenceBundle(t *testing.T) 
 	var parsed lesserBodyCertificationReport
 	require.NoError(t, json.Unmarshal(raw, &parsed))
 	require.Equal(t, statusPass, parsed.OverallStatus)
-	require.Equal(t, "v0.2.3", parsed.RequestedRelease.LesserBodyVersion)
+	require.Equal(t, "v1.0.8", parsed.RequestedRelease.LesserBodyVersion)
 	require.Equal(t, updateJobKindBody, parsed.Job.Kind)
 	require.Equal(t, testBodyTemplate, parsed.Job.TemplatePath)
 	require.Equal(t, testBodyTemplateCertificationKey, parsed.Job.TemplateCertificationKey)
@@ -454,7 +454,7 @@ func TestRunCertification_RequiredFollowOnPhasesFailWhenSkipped(t *testing.T) {
 		Token:             "token",
 		InstanceSlug:      "simulacrum",
 		LesserVersion:     "v1.2.6",
-		LesserBodyVersion: "v0.2.3",
+		LesserBodyVersion: "v1.0.8",
 		RequireLesserBody: true,
 		RequireMCP:        true,
 		ManagedStage:      "dev",
@@ -629,7 +629,7 @@ func TestParseCLI_ParsesValidArgsAndDefaults(t *testing.T) {
 	}
 
 	cfg, err = parseCLI(append(validCLIArgs(),
-		"--lesser-body-version", "v0.2.3",
+		"--lesser-body-version", "v1.0.8",
 		"--require-lesser-body",
 		"--require-mcp",
 		"--managed-stage", "live",
@@ -637,7 +637,7 @@ func TestParseCLI_ParsesValidArgsAndDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseCLI optional args: %v", err)
 	}
-	if cfg.LesserBodyVersion != "v0.2.3" || !cfg.RequireLesserBody || !cfg.RequireMCP || cfg.ManagedStage != "live" {
+	if cfg.LesserBodyVersion != "v1.0.8" || !cfg.RequireLesserBody || !cfg.RequireMCP || cfg.ManagedStage != "live" {
 		t.Fatalf("expected follow-on args to parse, got %#v", cfg)
 	}
 }
@@ -774,7 +774,7 @@ func TestRunCertification_BodyCompatibilityFailureBlocksManagedUpdate(t *testing
 
 	useStubManagedLesserCompatibilityValidator(t, func(context.Context, *http.Client, string, string, string) error { return nil })
 	useStubManagedLesserBodyCompatibilityValidator(t, func(context.Context, *http.Client, string, string, string, string) error {
-		return errors.New("managed lesser-body releases before v0.2.3 are not supported by this lesser-host build")
+		return errors.New("managed lesser-body releases before v1.0.8 are not supported by this lesser-host build")
 	})
 	useStubManagedLesserBodyTemplatePreflightValidator(t, func(context.Context, *http.Client, string, string, string, string) (string, error) {
 		t.Fatal("did not expect template preflight after lesser-body compatibility failure")
@@ -791,7 +791,7 @@ func TestRunCertification_BodyCompatibilityFailureBlocksManagedUpdate(t *testing
 		Token:             "token",
 		InstanceSlug:      "simulacrum",
 		LesserVersion:     "v1.2.6",
-		LesserBodyVersion: "v0.2.2",
+		LesserBodyVersion: "v1.0.7",
 		RequireLesserBody: true,
 		ManagedStage:      "dev",
 		PollInterval:      5 * time.Millisecond,
@@ -830,7 +830,7 @@ func TestRunCertification_BodyTemplatePreflightFailureBlocksManagedUpdate(t *tes
 		Token:             "token",
 		InstanceSlug:      "simulacrum",
 		LesserVersion:     "v1.2.6",
-		LesserBodyVersion: "v0.2.3",
+		LesserBodyVersion: "v1.0.8",
 		RequireLesserBody: true,
 		ManagedStage:      "dev",
 		PollInterval:      5 * time.Millisecond,
@@ -1065,7 +1065,7 @@ func TestRunCertification_FollowOnsBlockedWhenLesserUpdateFails(t *testing.T) {
 		Token:             "token",
 		InstanceSlug:      "simulacrum",
 		LesserVersion:     "v1.2.6",
-		LesserBodyVersion: "v0.2.3",
+		LesserBodyVersion: "v1.0.8",
 		RequireLesserBody: true,
 		RequireMCP:        true,
 		ManagedStage:      "dev",
@@ -1096,7 +1096,7 @@ func TestBuildLesserBodyCertificationReport_UsesFirstFailingCheckWhenJobMissing(
 		},
 		RequestedRelease: certificationRequested{
 			LesserVersion:     "v1.2.6",
-			LesserBodyVersion: "v0.2.3",
+			LesserBodyVersion: "v1.0.8",
 			RunLesser:         true,
 			RunLesserBody:     true,
 		},
@@ -1124,7 +1124,7 @@ func TestBuildLesserBodyCertificationReport_IncludesUpstreamFailures(t *testing.
 		GeneratedAt:   "2026-03-31T00:00:00Z",
 		RequestedRelease: certificationRequested{
 			LesserVersion:     "v1.2.6",
-			LesserBodyVersion: "v0.2.3",
+			LesserBodyVersion: "v1.0.8",
 			RunLesser:         true,
 			RunLesserBody:     true,
 		},

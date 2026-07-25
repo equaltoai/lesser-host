@@ -3,6 +3,8 @@ package hostedgenesis
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,13 +13,13 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
-	runtimemicrovm "github.com/theory-cloud/apptheory/runtime/microvm"
+	runtimemicrovm "github.com/theory-cloud/apptheory/v2/runtime/microvm"
 )
 
 // stubControllerServer is an httptest.Server-backed stub of the governed
 // AppTheoryMicrovmController HTTP API. It serves POST /microvms (run), GET
-// /microvms/{session_id} (get), and POST
-// /microvms/{session_id}/invoke/hosted-genesis/turn (canonical invoke),
+// /microvms/{session_id} (get), POST /microvms/{session_id}/resume, and
+// POST /microvms/{session_id}/invoke/hosted-genesis/turn (canonical invoke),
 // serializing the same ControllerResponse / LifecycleResult JSON shapes the
 // real controller route handlers emit, so the HTTPControllerDispatcher under
 // test exercises the real HTTP transport + response decoding path. It validates
@@ -31,9 +33,15 @@ type stubControllerServer struct {
 	sessions      map[string]runtimemicrovm.ControllerResponse
 	invokes       int
 	gets          int
+	resumes       int
+	terminates    int
+	runs          int
 	runState      runtimemicrovm.LifecycleState
 	getState      runtimemicrovm.LifecycleState
 	invokeFailure *runtimemicrovm.SafeError
+	runPayloads   []microvmRunRequestPayload
+	runBodies     []string
+	operations    []string
 }
 
 func newStubControllerServer(t *testing.T, token string) *stubControllerServer {
@@ -72,6 +80,14 @@ func (s *stubControllerServer) handleMicroVMRoute(w http.ResponseWriter, r *http
 		s.handleInvoke(w, r)
 		return
 	}
+	if strings.HasSuffix(r.URL.Path, "/resume") {
+		s.handleResume(w, r)
+		return
+	}
+	if r.Method == http.MethodDelete {
+		s.handleTerminate(w, r)
+		return
+	}
 	s.handleGet(w, r)
 }
 
@@ -86,13 +102,21 @@ func (s *stubControllerServer) handleRun(w http.ResponseWriter, r *http.Request)
 		})
 		return
 	}
-	var payload microvmRunRequestPayload
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+	body, readErr := io.ReadAll(r.Body)
+	if readErr != nil {
 		writeControllerJSON(w, http.StatusBadRequest, runtimemicrovm.ControllerResponse{
 			Error: &runtimemicrovm.SafeError{Code: "m15.microvm.invalid_controller_request", Message: "malformed"},
 		})
 		return
 	}
+	var payload microvmRunRequestPayload
+	if err := json.Unmarshal(body, &payload); err != nil {
+		writeControllerJSON(w, http.StatusBadRequest, runtimemicrovm.ControllerResponse{
+			Error: &runtimemicrovm.SafeError{Code: "m15.microvm.invalid_controller_request", Message: "malformed"},
+		})
+		return
+	}
+	s.recordRunPayload(payload, string(body))
 	sessionID := strings.TrimSpace(payload.SessionID)
 	if sessionID == "" {
 		sessionID = "stub-session"
@@ -102,6 +126,11 @@ func (s *stubControllerServer) handleRun(w http.ResponseWriter, r *http.Request)
 	if runState == "" {
 		runState = runtimemicrovm.StateRunning
 	}
+	s.mu.Lock()
+	s.runs++
+	s.operations = append(s.operations, "run")
+	runGeneration := s.runs
+	s.mu.Unlock()
 	resp := runtimemicrovm.ControllerResponse{
 		Command:           runtimemicrovm.CommandRun,
 		RequestID:         strings.TrimSpace(r.Header.Get("x-request-id")),
@@ -111,7 +140,7 @@ func (s *stubControllerServer) handleRun(w http.ResponseWriter, r *http.Request)
 		State:             runState,
 		LifecycleState:    runState,
 		DesiredState:      runtimemicrovm.StateRunning,
-		ProviderMicroVMID: "stub-microvm-" + sessionID,
+		ProviderMicroVMID: fmt.Sprintf("stub-microvm-%s-%d", sessionID, runGeneration),
 		ProviderState:     string(runState),
 		LastAction:        runtimemicrovm.CommandRun,
 		LastTransition:    now,
@@ -122,6 +151,44 @@ func (s *stubControllerServer) handleRun(w http.ResponseWriter, r *http.Request)
 	s.sessions[sessionID] = resp
 	s.mu.Unlock()
 	writeControllerJSON(w, http.StatusOK, resp)
+}
+
+func (s *stubControllerServer) handleTerminate(w http.ResponseWriter, r *http.Request) {
+	if !s.authorize(r) {
+		writeControllerJSON(w, http.StatusUnauthorized, runtimemicrovm.ControllerResponse{Error: &runtimemicrovm.SafeError{Code: "m15.microvm.unauthenticated_controller", Message: "unauthorized"}})
+		return
+	}
+	sessionID := strings.TrimPrefix(strings.TrimPrefix(r.URL.Path, "/microvms/"), "/")
+	now := time.Now().UTC()
+	s.mu.Lock()
+	resp, ok := s.sessions[sessionID]
+	if ok {
+		s.terminates++
+		s.operations = append(s.operations, "terminate")
+		resp.Command = runtimemicrovm.CommandTerminate
+		resp.LastAction = runtimemicrovm.CommandTerminate
+		resp.State = runtimemicrovm.StateTerminated
+		resp.LifecycleState = runtimemicrovm.StateTerminated
+		resp.DesiredState = runtimemicrovm.StateTerminated
+		resp.ProviderState = string(runtimemicrovm.StateTerminated)
+		resp.LastTransition = now
+		resp.RegistryVersion++
+		resp.ExpiresAt = now.Add(-time.Second)
+		s.sessions[sessionID] = resp
+	}
+	s.mu.Unlock()
+	if !ok {
+		writeControllerJSON(w, http.StatusNotFound, runtimemicrovm.ControllerResponse{Error: &runtimemicrovm.SafeError{Code: "m15.microvm.session_registry_incomplete", Message: "session not found"}})
+		return
+	}
+	writeControllerJSON(w, http.StatusOK, resp)
+}
+
+func (s *stubControllerServer) recordRunPayload(payload microvmRunRequestPayload, body string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.runPayloads = append(s.runPayloads, payload)
+	s.runBodies = append(s.runBodies, body)
 }
 
 func (s *stubControllerServer) handleGet(w http.ResponseWriter, r *http.Request) {
@@ -145,6 +212,7 @@ func (s *stubControllerServer) handleGet(w http.ResponseWriter, r *http.Request)
 	s.mu.Lock()
 	resp, ok := s.sessions[sessionID]
 	s.gets++
+	s.operations = append(s.operations, "get")
 	getState := s.getState
 	s.mu.Unlock()
 	if !ok {
@@ -162,6 +230,50 @@ func (s *stubControllerServer) handleGet(w http.ResponseWriter, r *http.Request)
 	resp.Command = runtimemicrovm.CommandGet
 	resp.LastAction = runtimemicrovm.CommandGet
 	resp.LastTransition = time.Now().UTC()
+	writeControllerJSON(w, http.StatusOK, resp)
+}
+
+func (s *stubControllerServer) handleResume(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.authorize(r) {
+		writeControllerJSON(w, http.StatusUnauthorized, runtimemicrovm.ControllerResponse{
+			Error: &runtimemicrovm.SafeError{Code: "m15.microvm.unauthenticated_controller", Message: "unauthorized"},
+		})
+		return
+	}
+	sessionID := strings.TrimSuffix(strings.TrimPrefix(strings.TrimPrefix(r.URL.Path, "/microvms/"), "/"), "/resume")
+	if strings.TrimSpace(sessionID) == "" || strings.Contains(sessionID, "/") {
+		writeControllerJSON(w, http.StatusNotFound, runtimemicrovm.ControllerResponse{
+			Error: &runtimemicrovm.SafeError{Code: "m15.microvm.session_registry_incomplete", Message: "session not found"},
+		})
+		return
+	}
+	now := time.Now().UTC()
+	s.mu.Lock()
+	resp, ok := s.sessions[sessionID]
+	if ok {
+		s.resumes++
+		resp.Command = runtimemicrovm.CommandResume
+		resp.LastAction = runtimemicrovm.CommandResume
+		resp.State = runtimemicrovm.StateReady
+		resp.LifecycleState = runtimemicrovm.StateReady
+		resp.DesiredState = runtimemicrovm.StateReady
+		resp.ProviderState = string(runtimemicrovm.StateReady)
+		resp.LastTransition = now
+		resp.RegistryVersion++
+		resp.ExpiresAt = now.Add(time.Hour)
+		s.sessions[sessionID] = resp
+	}
+	s.mu.Unlock()
+	if !ok {
+		writeControllerJSON(w, http.StatusNotFound, runtimemicrovm.ControllerResponse{
+			Error: &runtimemicrovm.SafeError{Code: "m15.microvm.session_registry_incomplete", Message: "session not found"},
+		})
+		return
+	}
 	writeControllerJSON(w, http.StatusOK, resp)
 }
 
@@ -244,6 +356,7 @@ func (s *stubControllerServer) recordInvoke(sessionID string) bool {
 		return false
 	}
 	s.invokes++
+	s.operations = append(s.operations, "invoke")
 	return true
 }
 
@@ -257,6 +370,23 @@ func stubInvokeEventMatches(r *http.Request, event runtimemicrovm.LifecycleEvent
 
 // terminate marks a session terminated so a subsequent get observes a terminal
 // state (the kill-VM recovery arc).
+func (s *stubControllerServer) suspend(sessionID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	resp, ok := s.sessions[sessionID]
+	if !ok {
+		return
+	}
+	resp.State = runtimemicrovm.StateSuspended
+	resp.LifecycleState = runtimemicrovm.StateSuspended
+	resp.DesiredState = runtimemicrovm.StateSuspended
+	resp.ProviderState = "suspended"
+	resp.LastAction = runtimemicrovm.CommandSuspend
+	resp.LastTransition = time.Now().UTC()
+	resp.ExpiresAt = time.Now().UTC().Add(time.Hour)
+	s.sessions[sessionID] = resp
+}
+
 func (s *stubControllerServer) terminate(sessionID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -285,6 +415,39 @@ func (s *stubControllerServer) getCount() int {
 	return s.gets
 }
 
+func (s *stubControllerServer) resumeCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.resumes
+}
+
+func (s *stubControllerServer) terminateCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.terminates
+}
+
+func (s *stubControllerServer) runCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.runs
+}
+
+func (s *stubControllerServer) operationSequence() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.operations...)
+}
+
+func (s *stubControllerServer) lastRunPayload() (microvmRunRequestPayload, string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.runPayloads) == 0 {
+		return microvmRunRequestPayload{}, "", false
+	}
+	return s.runPayloads[len(s.runPayloads)-1], s.runBodies[len(s.runBodies)-1], true
+}
+
 func writeControllerJSON(w http.ResponseWriter, status int, resp runtimemicrovm.ControllerResponse) {
 	w.Header().Set("content-type", "application/json")
 	w.WriteHeader(status)
@@ -303,6 +466,9 @@ func testHTTPDispatcher(t *testing.T, endpoint, token string) *HTTPControllerDis
 		Endpoint:            endpoint,
 		AuthToken:           token,
 		ImageRef:            "arn:aws:lambda:us-east-1:123456789012:microvm-image/hosted-genesis:1",
+		ImageVersion:        "29",
+		ExecutionRoleARN:    "arn:aws:iam::123456789012:role/hosted-genesis-current",
+		RuntimeLogGroup:     "/aws/lambda/microvms/hosted-genesis-current",
 		NetworkConnectorRef: "arn:aws:lambda:us-east-1:123456789012:network-connector/hosted-genesis-egress",
 		MaxDurationSeconds:  300,
 		HTTPClient:          &http.Client{Timeout: 5 * time.Second},
@@ -328,6 +494,91 @@ func TestHTTPControllerDispatcherDispatchesRunViaPOST(t *testing.T) {
 	require.NotEmpty(t, result.LifecycleRef.MicroVMID)
 	require.Equal(t, runtimemicrovm.StateRunning, result.LifecycleRef.LifecycleState)
 	require.Equal(t, 1, stub.invokeCount(), "dispatch must invoke the hosted-genesis turn through AppTheory's canonical controller invoke route")
+}
+
+func TestHTTPControllerDispatcherPreparesFreshCurrentRuntimeBeforeInvoke(t *testing.T) {
+	t.Parallel()
+	stub := newStubControllerServer(t, "stub-bearer")
+	srv := httptest.NewServer(stub.handler())
+	t.Cleanup(srv.Close)
+
+	binding := testMicroVMBinding()
+	dispatcher := testHTTPDispatcher(t, srv.URL+"/microvms", stub.token)
+	previous, err := dispatcher.StartMicroVMRun(context.Background(), "req-old", binding)
+	require.NoError(t, err)
+	require.Equal(t, 1, stub.runCount())
+	oldMicroVMID := previous.LifecycleRef.MicroVMID
+
+	prepared, err := dispatcher.PrepareFreshMicroVMRun(context.Background(), "req-fresh", binding, previous.LifecycleRef)
+	require.NoError(t, err)
+	require.Equal(t, binding.ConversationID, prepared.SessionID, "Host/AppTheory session identity must remain the conversation id")
+	require.Equal(t, 1, stub.terminateCount(), "old non-terminal runtime must be retired through AppTheory Terminate")
+	require.Equal(t, 2, stub.runCount(), "fresh preparation must issue exactly one additional AppTheory Run")
+	require.Equal(t, 0, stub.invokeCount(), "preparation must not invoke provider work before Host persists retry/debit truth")
+	require.NotEqual(t, oldMicroVMID, prepared.LifecycleRef.MicroVMID)
+	require.Equal(t, "29", prepared.LifecycleRef.ImageVersion)
+	require.Equal(t, "arn:aws:iam::123456789012:role/hosted-genesis-current", prepared.LifecycleRef.ExecutionRoleARN)
+	require.Equal(t, int32(300), prepared.LifecycleRef.MaximumDurationSeconds)
+	require.Equal(t, "/aws/lambda/microvms/hosted-genesis-current", prepared.LifecycleRef.RuntimeLogGroup)
+	payload, _, ok := stub.lastRunPayload()
+	require.True(t, ok)
+	require.Equal(t, "29", payload.ImageVersion, "fresh Run must pin the currently deployed image version")
+
+	require.NoError(t, dispatcher.InvokeMicroVMTurn(context.Background(), "req-invoke", binding))
+	require.Equal(t, 1, stub.invokeCount(), "governed dispatch invokes exactly once after preparation")
+	require.Equal(t, []string{"run", "get", "terminate", "run", "get", "invoke"}, stub.operationSequence(), "fresh recovery must use AppTheory Get/Terminate/Run/readiness Get before Invoke")
+}
+
+func TestHTTPControllerDispatcherPassesAppTheoryRuntimeEnvelopeWithoutSecretsOrIdlePolicy(t *testing.T) {
+	t.Parallel()
+	stub := newStubControllerServer(t, "stub-bearer")
+	srv := httptest.NewServer(stub.handler())
+	t.Cleanup(srv.Close)
+
+	binding := testMicroVMBinding()
+	dispatcher := testHTTPDispatcher(t, srv.URL+"/microvms", stub.token)
+	_, err := dispatcher.StartMicroVMRun(context.Background(), "req-lifetime", binding)
+	require.NoError(t, err)
+
+	payload, rawBody, ok := stub.lastRunPayload()
+	require.True(t, ok, "expected stub controller to capture the run payload")
+	require.Equal(t, binding.ConversationID, payload.SessionID)
+	require.Equal(t, int32(300), payload.MaximumDurationSeconds)
+	require.NoError(t, runtimemicrovm.ValidateProviderRunInput(runtimemicrovm.ProviderRunInput{
+		RequestID:                   "req-lifetime",
+		TenantID:                    binding.TenantID(),
+		Namespace:                   MicroVMNamespace,
+		SessionID:                   binding.ConversationID,
+		AuthContext:                 authContext(binding),
+		ImageRef:                    payload.ImageRef,
+		NetworkConnectorRef:         payload.NetworkConnectorRef,
+		IngressNetworkConnectorRefs: payload.IngressNetworkConnectorRefs,
+		EgressNetworkConnectorRefs:  payload.EgressNetworkConnectorRefs,
+		SessionSpec:                 payload.SessionSpec,
+		MaximumDurationSeconds:      payload.MaximumDurationSeconds,
+		ExecutionRoleArn:            "arn:aws:iam::123456789012:role/hosted-genesis",
+		Logging: runtimemicrovm.ProviderLogging{CloudWatch: &runtimemicrovm.ProviderCloudWatchLogging{
+			LogGroup: "/aws/lambda/microvms/hosted-genesis",
+		}},
+	}))
+	rawLower := strings.ToLower(rawBody)
+	require.NotContains(t, rawLower, "idle_policy", "asynchronous hosted-genesis work must omit AWS endpoint-idle suspension")
+	for _, forbidden := range []string{
+		"stub-bearer",
+		"authorization",
+		"bearer_token",
+		"provider_key",
+		"provider_secret",
+		"aws_secret_access_key",
+		"aws_access_key_id",
+		"instance_api_key",
+		"microvm_endpoint_token",
+		"transcript",
+		"messages",
+		"prompt",
+	} {
+		require.NotContains(t, rawLower, forbidden, "controller run body must carry only AppTheory run metadata/runtime envelope")
+	}
 }
 
 func TestHTTPControllerDispatcherRecordsReadyGETResponseAfterValidatingRun(t *testing.T) {
@@ -382,7 +633,7 @@ func TestHTTPControllerDispatcherReconcilesViaGET(t *testing.T) {
 	result, err := dispatcher.ReconcileMicroVM(context.Background(), "req-get", binding, dispatch.LifecycleRef)
 	require.NoError(t, err)
 	require.Equal(t, binding.ConversationID, result.SessionID)
-	require.False(t, result.Terminal, "live VM must not be terminal")
+	require.False(t, result.CannotCompletePendingTurn, "live VM must not be terminal")
 	require.NoError(t, result.LifecycleRef.Validate(binding))
 	require.Equal(t, runtimemicrovm.CommandGet, result.LifecycleRef.LastAction)
 }
@@ -404,9 +655,68 @@ func TestHTTPControllerDispatcherReconcileTerminalVMReportsTerminal(t *testing.T
 
 	result, err := dispatcher.ReconcileMicroVM(context.Background(), "req-get", binding, dispatch.LifecycleRef)
 	require.NoError(t, err)
-	require.True(t, result.Terminal, "terminated VM must reconcile as terminal")
+	require.True(t, result.CannotCompletePendingTurn, "terminated VM must reconcile as terminal")
 	require.Equal(t, runtimemicrovm.StateTerminated, result.LifecycleRef.LifecycleState)
 	require.NoError(t, result.LifecycleRef.Validate(binding))
+}
+
+func TestHTTPControllerDispatcherReconcileSuspendedAcceptedTurnRequiresDurableConvergence(t *testing.T) {
+	t.Parallel()
+	stub := newStubControllerServer(t, "stub-bearer")
+	srv := httptest.NewServer(stub.handler())
+	t.Cleanup(srv.Close)
+
+	binding := testMicroVMBinding()
+	dispatcher := testHTTPDispatcher(t, srv.URL+"/microvms", stub.token)
+	dispatch, err := dispatcher.DispatchMicroVMRun(context.Background(), "req-run", binding)
+	require.NoError(t, err)
+	stub.suspend(binding.ConversationID)
+
+	result, err := dispatcher.ReconcileMicroVM(context.Background(), "req-observe-suspended", binding, dispatch.LifecycleRef)
+	require.NoError(t, err)
+	require.True(t, result.CannotCompletePendingTurn, "a suspended VM cannot prove an accepted provider stream remains runnable")
+	require.Equal(t, runtimemicrovm.StateSuspended, result.LifecycleRef.LifecycleState)
+	require.Equal(t, 0, stub.resumeCount(), "wait-only observation must never resume uncertain provider work")
+}
+
+func TestHTTPControllerDispatcherEnsuresSuspendedSessionViaResumeThenInvoke(t *testing.T) {
+	t.Parallel()
+	stub := newStubControllerServer(t, "stub-bearer")
+	srv := httptest.NewServer(stub.handler())
+	t.Cleanup(srv.Close)
+
+	binding := testMicroVMBinding()
+	dispatcher := testHTTPDispatcher(t, srv.URL+"/microvms", stub.token)
+	started, err := dispatcher.StartMicroVMRun(context.Background(), "req-run", binding)
+	require.NoError(t, err)
+	stub.suspend(binding.ConversationID)
+
+	ensured, err := dispatcher.EnsureMicroVMTurnSession(context.Background(), "req-resume", binding, started.LifecycleRef)
+	require.NoError(t, err)
+	require.Equal(t, runtimemicrovm.StateReady, ensured.LifecycleRef.LifecycleState)
+	require.Equal(t, runtimemicrovm.CommandResume, ensured.LifecycleRef.LastAction)
+	require.Equal(t, 1, stub.resumeCount(), "suspended AppTheory sessions must resume through POST /microvms/{session_id}/resume")
+
+	require.NoError(t, dispatcher.InvokeMicroVMTurn(context.Background(), "req-invoke", binding))
+	require.Equal(t, 1, stub.invokeCount(), "ensured session should be invoked through AppTheory invoke route")
+}
+
+func TestHTTPControllerDispatcherEnsureTerminalSessionRequiresRelaunch(t *testing.T) {
+	t.Parallel()
+	stub := newStubControllerServer(t, "stub-bearer")
+	srv := httptest.NewServer(stub.handler())
+	t.Cleanup(srv.Close)
+
+	binding := testMicroVMBinding()
+	dispatcher := testHTTPDispatcher(t, srv.URL+"/microvms", stub.token)
+	started, err := dispatcher.StartMicroVMRun(context.Background(), "req-run", binding)
+	require.NoError(t, err)
+	stub.terminate(binding.ConversationID)
+
+	_, err = dispatcher.EnsureMicroVMTurnSession(context.Background(), "req-ensure", binding, started.LifecycleRef)
+	require.ErrorIs(t, err, ErrMicroVMRelaunchRequired)
+	require.Equal(t, 0, stub.resumeCount(), "terminal sessions must not be resumed")
+	require.Equal(t, 0, stub.invokeCount(), "terminal sessions must not be invoked")
 }
 
 func TestHTTPControllerDispatcherFailsClosedWhenNil(t *testing.T) {
@@ -430,6 +740,8 @@ func TestHTTPControllerDispatcherConstructionFailsClosedOnMissingConfig(t *testi
 		{"missing image ref", HTTPControllerDispatcherConfig{Endpoint: "https://example/microvms", AuthToken: "tok", NetworkConnectorRef: "net", HTTPClient: client}},
 		{"missing network ref", HTTPControllerDispatcherConfig{Endpoint: "https://example/microvms", AuthToken: "tok", ImageRef: "img", HTTPClient: client}},
 		{"nil http client", HTTPControllerDispatcherConfig{Endpoint: "https://example/microvms", AuthToken: "tok", ImageRef: "img", NetworkConnectorRef: "net"}},
+		{"negative maximum duration", HTTPControllerDispatcherConfig{Endpoint: "https://example/microvms", AuthToken: "tok", ImageRef: "img", NetworkConnectorRef: "net", MaxDurationSeconds: -1, HTTPClient: client}},
+		{"above AWS maximum duration", HTTPControllerDispatcherConfig{Endpoint: "https://example/microvms", AuthToken: "tok", ImageRef: "img", NetworkConnectorRef: "net", MaxDurationSeconds: 28801, HTTPClient: client}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -565,4 +877,12 @@ func TestH1_4_MicroVMReconcileIsTerminalClassification(t *testing.T) {
 			require.Equal(t, tc.want, got)
 		})
 	}
+}
+
+func TestMicroVMReconcileCannotCompletePendingTurnIncludesSuspended(t *testing.T) {
+	t.Parallel()
+	observedAt := time.Date(2026, 7, 22, 13, 40, 0, 0, time.UTC)
+	require.True(t, microVMReconcileCannotCompletePendingTurn(runtimemicrovm.StateSuspended, observedAt.Add(time.Hour), observedAt))
+	require.True(t, microVMReconcileCannotCompletePendingTurn(runtimemicrovm.StateTerminated, time.Time{}, observedAt))
+	require.False(t, microVMReconcileCannotCompletePendingTurn(runtimemicrovm.StateRunning, observedAt.Add(time.Hour), observedAt))
 }

@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	runtimemicrovm "github.com/theory-cloud/apptheory/runtime/microvm"
+	runtimemicrovm "github.com/theory-cloud/apptheory/v2/runtime/microvm"
 
 	"github.com/equaltoai/lesser-host/internal/config"
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
@@ -19,8 +19,8 @@ import (
 
 // microVMWiringTestConfig returns a complete HTTP-transport MicroVM config for
 // NewServer wiring tests. The ControllerEndpoint + AuthTokenSSMParam +
-// ImageRef/NetworkConnectorRef satisfy Complete(); tests inject an httptest
-// stub controller URL + a stub SSM getter so no AWS or SSM is called.
+// ImageRef/NetworkConnectorRef/maximum duration satisfy Complete(); tests inject an
+// httptest stub controller URL + a stub SSM getter so no AWS or SSM is called.
 func microVMWiringTestConfig() config.Config {
 	return config.Config{
 		Stage: "lab",
@@ -29,10 +29,13 @@ func microVMWiringTestConfig() config.Config {
 			ControllerEndpoint:     "https://placeholder.example/microvms",
 			AuthTokenSSMParam:      "/lesser-host/hosted-genesis/microvm/auth-token",
 			ImageRef:               "arn:aws:lambda::microvm-image/hosted-genesis:test",
+			ImageVersion:           "29",
+			ExecutionRoleARN:       "arn:aws:iam::123456789012:role/hosted-genesis-test",
+			RuntimeLogGroup:        "/aws/lambda/microvms/hosted-genesis-test",
 			NetworkConnectorRef:    "arn:aws:lambda::network-connector/egress:test",
 			IngressConnectorRefs:   []string{"arn:aws:lambda::network-connector/all-ingress:test"},
 			EgressConnectorRefs:    []string{"arn:aws:lambda::network-connector/egress:test"},
-			MaximumDurationSeconds: 300,
+			MaximumDurationSeconds: config.HostedGenesisMicroVMDefaultMaximumDurationSeconds,
 		},
 	}
 }
@@ -82,6 +85,11 @@ func (s *stubControllerServer) handleRun(w http.ResponseWriter, r *http.Request)
 	var payload struct {
 		SessionID              string `json:"session_id"`
 		MaximumDurationSeconds int32  `json:"maximum_duration_seconds"`
+		IdlePolicy             struct {
+			AutoResumeEnabled        bool  `json:"auto_resume_enabled"`
+			MaxIdleDurationSeconds   int32 `json:"max_idle_duration_seconds"`
+			SuspendedDurationSeconds int32 `json:"suspended_duration_seconds"`
+		} `json:"idle_policy"`
 	}
 	_ = readJSONBody(r, &payload)
 	sessionID := strings.TrimSpace(payload.SessionID)
@@ -226,7 +234,7 @@ func (g stubSSMGetter) GetParameter(_ context.Context, name string) (string, err
 // TestH1_5_NewServerWiresHTTPControllerDispatcherForDeployedStages proves
 // NewServer constructs a real HTTPControllerDispatcher against the governed
 // AppTheoryMicrovmController HTTP API when the MicroVM config is enabled and
-// complete, and sets it on the Server for recovery/extraction dispatch (no
+// complete, and sets it on the Server for actor continuation/recovery (no
 // sync LLM). The httptest stub controller + stub SSM getter prove the wiring
 // without calling AWS or SSM.
 func TestH1_5_NewServerWiresHTTPControllerDispatcherForDeployedStages(t *testing.T) {
@@ -360,6 +368,7 @@ func TestH1_5_NewServerSetsNonNilDispatcherOnServer(t *testing.T) {
 	srv2 := NewServer(cfg, store.New(nil))
 	if srv2 == nil {
 		t.Fatalf("NewServer returned nil")
+		return
 	}
 	if srv2.hostedGenesisMicroVMDispatcher == nil {
 		t.Fatalf("expected NewServer to wire a non-nil MicroVM dispatcher for a complete enabled config")
@@ -377,6 +386,7 @@ func TestH1_5_NewServerLeavesDispatcherNilForEmptyConfig(t *testing.T) {
 	srv := NewServer(config.Config{}, store.New(nil))
 	if srv == nil {
 		t.Fatalf("NewServer returned nil")
+		return
 	}
 	if srv.hostedGenesisMicroVMDispatcher != nil {
 		t.Fatalf("empty config must leave the dispatcher nil (fail-closed), got %T", srv.hostedGenesisMicroVMDispatcher)

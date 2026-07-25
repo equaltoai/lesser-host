@@ -1,6 +1,7 @@
 package mintprompt
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -8,12 +9,42 @@ import (
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
+func mustFiveBodyPrompt(t *testing.T, reg *models.SoulAgentRegistration) string {
+	t.Helper()
+	got, err := MintConversationSystemPromptForContract(reg, hostedgenesis.FiveBodyDeclarationContract())
+	if err != nil {
+		t.Fatalf("five-body prompt: %v", err)
+	}
+	return got
+}
+
+func TestMintConversationSystemPromptForContract_FailsClosedWithoutFiveBody(t *testing.T) {
+	for _, contract := range []hostedgenesis.DeclarationContract{
+		{},
+		{SchemaVersion: "soul-mint-conversation-declaration.v1", GuidanceVersion: "soul-mint-conversation-guidance.v1"},
+		{SchemaVersion: "v3"},
+	} {
+		got, err := MintConversationSystemPromptForContract(&models.SoulAgentRegistration{}, contract)
+		if !errors.Is(err, hostedgenesis.ErrDeclarationContractUnconfigured) || got != "" {
+			t.Fatalf("expected fail-closed unconfigured contract for %#v, got prompt=%q err=%v", contract, got, err)
+		}
+	}
+}
+
 func TestMintConversationSystemPrompt_ContainsCoreInstructions(t *testing.T) {
-	got := MintConversationSystemPrompt(&models.SoulAgentRegistration{})
+	got := mustFiveBodyPrompt(t, &models.SoulAgentRegistration{})
 	if !strings.Contains(got, "Soul Registry minting assistant") {
 		t.Fatalf("expected core minting-assistant instruction, got: %q", got)
 	}
-	for _, want := range []string{"Self-Description", "Capabilities", "Boundaries", "Transparency"} {
+	for _, want := range []string{
+		"Phase 1 — identity",
+		"Phase 2 — philosophy",
+		"Phase 3 — discipline",
+		"Phase 4 — boundaries",
+		"Phase 5 — soul",
+		"Capabilities: concrete abilities only",
+		"Transparency: model/provider uncertainty",
+	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("expected prompt to mention %q, got: %q", want, got)
 		}
@@ -21,7 +52,7 @@ func TestMintConversationSystemPrompt_ContainsCoreInstructions(t *testing.T) {
 }
 
 func TestMintConversationSystemPrompt_HostedOffchainHygiene(t *testing.T) {
-	got := MintConversationSystemPrompt(&models.SoulAgentRegistration{})
+	got := mustFiveBodyPrompt(t, &models.SoulAgentRegistration{})
 	for _, want := range []string{
 		"hosted/off-chain",
 		`claimLevel "self-declared"`,
@@ -39,8 +70,27 @@ func TestMintConversationSystemPrompt_HostedOffchainHygiene(t *testing.T) {
 	}
 }
 
+func TestMintConversationSystemPrompt_CapabilityPayloadContract(t *testing.T) {
+	got := mustFiveBodyPrompt(t, &models.SoulAgentRegistration{})
+	for _, want := range []string{
+		`"capability":"operator_support"`,
+		`"scope":"Help operators inspect hosted genesis status."`,
+		`"claimLevel":"self-declared"`,
+		`"lastValidated":""`,
+		`"validationRef":""`,
+		`"degradesTo":""`,
+		"RFC3339",
+		"2026-07-25T17:22:19Z",
+		"usually empty for a self-declared prototype",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected capability payload guidance %q, got: %q", want, got)
+		}
+	}
+}
+
 func TestMintConversationSystemPrompt_FiveBodyContract(t *testing.T) {
-	got := MintConversationSystemPromptForContract(&models.SoulAgentRegistration{}, hostedgenesis.FiveBodyDeclarationContract())
+	got := mustFiveBodyPrompt(t, &models.SoulAgentRegistration{})
 	for _, want := range []string{
 		hostedgenesis.DeclarationSchemaVersionV2,
 		hostedgenesis.GuidanceVersionV2,
@@ -78,7 +128,7 @@ func TestMintConversationSystemPrompt_IncludesRegistrationContext(t *testing.T) 
 		LocalID:          "acme",
 		Capabilities:     []string{"reasoning", "tool-use"},
 	}
-	got := MintConversationSystemPrompt(reg)
+	got := mustFiveBodyPrompt(t, reg)
 	if !strings.Contains(got, "acme.example") {
 		t.Fatalf("expected prompt to include domain, got: %q", got)
 	}
@@ -92,7 +142,7 @@ func TestMintConversationSystemPrompt_IncludesRegistrationContext(t *testing.T) 
 
 func TestMintConversationSystemPrompt_OmitsEmptyContext(t *testing.T) {
 	reg := &models.SoulAgentRegistration{DomainNormalized: "acme.example"}
-	got := MintConversationSystemPrompt(reg)
+	got := mustFiveBodyPrompt(t, reg)
 	if strings.Contains(got, "Local ID") {
 		t.Fatalf("expected prompt to omit Local ID when empty, got: %q", got)
 	}
@@ -103,7 +153,7 @@ func TestMintConversationSystemPrompt_OmitsEmptyContext(t *testing.T) {
 
 func TestMintConversationSystemPrompt_FiltersRetiredHostedCapability(t *testing.T) {
 	reg := &models.SoulAgentRegistration{Capabilities: []string{"simulacrum.hosted-first-default", "planning"}}
-	got := MintConversationSystemPrompt(reg)
+	got := mustFiveBodyPrompt(t, reg)
 	if strings.Contains(got, "simulacrum.hosted-first-default") {
 		t.Fatalf("prompt included retired placeholder capability: %q", got)
 	}

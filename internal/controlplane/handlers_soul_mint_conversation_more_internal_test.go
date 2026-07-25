@@ -14,15 +14,14 @@ import (
 
 	"github.com/ethereum/go-ethereum/accounts"
 	"github.com/ethereum/go-ethereum/crypto"
-	apptheory "github.com/theory-cloud/apptheory/runtime"
-	runtimemicrovm "github.com/theory-cloud/apptheory/runtime/microvm"
+	apptheory "github.com/theory-cloud/apptheory/v2/runtime"
+	runtimemicrovm "github.com/theory-cloud/apptheory/v2/runtime/microvm"
 	"github.com/theory-cloud/tabletheory/v2/pkg/core"
 	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
 	ttmocks "github.com/theory-cloud/tabletheory/v2/pkg/mocks"
 
 	"github.com/stretchr/testify/mock"
 
-	"github.com/equaltoai/lesser-host/internal/ai/llm"
 	"github.com/equaltoai/lesser-host/internal/config"
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
 	"github.com/equaltoai/lesser-host/internal/soul"
@@ -197,25 +196,6 @@ func newMintConversationServer(tdb *mintConversationTestDB) *Server {
 	}
 }
 
-func stubHostedGenesisAssistantRunner(t *testing.T, s *Server, response string, runErr error) {
-	t.Helper()
-	s.hostedGenesisAssistantRunner = func(_ context.Context, in hostedGenesisAssistantRunInput) (hostedGenesisAssistantRunResult, error) {
-		if strings.TrimSpace(in.apiKey) == "" || strings.TrimSpace(in.modelSet) == "" || strings.TrimSpace(in.systemPrompt) == "" {
-			t.Fatalf("hosted genesis assistant runner received incomplete safe input: %#v", in)
-		}
-		if len(in.messages) == 0 || strings.TrimSpace(in.messages[len(in.messages)-1].Content) == "" {
-			t.Fatalf("hosted genesis assistant runner received no accepted user turn: %#v", in.messages)
-		}
-		if strings.Contains(in.systemPrompt, mintConversationInstanceReadTestRawKey) {
-			t.Fatalf("hosted genesis assistant prompt leaked instance key")
-		}
-		return hostedGenesisAssistantRunResult{
-			fullResponse: response,
-			usage:        models.AIUsage{Provider: "test", Model: in.modelSet, InputTokens: 1, OutputTokens: 1, TotalTokens: 2},
-		}, runErr
-	}
-}
-
 // stubHostedGenesisMicroVMDispatcher wires a stub MicroVMDispatcher that records
 // a valid MicroVM dispatcher plus queue enqueue seam. It asserts the sync
 // assistant runner is NOT invoked so the accept path is proven
@@ -231,22 +211,24 @@ func stubHostedGenesisMicroVMDispatcher(t *testing.T, s *Server) *stubMicroVMDis
 	}
 	// Guard the synchronous runner seam: H1.2 makes the production accept path
 	// queue-handoff-only, so the sync assistant runner must never be reached.
-	s.hostedGenesisAssistantRunner = func(_ context.Context, _ hostedGenesisAssistantRunInput) (hostedGenesisAssistantRunResult, error) {
-		t.Fatalf("synchronous assistant runner must not be invoked on the dispatch-only accept path")
-		return hostedGenesisAssistantRunResult{}, nil
-	}
 	return dispatcher
 }
 
 type stubMicroVMDispatcher struct {
-	t              *testing.T
-	calls          int
-	reconcileCalls int
-	lastBinding    hostedgenesis.MicroVMSessionBinding
-	dispatchErr    error
-	reconcileErr   error
-	queueCalls     int
-	lastQueue      hostedgenesis.QueueMessage
+	t                  *testing.T
+	calls              int
+	startCalls         int
+	waitAndInvokeCalls int
+	reconcileCalls     int
+	prepareFreshCalls  int
+	invokeCalls        int
+	lastBinding        hostedgenesis.MicroVMSessionBinding
+	dispatchErr        error
+	reconcileErr       error
+	prepareFreshErr    error
+	invokeErr          error
+	queueCalls         int
+	lastQueue          hostedgenesis.QueueMessage
 	// observedState is the lifecycle state the stub reports from a controller
 	// get reconciliation (defaults to running/non-terminal).
 	observedState runtimemicrovm.LifecycleState
@@ -257,13 +239,86 @@ type stubMicroVMDispatcher struct {
 	expired bool
 }
 
-func (d *stubMicroVMDispatcher) DispatchMicroVMRun(ctx context.Context, requestID string, binding hostedgenesis.MicroVMSessionBinding) (hostedgenesis.MicroVMDispatchResult, error) {
+func (d *stubMicroVMDispatcher) PrepareFreshMicroVMRun(ctx context.Context, requestID string, binding hostedgenesis.MicroVMSessionBinding, previous hostedgenesis.MicroVMLifecycleRef) (hostedgenesis.MicroVMDispatchResult, error) {
+	d.t.Helper()
+	d.prepareFreshCalls++
+	d.lastBinding = binding
+	if d.prepareFreshErr != nil {
+		return hostedgenesis.MicroVMDispatchResult{}, d.prepareFreshErr
+	}
+	if strings.TrimSpace(requestID) == "" || previous.MicroVMID == "" {
+		d.t.Fatalf("fresh preparation requires request id and previous MicroVM id")
+	}
+	resp := runtimemicrovm.ControllerResponse{
+		Command:           runtimemicrovm.CommandGet,
+		RequestID:         requestID,
+		TenantID:          binding.TenantID(),
+		Namespace:         hostedgenesis.MicroVMNamespace,
+		SessionID:         strings.TrimSpace(binding.ConversationID),
+		State:             runtimemicrovm.StateRunning,
+		DesiredState:      runtimemicrovm.StateRunning,
+		LifecycleState:    runtimemicrovm.StateRunning,
+		MicroVMID:         "mv-fresh-" + strings.TrimSpace(binding.ConversationID),
+		ProviderMicroVMID: "mv-fresh-" + strings.TrimSpace(binding.ConversationID),
+		LastAction:        runtimemicrovm.CommandGet,
+		LastTransition:    time.Now().UTC(),
+		RegistryVersion:   previous.RegistryVersion + 1,
+	}
+	ref, err := hostedgenesis.MicroVMLifecycleRefFromResponse(binding, resp, time.Now().UTC())
+	if err != nil {
+		d.t.Fatalf("stub fresh dispatcher failed to build lifecycle ref: %v", err)
+	}
+	ref.ImageRef = "arn:aws:lambda:us-east-1:123456789012:microvm-image/hosted-genesis"
+	ref.ImageVersion = "29"
+	ref.ExecutionRoleARN = "arn:aws:iam::123456789012:role/hosted-genesis-current"
+	ref.MaximumDurationSeconds = 28800
+	ref.RuntimeLogGroup = "/aws/lambda/microvms/hosted-genesis-current"
+	return hostedgenesis.MicroVMDispatchResult{LifecycleRef: ref, SessionID: resp.SessionID}, nil
+}
+
+func (d *stubMicroVMDispatcher) InvokeMicroVMTurn(_ context.Context, requestID string, binding hostedgenesis.MicroVMSessionBinding) error {
+	d.t.Helper()
+	d.invokeCalls++
+	d.lastBinding = binding
+	if strings.TrimSpace(requestID) == "" {
+		d.t.Fatalf("stub fresh invoke received empty request id")
+	}
+	return d.invokeErr
+}
+
+func (d *stubMicroVMDispatcher) StartMicroVMRun(_ context.Context, requestID string, binding hostedgenesis.MicroVMSessionBinding) (hostedgenesis.MicroVMDispatchResult, error) {
+	d.t.Helper()
+	d.startCalls++
+	d.lastBinding = binding
+	if d.dispatchErr != nil {
+		return hostedgenesis.MicroVMDispatchResult{}, d.dispatchErr
+	}
+	return d.microVMDispatchResult(requestID, binding)
+}
+
+func (d *stubMicroVMDispatcher) WaitAndInvokeMicroVMTurn(_ context.Context, requestID string, binding hostedgenesis.MicroVMSessionBinding) (hostedgenesis.MicroVMDispatchResult, error) {
+	d.t.Helper()
+	d.waitAndInvokeCalls++
+	d.invokeCalls++
+	d.lastBinding = binding
+	if d.invokeErr != nil {
+		return hostedgenesis.MicroVMDispatchResult{}, d.invokeErr
+	}
+	return d.microVMDispatchResult(requestID, binding)
+}
+
+func (d *stubMicroVMDispatcher) DispatchMicroVMRun(_ context.Context, requestID string, binding hostedgenesis.MicroVMSessionBinding) (hostedgenesis.MicroVMDispatchResult, error) {
 	d.t.Helper()
 	d.calls++
 	d.lastBinding = binding
 	if d.dispatchErr != nil {
 		return hostedgenesis.MicroVMDispatchResult{}, d.dispatchErr
 	}
+	return d.microVMDispatchResult(requestID, binding)
+}
+
+func (d *stubMicroVMDispatcher) microVMDispatchResult(requestID string, binding hostedgenesis.MicroVMSessionBinding) (hostedgenesis.MicroVMDispatchResult, error) {
+	d.t.Helper()
 	if err := binding.Validate(); err != nil {
 		d.t.Fatalf("stub dispatcher received invalid binding: %v", err)
 	}
@@ -330,16 +385,16 @@ func (d *stubMicroVMDispatcher) ReconcileMicroVM(ctx context.Context, requestID 
 	if err != nil {
 		d.t.Fatalf("stub dispatcher failed to reconcile lifecycle ref: %v", err)
 	}
-	terminal := runtimemicrovm.IsTerminalState(reconciled.LifecycleState)
+	terminal := runtimemicrovm.IsTerminalState(reconciled.LifecycleState) || reconciled.LifecycleState == runtimemicrovm.StateSuspended
 	if d.expired {
 		// Mirror the production seam: an expired session is terminal (dead) even
 		// when its observed lifecycle state is non-terminal.
 		terminal = true
 	}
 	return hostedgenesis.MicroVMReconcileResult{
-		LifecycleRef: reconciled,
-		SessionID:    strings.TrimSpace(binding.ConversationID),
-		Terminal:     terminal,
+		LifecycleRef:              reconciled,
+		SessionID:                 strings.TrimSpace(binding.ConversationID),
+		CannotCompletePendingTurn: terminal,
 	}, nil
 }
 
@@ -385,6 +440,8 @@ func stubMintConversationDomainAccess(t *testing.T, tdb *mintConversationTestDB,
 
 func testMintConversationDecl() soulMintConversationProducedDeclarations {
 	return soulMintConversationProducedDeclarations{
+		SchemaVersion:   hostedgenesis.DeclarationSchemaVersionV2,
+		GuidanceVersion: hostedgenesis.GuidanceVersionV2,
 		SelfDescription: soul.SelfDescriptionV2{
 			Purpose:      "Help users plan travel with explicit limitations.",
 			AuthoredBy:   "agent",
@@ -457,10 +514,6 @@ func TestRequireMintConversationFinalizeActiveIdentityAllowsPendingHosted(t *tes
 func TestMintConversationHelperCoverage(t *testing.T) {
 	now := time.Date(2026, 3, 5, 12, 0, 0, 0, time.UTC)
 
-	t.Run("build produced declarations errors and defaults", func(t *testing.T) {
-		testMintConversationProducedDeclarationsBranches(t, now)
-	})
-
 	t.Run("parse declarations branches", func(t *testing.T) {
 		testMintConversationParseDeclarationsBranches(t)
 	})
@@ -471,10 +524,6 @@ func TestMintConversationHelperCoverage(t *testing.T) {
 
 	t.Run("system prompt and api key selection", func(t *testing.T) {
 		testMintConversationPromptAndAPIKeys(t)
-	})
-
-	t.Run("extract declarations guard rails", func(t *testing.T) {
-		testMintConversationExtractDeclarationsGuards(t, now)
 	})
 
 	t.Run("finalize registration helper", func(t *testing.T) {
@@ -492,57 +541,6 @@ func TestMintConversationHelperCoverage(t *testing.T) {
 	t.Run("emit event never blocks when stream is unavailable", func(t *testing.T) {
 		testMintConversationEmitEvent(t)
 	})
-}
-
-func testMintConversationProducedDeclarationsBranches(t *testing.T, now time.Time) {
-	t.Helper()
-
-	if _, appErr := buildMintConversationProducedDeclarations(llm.MintConversationDeclarationsDraft{
-		SelfDescription: soul.SelfDescriptionV2{Purpose: "short", AuthoredBy: "agent"},
-	}, now, "openai:gpt-5.4"); appErr == nil || appErr.Message != string(hostedgenesis.DeclarationCodeSelfDescription) {
-		t.Fatalf("expected selfDescription error, got %#v", appErr)
-	}
-	decl, appErr := buildMintConversationProducedDeclarations(llm.MintConversationDeclarationsDraft{
-		SelfDescription: soul.SelfDescriptionV2{Purpose: "A sufficiently long purpose string.", AuthoredBy: "agent"},
-		Capabilities:    []soul.CapabilityV2{{Capability: "", Scope: "skip"}},
-		Boundaries:      []llm.MintConversationBoundaryDraft{{Category: "refusal", Statement: "I will not impersonate humans."}},
-	}, now, "openai:gpt-5.4", []string{"travel_planning"})
-	if appErr != nil {
-		t.Fatalf("expected declared capabilities to fill empty extracted capabilities, got %#v", appErr)
-	}
-	if len(decl.Capabilities) != 1 || decl.Capabilities[0].Capability != "travel_planning" || len(decl.Boundaries) != 1 {
-		t.Fatalf("expected declared capability with retained valid boundary, got %#v", decl)
-	}
-
-	_, appErr = buildMintConversationProducedDeclarations(llm.MintConversationDeclarationsDraft{
-		SelfDescription: soul.SelfDescriptionV2{Purpose: "A sufficiently long purpose string.", AuthoredBy: "agent"},
-		Capabilities:    []soul.CapabilityV2{{Capability: "", Scope: "skip"}},
-		Boundaries:      []llm.MintConversationBoundaryDraft{{Category: "refusal", Statement: "I will not impersonate humans."}},
-	}, now, "openai:gpt-5.4")
-	if appErr == nil || appErr.Message != string(hostedgenesis.DeclarationCodeCapabilities) {
-		t.Fatalf("expected required capabilities error, got %#v", appErr)
-	}
-
-	_, appErr = buildMintConversationProducedDeclarations(llm.MintConversationDeclarationsDraft{
-		SelfDescription: soul.SelfDescriptionV2{Purpose: "A sufficiently long purpose string.", AuthoredBy: "agent"},
-		Capabilities:    []soul.CapabilityV2{{Capability: "travel_planning", Scope: "Draft itineraries."}},
-		Boundaries:      []llm.MintConversationBoundaryDraft{{Category: "", Statement: "skip"}},
-	}, now, "openai:gpt-5.4")
-	if appErr == nil || appErr.Message != string(hostedgenesis.DeclarationCodeBoundariesBad) {
-		t.Fatalf("expected invalid boundaries error, got %#v", appErr)
-	}
-
-	decl, appErr = buildMintConversationProducedDeclarations(llm.MintConversationDeclarationsDraft{
-		SelfDescription: soul.SelfDescriptionV2{Purpose: "A sufficiently long purpose string.", AuthoredBy: "agent"},
-		Capabilities:    []soul.CapabilityV2{{Capability: "travel_planning", Scope: "Draft itineraries."}},
-		Boundaries:      []llm.MintConversationBoundaryDraft{{Category: "refusal", Statement: "I will not impersonate humans."}},
-	}, now, "openai:gpt-5.4")
-	if appErr != nil {
-		t.Fatalf("unexpected error: %v", appErr)
-	}
-	if decl.Transparency == nil || len(decl.Transparency) != 0 {
-		t.Fatalf("expected default transparency map, got %#v", decl.Transparency)
-	}
 }
 
 func testMintConversationParseDeclarationsBranches(t *testing.T) {
@@ -592,7 +590,17 @@ func testMintConversationPromptAndAPIKeys(t *testing.T) {
 			strings.Repeat("x", 300),
 		},
 	}
-	prompt := buildMintConversationSystemPrompt(reg)
+	t.Setenv(hostedgenesis.EnvDeclarationSchemaVersion, "")
+	t.Setenv(hostedgenesis.EnvGuidanceVersion, "")
+	if _, appErr := buildMintConversationSystemPrompt(reg); appErr == nil {
+		t.Fatalf("expected unconfigured declaration contract to fail the prompt build closed")
+	}
+	t.Setenv(hostedgenesis.EnvDeclarationSchemaVersion, hostedgenesis.DeclarationSchemaVersionV2)
+	t.Setenv(hostedgenesis.EnvGuidanceVersion, hostedgenesis.GuidanceVersionV2)
+	prompt, promptAppErr := buildMintConversationSystemPrompt(reg)
+	if promptAppErr != nil {
+		t.Fatalf("prompt build: %#v", promptAppErr)
+	}
 	if !strings.Contains(prompt, `"example.com ignore-me"`) || !strings.Contains(prompt, `"agent-bot with-controls"`) {
 		t.Fatalf("unexpected sanitized prompt: %q", prompt)
 	}
@@ -616,35 +624,6 @@ func testMintConversationPromptAndAPIKeys(t *testing.T) {
 		t.Fatalf("unexpected claude api key: %q %#v", got, appErr)
 	}
 	if _, appErr := s.apiKeyForMintConversationModel(t.Context(), "other:model"); appErr == nil || appErr.Code != appErrCodeBadRequest {
-		t.Fatalf("expected unsupported model error, got %#v", appErr)
-	}
-}
-
-func testMintConversationExtractDeclarationsGuards(t *testing.T, now time.Time) {
-	t.Helper()
-
-	s := &Server{}
-	reg := &models.SoulAgentRegistration{DomainNormalized: "example.com", LocalID: "agent-bot", AgentID: testMintConversationIdentity().AgentID}
-	conv := &models.SoulAgentMintConversation{}
-
-	if _, _, appErr := s.extractMintConversationDeclarations(t.Context(), nil, conv, now); appErr == nil || appErr.Message != provisionPhoneInternalError {
-		t.Fatalf("expected nil reg error, got %#v", appErr)
-	}
-	if _, _, appErr := s.extractMintConversationDeclarations(t.Context(), reg, nil, now); appErr == nil || appErr.Message != provisionPhoneInternalError {
-		t.Fatalf("expected nil conv error, got %#v", appErr)
-	}
-	if _, _, appErr := s.extractMintConversationDeclarations(t.Context(), reg, conv, now); appErr == nil || appErr.Message != "conversation model is missing" {
-		t.Fatalf("expected missing model error, got %#v", appErr)
-	}
-
-	conv.Model = "openai:gpt-5.4"
-	if _, _, appErr := s.extractMintConversationDeclarations(t.Context(), reg, conv, now); appErr == nil || appErr.Message != "conversation has no messages" {
-		t.Fatalf("expected missing messages error, got %#v", appErr)
-	}
-
-	conv.Model = "other:model"
-	conv.Messages = `[{"role":"user","content":"hello"}]`
-	if _, _, appErr := s.extractMintConversationDeclarations(t.Context(), reg, conv, now); appErr == nil || appErr.Code != appErrCodeBadRequest {
 		t.Fatalf("expected unsupported model error, got %#v", appErr)
 	}
 }
@@ -791,9 +770,7 @@ func TestMintConversationGetCompleteAndFinalizeGuards(t *testing.T) {
 	testMintConversationCompleteRejectsFailedConversationState(t)
 	testMintConversationCompleteReturnsCompletedConversationReplay(t)
 	testMintConversationCompleteRejectsPublishedRegistration(t)
-	testMintConversationCompleteRejectsMissingAssistantTurn(t)
-	testMintConversationCompleteAcceptsStringDeclarations(t)
-	testMintConversationCompleteAcceptsObjectDeclarations(t)
+	testMintConversationCompleteRejectsCallerDeclarations(t)
 	testMintConversationBeginFinalizeRequiresBucketConfiguration(t)
 	testMintConversationFinalizeRequiresRegistrationIDWithBucketConfigured(t)
 }
@@ -814,10 +791,6 @@ func mintConversationHandleReg() models.SoulAgentRegistration {
 		DomainNormalized: "example.com",
 		AgentID:          "0x" + strings.Repeat("11", 32),
 	}
-}
-
-func mintConversationDurableAssistantMessagesJSON() string {
-	return `[{"role":"user","content":"describe yourself"},{"role":"assistant","content":"done"}]`
 }
 
 func testMintConversationHandleRequiresRegistrationID(t *testing.T) {
@@ -1141,7 +1114,7 @@ func testMintConversationCompleteRejectsPublishedRegistration(t *testing.T) {
 	}
 }
 
-func testMintConversationCompleteRejectsMissingAssistantTurn(t *testing.T) {
+func testMintConversationCompleteRejectsCallerDeclarations(t *testing.T) {
 	t.Helper()
 	reg := mintConversationGuardReg()
 	tdb := newMintConversationTestDB()
@@ -1167,87 +1140,10 @@ func testMintConversationCompleteRejectsMissingAssistantTurn(t *testing.T) {
 	ctx.Request.Body = body
 	_, err := s.handleSoulCompleteMintConversation(ctx)
 	appErr, ok := err.(*apptheory.AppTheoryError)
-	if !ok || appErr.Code != appErrCodeConflict || appErr.Message != "conversation has no completed assistant turn" {
-		t.Fatalf("expected durable assistant-turn conflict, got %#v", err)
+	if !ok || appErr.Code != appErrCodeConflict || appErr.Message != "typed declaration candidate must be finalized by the Hosted Genesis MicroVM" {
+		t.Fatalf("expected typed-candidate-only conflict, got %#v", err)
 	}
 	tdb.qConv.AssertNumberOfCalls(t, "Update", 0)
-}
-
-func testMintConversationCompleteAcceptsStringDeclarations(t *testing.T) {
-	t.Helper()
-	reg := mintConversationGuardReg()
-	tdb := newMintConversationTestDB()
-	s := newMintConversationServer(tdb)
-	stubMintConversationRegistration(t, tdb, reg)
-	stubMintConversationDomainAccess(t, tdb, reg.DomainNormalized)
-	stubMintConversationIdentity(t, tdb, nil, theoryErrors.ErrItemNotFound)
-	tdb.qConv.On("First", mock.AnythingOfType("*models.SoulAgentMintConversation")).Return(nil).Run(func(args mock.Arguments) {
-		dest, ok := args.Get(0).(*models.SoulAgentMintConversation)
-		if !ok || dest == nil {
-			t.Fatalf("expected *models.SoulAgentMintConversation, got %#v", args.Get(0))
-		}
-		*dest = models.SoulAgentMintConversation{
-			AgentID:        reg.AgentID,
-			ConversationID: mintConversationTestConversationID,
-			Status:         models.SoulMintConversationStatusInProgress,
-			Messages:       encodeMintConversationBlob(mintConversationDurableAssistantMessagesJSON()),
-		}
-	}).Once()
-	tdb.qConv.On("Update", []string{"Status", "ProducedDeclarations", "CompletedAt", "Usage"}).Return(nil).Once()
-	declBytes := mustMarshalJSON(t, testMintConversationDecl())
-	body := mustMarshalJSON(t, map[string]string{"declarations": string(declBytes)})
-	ctx := adminCtx()
-	ctx.Params = map[string]string{"id": reg.ID, "conversationId": mintConversationTestConversationID}
-	ctx.Request.Body = body
-	resp, err := s.handleSoulCompleteMintConversation(ctx)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	var out models.SoulAgentMintConversation
-	if err := json.Unmarshal(resp.Body, &out); err != nil {
-		t.Fatalf("unmarshal response: %v", err)
-	}
-	if out.Status != models.SoulMintConversationStatusCompleted || out.ProducedDeclarations != string(declBytes) {
-		t.Fatalf("unexpected completed conversation: %#v", out)
-	}
-}
-
-func testMintConversationCompleteAcceptsObjectDeclarations(t *testing.T) {
-	t.Helper()
-	reg := mintConversationGuardReg()
-	tdb := newMintConversationTestDB()
-	s := newMintConversationServer(tdb)
-	stubMintConversationRegistration(t, tdb, reg)
-	stubMintConversationDomainAccess(t, tdb, reg.DomainNormalized)
-	stubMintConversationIdentity(t, tdb, nil, theoryErrors.ErrItemNotFound)
-	tdb.qConv.On("First", mock.AnythingOfType("*models.SoulAgentMintConversation")).Return(nil).Run(func(args mock.Arguments) {
-		dest, ok := args.Get(0).(*models.SoulAgentMintConversation)
-		if !ok || dest == nil {
-			t.Fatalf("expected *models.SoulAgentMintConversation, got %#v", args.Get(0))
-		}
-		*dest = models.SoulAgentMintConversation{
-			AgentID:        reg.AgentID,
-			ConversationID: "conv-2",
-			Status:         models.SoulMintConversationStatusInProgress,
-			Messages:       encodeMintConversationBlob(mintConversationDurableAssistantMessagesJSON()),
-		}
-	}).Once()
-	tdb.qConv.On("Update", []string{"Status", "ProducedDeclarations", "CompletedAt", "Usage"}).Return(nil).Once()
-	body := mustMarshalJSON(t, map[string]any{"declarations": testMintConversationDecl()})
-	ctx := adminCtx()
-	ctx.Params = map[string]string{"id": reg.ID, "conversationId": "conv-2"}
-	ctx.Request.Body = body
-	resp, err := s.handleSoulCompleteMintConversation(ctx)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	var out models.SoulAgentMintConversation
-	if err := json.Unmarshal(resp.Body, &out); err != nil {
-		t.Fatalf("unmarshal response: %v", err)
-	}
-	if out.Status != models.SoulMintConversationStatusCompleted || !strings.Contains(out.ProducedDeclarations, `"selfDescription"`) {
-		t.Fatalf("unexpected completed conversation: %#v", out)
-	}
 }
 
 func testMintConversationBeginFinalizeRequiresBucketConfiguration(t *testing.T) {

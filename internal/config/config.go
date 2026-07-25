@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 )
@@ -164,6 +165,23 @@ type Config struct {
 	HostedGenesisMicroVM HostedGenesisMicroVMConfig
 }
 
+const (
+	// HostedGenesisMicroVMConfigJSONEnv is the compact, CDK-owned dispatcher
+	// config envelope used on deployment Lambdas. It keeps the Lambda
+	// environment below AWS's 4KB limit while still carrying the same AppTheory
+	// run inputs (controller endpoint, auth-token source, image ref, connector
+	// refs, and MaximumDurationSeconds). Legacy individual env vars remain
+	// supported for local tests/tools.
+	HostedGenesisMicroVMConfigJSONEnv = "HOSTED_GENESIS_MICROVM_CONFIG_JSON"
+
+	// HostedGenesisMicroVMDefaultMaximumDurationSeconds caps one active
+	// AppTheory MicroVM run for the longest provider turn plus in-VM
+	// phase-tool validation. Hosted Genesis intentionally omits an idle policy:
+	// AWS defines idleness by inbound endpoint traffic, which cannot represent
+	// the long-running provider work continuing inside the MicroVM.
+	HostedGenesisMicroVMDefaultMaximumDurationSeconds int32 = 28800
+)
+
 // HostedGenesisMicroVMConfig groups the AppTheory M16 MicroVM controller HTTP
 // transport inputs controlplane.NewServer uses to construct the production
 // dispatcher. ControllerEndpoint is the governed AppTheoryMicrovmController
@@ -173,12 +191,16 @@ type Config struct {
 // IngressConnectorRefs / EgressConnectorRefs are non-secret refs the control
 // plane sends in the POST /microvms run body (the HTTP route handler does not
 // fill them from env the way the in-process runtime did). MaximumDurationSeconds
-// caps each dispatched run session duration.
+// caps each dispatched run session duration. No idle policy is carried: the
+// asynchronous conversation actor must remain runnable for that entire cap.
 type HostedGenesisMicroVMConfig struct {
 	Enabled                bool
 	ControllerEndpoint     string
 	AuthTokenSSMParam      string
 	ImageRef               string
+	ImageVersion           string
+	ExecutionRoleARN       string
+	RuntimeLogGroup        string
 	NetworkConnectorRef    string
 	IngressConnectorRefs   []string
 	EgressConnectorRefs    []string
@@ -192,7 +214,7 @@ type HostedGenesisMicroVMConfig struct {
 // parameter named here; Complete only requires the parameter name. A missing or
 // empty token at fetch time fails the dispatcher construction loudly.
 func (c HostedGenesisMicroVMConfig) Complete() bool {
-	return c.Enabled && c.ControllerEndpoint != "" && c.AuthTokenSSMParam != "" && c.ImageRef != "" && c.NetworkConnectorRef != ""
+	return c.Enabled && c.ControllerEndpoint != "" && c.AuthTokenSSMParam != "" && c.ImageRef != "" && c.ImageVersion != "" && c.ExecutionRoleARN != "" && c.RuntimeLogGroup != "" && c.NetworkConnectorRef != "" && c.MaximumDurationSeconds > 0
 }
 
 // Load reads environment variables and returns a Config with defaults applied.
@@ -260,45 +282,7 @@ func Load() Config {
 	paymentsProvider := envLowerStringDefault("PAYMENTS_PROVIDER", "none")
 	centsPer1000Credits := envInt64Bounded("PAYMENTS_CENTS_PER_1000_CREDITS", 100, 1, 1_000_000)
 
-	// P52 H1.5: production MicroVM HTTP-transport dispatch config. The
-	// AppTheoryMicrovmController CDK construct exposes the controller endpoint
-	// (HostedGenesisMicrovmControllerEndpoint CfnOutput → control-plane env);
-	// the CDK grants the control-plane Lambda HTTP egress to that endpoint +
-	// ssm:GetParameter on the auth-token SecureString. The control plane never
-	// receives MicroVM IAM or session-registry access — it only speaks HTTP to
-	// the governed controller API with the authorizer bearer token (loaded from
-	// SSM at runtime, never committed or logged).
-	microvmEgressRefs := parseCSV(envString("APPTHEORY_MICROVM_EGRESS_NETWORK_CONNECTOR_REFS"))
-	if len(microvmEgressRefs) == 0 {
-		microvmEgressRefs = parseCSV(envString("APPTHEORY_MICROVM_NETWORK_CONNECTOR_REFS"))
-	}
-	microvmNetworkConnectorRef := ""
-	for _, ref := range microvmEgressRefs {
-		if ref = strings.TrimSpace(ref); ref != "" {
-			microvmNetworkConnectorRef = ref
-			break
-		}
-	}
-	// MaximumDurationSeconds is sized for the longest LLM turn plus in-VM
-	// declaration extraction (decision 7): default 300s, bounded to the M16
-	// provider's int32 range [0,3600]. A non-positive config disables the cap
-	// and lets the provider/default apply (still fail-closed; never a sync
-	// fallback). The bound keeps the int64->int32 narrowing safe (gosec G115).
-	microvmMaxDurationRaw := envInt64Bounded("HOSTED_GENESIS_MICROVM_MAXIMUM_DURATION_SECONDS", 300, 0, 3600)
-	microvmMaxDuration := int32(0)
-	if microvmMaxDurationRaw > 0 && microvmMaxDurationRaw <= 3600 {
-		microvmMaxDuration = int32(microvmMaxDurationRaw)
-	}
-	microvmCfg := HostedGenesisMicroVMConfig{
-		Enabled:                envBoolOn("HOSTED_GENESIS_MICROVM_ENABLED"),
-		ControllerEndpoint:     strings.TrimSpace(envString("APPTHEORY_MICROVM_CONTROLLER_ENDPOINT")),
-		AuthTokenSSMParam:      strings.TrimSpace(envString("HOSTED_GENESIS_MICROVM_AUTH_TOKEN_SSM_PARAM")),
-		ImageRef:               envString("APPTHEORY_MICROVM_IMAGE_REF"),
-		NetworkConnectorRef:    microvmNetworkConnectorRef,
-		IngressConnectorRefs:   parseCSV(envString("APPTHEORY_MICROVM_INGRESS_NETWORK_CONNECTOR_REFS")),
-		EgressConnectorRefs:    microvmEgressRefs,
-		MaximumDurationSeconds: microvmMaxDuration,
-	}
+	microvmCfg := loadHostedGenesisMicroVMConfig()
 
 	portalHost := envStringDefault("WEBAUTHN_RP_ID", "lesser.host")
 	checkoutSuccessURL := envStringDefault(
@@ -420,6 +404,99 @@ func Load() Config {
 
 		HostedGenesisMicroVM: microvmCfg,
 	}
+}
+
+// hostedGenesisMicroVMCompactConfig is the compact JSON shape stored in
+// HOSTED_GENESIS_MICROVM_CONFIG_JSON. The intentionally short JSON field names
+// are a deployment-budget measure, not a public API: CDK owns the producer and
+// this package owns the consumer. Values remain the same AppTheory request
+// inputs the legacy per-variable env carried.
+type hostedGenesisMicroVMCompactConfig struct {
+	Version                int    `json:"v"`
+	ControllerEndpoint     string `json:"ep"`
+	AuthTokenSSMParam      string `json:"ap"`
+	ImageRef               string `json:"img"`
+	ImageVersion           string `json:"iv"`
+	ExecutionRoleARN       string `json:"er"`
+	RuntimeLogGroup        string `json:"lg"`
+	IngressConnectorRefs   string `json:"in"`
+	EgressConnectorRefs    string `json:"eg"`
+	MaximumDurationSeconds *int32 `json:"max"`
+}
+
+func loadHostedGenesisMicroVMConfig() HostedGenesisMicroVMConfig {
+	if raw := envString(HostedGenesisMicroVMConfigJSONEnv); raw != "" {
+		return parseHostedGenesisMicroVMCompactConfig(raw)
+	}
+	return loadHostedGenesisMicroVMLegacyEnvConfig()
+}
+
+func loadHostedGenesisMicroVMLegacyEnvConfig() HostedGenesisMicroVMConfig {
+	// P52 H1.5: production MicroVM HTTP-transport dispatch config. The
+	// AppTheoryMicrovmController CDK construct exposes the controller endpoint;
+	// the CDK grants the control-plane Lambda HTTP egress to that endpoint +
+	// ssm:GetParameter on the auth-token SecureString. The control plane never
+	// receives MicroVM IAM or session-registry access — it only speaks HTTP to
+	// the governed controller API with the authorizer bearer token (loaded from
+	// SSM at runtime, never committed or logged).
+	microvmEgressRefs := parseCSV(envString("APPTHEORY_MICROVM_EGRESS_NETWORK_CONNECTOR_REFS"))
+	if len(microvmEgressRefs) == 0 {
+		microvmEgressRefs = parseCSV(envString("APPTHEORY_MICROVM_NETWORK_CONNECTOR_REFS"))
+	}
+	return HostedGenesisMicroVMConfig{
+		Enabled:                envBoolOn("HOSTED_GENESIS_MICROVM_ENABLED"),
+		ControllerEndpoint:     strings.TrimSpace(envString("APPTHEORY_MICROVM_CONTROLLER_ENDPOINT")),
+		AuthTokenSSMParam:      strings.TrimSpace(envString("HOSTED_GENESIS_MICROVM_AUTH_TOKEN_SSM_PARAM")),
+		ImageRef:               envString("APPTHEORY_MICROVM_IMAGE_REF"),
+		ImageVersion:           strings.TrimSpace(envString("APPTHEORY_MICROVM_IMAGE_VERSION")),
+		ExecutionRoleARN:       strings.TrimSpace(envString("HOSTED_GENESIS_MICROVM_EXECUTION_ROLE_ARN")),
+		RuntimeLogGroup:        strings.TrimSpace(envString("HOSTED_GENESIS_MICROVM_RUNTIME_LOG_GROUP")),
+		NetworkConnectorRef:    firstNonEmpty(microvmEgressRefs),
+		IngressConnectorRefs:   parseCSV(envString("APPTHEORY_MICROVM_INGRESS_NETWORK_CONNECTOR_REFS")),
+		EgressConnectorRefs:    microvmEgressRefs,
+		MaximumDurationSeconds: envInt32Bounded("HOSTED_GENESIS_MICROVM_MAXIMUM_DURATION_SECONDS", HostedGenesisMicroVMDefaultMaximumDurationSeconds, 1, HostedGenesisMicroVMDefaultMaximumDurationSeconds),
+	}
+}
+
+func parseHostedGenesisMicroVMCompactConfig(raw string) HostedGenesisMicroVMConfig {
+	cfg := HostedGenesisMicroVMConfig{
+		Enabled:                true,
+		MaximumDurationSeconds: HostedGenesisMicroVMDefaultMaximumDurationSeconds,
+	}
+	var compact hostedGenesisMicroVMCompactConfig
+	if err := json.Unmarshal([]byte(strings.TrimSpace(raw)), &compact); err != nil || compact.Version != 2 {
+		// Fail closed: a present-but-invalid compact env means deployment config
+		// is malformed. Do not silently fall back to legacy variables because
+		// that could mask a broken CDK/runtime boundary.
+		return cfg
+	}
+	cfg.ControllerEndpoint = strings.TrimSpace(compact.ControllerEndpoint)
+	cfg.AuthTokenSSMParam = strings.TrimSpace(compact.AuthTokenSSMParam)
+	cfg.ImageRef = strings.TrimSpace(compact.ImageRef)
+	cfg.ImageVersion = strings.TrimSpace(compact.ImageVersion)
+	cfg.ExecutionRoleARN = strings.TrimSpace(compact.ExecutionRoleARN)
+	cfg.RuntimeLogGroup = strings.TrimSpace(compact.RuntimeLogGroup)
+	cfg.IngressConnectorRefs = parseCSV(compact.IngressConnectorRefs)
+	cfg.EgressConnectorRefs = parseCSV(compact.EgressConnectorRefs)
+	cfg.NetworkConnectorRef = firstNonEmpty(cfg.EgressConnectorRefs)
+	cfg.MaximumDurationSeconds = boundedInt32Ptr(compact.MaximumDurationSeconds, HostedGenesisMicroVMDefaultMaximumDurationSeconds, 1, HostedGenesisMicroVMDefaultMaximumDurationSeconds)
+	return cfg
+}
+
+func boundedInt32Ptr(value *int32, fallback int32, minValue int32, maxValue int32) int32 {
+	if value == nil || *value < minValue || *value > maxValue {
+		return fallback
+	}
+	return *value
+}
+
+func firstNonEmpty(values []string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }
 
 func defaultENSGatewayChain(stage string) (int64, string) {

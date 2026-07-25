@@ -11,12 +11,12 @@ import (
 
 // SoulMintConversationStatus* constants define minting conversation states.
 const (
-	SoulMintConversationStatusCreated                      = "created"
-	SoulMintConversationStatusInProgress                   = "in_progress"
-	SoulMintConversationStatusAssistantTurnReady           = "assistant_turn_ready"
-	SoulMintConversationStatusDeclarationExtractionPending = "declaration_extraction_pending"
-	SoulMintConversationStatusDeclarationReady             = "declaration_ready"
-	SoulMintConversationStatusFailed                       = "failed"
+	SoulMintConversationStatusCreated            = "created"
+	SoulMintConversationStatusInProgress         = "in_progress"
+	SoulMintConversationStatusAssistantTurnReady = "assistant_turn_ready"
+	SoulMintConversationStatusDeclarationReady   = "declaration_ready"
+	SoulMintConversationStatusPublished          = "published"
+	SoulMintConversationStatusFailed             = "failed"
 
 	// SoulMintConversationStatusCompleted is the legacy terminal status stored by
 	// pre-Project-49 records. New durable hosted-genesis responses project it as
@@ -135,8 +135,8 @@ func SoulMintConversationAllowedStatuses() []string {
 		SoulMintConversationStatusCreated,
 		SoulMintConversationStatusInProgress,
 		SoulMintConversationStatusAssistantTurnReady,
-		SoulMintConversationStatusDeclarationExtractionPending,
 		SoulMintConversationStatusDeclarationReady,
+		SoulMintConversationStatusPublished,
 		SoulMintConversationStatusFailed,
 		SoulMintConversationStatusCompleted,
 	}

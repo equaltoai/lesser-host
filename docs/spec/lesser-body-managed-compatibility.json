@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "release_name": "lesser-body",
-  "minimum_release_version": "v0.2.3",
+  "minimum_release_version": "v1.0.8",
   "release_manifest_asset": "lesser-body-release.json",
   "release_manifest_schema": 1,
   "checksums": {

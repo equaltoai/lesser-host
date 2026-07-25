@@ -3,20 +3,18 @@ package controlplane
 import (
 	"context"
 	"encoding/json"
-	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/mock"
-	apptheory "github.com/theory-cloud/apptheory/runtime"
+	apptheory "github.com/theory-cloud/apptheory/v2/runtime"
 	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
-	ttmocks "github.com/theory-cloud/tabletheory/v2/pkg/mocks"
 
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
 	"github.com/equaltoai/lesser-host/internal/store/models"
-	"github.com/equaltoai/lesser-host/internal/testutil"
 )
 
 // TestH1_2_AcceptPathEnqueuesMicroVMDispatchAndReturns202 proves the production
@@ -66,13 +64,20 @@ func TestH1_2_AcceptPathDoesNotPopulateMicroVMRefsBeforeWorkerDispatch(t *testin
 	}
 }
 
-func TestHostedGenesisFinalAffirmationStartsDeclarationExtraction(t *testing.T) {
+func TestHostedGenesisInProgressNudgeReturnsWaitOnlyProjection(t *testing.T) {
+	const activeTurnID = "turn-active"
+
 	tdb := newMintConversationTestDB()
 	s := newMintConversationServer(tdb)
 	reg := mintConversationHandleReg()
-	t.Setenv("ANTHROPIC_API_KEY", "anthropic-test-key")
-	dispatcher := stubHostedGenesisMicroVMDispatcher(t, s)
-	finalPrompt := "Do you affirm this declaration as the foundation of your minted soul? If there is anything here you would correct, qualify, or strike before it is inscribed, name it now."
+	dispatcher := &stubMicroVMDispatcher{t: t}
+	s.hostedGenesisMicroVMDispatcher = dispatcher
+	s.enqueueHostedGenesisMessage = func(_ context.Context, msg hostedgenesis.QueueMessage) error {
+		dispatcher.queueCalls++
+		dispatcher.lastQueue = msg
+		return nil
+	}
+	now := time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC)
 
 	expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, soulInstanceBootstrapTestInstanceSlug)
 	stubMintConversationRegistration(t, tdb, reg)
@@ -82,42 +87,249 @@ func TestHostedGenesisFinalAffirmationStartsDeclarationExtraction(t *testing.T) 
 		AgentID:        reg.AgentID,
 		ConversationID: mintConversationTestConversationID,
 		Model:          "anthropic:claude-sonnet-4-6",
-		Messages:       encodeMintConversationBlob(`[{"role":"user","content":"define yourself"},{"role":"assistant","content":` + jsonString(finalPrompt) + `}]`),
-		Status:         models.SoulMintConversationStatusAssistantTurnReady,
-		LatestTurnID:   "turn-ready",
-		CreatedAt:      time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC),
+		Messages:       encodeMintConversationBlob(`[{"role":"user","content":"first accepted turn"}]`),
+		Status:         models.SoulMintConversationStatusInProgress,
+		LatestTurnID:   activeTurnID,
+		RequestID:      "req-original",
+		CreatedAt:      now,
+		UpdatedAt:      now,
 	})
-	expectSoulInstanceMintConversationDebit(t, tdb, reg.AgentID, false)
-	expectHostedGenesisFinalAffirmationExtractionDebit(t, tdb)
-	expectHostedGenesisExtractionDispatchWrite(t, tdb)
+	session := hostedGenesisRecoverySessionFixture(t, reg, hostedgenesis.StatusInProgress, "")
+	session.LatestTurnID = activeTurnID
+	session.TurnLedger[0].TurnID = activeTurnID
+	stubSoulInstanceRecoverySession(t, tdb, session)
 
 	resp, err := s.handleSoulInstanceMintConversation(newSoulInstanceBootstrapContext(
 		map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
-		mustMarshalJSON(t, soulMintConversationRequest{ConversationID: mintConversationTestConversationID, Message: "I affirm."}),
+		mustMarshalJSON(t, soulMintConversationRequest{
+			ConversationID: mintConversationTestConversationID,
+			Message:        "second nudge while the first turn is still running",
+		}),
+		map[string]string{"id": reg.ID},
+	))
+	if err != nil {
+		t.Fatalf("in-progress nudge should return wait projection, got err: %v", err)
+	}
+	if resp.Status != http.StatusAccepted {
+		t.Fatalf("expected wait-only 202 projection, got %#v", resp)
+	}
+	var out hostedGenesisConversationResponse
+	if err := json.Unmarshal(resp.Body, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.Conversation.Status != models.SoulMintConversationStatusInProgress ||
+		out.Conversation.LatestTurnID != activeTurnID ||
+		out.Conversation.MessageCount != 1 ||
+		out.Conversation.PollAfterSeconds <= 0 {
+		t.Fatalf("expected current in-progress turn projection with poll guidance, got %#v", out.Conversation)
+	}
+	if len(out.Conversation.Messages) != 1 || out.Conversation.Messages[0].Content != "first accepted turn" {
+		t.Fatalf("wait-only projection must not append the nudge, got %#v", out.Conversation.Messages)
+	}
+	if dispatcher.queueCalls != 0 || dispatcher.calls != 0 {
+		t.Fatalf("wait-only nudge must not dispatch a second MicroVM run, queue=%d dispatch=%d", dispatcher.queueCalls, dispatcher.calls)
+	}
+	tdb.db.AssertNotCalled(t, "TransactWrite", mock.Anything, mock.Anything)
+	tdb.qBudget.AssertNumberOfCalls(t, "First", 0)
+}
+
+func TestHostedGenesisStructuralAffirmationQueuesProviderFreeFinalizationTurn(t *testing.T) {
+	tdb := newMintConversationTestDB()
+	s := newMintConversationServer(tdb)
+	reg := mintConversationHandleReg()
+	t.Setenv("ANTHROPIC_API_KEY", "anthropic-test-key")
+	dispatcher := stubHostedGenesisMicroVMDispatcher(t, s)
+	now := time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC)
+	candidate := controlplaneCompleteReviewCandidate(t, hostedgenesis.DeclarationCandidateBinding{
+		InstanceSlug: soulInstanceBootstrapTestInstanceSlug, RegistrationID: reg.ID, AgentID: reg.AgentID,
+		ConversationID: mintConversationTestConversationID, SourceTurnID: "turn-ready", Model: "anthropic:claude-sonnet-4-6",
+	}, now)
+	assertControlplaneReviewCandidateCanAffirm(t, candidate, "turn-next", now.Add(time.Minute))
+
+	expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, soulInstanceBootstrapTestInstanceSlug)
+	stubMintConversationRegistration(t, tdb, reg)
+	stubSoulInstanceBootstrapDomainAndInstance(t, tdb, reg.DomainNormalized, soulInstanceBootstrapTestInstanceSlug)
+	stubMintConversationIdentity(t, tdb, nil, theoryErrors.ErrItemNotFound)
+	conv := models.SoulAgentMintConversation{
+		AgentID: reg.AgentID, ConversationID: mintConversationTestConversationID, Model: "anthropic:claude-sonnet-4-6",
+		Messages: encodeMintConversationBlob(`[{"role":"user","content":"define yourself"},{"role":"assistant","content":` + jsonString(candidate.Review.ReviewText) + `}]`),
+		Status:   models.SoulMintConversationStatusAssistantTurnReady, LatestTurnID: "turn-ready", CreatedAt: now,
+	}
+	stubMintConversationConversation(t, tdb, conv)
+	derived := hostedGenesisSessionFromLegacyConversationForTest(tdb, conv)
+	assertControlplaneReviewFixtureMatches(t, derived.DeclarationCandidate, candidate)
+	assertControlplaneReviewCandidateCanAffirm(t, derived.DeclarationCandidate, "turn-next", now.Add(time.Minute))
+	expectSoulInstanceMintConversationDebit(t, tdb, reg.AgentID, false)
+
+	resp, err := s.handleSoulInstanceMintConversation(newSoulInstanceBootstrapContext(
+		map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
+		mustMarshalJSON(t, soulMintConversationRequest{ConversationID: mintConversationTestConversationID, Message: "I affirm.", CandidateAction: &hostedgenesis.DeclarationCandidateAction{
+			Action: "affirm", CandidateRevision: candidate.Revision, CandidateHash: candidate.CandidateHash, ReviewHash: candidate.Review.ReviewHash,
+		}}),
+		map[string]string{"id": reg.ID},
+	))
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	assertProviderFreeFinalizationAccepted(t, resp, dispatcher)
+}
+
+func TestHostedGenesisExactAdvertisedBoundariesEditQueuesOnlySelectedSection(t *testing.T) {
+	tdb := newMintConversationTestDB()
+	s := newMintConversationServer(tdb)
+	reg := mintConversationHandleReg()
+	t.Setenv("ANTHROPIC_API_KEY", "anthropic-test-key")
+	dispatcher := stubHostedGenesisMicroVMDispatcher(t, s)
+	now := time.Date(2026, 7, 23, 11, 30, 30, 0, time.UTC)
+	candidate := controlplaneCompleteReviewCandidate(t, hostedgenesis.DeclarationCandidateBinding{
+		InstanceSlug: soulInstanceBootstrapTestInstanceSlug, RegistrationID: reg.ID, AgentID: reg.AgentID,
+		ConversationID: mintConversationTestConversationID, SourceTurnID: "turn-live-review", Model: "anthropic:claude-sonnet-4-6",
+	}, now)
+	candidate = liveShapedMissingCapabilitiesReviewCandidate(t, candidate)
+
+	expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, soulInstanceBootstrapTestInstanceSlug)
+	stubMintConversationRegistration(t, tdb, reg)
+	stubSoulInstanceBootstrapDomainAndInstance(t, tdb, reg.DomainNormalized, soulInstanceBootstrapTestInstanceSlug)
+	stubMintConversationIdentity(t, tdb, nil, theoryErrors.ErrItemNotFound)
+	conv := models.SoulAgentMintConversation{
+		AgentID: reg.AgentID, ConversationID: mintConversationTestConversationID, Model: "anthropic:claude-sonnet-4-6",
+		Messages: encodeMintConversationBlob(`[{"role":"user","content":"define yourself"},{"role":"assistant","content":` + jsonString(candidate.Review.ReviewText) + `}]`),
+		Status:   models.SoulMintConversationStatusAssistantTurnReady, LatestTurnID: "turn-live-review", CreatedAt: now,
+	}
+	tdb.qConv.On("First", mock.AnythingOfType("*models.SoulAgentMintConversation")).Return(nil).Run(func(args mock.Arguments) {
+		target, ok := args.Get(0).(*models.SoulAgentMintConversation)
+		if !ok {
+			t.Fatal("conversation mock target has unexpected type")
+		}
+		*target = conv
+	}).Once()
+	tdb.qHosted.On("First", mock.AnythingOfType("*models.HostedGenesisSession")).Return(nil).Run(func(args mock.Arguments) {
+		session := hostedGenesisSessionFromLegacyConversationForTest(tdb, conv)
+		session.DeclarationCandidate = candidate.Clone()
+		session.CandidateRevision = candidate.Revision
+		session.CandidateHash = candidate.CandidateHash
+		session.CandidatePhase = string(candidate.Phase)
+		target, ok := args.Get(0).(*models.HostedGenesisSession)
+		if !ok {
+			t.Fatal("hosted genesis session mock target has unexpected type")
+		}
+		*target = session
+	}).Once()
+	expectSoulInstanceMintConversationDebit(t, tdb, reg.AgentID, false)
+
+	resp, err := s.handleSoulInstanceMintConversation(newSoulInstanceBootstrapContext(
+		map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
+		mustMarshalJSON(t, soulMintConversationRequest{
+			ConversationID: mintConversationTestConversationID,
+			Message:        "Revise boundaries: retain the owner-supplied B10 and regenerate the exact review.",
+			CandidateAction: &hostedgenesis.DeclarationCandidateAction{
+				Action: "edit", Section: hostedgenesis.DeclarationSectionBoundaries,
+				CandidateRevision: candidate.Revision, CandidateHash: candidate.CandidateHash, ReviewHash: candidate.Review.ReviewHash,
+			},
+		}),
 		map[string]string{"id": reg.ID},
 	))
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
 	if resp.Status != http.StatusAccepted {
-		t.Fatalf("expected final affirmation to return 202 pending extraction, got %#v", resp)
+		t.Fatalf("exact advertised edit returned %d: %#v", resp.Status, resp)
 	}
 	var out hostedGenesisConversationResponse
 	if err := json.Unmarshal(resp.Body, &out); err != nil {
-		t.Fatalf("unmarshal: %v", err)
+		t.Fatal(err)
 	}
-	if out.Conversation.Status != models.SoulMintConversationStatusDeclarationExtractionPending {
-		t.Fatalf("expected declaration_extraction_pending after affirmation, got %#v", out.Conversation)
+	got := out.Conversation.DeclarationCandidate
+	if got == nil || got.Phase != hostedgenesis.DeclarationCandidatePhaseSection ||
+		got.CurrentSection != hostedgenesis.DeclarationSectionBoundaries || got.Revision != candidate.Revision+1 ||
+		len(got.CompletedSections) != 5 || got.Review != nil {
+		t.Fatalf("exact edit did not reopen only boundaries: %#v", got)
 	}
-	if dispatcher.queueCalls != 0 {
-		t.Fatalf("final affirmation must not enqueue another assistant turn, queued %#v", dispatcher.lastQueue)
+	if dispatcher.queueCalls != 1 || dispatcher.calls != 0 || dispatcher.lastQueue.TurnID == "" {
+		t.Fatalf("edit must queue one AppTheory MicroVM actor turn only: %#v", dispatcher)
 	}
-	if dispatcher.calls != 1 {
-		t.Fatalf("final affirmation must dispatch declaration extraction once, got %d", dispatcher.calls)
+}
+
+func liveShapedMissingCapabilitiesReviewCandidate(t *testing.T, candidate *hostedgenesis.DeclarationCandidate) *hostedgenesis.DeclarationCandidate {
+	t.Helper()
+	legacy := candidate.Clone()
+	legacy.Capabilities = nil
+	if err := legacy.Validate(); err == nil {
+		t.Fatal("transaction-shaped missing capabilities representation should be invalid before read repair")
 	}
-	if len(out.Conversation.Messages) == 0 || out.Conversation.Messages[len(out.Conversation.Messages)-1].Content != "I affirm." {
-		t.Fatalf("final affirmation must remain in the durable transcript, got %#v", out.Conversation.Messages)
+	return legacy
+}
+
+func assertControlplaneReviewCandidateCanAffirm(t *testing.T, candidate *hostedgenesis.DeclarationCandidate, turnID string, now time.Time) {
+	t.Helper()
+	if _, err := hostedgenesis.ApplyDeclarationCandidateAction(candidate, hostedgenesis.DeclarationCandidateAction{
+		Action: "affirm", CandidateRevision: candidate.Revision, CandidateHash: candidate.CandidateHash, ReviewHash: candidate.Review.ReviewHash,
+	}, turnID, now); err != nil {
+		t.Fatalf("review candidate cannot affirm directly: %v", err)
 	}
+}
+
+func assertControlplaneReviewFixtureMatches(t *testing.T, derived *hostedgenesis.DeclarationCandidate, expected *hostedgenesis.DeclarationCandidate) {
+	t.Helper()
+	if derived == nil || derived.Review == nil || derived.CandidateHash != expected.CandidateHash || derived.Review.ReviewHash != expected.Review.ReviewHash {
+		t.Fatalf("review fixture drift: derived=%#v expected=%#v", derived, expected)
+	}
+}
+
+func assertProviderFreeFinalizationAccepted(t *testing.T, resp *apptheory.Response, dispatcher *stubMicroVMDispatcher) {
+	t.Helper()
+	if resp.Status != http.StatusAccepted {
+		t.Fatalf("expected structural affirmation 202, got %#v", resp)
+	}
+	var out hostedGenesisConversationResponse
+	if err := json.Unmarshal(resp.Body, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Conversation.Status != models.SoulMintConversationStatusInProgress || out.Conversation.DeclarationCandidate == nil || out.Conversation.DeclarationCandidate.Phase != hostedgenesis.DeclarationCandidatePhaseAffirmed {
+		t.Fatalf("expected structurally affirmed in_progress turn, got %#v", out.Conversation)
+	}
+	if dispatcher.queueCalls != 1 || dispatcher.calls != 0 {
+		t.Fatalf("affirmation must queue only the MicroVM actor, queue=%d dispatch=%d", dispatcher.queueCalls, dispatcher.calls)
+	}
+	if dispatcher.lastQueue.Step != hostedgenesis.StepMicroVMDispatch || dispatcher.lastQueue.TurnID == "" {
+		t.Fatalf("unbound finalization turn: %#v", dispatcher.lastQueue)
+	}
+}
+
+func controlplaneCompleteReviewCandidate(t *testing.T, binding hostedgenesis.DeclarationCandidateBinding, now time.Time) *hostedgenesis.DeclarationCandidate {
+	t.Helper()
+	candidate, err := hostedgenesis.NewDeclarationCandidate(binding, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := []struct{ name, body string }{
+		{hostedgenesis.DeclarationToolIdentityPut, `{"section":{"summary":"I am the tenant-bound Hosted Genesis actor.","notes":[]}}`},
+		{hostedgenesis.DeclarationToolPhilosophyPut, `{"section":{"summary":"I prefer auditable durable truth over implicit authority.","notes":[]}}`},
+		{hostedgenesis.DeclarationToolDisciplinePut, `{"section":{"summary":"I ground, act, record, and re-ground at each checkpoint.","notes":[]}}`},
+		{hostedgenesis.DeclarationToolBoundariesPut, `{"section":{"summary":"I remain within the managed instance and require owner authority.","notes":[]}}`},
+		{hostedgenesis.DeclarationToolSoulPut, `{"section":{"summary":"Exact reviewed truth is load-bearing.","notes":[],"refusals":[{"bypass":"skip the candidate hash check","invariant":"exact reviewed bytes remain authoritative","closestSafePath":"submit a matching structural affirmation"},{"bypass":"reuse another tenant session","invariant":"tenant and session guards must match","closestSafePath":"restart in the correct managed instance"},{"bypass":"call a provider after affirmation","invariant":"finalization remains deterministic","closestSafePath":"publish the exact affirmed candidate bytes"}]},"selfDescription":{"purpose":"Construct a typed Hosted Genesis declaration.","constraints":"Remain tenant bound.","commitments":"Preserve exact durable truth.","limitations":"No provider after affirmation.","authoredBy":"agent","mintingModel":"anthropic:claude-sonnet-4-6"},"capabilities":[],"transparency":{"modelProviderUncertainty":"Provider content is self-declared.","operationalNotes":"Host validates every section.","selfDeclaredNotice":"Self-declared until publication."}}`},
+	}
+	for i, call := range calls {
+		var payload map[string]any
+		if err := json.Unmarshal([]byte(call.body), &payload); err != nil {
+			t.Fatal(err)
+		}
+		payload["candidateRevision"] = candidate.Revision
+		payload["candidateHash"] = candidate.CandidateHash
+		payloadBytes, err := json.Marshal(payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		next, result, err := hostedgenesis.ApplyDeclarationTool(candidate, hostedgenesis.DeclarationToolRequest{
+			ToolName: call.name, ToolCallID: fmt.Sprintf("call-%d", i), ExpectedRevision: candidate.Revision,
+			ExpectedHash: candidate.CandidateHash, SourceTurnID: binding.SourceTurnID, Payload: payloadBytes,
+		}, now.Add(time.Duration(i)*time.Second))
+		if err != nil || !result.Accepted {
+			t.Fatalf("candidate tool %s failed: %#v err=%v", call.name, result, err)
+		}
+		candidate = next
+	}
+	return candidate
 }
 
 // TestH1_2_MicroVMQueueUnavailableIsLoudFailureNotSyncLLMFallthrough proves that
@@ -127,11 +339,6 @@ func TestHostedGenesisFinalAffirmationStartsDeclarationExtraction(t *testing.T) 
 func TestH1_2_MicroVMQueueUnavailableIsLoudFailureNotSyncLLMFallthrough(t *testing.T) {
 	tdb, s, reg, _ := h1d2AcceptPathFixture(t)
 	s.enqueueHostedGenesisMessage = nil
-	syncLLMCalled := false
-	s.hostedGenesisAssistantRunner = func(_ context.Context, _ hostedGenesisAssistantRunInput) (hostedGenesisAssistantRunResult, error) {
-		syncLLMCalled = true
-		return hostedGenesisAssistantRunResult{}, nil
-	}
 	h1d2ExpectAcceptPathProgression(t, tdb, hostedgenesis.StatusFailed)
 
 	resp, err := s.handleSoulInstanceMintConversation(h1d2AcceptPathRequest(t, reg))
@@ -142,34 +349,12 @@ func TestH1_2_MicroVMQueueUnavailableIsLoudFailureNotSyncLLMFallthrough(t *testi
 	if appErr.Code != soulInstanceBootstrapCodeMicroVMUnavailable || appErr.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("expected typed microvm-unavailable 503, got %#v", appErr)
 	}
-	if syncLLMCalled {
-		t.Fatalf("accept path must not fall back to synchronous LLM when MicroVM queue dispatch is unavailable")
-	}
 }
 
 // TestH1_2_NonProductionSyncFallbackGuard proves the retained synchronous
 // assistant runner stays reachable ONLY through the explicit non-production
-// guard (hostedGenesisSyncAssistantFallbackEnabled). This keeps the sync path
 // referenced and covered until H2.1 deletes it; production never sets the guard
 // so production cannot reach this branch.
-func TestH1_2_NonProductionSyncFallbackGuard(t *testing.T) {
-	tdb, s, reg, _ := h1d2AcceptPathFixture(t)
-	// No dispatcher wired, but the non-production sync fallback guard is set.
-	s.hostedGenesisMicroVMDispatcher = nil
-	s.hostedGenesisSyncAssistantFallbackEnabled = true
-	stubHostedGenesisAssistantRunner(t, s, "assistant reply", nil)
-	expectSoulInstanceMintConversationProgression(t, tdb, hostedgenesis.StatusAssistantTurnReady)
-
-	resp, err := s.handleSoulInstanceMintConversation(h1d2AcceptPathRequest(t, reg))
-	if err != nil {
-		t.Fatalf("unexpected err: %v", err)
-	}
-	out := assertSoulInstanceMintConversationAcceptedResponse(t, resp)
-	if out.Conversation.Status != models.SoulMintConversationStatusAssistantTurnReady {
-		t.Fatalf("expected sync fallback to reach assistant_turn_ready, got %#v", out.Conversation)
-	}
-}
-
 // TestH1_2_NonProductionSyncFallbackFailurePersistsTypedFailure covers the
 // non-production sync fallback's failure branch (provider error) so the
 // retained sync path's failure handling and provider-name logging stay covered
@@ -177,23 +362,6 @@ func TestH1_2_NonProductionSyncFallbackGuard(t *testing.T) {
 // loud non-2xx typed failure (502 assistant_turn_failed), not HTTP 200 with a
 // failed body. The durable session is still persisted as a retryable failed
 // turn before the error is returned.
-func TestH1_2_NonProductionSyncFallbackFailurePersistsTypedFailure(t *testing.T) {
-	tdb, s, reg, _ := h1d2AcceptPathFixture(t)
-	s.hostedGenesisMicroVMDispatcher = nil
-	s.hostedGenesisSyncAssistantFallbackEnabled = true
-	stubHostedGenesisAssistantRunner(t, s, "", errors.New("provider unavailable"))
-	expectSoulInstanceMintConversationProgression(t, tdb, hostedgenesis.StatusFailed)
-
-	resp, err := s.handleSoulInstanceMintConversation(h1d2AcceptPathRequest(t, reg))
-	if err == nil {
-		t.Fatalf("expected loud assistant-turn-failed error, got response %#v", resp)
-	}
-	appErr := requireAppTheoryError(t, err)
-	if appErr.Code != soulInstanceBootstrapCodeAssistantTurnFailed || appErr.StatusCode != http.StatusBadGateway {
-		t.Fatalf("expected typed assistant_turn_failed 502, got %#v", appErr)
-	}
-}
-
 // h1d2AcceptPathFixture builds the shared mock scaffolding for a fresh hosted
 // genesis accept turn and returns a stub dispatcher not yet wired onto the
 // server (callers wire it to control the dispatch outcome).
@@ -203,6 +371,10 @@ func h1d2AcceptPathFixture(t *testing.T) (*mintConversationTestDB, *Server, mode
 	s := newMintConversationServer(tdb)
 	reg := mintConversationHandleReg()
 	t.Setenv("ANTHROPIC_API_KEY", "anthropic-test-key")
+	// The retained non-production sync fallback builds the five-body system
+	// prompt through the fail-closed env selector; there is no legacy prompt.
+	t.Setenv(hostedgenesis.EnvDeclarationSchemaVersion, hostedgenesis.DeclarationSchemaVersionV2)
+	t.Setenv(hostedgenesis.EnvGuidanceVersion, hostedgenesis.GuidanceVersionV2)
 	expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, soulInstanceBootstrapTestInstanceSlug)
 	stubMintConversationRegistration(t, tdb, reg)
 	stubSoulInstanceBootstrapDomainAndInstance(t, tdb, reg.DomainNormalized, soulInstanceBootstrapTestInstanceSlug)
@@ -305,35 +477,6 @@ func assertSoulInstanceMintConversationDispatchedResponse(t *testing.T, resp *ap
 		t.Fatalf("response leaked credential material: %s", string(resp.Body))
 	}
 	return out
-}
-
-func expectHostedGenesisFinalAffirmationExtractionDebit(t *testing.T, tdb *mintConversationTestDB) {
-	t.Helper()
-	tb, _ := tdb.db.TransactWriteBuilder.(*ttmocks.MockTransactionBuilder)
-	if tb == nil {
-		tb = new(ttmocks.MockTransactionBuilder)
-		tdb.db.TransactWriteBuilder = tb
-	}
-	tdb.qBudget.On("First", mock.AnythingOfType("*models.InstanceBudgetMonth")).Return(nil).Run(func(args mock.Arguments) {
-		dest := testutil.RequireMockArg[*models.InstanceBudgetMonth](t, args, 0)
-		*dest = models.InstanceBudgetMonth{InstanceSlug: soulInstanceBootstrapTestInstanceSlug, Month: time.Now().UTC().Format("2006-01"), IncludedCredits: 100, UsedCredits: 0}
-	}).Once()
-	tdb.db.On("TransactWrite", mock.Anything, mock.Anything).Return(nil).Once()
-	tb.On("Put", mock.AnythingOfType("*models.UsageLedgerEntry"), mock.Anything).Return(tb).Once().Run(func(args mock.Arguments) {
-		entry := testutil.RequireMockArg[*models.UsageLedgerEntry](t, args, 0)
-		if entry.Module != soulMintConversationExtractModule || entry.RequestedCredits != soulMintConversationExtractBaseCredits {
-			t.Fatalf("unexpected extraction ledger entry: %#v", entry)
-		}
-	})
-	tb.On("UpdateWithBuilder", mock.AnythingOfType("*models.HostedGenesisSession"), mock.Anything, mock.Anything).Return(tb).Once().Run(func(args mock.Arguments) {
-		session := testutil.RequireMockArg[*models.HostedGenesisSession](t, args, 0)
-		if hostedgenesis.NormalizeStatus(session.Status) != hostedgenesis.StatusDeclarationExtractionPending {
-			t.Fatalf("expected final affirmation to transition to declaration_extraction_pending, got %#v", session)
-		}
-	})
-	tb.On("UpdateWithBuilder", mock.AnythingOfType("*models.SoulAgentMintConversation"), mock.Anything, mock.Anything).Return(tb).Once()
-	tb.On("UpdateWithBuilder", mock.AnythingOfType("*models.InstanceBudgetMonth"), mock.Anything, mock.Anything).Return(tb).Once()
-	tb.On("Execute").Return(nil).Once()
 }
 
 func jsonString(s string) string {

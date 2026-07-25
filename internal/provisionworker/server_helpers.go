@@ -20,6 +20,7 @@ import (
 const (
 	deployRunnerModeLesser     = "lesser"
 	deployRunnerModeLesserBody = "lesser-body"
+	envBoolFalse               = "false"
 	envBoolTrue                = "true"
 )
 
@@ -90,15 +91,30 @@ func (s *Server) startDeployRunnerWithMode(ctx context.Context, job *models.Prov
 	if err != nil {
 		return "", err
 	}
+	trustErr := s.ensureDeployRunnerAssumeRoleTrust(
+		ctx,
+		strings.TrimSpace(job.AccountID),
+		strings.TrimSpace(job.AccountRoleName),
+		strings.TrimSpace(job.Region),
+		strings.TrimSpace(job.InstanceSlug),
+		strings.TrimSpace(job.ID),
+	)
+	if trustErr != nil {
+		return "", fmt.Errorf("deploy runner trust bootstrap failed: %s", compactErr(trustErr))
+	}
 
 	bootstrapKey := s.bootstrapS3Key(job)
 	stage := s.deployRunnerStage(job)
 	env := s.buildDeployRunnerEnv(job, stage, receiptKey, bootstrapKey)
 	mode = normalizeDeployRunnerMode(mode)
+	if phaseErr := validateDeployRunnerLesserBodyPhaseVersion(mode, s.cfg.ManagedLesserBodyDefaultVersion); phaseErr != nil {
+		return "", phaseErr
+	}
 	env = append(env, cbtypes.EnvironmentVariable{Name: aws.String("RUN_MODE"), Value: aws.String(mode)})
 	if bodyEnabled, ok := provisionDeployRunnerBodyEnabledForMode(mode); ok {
 		env = append(env, cbtypes.EnvironmentVariable{Name: aws.String("BODY_ENABLED"), Value: aws.String(bodyEnabled)})
 	}
+	env = appendDeployRunnerInstancePlaneEnv(env, mode)
 	env = appendProvisionDeployRunnerInstanceEnv(env, runnerInputs)
 
 	idempotencyToken := codebuildIdempotencyToken(
@@ -132,12 +148,44 @@ func provisionDeployRunnerBodyEnabledForMode(mode string) (string, bool) {
 		// route. Lesser's CLI defaults BODY_ENABLED to true, which makes the
 		// first Lesser deploy try to resolve the body SSM export before the
 		// body stack exists. Keep the first phase explicitly body-free.
-		return "false", true
+		return envBoolFalse, true
 	case deployRunnerModeLesserMCP:
 		return envBoolTrue, true
 	default:
 		return "", false
 	}
+}
+
+func deployRunnerInstancePlaneEnabledForMode(mode string) (string, bool) {
+	switch normalizeDeployRunnerMode(mode) {
+	case deployRunnerModeLesser:
+		// Phase 1 must never ask Lesser to resolve the instance-plane SSM
+		// parameters that lesser-body publishes in phase 2. Keep BODY_ENABLED
+		// independent so managed updates retain the existing /mcp route.
+		return envBoolFalse, true
+	case deployRunnerModeLesserMCP:
+		return envBoolTrue, true
+	default:
+		return "", false
+	}
+}
+
+func appendDeployRunnerInstancePlaneEnv(env []cbtypes.EnvironmentVariable, mode string) []cbtypes.EnvironmentVariable {
+	instancePlaneEnabled, ok := deployRunnerInstancePlaneEnabledForMode(mode)
+	if !ok {
+		return env
+	}
+	return append(env, cbtypes.EnvironmentVariable{Name: aws.String("INSTANCE_PLANE_ENABLED"), Value: aws.String(instancePlaneEnabled)})
+}
+
+func validateDeployRunnerLesserBodyPhaseVersion(mode string, version string) error {
+	if normalizeDeployRunnerMode(mode) != deployRunnerModeLesserMCP {
+		return nil
+	}
+	if err := ValidateManagedLesserBodyReleaseVersionSupported(version); err != nil {
+		return fmt.Errorf("RUN_MODE=lesser-mcp requires a compatible lesser-body release: %w", err)
+	}
+	return nil
 }
 
 func (s *Server) getDeployRunnerStatus(ctx context.Context, runID string) (string, string, error) {

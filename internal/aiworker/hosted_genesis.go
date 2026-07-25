@@ -6,38 +6,35 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"log"
-	"os"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/aws/aws-lambda-go/events"
-	apptheory "github.com/theory-cloud/apptheory/runtime"
+	apptheory "github.com/theory-cloud/apptheory/v2/runtime"
 
-	"github.com/equaltoai/lesser-host/internal/ai/llm"
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
-	"github.com/equaltoai/lesser-host/internal/hostedgenesis/mintprompt"
 	"github.com/equaltoai/lesser-host/internal/manageddomain"
-	"github.com/equaltoai/lesser-host/internal/secrets"
-	"github.com/equaltoai/lesser-host/internal/soul"
 	"github.com/equaltoai/lesser-host/internal/store"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
-const hostedGenesisRunTimeout = 2 * time.Minute
-
 const (
 	hostedGenesisFailureLLMUnavailable              = "llm_unavailable"
 	hostedGenesisFailureAssistantTurnFailed         = "assistant_turn_failed"
-	hostedGenesisFailureDeclarationExtractionFailed = "declaration_extraction_failed"
 	hostedGenesisFailureMicroVMUnavailable          = "microvm_unavailable"
 	hostedGenesisFailureInvalidCompletionState      = "invalid_completion_state"
 	hostedGenesisFailureMissingProducedDeclarations = "missing_produced_declarations"
 	hostedGenesisFailureInvalidProducedDeclarations = "invalid_produced_declarations"
 	hostedGenesisFailureTenantBoundaryViolation     = "tenant_boundary_violation"
-)
+	hostedGenesisFailureOperatorActionRequired      = "operator_action_required"
 
-const hostedGenesisSelfDescriptionAuthoredByAgent = "agent"
+	hostedGenesisSQSApproximateReceiveCount = "ApproximateReceiveCount"
+	// Keep this limit contract-tested against HostedGenesisQueue's CDK redrive
+	// policy. The final source-queue delivery must terminalize durable state
+	// before SQS transfers the message to the alarm-only DLQ.
+	hostedGenesisQueueMaxReceiveCount = 3
+)
 
 type hostedGenesisStore interface {
 	GetSoulAgentRegistration(ctx context.Context, id string) (*models.SoulAgentRegistration, error)
@@ -49,22 +46,6 @@ type hostedGenesisStore interface {
 	GetSoulAgentMintConversation(ctx context.Context, agentID string, conversationID string) (*models.SoulAgentMintConversation, error)
 	PutSoulAgentMintConversation(ctx context.Context, item *models.SoulAgentMintConversation) error
 	GetSoulMintConversationIdempotency(ctx context.Context, instanceSlug string, registrationID string, idempotencyKey string) (*models.SoulMintConversationIdempotency, error)
-}
-
-type hostedGenesisMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
-}
-
-type hostedGenesisProducedDeclarations struct {
-	SchemaVersion     string                             `json:"schemaVersion,omitempty"`
-	GuidanceVersion   string                             `json:"guidanceVersion,omitempty"`
-	FiveBodies        *hostedgenesis.FiveBodyDeclaration `json:"fiveBodies,omitempty"`
-	SelfDescription   soul.SelfDescriptionV2             `json:"selfDescription"`
-	Capabilities      []soul.CapabilityV2                `json:"capabilities"`
-	Boundaries        []soul.BoundaryV2                  `json:"boundaries"`
-	Transparency      map[string]any                     `json:"transparency"`
-	AdversarialReview *hostedgenesis.AdversarialReview   `json:"adversarialReview,omitempty"`
 }
 
 func (s *Server) handleHostedGenesisQueueMessage(ctx *apptheory.EventContext, msg events.SQSMessage) error {
@@ -83,14 +64,23 @@ func (s *Server) handleHostedGenesisQueueMessage(ctx *apptheory.EventContext, ms
 	}
 	switch strings.TrimSpace(qm.Step) {
 	case hostedgenesis.StepMicroVMDispatch:
-		return s.processHostedGenesisMicroVMDispatch(ctx.Context(), ctx.RequestID, qm)
-	case hostedgenesis.StepAssistantTurn:
-		return s.processHostedGenesisAssistantTurn(ctx.Context(), ctx.RequestID, qm)
-	case hostedgenesis.StepDeclarationExtraction:
-		return s.processHostedGenesisDeclarationExtraction(ctx.Context(), ctx.RequestID, qm)
+		receiveCount, err := hostedGenesisSQSReceiveCount(msg)
+		if err != nil {
+			return err
+		}
+		return s.processHostedGenesisMicroVMDispatch(ctx.Context(), ctx.RequestID, qm, receiveCount)
 	default:
 		return nil
 	}
+}
+
+func hostedGenesisSQSReceiveCount(msg events.SQSMessage) (int, error) {
+	raw := strings.TrimSpace(msg.Attributes[hostedGenesisSQSApproximateReceiveCount])
+	receiveCount, err := strconv.Atoi(raw)
+	if err != nil || receiveCount < 1 {
+		return 0, fmt.Errorf("hosted genesis SQS receive count is invalid")
+	}
+	return receiveCount, nil
 }
 
 func (s *Server) hostedGenesisStore() (hostedGenesisStore, bool) {
@@ -99,242 +89,6 @@ func (s *Server) hostedGenesisStore() (hostedGenesisStore, bool) {
 	}
 	st, ok := s.store.(hostedGenesisStore)
 	return st, ok
-}
-
-func (s *Server) processHostedGenesisAssistantTurn(ctx context.Context, workerRequestID string, msg hostedgenesis.QueueMessage) error {
-	st, ok := s.hostedGenesisStore()
-	if !ok {
-		return fmt.Errorf("hosted genesis store not initialized")
-	}
-	reg, conv, session, err := s.loadAndValidateHostedGenesisJob(ctx, st, msg)
-	if err != nil {
-		return err
-	}
-	if !hostedGenesisAssistantJobReady(reg, conv, session, msg) {
-		return nil
-	}
-	run, ok, err := s.prepareHostedGenesisAssistantRun(ctx, st, conv, session, workerRequestID)
-	if err != nil {
-		return err
-	}
-	if !ok {
-		return nil
-	}
-	return s.runAndPersistHostedGenesisAssistant(ctx, st, reg, conv, session, msg, workerRequestID, run)
-}
-
-type hostedGenesisAssistantRun struct {
-	messages    []hostedGenesisMessage
-	llmMessages []llm.MintConversationMessage
-	modelSet    string
-	apiKey      string
-}
-
-func hostedGenesisAssistantJobReady(reg *models.SoulAgentRegistration, conv *models.SoulAgentMintConversation, session *models.HostedGenesisSession, msg hostedgenesis.QueueMessage) bool {
-	if reg == nil || conv == nil || session == nil {
-		return false
-	}
-	return strings.TrimSpace(session.LatestTurnID) == strings.TrimSpace(msg.TurnID) && hostedgenesis.NormalizeStatus(session.Status) == hostedgenesis.StatusInProgress
-}
-
-func (s *Server) prepareHostedGenesisAssistantRun(ctx context.Context, st hostedGenesisStore, conv *models.SoulAgentMintConversation, session *models.HostedGenesisSession, workerRequestID string) (hostedGenesisAssistantRun, bool, error) {
-	messages, err := decodeHostedGenesisMessages(conv.Messages)
-	if err != nil || len(messages) == 0 {
-		persistErr := s.markHostedGenesisConversationFailed(ctx, st, conv, session, hostedGenesisFailureInvalidCompletionState, workerRequestID)
-		return hostedGenesisAssistantRun{}, false, persistErr
-	}
-	modelSet := firstNonEmptyWorker(session.Model, conv.Model)
-	apiKey, appErr := hostedGenesisAPIKey(ctx, modelSet)
-	if appErr != nil {
-		persistErr := s.markHostedGenesisConversationFailed(ctx, st, conv, session, hostedGenesisFailureLLMUnavailable, workerRequestID)
-		return hostedGenesisAssistantRun{}, false, persistErr
-	}
-	return hostedGenesisAssistantRun{
-		messages:    messages,
-		llmMessages: hostedGenesisLLMMessages(messages),
-		modelSet:    modelSet,
-		apiKey:      apiKey,
-	}, true, nil
-}
-
-func (s *Server) runAndPersistHostedGenesisAssistant(ctx context.Context, st hostedGenesisStore, reg *models.SoulAgentRegistration, conv *models.SoulAgentMintConversation, session *models.HostedGenesisSession, msg hostedgenesis.QueueMessage, workerRequestID string, run hostedGenesisAssistantRun) error {
-	runCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), hostedGenesisRunTimeout)
-	defer cancel()
-	fullResponse, usage, err := runHostedGenesisAssistantModel(runCtx, run.apiKey, run.modelSet, hostedGenesisSystemPrompt(reg), run.llmMessages)
-	if err != nil || strings.TrimSpace(fullResponse) == "" {
-		log.Printf("aiworker: hosted genesis assistant turn failed agent_hash=%s conversation_hash=%s provider=%s failure_code=%s", hostedGenesisAuditHash(conv.AgentID), hostedGenesisAuditHash(conv.ConversationID), hostedGenesisProvider(run.modelSet), hostedGenesisFailureAssistantTurnFailed)
-		if persistErr := s.markHostedGenesisConversationFailed(ctx, st, conv, session, hostedGenesisFailureAssistantTurnFailed, workerRequestID); persistErr != nil {
-			return persistErr
-		}
-		return err
-	}
-	run.messages = append(run.messages, hostedGenesisMessage{Role: "assistant", Content: fullResponse})
-	messagesJSON, err := json.Marshal(run.messages)
-	if err != nil {
-		return s.markHostedGenesisConversationFailed(ctx, st, conv, session, hostedGenesisFailureAssistantTurnFailed, workerRequestID)
-	}
-	return persistHostedGenesisAssistantResponse(ctx, st, conv, session, msg, workerRequestID, string(messagesJSON), usage, len(run.messages))
-}
-
-func persistHostedGenesisAssistantResponse(ctx context.Context, st hostedGenesisStore, conv *models.SoulAgentMintConversation, session *models.HostedGenesisSession, msg hostedgenesis.QueueMessage, workerRequestID string, messagesJSON string, usage models.AIUsage, messageCount int) error {
-	now := time.Now().UTC()
-	conv.Messages = models.EncodeSoulMintConversationBlob(messagesJSON)
-	conv.Usage = addAIUsageWorker(conv.Usage, usage)
-	conv.Status = models.SoulMintConversationStatusAssistantTurnReady
-	conv.StatusReason = ""
-	conv.RequestID = firstNonEmptyWorker(msg.RequestID, workerRequestID, conv.RequestID)
-	conv.UpdatedAt = now
-	encodeHostedGenesisPrivateFields(conv)
-	_ = conv.UpdateKeys()
-	if err := st.PutSoulAgentMintConversation(ctx, conv); err != nil {
-		return err
-	}
-	session.Status = string(hostedgenesis.StatusAssistantTurnReady)
-	session.MessageCount = maxInt(session.MessageCount, messageCount)
-	session.AssistantCheckpointRef = hostedgenesis.CheckpointRef("assistant", session.ConversationID, msg.TurnID)
-	session.RequestID = conv.RequestID
-	session.UpdatedAt = now
-	return st.UpdateHostedGenesisSession(ctx, session, session.Version, hostedgenesis.StatusInProgress)
-}
-
-func (s *Server) processHostedGenesisDeclarationExtraction(ctx context.Context, workerRequestID string, msg hostedgenesis.QueueMessage) error {
-	st, ok := s.hostedGenesisStore()
-	if !ok {
-		return fmt.Errorf("hosted genesis store not initialized")
-	}
-	reg, conv, session, err := s.loadAndValidateHostedGenesisJob(ctx, st, msg)
-	if err != nil {
-		return err
-	}
-	if !hostedGenesisDeclarationJobReady(reg, conv, session) {
-		return nil
-	}
-	run, ok, err := s.prepareHostedGenesisDeclarationRun(ctx, st, reg, conv, session, workerRequestID)
-	if err != nil {
-		return err
-	}
-	if !ok {
-		return nil
-	}
-	return s.runAndPersistHostedGenesisDeclaration(ctx, st, conv, session, msg, workerRequestID, run)
-}
-
-type hostedGenesisDeclarationRun struct {
-	input    llm.MintConversationDeclarationsInput
-	modelSet string
-	apiKey   string
-	contract hostedgenesis.DeclarationContract
-}
-
-func hostedGenesisDeclarationJobReady(reg *models.SoulAgentRegistration, conv *models.SoulAgentMintConversation, session *models.HostedGenesisSession) bool {
-	return reg != nil && conv != nil && session != nil && hostedgenesis.NormalizeStatus(session.Status) == hostedgenesis.StatusDeclarationExtractionPending
-}
-
-func (s *Server) prepareHostedGenesisDeclarationRun(ctx context.Context, st hostedGenesisStore, reg *models.SoulAgentRegistration, conv *models.SoulAgentMintConversation, session *models.HostedGenesisSession, workerRequestID string) (hostedGenesisDeclarationRun, bool, error) {
-	messages, err := decodeHostedGenesisMessages(conv.Messages)
-	if err != nil || len(messages) == 0 || !hostedGenesisHasAssistant(messages) {
-		persistErr := s.markHostedGenesisConversationFailed(ctx, st, conv, session, hostedGenesisFailureInvalidCompletionState, workerRequestID)
-		return hostedGenesisDeclarationRun{}, false, persistErr
-	}
-	modelSet := firstNonEmptyWorker(session.Model, conv.Model)
-	apiKey, appErr := hostedGenesisAPIKey(ctx, modelSet)
-	if appErr != nil {
-		persistErr := s.markHostedGenesisConversationFailed(ctx, st, conv, session, hostedGenesisFailureLLMUnavailable, workerRequestID)
-		return hostedGenesisDeclarationRun{}, false, persistErr
-	}
-	contract := hostedgenesis.DeclarationContractFromEnv()
-	return hostedGenesisDeclarationRun{
-		input:    hostedGenesisDeclarationInput(reg, messages, contract),
-		modelSet: modelSet,
-		apiKey:   apiKey,
-		contract: contract,
-	}, true, nil
-}
-
-func hostedGenesisDeclarationInput(reg *models.SoulAgentRegistration, messages []hostedGenesisMessage, contract hostedgenesis.DeclarationContract) llm.MintConversationDeclarationsInput {
-	contract = contract.Normalize()
-	in := llm.MintConversationDeclarationsInput{
-		SchemaVersion:   inputSchemaVersion(contract),
-		GuidanceVersion: inputGuidanceVersion(contract),
-		Registration: llm.MintConversationRegistrationContext{
-			Domain:               strings.TrimSpace(reg.DomainNormalized),
-			LocalID:              strings.TrimSpace(reg.LocalID),
-			AgentID:              strings.TrimSpace(reg.AgentID),
-			DeclaredCapabilities: hostedgenesis.FilterDeclaredCapabilitiesForPrompt(reg.Capabilities),
-		},
-		Messages: hostedGenesisLLMMessages(messages),
-	}
-	return in
-}
-
-func inputSchemaVersion(contract hostedgenesis.DeclarationContract) string {
-	contract = contract.Normalize()
-	if !contract.IsFiveBody() {
-		return ""
-	}
-	return contract.SchemaVersion
-}
-
-func inputGuidanceVersion(contract hostedgenesis.DeclarationContract) string {
-	contract = contract.Normalize()
-	if !contract.IsFiveBody() {
-		return ""
-	}
-	return contract.GuidanceVersion
-}
-
-func hostedGenesisLLMMessages(messages []hostedGenesisMessage) []llm.MintConversationMessage {
-	out := make([]llm.MintConversationMessage, 0, len(messages))
-	for _, m := range messages {
-		out = append(out, llm.MintConversationMessage{Role: strings.ToLower(strings.TrimSpace(m.Role)), Content: strings.TrimSpace(m.Content)})
-	}
-	return out
-}
-
-func (s *Server) runAndPersistHostedGenesisDeclaration(ctx context.Context, st hostedGenesisStore, conv *models.SoulAgentMintConversation, session *models.HostedGenesisSession, msg hostedgenesis.QueueMessage, workerRequestID string, run hostedGenesisDeclarationRun) error {
-	draft, usage, err := runHostedGenesisDeclarationModel(ctx, run.apiKey, run.modelSet, run.input)
-	if err != nil {
-		log.Printf("aiworker: hosted genesis declaration extraction failed agent_hash=%s conversation_hash=%s provider=%s failure_code=%s", hostedGenesisAuditHash(conv.AgentID), hostedGenesisAuditHash(conv.ConversationID), hostedGenesisProvider(run.modelSet), hostedGenesisFailureDeclarationExtractionFailed)
-		if persistErr := s.markHostedGenesisConversationFailed(ctx, st, conv, session, hostedGenesisFailureDeclarationExtractionFailed, workerRequestID); persistErr != nil {
-			return persistErr
-		}
-		return err
-	}
-	decl, err := buildHostedGenesisDeclarationsDraftForContract(draft, time.Now().UTC(), run.modelSet, run.contract, run.input.Registration.DeclaredCapabilities)
-	if err != nil {
-		detail := string(hostedgenesis.DeclarationValidationCodeFromError(err))
-		log.Printf("aiworker: hosted genesis produced declarations rejected agent_hash=%s conversation_hash=%s failure_code=%s reason_code=%s", hostedGenesisAuditHash(conv.AgentID), hostedGenesisAuditHash(conv.ConversationID), hostedGenesisFailureInvalidProducedDeclarations, detail)
-		return s.markHostedGenesisConversationFailedWithDetail(ctx, st, conv, session, hostedGenesisFailureInvalidProducedDeclarations, detail, workerRequestID)
-	}
-	b, err := json.Marshal(decl)
-	if err != nil {
-		return s.markHostedGenesisConversationFailedWithDetail(ctx, st, conv, session, hostedGenesisFailureInvalidProducedDeclarations, string(hostedgenesis.DeclarationCodeInvalid), workerRequestID)
-	}
-	return persistHostedGenesisDeclarationResponse(ctx, st, conv, session, msg, workerRequestID, string(b), usage, run.modelSet, run.contract)
-}
-
-func persistHostedGenesisDeclarationResponse(ctx context.Context, st hostedGenesisStore, conv *models.SoulAgentMintConversation, session *models.HostedGenesisSession, msg hostedgenesis.QueueMessage, workerRequestID string, declarationsJSON string, usage models.AIUsage, modelSet string, contract hostedgenesis.DeclarationContract) error {
-	now := time.Now().UTC()
-	conv.ProducedDeclarations = models.EncodeSoulMintConversationBlob(declarationsJSON)
-	conv.Usage = addAIUsageWorker(conv.Usage, usage)
-	conv.Status = models.SoulMintConversationStatusDeclarationReady
-	conv.StatusReason = ""
-	conv.RequestID = firstNonEmptyWorker(msg.RequestID, workerRequestID, conv.RequestID)
-	conv.CompletedAt = now
-	conv.UpdatedAt = now
-	encodeHostedGenesisPrivateFields(conv)
-	_ = conv.UpdateKeys()
-	if err := st.PutSoulAgentMintConversation(ctx, conv); err != nil {
-		return err
-	}
-	checkpoint := hostedGenesisDeclarationCheckpointFromWorker(session, conv, declarationsJSON, now, modelSet, conv.RequestID, contract)
-	session.Status = string(hostedgenesis.StatusDeclarationReady)
-	session.DeclarationCheckpoint = &checkpoint
-	session.Failure = nil
-	session.RequestID = conv.RequestID
-	session.CompletedAt = now
-	session.UpdatedAt = now
-	return st.UpdateHostedGenesisSession(ctx, session, session.Version, hostedgenesis.StatusDeclarationExtractionPending)
 }
 
 func (s *Server) loadAndValidateHostedGenesisJob(ctx context.Context, st hostedGenesisStore, msg hostedgenesis.QueueMessage) (*models.SoulAgentRegistration, *models.SoulAgentMintConversation, *models.HostedGenesisSession, error) {
@@ -444,32 +198,6 @@ func (s *Server) validateHostedGenesisIdempotency(ctx context.Context, st hosted
 		return false, err
 	}
 	return false, s.markHostedGenesisConversationFailed(ctx, st, conv, session, hostedGenesisFailureInvalidCompletionState, msg.RequestID)
-}
-
-var runHostedGenesisAssistantModel = defaultRunHostedGenesisAssistantModel
-
-func defaultRunHostedGenesisAssistantModel(ctx context.Context, apiKey string, modelSet string, systemPrompt string, messages []llm.MintConversationMessage) (string, models.AIUsage, error) {
-	switch {
-	case strings.HasPrefix(strings.ToLower(modelSet), "openai:"):
-		return llm.StreamMintConversationOpenAI(ctx, apiKey, modelSet, systemPrompt, messages, func(string) {})
-	case strings.HasPrefix(strings.ToLower(modelSet), "anthropic:"):
-		return llm.StreamMintConversationAnthropic(ctx, apiKey, modelSet, systemPrompt, messages, func(string) {})
-	default:
-		return "", models.AIUsage{}, fmt.Errorf("unsupported model set")
-	}
-}
-
-var runHostedGenesisDeclarationModel = defaultRunHostedGenesisDeclarationModel
-
-func defaultRunHostedGenesisDeclarationModel(ctx context.Context, apiKey string, modelSet string, in llm.MintConversationDeclarationsInput) (llm.MintConversationDeclarationsDraft, models.AIUsage, error) {
-	switch {
-	case strings.HasPrefix(strings.ToLower(modelSet), "openai:"):
-		return llm.MintConversationDeclarationsOpenAI(ctx, apiKey, modelSet, in)
-	case strings.HasPrefix(strings.ToLower(modelSet), "anthropic:"):
-		return llm.MintConversationDeclarationsAnthropic(ctx, apiKey, modelSet, in)
-	default:
-		return llm.MintConversationDeclarationsDraft{}, models.AIUsage{}, fmt.Errorf("unsupported model set")
-	}
 }
 
 func hostedGenesisRegistrationMatchesJob(reg *models.SoulAgentRegistration, msg hostedgenesis.QueueMessage) bool {
@@ -626,106 +354,39 @@ func encodeHostedGenesisPrivateFields(conv *models.SoulAgentMintConversation) {
 	conv.ProducedDeclarations = models.EncodeSoulMintConversationBlob(models.DecodeSoulMintConversationBlob(conv.ProducedDeclarations))
 }
 
-func decodeHostedGenesisMessages(raw string) ([]hostedGenesisMessage, error) {
-	raw = models.DecodeSoulMintConversationBlob(raw)
-	if strings.TrimSpace(raw) == "" {
-		return nil, nil
-	}
-	var messages []hostedGenesisMessage
-	if err := json.Unmarshal([]byte(raw), &messages); err != nil {
-		return nil, err
-	}
-	return messages, nil
-}
-
-func hostedGenesisHasAssistant(messages []hostedGenesisMessage) bool {
-	for _, msg := range messages {
-		if strings.EqualFold(strings.TrimSpace(msg.Role), "assistant") && strings.TrimSpace(msg.Content) != "" {
-			return true
-		}
-	}
-	return false
-}
-
-func hostedGenesisDeclarationCheckpointFromWorker(session *models.HostedGenesisSession, conv *models.SoulAgentMintConversation, declarationsJSON string, now time.Time, modelSet string, requestID string, contract hostedgenesis.DeclarationContract) hostedgenesis.DeclarationCheckpoint {
-	sum := sha256.Sum256([]byte(strings.TrimSpace(declarationsJSON)))
-	hashHex := hex.EncodeToString(sum[:])
-	messageCount := 0
-	registrationID := ""
-	if session != nil {
-		messageCount = session.MessageCount
-		registrationID = session.RegistrationID
-	}
-	if messageCount <= 0 {
-		messageCount = mintConversationMessageCountWorker(conv)
-	}
-	return hostedgenesis.DeclarationCheckpoint{
-		DeclarationID:   "decl_" + hashHex[:16],
-		DeclarationHash: "sha256:" + hashHex,
-		CheckpointRef:   hostedgenesis.CheckpointRef("declaration", conv.ConversationID, hashHex[:16]),
-		ProducedAt:      now.UTC(),
-		RegistrationID:  strings.TrimSpace(registrationID),
-		ConversationID:  strings.TrimSpace(conv.ConversationID),
-		AgentID:         strings.ToLower(strings.TrimSpace(conv.AgentID)),
-		MessageCount:    messageCount,
-		Model:           strings.TrimSpace(modelSet),
-		SchemaVersion:   checkpointSchemaVersion(contract),
-		GuidanceVersion: checkpointGuidanceVersion(contract),
-		RequestID:       strings.TrimSpace(requestID),
-	}
-}
-
-func checkpointSchemaVersion(contract hostedgenesis.DeclarationContract) string {
-	contract = contract.Normalize()
-	if !contract.IsFiveBody() {
-		return ""
-	}
-	return contract.SchemaVersion
-}
-
-func checkpointGuidanceVersion(contract hostedgenesis.DeclarationContract) string {
-	contract = contract.Normalize()
-	if !contract.IsFiveBody() {
-		return ""
-	}
-	return contract.GuidanceVersion
-}
-
 func hostedGenesisFailureFromWorkerReason(reason string) *hostedgenesis.Failure {
 	return hostedGenesisFailureFromWorkerReasonWithDetail(reason, "")
 }
 
+var hostedGenesisWorkerFailureCodes = map[string]hostedgenesis.FailureCode{
+	hostedGenesisFailureLLMUnavailable:              hostedgenesis.FailureCodeLLMUnavailable,
+	hostedGenesisFailureAssistantTurnFailed:         hostedgenesis.FailureCodeAssistantTurnFailed,
+	hostedGenesisFailureMicroVMUnavailable:          hostedgenesis.FailureCodeMicroVMUnavailable,
+	hostedGenesisFailureMissingProducedDeclarations: hostedgenesis.FailureCodeMissingProducedDeclarations,
+	hostedGenesisFailureInvalidProducedDeclarations: hostedgenesis.FailureCodeInvalidProducedDeclarations,
+	hostedGenesisFailureTenantBoundaryViolation:     hostedgenesis.FailureCodeTenantBoundaryViolation,
+	hostedGenesisFailureOperatorActionRequired:      hostedgenesis.FailureCodeOperatorActionRequired,
+}
+
+func workerRecoveryForFailureCode(code hostedgenesis.FailureCode) (hostedgenesis.RecoveryAction, bool) {
+	switch code {
+	case hostedgenesis.FailureCodeLLMUnavailable, hostedgenesis.FailureCodeAssistantTurnFailed, hostedgenesis.FailureCodeMicroVMUnavailable:
+		return hostedgenesis.RecoveryActionRetrySameStep, true
+	case hostedgenesis.FailureCodeTenantBoundaryViolation, hostedgenesis.FailureCodeOperatorActionRequired:
+		return hostedgenesis.RecoveryActionOperatorAction, false
+	case hostedgenesis.FailureCodeMissingProducedDeclarations, hostedgenesis.FailureCodeInvalidProducedDeclarations:
+		return hostedgenesis.RecoveryActionRestartSoulBootstrap, false
+	default:
+		return hostedgenesis.RecoveryActionRefreshState, false
+	}
+}
+
 func hostedGenesisFailureFromWorkerReasonWithDetail(reason string, detail string) *hostedgenesis.Failure {
-	code := hostedgenesis.FailureCodeInvalidCompletionState
-	switch strings.TrimSpace(reason) {
-	case hostedGenesisFailureLLMUnavailable:
-		code = hostedgenesis.FailureCodeLLMUnavailable
-	case hostedGenesisFailureAssistantTurnFailed:
-		code = hostedgenesis.FailureCodeAssistantTurnFailed
-	case hostedGenesisFailureMicroVMUnavailable:
-		code = hostedgenesis.FailureCodeMicroVMUnavailable
-	case hostedGenesisFailureDeclarationExtractionFailed:
-		code = hostedgenesis.FailureCodeDeclarationExtractionFailed
-	case hostedGenesisFailureMissingProducedDeclarations:
-		code = hostedgenesis.FailureCodeMissingProducedDeclarations
-	case hostedGenesisFailureInvalidProducedDeclarations:
-		code = hostedgenesis.FailureCodeInvalidProducedDeclarations
-	case hostedGenesisFailureTenantBoundaryViolation:
-		code = hostedgenesis.FailureCodeTenantBoundaryViolation
+	code, ok := hostedGenesisWorkerFailureCodes[strings.TrimSpace(reason)]
+	if !ok {
+		code = hostedgenesis.FailureCodeInvalidCompletionState
 	}
-	action := hostedgenesis.RecoveryActionRefreshState
-	retryable := false
-	if code == hostedgenesis.FailureCodeLLMUnavailable || code == hostedgenesis.FailureCodeAssistantTurnFailed || code == hostedgenesis.FailureCodeDeclarationExtractionFailed || code == hostedgenesis.FailureCodeMicroVMUnavailable {
-		action = hostedgenesis.RecoveryActionRetrySameStep
-		retryable = true
-	}
-	if code == hostedgenesis.FailureCodeTenantBoundaryViolation {
-		action = hostedgenesis.RecoveryActionOperatorAction
-	}
-	if code == hostedgenesis.FailureCodeMissingProducedDeclarations || code == hostedgenesis.FailureCodeInvalidProducedDeclarations {
-		action = hostedgenesis.RecoveryActionRestartSoulBootstrap
-		retryable = false
-	}
+	action, retryable := workerRecoveryForFailureCode(code)
 	recoveryReason := hostedgenesis.SanitizeFailureReason(code, detail)
 	return &hostedgenesis.Failure{
 		Code:      code,
@@ -759,189 +420,12 @@ func retryAfterFromWorkerRecovery(action hostedgenesis.RecoveryAction) int {
 	return 0
 }
 
-func mintConversationMessageCountWorker(conv *models.SoulAgentMintConversation) int {
-	if conv == nil {
-		return 0
-	}
-	messages, err := decodeHostedGenesisMessages(conv.Messages)
-	if err != nil {
-		return 0
-	}
-	return len(messages)
-}
-
-func maxInt(a int, b int) int {
-	if a > b {
-		return a
-	}
-	return b
-}
-
 func hostedGenesisDomainActive(domain *models.Domain) bool {
 	if domain == nil {
 		return false
 	}
 	status := strings.ToLower(strings.TrimSpace(domain.Status))
 	return status == models.DomainStatusVerified || status == models.DomainStatusActive
-}
-
-func hostedGenesisAPIKey(ctx context.Context, modelSet string) (string, error) {
-	modelSetNorm := strings.ToLower(strings.TrimSpace(modelSet))
-	switch {
-	case strings.HasPrefix(modelSetNorm, "openai:"):
-		if k := strings.TrimSpace(os.Getenv("OPENAI_API_KEY")); k != "" {
-			return k, nil
-		}
-		return secrets.OpenAIServiceKey(ctx, nil)
-	case strings.HasPrefix(modelSetNorm, "anthropic:"):
-		if k := strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY")); k != "" {
-			return k, nil
-		}
-		if k := strings.TrimSpace(os.Getenv("CLAUDE_API_KEY")); k != "" {
-			return k, nil
-		}
-		return secrets.ClaudeAPIKey(ctx, nil)
-	default:
-		return "", fmt.Errorf("unsupported model set")
-	}
-}
-
-func hostedGenesisSystemPrompt(reg *models.SoulAgentRegistration) string {
-	return mintprompt.MintConversationSystemPromptForContract(reg, hostedgenesis.DeclarationContractFromEnv())
-}
-
-func buildHostedGenesisDeclarationsDraft(draft llm.MintConversationDeclarationsDraft, now time.Time, modelSet string, _ ...[]string) (hostedGenesisProducedDeclarations, error) {
-	return buildHostedGenesisDeclarationsDraftForContract(draft, now, modelSet, hostedgenesis.LegacyDeclarationContract())
-}
-
-func buildHostedGenesisDeclarationsDraftForContract(draft llm.MintConversationDeclarationsDraft, now time.Time, modelSet string, contract hostedgenesis.DeclarationContract, _ ...[]string) (hostedGenesisProducedDeclarations, error) {
-	contract = contract.Normalize()
-	if contract.IsFiveBody() {
-		return buildHostedGenesisFiveBodyDeclarationsDraft(draft, now, modelSet, contract)
-	}
-	decl := hostedGenesisProducedDeclarations{
-		SelfDescription: draft.SelfDescription,
-		Capabilities:    []soul.CapabilityV2{},
-		Boundaries:      []soul.BoundaryV2{},
-		Transparency:    draft.Transparency,
-	}
-	decl.SelfDescription.AuthoredBy = hostedGenesisSelfDescriptionAuthoredByAgent
-	decl.SelfDescription.MintingModel = strings.TrimSpace(modelSet)
-	if err := decl.SelfDescription.Validate(); err != nil {
-		return hostedGenesisProducedDeclarations{}, hostedgenesis.NewDeclarationValidationError(hostedgenesis.DeclarationCodeSelfDescription)
-	}
-	var capErr error
-	decl.Capabilities, capErr = hostedgenesis.ValidateAndNormalizeProducedCapabilities(draft.Capabilities)
-	if capErr != nil {
-		return hostedGenesisProducedDeclarations{}, capErr
-	}
-	invalidBoundary := false
-	for i, b := range draft.Boundaries {
-		entry := soul.BoundaryV2{
-			ID:             fmt.Sprintf("mint-%d-%02d", now.Unix(), i+1),
-			Category:       strings.ToLower(strings.TrimSpace(b.Category)),
-			Statement:      strings.TrimSpace(b.Statement),
-			Rationale:      strings.TrimSpace(b.Rationale),
-			AddedAt:        now.UTC().Format(time.RFC3339),
-			AddedInVersion: "1",
-			Signature:      "0x00",
-		}
-		if err := entry.Validate(); err != nil {
-			invalidBoundary = true
-			continue
-		}
-		decl.Boundaries = append(decl.Boundaries, entry)
-	}
-	if invalidBoundary {
-		return hostedGenesisProducedDeclarations{}, hostedgenesis.NewDeclarationValidationError(hostedgenesis.DeclarationCodeBoundariesBad)
-	}
-	if len(decl.Boundaries) == 0 {
-		if len(draft.Boundaries) > 0 {
-			return hostedGenesisProducedDeclarations{}, hostedgenesis.NewDeclarationValidationError(hostedgenesis.DeclarationCodeBoundariesBad)
-		}
-		return hostedGenesisProducedDeclarations{}, hostedgenesis.NewDeclarationValidationError(hostedgenesis.DeclarationCodeBoundaries)
-	}
-	if decl.Transparency == nil {
-		decl.Transparency = map[string]any{}
-	}
-	return decl, nil
-}
-
-func buildHostedGenesisFiveBodyDeclarationsDraft(draft llm.MintConversationDeclarationsDraft, now time.Time, modelSet string, contract hostedgenesis.DeclarationContract) (hostedGenesisProducedDeclarations, error) {
-	if err := hostedgenesis.ValidateDeclarationContractVersions(draft.SchemaVersion, draft.GuidanceVersion, contract); err != nil {
-		return hostedGenesisProducedDeclarations{}, err
-	}
-	fiveBodies := hostedgenesis.NormalizeFiveBodyDeclaration(draft.FiveBodies)
-	if err := hostedgenesis.ValidateFiveBodyDeclaration(fiveBodies); err != nil {
-		return hostedGenesisProducedDeclarations{}, err
-	}
-	review, err := hostedgenesis.BuildAdversarialReviewV2(fiveBodies)
-	if err != nil {
-		return hostedGenesisProducedDeclarations{}, err
-	}
-	decl := hostedGenesisProducedDeclarations{
-		SchemaVersion:     contract.SchemaVersion,
-		GuidanceVersion:   contract.GuidanceVersion,
-		FiveBodies:        &fiveBodies,
-		SelfDescription:   fiveBodySelfDescription(draft.SelfDescription, fiveBodies, modelSet),
-		Capabilities:      []soul.CapabilityV2{},
-		Boundaries:        hostedgenesis.FiveBodyBoundaries(fiveBodies.Soul.Refusals, now),
-		Transparency:      draft.Transparency,
-		AdversarialReview: &review,
-	}
-	if err := decl.SelfDescription.Validate(); err != nil {
-		return hostedGenesisProducedDeclarations{}, hostedgenesis.NewDeclarationValidationError(hostedgenesis.DeclarationCodeSelfDescription)
-	}
-	var capErr error
-	decl.Capabilities, capErr = hostedgenesis.ValidateAndNormalizeProducedCapabilities(draft.Capabilities)
-	if capErr != nil {
-		return hostedGenesisProducedDeclarations{}, capErr
-	}
-	if len(decl.Boundaries) < 3 {
-		return hostedGenesisProducedDeclarations{}, hostedgenesis.NewDeclarationValidationError(hostedgenesis.DeclarationCodeSoulRefusals)
-	}
-	for i := range decl.Boundaries {
-		if err := decl.Boundaries[i].Validate(); err != nil {
-			return hostedGenesisProducedDeclarations{}, hostedgenesis.NewDeclarationValidationError(hostedgenesis.DeclarationCodeBoundariesBad)
-		}
-	}
-	if decl.Transparency == nil {
-		decl.Transparency = map[string]any{}
-	}
-	if err := hostedgenesis.ValidateAdversarialReview(review); err != nil {
-		return hostedGenesisProducedDeclarations{}, err
-	}
-	return decl, nil
-}
-
-func fiveBodySelfDescription(source soul.SelfDescriptionV2, fiveBodies hostedgenesis.FiveBodyDeclaration, modelSet string) soul.SelfDescriptionV2 {
-	source.Purpose = firstNonEmptyWorker(source.Purpose, fiveBodies.Identity.Summary)
-	source.Constraints = firstNonEmptyWorker(source.Constraints, fiveBodies.Boundaries.Summary)
-	source.Commitments = firstNonEmptyWorker(source.Commitments, fiveBodies.Philosophy.Summary)
-	source.Limitations = firstNonEmptyWorker(source.Limitations, fiveBodies.Soul.Summary)
-	source.AuthoredBy = hostedGenesisSelfDescriptionAuthoredByAgent
-	source.MintingModel = strings.TrimSpace(modelSet)
-	return source
-}
-
-func addAIUsageWorker(existing models.AIUsage, delta models.AIUsage) models.AIUsage {
-	out := existing
-	if strings.TrimSpace(out.Provider) == "" {
-		out.Provider = strings.TrimSpace(delta.Provider)
-	}
-	if strings.TrimSpace(out.Model) == "" {
-		out.Model = strings.TrimSpace(delta.Model)
-	}
-	out.InputTokens += delta.InputTokens
-	out.OutputTokens += delta.OutputTokens
-	total := delta.TotalTokens
-	if total == 0 && (delta.InputTokens != 0 || delta.OutputTokens != 0) {
-		total = delta.InputTokens + delta.OutputTokens
-	}
-	out.TotalTokens += total
-	out.DurationMs += delta.DurationMs
-	out.ToolCalls += delta.ToolCalls
-	return out
 }
 
 func firstNonEmptyWorker(values ...string) string {
@@ -951,13 +435,6 @@ func firstNonEmptyWorker(values ...string) string {
 		}
 	}
 	return ""
-}
-
-func hostedGenesisProvider(modelSet string) string {
-	if i := strings.Index(strings.TrimSpace(modelSet), ":"); i > 0 {
-		return strings.ToLower(strings.TrimSpace(modelSet[:i]))
-	}
-	return "unknown"
 }
 
 func hostedGenesisAuditHash(raw string) string {

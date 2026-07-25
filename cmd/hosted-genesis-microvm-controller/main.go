@@ -9,14 +9,16 @@ import (
 	"errors"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-lambda-go/lambda"
-	apptheory "github.com/theory-cloud/apptheory/runtime"
-	runtimemicrovm "github.com/theory-cloud/apptheory/runtime/microvm"
+	apptheory "github.com/theory-cloud/apptheory/v2/runtime"
+	runtimemicrovm "github.com/theory-cloud/apptheory/v2/runtime/microvm"
 
+	"github.com/equaltoai/lesser-host/internal/config"
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
 	"github.com/equaltoai/lesser-host/internal/observability"
 	"github.com/equaltoai/lesser-host/internal/store"
@@ -155,6 +157,13 @@ func newRuntimeController(ctx context.Context, getenv getenvFunc) (*hostedgenesi
 		ControllerID:             hostedgenesis.MicroVMControllerID,
 		SessionTTL:               hostedgenesis.MicroVMRegistryReconstructionTTL,
 		ReconstructionStaleAfter: 5 * time.Minute,
+		MaximumDurationSeconds: microVMInt32Env(
+			getenv,
+			"HOSTED_GENESIS_MICROVM_MAXIMUM_DURATION_SECONDS",
+			config.HostedGenesisMicroVMDefaultMaximumDurationSeconds,
+			0,
+			config.HostedGenesisMicroVMDefaultMaximumDurationSeconds,
+		),
 	}
 	return hostedgenesis.NewMicroVMControllerRuntime(cfg)
 }
@@ -248,6 +257,21 @@ func csv(value string) []string {
 		}
 	}
 	return out
+}
+
+func microVMInt32Env(getenv getenvFunc, key string, fallback int32, minValue int32, maxValue int32) int32 {
+	if getenv == nil {
+		getenv = os.Getenv
+	}
+	raw := strings.TrimSpace(getenv(key))
+	if raw == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseInt(raw, 10, 32)
+	if err != nil || parsed < int64(minValue) || parsed > int64(maxValue) {
+		return fallback
+	}
+	return int32(parsed)
 }
 
 func safeFailure(command runtimemicrovm.Command, requestID string, code string, message string) runtimemicrovm.ControllerResponse {

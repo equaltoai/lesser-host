@@ -87,7 +87,7 @@ func newHappyManagedLesserBodyReleaseClient(t *testing.T, stage string, versions
 	t.Helper()
 
 	if len(versions) == 0 {
-		versions = []string{"v0.2.3"}
+		versions = []string{"v1.0.8"}
 	}
 	stage = normalizeManagedLesserStage(stage)
 	if stage == "" {
@@ -363,7 +363,7 @@ func lesserBodyDeployManifestSchema2JSON(t *testing.T, stage string, capability 
 	raw, err := json.Marshal(map[string]any{
 		"schema":                2,
 		"required_capabilities": []string{capability},
-		"asset_prefix_default":  "releases/lesser-body/v0.2.3",
+		"asset_prefix_default":  "releases/lesser-body/v1.0.8",
 		"templates": map[string]any{
 			stage: map[string]any{
 				"path":   templatePath,
@@ -701,7 +701,7 @@ func TestValidateManagedLesserReleaseManifest_RejectsMutableGitSHA(t *testing.T)
 func TestPreflightManagedLesserBodyRelease_ValidatesReleaseManifestAndChecksums(t *testing.T) {
 	t.Parallel()
 
-	const version = "v0.2.3"
+	const version = "v1.0.8"
 	const stage = managedStageDev
 	handler := http.NewServeMux()
 	handler.HandleFunc("/equaltoai/lesser-body/releases/download/"+version+"/lesser-body-release.json", func(w http.ResponseWriter, _ *http.Request) {
@@ -732,7 +732,7 @@ func TestPreflightManagedLesserBodyRelease_ValidatesReleaseManifestAndChecksums(
 func TestPreflightManagedLesserBodyRelease_RejectsNonStringTemplateDefaults(t *testing.T) {
 	t.Parallel()
 
-	const version = "v0.2.3"
+	const version = "v1.0.8"
 	const stage = managedStageDev
 	handler := http.NewServeMux()
 	handler.HandleFunc("/equaltoai/lesser-body/releases/download/"+version+"/lesser-body-release.json", func(w http.ResponseWriter, _ *http.Request) {
@@ -766,7 +766,7 @@ func TestPreflightManagedLesserBodyRelease_RejectsNonStringTemplateDefaults(t *t
 func TestPreflightManagedLesserBodyRelease_SupportsSchema2AuxiliaryAssets(t *testing.T) {
 	t.Parallel()
 
-	const version = "v0.2.3"
+	const version = "v1.0.8"
 	const stage = managedStageDev
 	handler := http.NewServeMux()
 	handler.HandleFunc("/equaltoai/lesser-body/releases/download/"+version+"/lesser-body-release.json", func(w http.ResponseWriter, _ *http.Request) {
@@ -801,7 +801,7 @@ func TestPreflightManagedLesserBodyRelease_SupportsSchema2AuxiliaryAssets(t *tes
 func TestPreflightManagedLesserBodyRelease_SupportsInstancePlaneAuxiliaryArtifact(t *testing.T) {
 	t.Parallel()
 
-	const version = "v0.2.3"
+	const version = "v1.0.8"
 	const stage = managedStageDev
 	assets := []map[string]any{
 		lesserBodyAuxiliaryAssetFixture(stage),
@@ -840,7 +840,7 @@ func TestPreflightManagedLesserBodyRelease_SupportsInstancePlaneAuxiliaryArtifac
 func TestPreflightManagedLesserBodyRelease_RejectsMissingInstancePlaneChecksum(t *testing.T) {
 	t.Parallel()
 
-	const version = "v0.2.3"
+	const version = "v1.0.8"
 	const stage = managedStageDev
 	assets := []map[string]any{
 		lesserBodyAuxiliaryAssetFixture(stage),
@@ -876,7 +876,7 @@ func TestPreflightManagedLesserBodyRelease_RejectsMissingInstancePlaneChecksum(t
 func TestPreflightManagedLesserBodyRelease_RejectsInstancePlaneWithoutDeclaredArtifact(t *testing.T) {
 	t.Parallel()
 
-	const version = "v0.2.3"
+	const version = "v1.0.8"
 	const stage = managedStageDev
 	handler := http.NewServeMux()
 	handler.HandleFunc("/equaltoai/lesser-body/releases/download/"+version+"/lesser-body-release.json", func(w http.ResponseWriter, _ *http.Request) {
@@ -913,7 +913,7 @@ func TestPreflightManagedLesserBodyRelease_RejectsInstancePlaneWithoutDeclaredAr
 func TestPreflightManagedLesserBodyRelease_RejectsUnsupportedSchema2Capability(t *testing.T) {
 	t.Parallel()
 
-	const version = "v0.2.3"
+	const version = "v1.0.8"
 	const stage = managedStageDev
 	handler := http.NewServeMux()
 	handler.HandleFunc("/equaltoai/lesser-body/releases/download/"+version+"/lesser-body-release.json", func(w http.ResponseWriter, _ *http.Request) {
@@ -937,22 +937,22 @@ func TestPreflightManagedLesserBodyRelease_RejectsUnsupportedSchema2Capability(t
 func TestPreflightManagedLesserBodyRelease_RejectsSourceCheckoutOrNPMInstall(t *testing.T) {
 	t.Parallel()
 
-	releaseManifest, err := parseManagedLesserBodyReleaseManifest(lesserBodyReleaseManifestJSON(t, "v0.2.3", managedStageDev))
+	releaseManifest, err := parseManagedLesserBodyReleaseManifest(lesserBodyReleaseManifestJSON(t, "v1.0.8", managedStageDev))
 	require.NoError(t, err)
 
 	t.Run("source checkout", func(t *testing.T) {
 		required := true
 		releaseManifest.Deploy.SourceCheckoutRequired = &required
-		err := validateManagedLesserBodyReleaseManifest(releaseManifest, "v0.2.3", managedStageDev)
+		err := validateManagedLesserBodyReleaseManifest(releaseManifest, "v1.0.8", managedStageDev)
 		require.ErrorContains(t, err, "source checkout")
 	})
 
 	t.Run("npm install", func(t *testing.T) {
-		releaseManifest, err := parseManagedLesserBodyReleaseManifest(lesserBodyReleaseManifestJSON(t, "v0.2.3", managedStageDev))
+		releaseManifest, err := parseManagedLesserBodyReleaseManifest(lesserBodyReleaseManifestJSON(t, "v1.0.8", managedStageDev))
 		require.NoError(t, err)
 		required := true
 		releaseManifest.Deploy.NPMInstallRequired = &required
-		err = validateManagedLesserBodyReleaseManifest(releaseManifest, "v0.2.3", managedStageDev)
+		err = validateManagedLesserBodyReleaseManifest(releaseManifest, "v1.0.8", managedStageDev)
 		require.ErrorContains(t, err, "npm install")
 	})
 }
@@ -960,7 +960,7 @@ func TestPreflightManagedLesserBodyRelease_RejectsSourceCheckoutOrNPMInstall(t *
 func TestPreflightManagedLesserBodyRelease_RejectsTemplateReferenceWithoutAuxiliaryDeclaration(t *testing.T) {
 	t.Parallel()
 
-	const version = "v0.2.3"
+	const version = "v1.0.8"
 	const stage = managedStageDev
 	handler := http.NewServeMux()
 	handler.HandleFunc("/equaltoai/lesser-body/releases/download/"+version+"/lesser-body-release.json", func(w http.ResponseWriter, _ *http.Request) {
@@ -996,7 +996,7 @@ func TestPreflightManagedLesserBodyRelease_RejectsTemplateReferenceWithoutAuxili
 func TestPreflightManagedLesserBodyRelease_RejectsRawBootstrapLambdaAssetRefs(t *testing.T) {
 	t.Parallel()
 
-	const version = "v0.2.3"
+	const version = "v1.0.8"
 	const stage = managedStageDev
 	releaseRaw := lesserBodyReleaseManifestSchema2JSON(t, version, stage, "")
 	var releaseDoc map[string]any
@@ -1103,14 +1103,14 @@ func TestManagedLesserBodySchema2BodyFixtureParsesAuxiliaryUploadPlan(t *testing
 func TestManagedReleaseAssetPath_AllowsNestedAssetsAndRejectsUnsafePaths(t *testing.T) {
 	t.Parallel()
 
-	u, err := managedGitHubReleaseAssetURL("equaltoai", "lesser-body", "v0.2.3", "assets/mcp-stream-spill-auto-delete-provider.zip")
+	u, err := managedGitHubReleaseAssetURL("equaltoai", "lesser-body", "v1.0.8", "assets/mcp-stream-spill-auto-delete-provider.zip")
 	require.NoError(t, err)
 	require.Contains(t, u, "/assets/mcp-stream-spill-auto-delete-provider.zip")
 
 	for _, path := range []string{"../evil.zip", "/evil.zip", "assets//evil.zip", "assets/./evil.zip", "assets\\evil.zip"} {
 		t.Run(path, func(t *testing.T) {
 			t.Parallel()
-			_, err := managedGitHubReleaseAssetURL("equaltoai", "lesser-body", "v0.2.3", path)
+			_, err := managedGitHubReleaseAssetURL("equaltoai", "lesser-body", "v1.0.8", path)
 			require.Error(t, err)
 		})
 	}
@@ -1119,7 +1119,7 @@ func TestManagedReleaseAssetPath_AllowsNestedAssetsAndRejectsUnsafePaths(t *test
 func TestManagedLesserBodySchema2DeployManifestRejectsContractDrift(t *testing.T) {
 	t.Parallel()
 
-	releaseManifest, err := parseManagedLesserBodyReleaseManifest(lesserBodyReleaseManifestSchema2JSON(t, "v0.2.3", managedStageDev, ""))
+	releaseManifest, err := parseManagedLesserBodyReleaseManifest(lesserBodyReleaseManifestSchema2JSON(t, "v1.0.8", managedStageDev, ""))
 	require.NoError(t, err)
 
 	t.Run("duplicate capability", func(t *testing.T) {
@@ -1279,7 +1279,7 @@ func TestAdvanceUpdateBodyReleasePreflightFailureFailsBeforeRunnerStarts(t *test
 			Build: &cbtypes.Build{Id: aws.String("run-should-not-start")},
 		},
 	}
-	const version = "v0.2.3"
+	const version = "v1.0.8"
 	handler := http.NewServeMux()
 	handler.HandleFunc("/equaltoai/lesser-body/releases/download/"+version+"/lesser-body-release.json", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

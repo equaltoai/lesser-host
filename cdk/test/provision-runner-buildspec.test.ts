@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import test from 'node:test';
 
 import { renderProvisionRunnerBuildCommands } from '../lib/provision-runner-buildspec';
@@ -63,6 +65,24 @@ test('RUN_MODE=lesser-mcp uses the CLI binary with --release-dir', () => {
 	assert.doesNotMatch(buildCommands, /aws cloudformation deploy/);
 });
 
+test('Lesser phases serialize the explicit instance-plane flag into provisioning input', () => {
+	assert.equal(
+		buildCommands.match(/--arg instance_plane_enabled "\$\{INSTANCE_PLANE_ENABLED:-\}"/g)?.length,
+		2,
+	);
+	assert.equal(
+		buildCommands.match(/\.instance_plane_enabled = bool\(\$instance_plane_enabled\)/g)?.length,
+		2,
+	);
+});
+
+test('managed lesser-body default is the verified instance-plane baseline', () => {
+	const cdkConfig = JSON.parse(readFileSync(join(__dirname, '..', '..', 'cdk.json'), 'utf8')) as {
+		context?: { managedLesserBodyDefaultVersion?: string };
+	};
+	assert.equal(cdkConfig.context?.managedLesserBodyDefaultVersion, 'v1.0.8');
+});
+
 test('runner manages instance-key secret through managed profile receipt proof', () => {
 	assert.match(buildCommands, /aws secretsmanager describe-secret --profile managed --secret-id "\$secret_ref"/);
 	assert.match(buildCommands, /aws secretsmanager create-secret --profile managed/);
@@ -87,6 +107,21 @@ test('runner manages soul-binding integration secret and passes one ARN to both 
 	// Receipts prove the ARN/key id without the bearer value.
 	assert.match(buildCommands, /write_soul_binding_integration_receipt "\$SOUL_BINDING_INTEGRATION_RECEIPT_PATH"/);
 	assert.match(buildCommands, /soul_binding_integration:\$soul_binding\[0\]/);
+});
+
+test('runner reuses the one canonical soul-binding secret without rotation', () => {
+	const start = buildCommands.indexOf('ensure_soul_binding_integration_secret()');
+	const end = buildCommands.indexOf('validate_https_custom_domain()', start);
+	assert.notEqual(start, -1);
+	assert.notEqual(end, -1);
+	const ensureBody = buildCommands.slice(start, end);
+
+	assert.match(ensureBody, /secret_ref="\$\{SOUL_BINDING_INTEGRATION_KEY_ARN:-\}"/);
+	assert.match(ensureBody, /if \[ -z "\$secret_ref" \]; then secret_ref=\$\(soul_binding_integration_secret_name\); fi/);
+	assert.match(ensureBody, /describe-secret --profile managed --secret-id "\$secret_ref"/);
+	assert.match(ensureBody, /validate_soul_binding_integration_secret_tags "\$desc_path"/);
+	assert.match(ensureBody, /read_managed_instance_key_plaintext "\$secret_arn"/);
+	assert.doesNotMatch(ensureBody, /update-secret|put-secret-value|SOUL_BINDING_INTEGRATION_ROTATE/);
 });
 
 test('runner emits explicit asset-contract failure messages', () => {

@@ -6,8 +6,8 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
-	runtimemicrovm "github.com/theory-cloud/apptheory/runtime/microvm"
-	microvmtestkit "github.com/theory-cloud/apptheory/testkit/microvm"
+	runtimemicrovm "github.com/theory-cloud/apptheory/v2/runtime/microvm"
+	microvmtestkit "github.com/theory-cloud/apptheory/v2/testkit/microvm"
 )
 
 func TestMicroVMRunRequestUsesAppTheoryM16Contract(t *testing.T) {
@@ -36,6 +36,7 @@ func TestMicroVMRunRequestUsesAppTheoryM16Contract(t *testing.T) {
 		microvmtestkit.NewFakeProviderWithTime(time.Date(2026, 6, 25, 10, 0, 0, 0, time.UTC)),
 		runtimemicrovm.NewMemorySessionRegistry(),
 		runtimemicrovm.WithControllerID(MicroVMControllerID),
+		runtimemicrovm.WithControllerLogging(runtimemicrovm.ProviderLogging{Disabled: true}),
 	)
 	require.NoError(t, err)
 	resp, err := controller.Handle(context.Background(), req)

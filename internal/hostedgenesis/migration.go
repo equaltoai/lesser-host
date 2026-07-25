@@ -120,66 +120,36 @@ func PlanLegacySessionMigration(input LegacySessionInput) (MigrationPlan, error)
 		}
 	}
 
-	plan := classifyLegacySession(seed, input, now)
-	if plan.Seed.Status != StatusDeclarationReady {
-		plan.Notes = append(plan.Notes, "legacy active/invalid state mapped to deterministic recovery; no SQS state imported")
-	}
+	plan := classifyLegacySession(seed, input)
+	plan.Notes = append(plan.Notes, "legacy state mapped to deterministic recovery; no SQS state imported")
 	return plan, nil
 }
 
-func classifyLegacySession(seed SessionSeed, input LegacySessionInput, now time.Time) MigrationPlan {
+func classifyLegacySession(seed SessionSeed, input LegacySessionInput) MigrationPlan {
 	status := NormalizeStatus(input.Status)
 	if status == StatusDeclarationReady || strings.EqualFold(input.Status, LegacyStatusCompleted) {
-		return planLegacyTerminalSession(seed, input, now)
+		return planLegacyTerminalSession(seed, input)
 	}
 	if status == StatusCreated || status == StatusInProgress || status == StatusAssistantTurnReady {
-		return failMigration(seed, FailureCodeAssistantTurnFailed, RecoveryActionRetrySameStep)
-	}
-	if status == StatusDeclarationExtractionPending {
-		return failMigration(seed, FailureCodeDeclarationExtractionFailed, RecoveryActionRetrySameStep)
+		return failMigration(seed, FailureCodeInvalidCompletionState, RecoveryActionRestartSoulBootstrap)
 	}
 	if status == StatusFailed {
 		code := failureCodeFromLegacyReason(input.StatusReason)
-		return failMigration(seed, code, recoveryActionForFailure(code))
+		return failMigration(seed, code, RecoveryActionRestartSoulBootstrap)
 	}
 	return failMigration(seed, FailureCodeInvalidCompletionState, RecoveryActionRefreshState)
 }
 
-func planLegacyTerminalSession(seed SessionSeed, input LegacySessionInput, now time.Time) MigrationPlan {
-	if input.ProducedDeclarationsValid {
-		if plan, ok := declarationReadyMigration(seed, input, now); ok {
-			return plan
-		}
-	}
-	if input.ProducedDeclarationsPresent {
+// planLegacyTerminalSession maps every legacy terminal conversation to a
+// deterministic restart_soul_bootstrap recovery. A pre-five-body declaration
+// cannot authorize declaration_ready: the declaration checkpoint requires the
+// exact five-body contract versions, which no legacy conversation carries, so
+// there is no migration path that seeds declaration_ready.
+func planLegacyTerminalSession(seed SessionSeed, input LegacySessionInput) MigrationPlan {
+	if input.ProducedDeclarationsPresent || input.ProducedDeclarationsValid {
 		return failMigration(seed, FailureCodeInvalidProducedDeclarations, RecoveryActionRestartSoulBootstrap)
 	}
 	return failMigration(seed, FailureCodeMissingProducedDeclarations, RecoveryActionRestartSoulBootstrap)
-}
-
-func declarationReadyMigration(seed SessionSeed, input LegacySessionInput, now time.Time) (MigrationPlan, bool) {
-	checkpoint := DeclarationCheckpoint{
-		DeclarationID:   input.DeclarationID,
-		DeclarationHash: input.DeclarationHash,
-		CheckpointRef:   input.DeclarationCheckpointRef,
-		ProducedAt:      firstNonZeroTime(input.CompletedAt, input.UpdatedAt, now),
-		RegistrationID:  input.RegistrationID,
-		ConversationID:  input.ConversationID,
-		AgentID:         input.AgentID,
-		MessageCount:    seed.MessageCount,
-		Model:           input.Model,
-		RequestID:       input.RequestID,
-	}
-	if err := checkpoint.Validate(); err != nil {
-		return MigrationPlan{}, false
-	}
-	seed.Status = StatusDeclarationReady
-	seed.DeclarationCheckpoint = &checkpoint
-	seed.CompletedAt = firstNonZeroTime(input.CompletedAt, input.UpdatedAt, now)
-	return MigrationPlan{
-		Seed:  seed,
-		Notes: []string{"legacy terminal conversation has valid declaration checkpoint"},
-	}, true
 }
 
 func failMigration(seed SessionSeed, code FailureCode, action RecoveryAction) MigrationPlan {
@@ -222,7 +192,6 @@ func failureCodeFromLegacyReason(reason string) FailureCode {
 	switch FailureCode(strings.TrimSpace(reason)) {
 	case FailureCodeLLMUnavailable,
 		FailureCodeAssistantTurnFailed,
-		FailureCodeDeclarationExtractionFailed,
 		FailureCodeInvalidCompletionState,
 		FailureCodeMissingProducedDeclarations,
 		FailureCodeInvalidProducedDeclarations,
@@ -234,27 +203,12 @@ func failureCodeFromLegacyReason(reason string) FailureCode {
 	}
 }
 
-func recoveryActionForFailure(code FailureCode) RecoveryAction {
-	switch code {
-	case FailureCodeMissingProducedDeclarations, FailureCodeInvalidProducedDeclarations:
-		return RecoveryActionRestartSoulBootstrap
-	case FailureCodeTenantBoundaryViolation, FailureCodeOperatorActionRequired:
-		return RecoveryActionOperatorAction
-	case FailureCodeLLMUnavailable, FailureCodeAssistantTurnFailed, FailureCodeDeclarationExtractionFailed:
-		return RecoveryActionRetrySameStep
-	default:
-		return RecoveryActionRefreshState
-	}
-}
-
 func failureMessage(code FailureCode) string {
 	switch code {
 	case FailureCodeLLMUnavailable:
 		return "Assistant provider was unavailable."
 	case FailureCodeAssistantTurnFailed:
-		return "Assistant turn did not reach declaration extraction."
-	case FailureCodeDeclarationExtractionFailed:
-		return "Declaration extraction did not complete."
+		return "Assistant declaration phase did not complete."
 	case FailureCodeMissingProducedDeclarations:
 		return "Produced declarations are missing."
 	case FailureCodeInvalidProducedDeclarations:

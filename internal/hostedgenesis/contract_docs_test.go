@@ -18,6 +18,155 @@ func TestFiveBodyContractDocsPinSchemaGuidanceVersions(t *testing.T) {
 	assertFiveBodyContractMarkdown(t)
 }
 
+func TestHostedGenesisConversationContractCodifiesM11TypedCandidateCutover(t *testing.T) {
+	assertHostedGenesisConversationContractM11Policy(t)
+	assertHostedGenesisConversationSourceM11Cutover(t)
+	assertHostedGenesisConversationCandidateResponseSchema(t)
+	assertHostedGenesisConversationReviewFixtures(t)
+	assertHostedGenesisConversationCandidateOpenAPI(t)
+}
+
+func assertHostedGenesisConversationContractM11Policy(t *testing.T) {
+	t.Helper()
+	contractBody, readErr := os.ReadFile(filepath.Join("..", "..", "docs", "contracts", "hosted-genesis-conversation.md"))
+	if readErr != nil {
+		t.Fatalf("read hosted-genesis conversation contract: %v", readErr)
+	}
+	contract := string(contractBody)
+	for _, want := range []string{
+		"typed declaration candidate",
+		"candidate_action",
+		"exact canonical JSON",
+		"No provider request occurs after affirmation",
+		"hard cutover",
+	} {
+		if !strings.Contains(contract, want) {
+			t.Fatalf("hosted-genesis conversation contract missing M11 billing policy phrase %q", want)
+		}
+	}
+}
+
+func assertHostedGenesisConversationSourceM11Cutover(t *testing.T) {
+	t.Helper()
+	asyncBody, readErr := os.ReadFile(filepath.Join("..", "controlplane", "handlers_soul_mint_conversation_async.go"))
+	if readErr != nil {
+		t.Fatalf("read async mint conversation source: %v", readErr)
+	}
+	asyncSrc := string(asyncBody)
+	for _, forbidden := range []string{"startHostedGenesisDeclarationExtraction", "soulMintConversationExtractModule", "hostedGenesisSyncAssistantFallbackEnabled"} {
+		if strings.Contains(asyncSrc, forbidden) {
+			t.Fatalf("active M11 accepted-turn path retains removed compatibility symbol %q", forbidden)
+		}
+	}
+	for _, required := range []string{"NewDeclarationCandidate", "ApplyDeclarationCandidateAction"} {
+		if !strings.Contains(asyncSrc, required) {
+			t.Fatalf("active M11 accepted-turn path missing structural candidate operation %q", required)
+		}
+	}
+
+	if _, statErr := os.Stat(filepath.Join("..", "ai", "llm", "mint_conversation_declarations.go")); !os.IsNotExist(statErr) {
+		t.Fatalf("whole-transcript declaration extractor must be deleted, stat err=%v", statErr)
+	}
+}
+
+func assertHostedGenesisConversationCandidateResponseSchema(t *testing.T) {
+	t.Helper()
+	responseSchemaBody, readErr := os.ReadFile(filepath.Join("..", "..", "docs", "spec", "v3", "schemas", "hosted-genesis.conversation.response.schema.json"))
+	if readErr != nil {
+		t.Fatalf("read hosted-genesis response schema: %v", readErr)
+	}
+	var responseSchema map[string]any
+	if err := json.Unmarshal(responseSchemaBody, &responseSchema); err != nil {
+		t.Fatalf("parse hosted-genesis response schema: %v", err)
+	}
+	defs := requireJSONMap(t, responseSchema, "$defs")
+	candidate := requireJSONMap(t, defs, "declaration_candidate")
+	candidateProps := requireJSONMap(t, candidate, "properties")
+	for _, field := range []string{"phase", "current_section", "completed_sections", "revision", "candidate_hash", "review"} {
+		if _, ok := candidateProps[field]; !ok {
+			t.Fatalf("typed candidate response schema missing %s", field)
+		}
+	}
+	review := requireJSONMap(t, defs, "candidate_review")
+	reviewText := requireJSONMap(t, requireJSONMap(t, review, "properties"), "review_text")
+	if got, ok := reviewText["maxLength"].(float64); !ok || int(got) != MaxDeclarationOwnerReviewRunes {
+		t.Fatalf("candidate review API limit drift: %#v", reviewText["maxLength"])
+	}
+	if description, _ := reviewText["description"].(string); !strings.Contains(description, "exact canonical JSON") {
+		t.Fatalf("candidate review schema does not describe the lossless payload: %#v", reviewText)
+	}
+}
+
+func assertHostedGenesisConversationReviewFixtures(t *testing.T) {
+	t.Helper()
+	for _, name := range []string{
+		"hosted-genesis.conversation.assistant-turn-ready.example.json",
+		"hosted-genesis.conversation.completed-declaration-ready.example.json",
+		"hosted-genesis.conversation.published.example.json",
+	} {
+		body, err := os.ReadFile(filepath.Join("..", "..", "docs", "spec", "v3", "fixtures", name))
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		var fixture struct {
+			Conversation struct {
+				Messages []struct {
+					Role    string `json:"role"`
+					Content string `json:"content"`
+				} `json:"messages"`
+				DeclarationCandidate struct {
+					CandidateHash string `json:"candidate_hash"`
+					Review        struct {
+						CandidateHash string `json:"candidate_hash"`
+						ReviewHash    string `json:"review_hash"`
+						ReviewText    string `json:"review_text"`
+					} `json:"review"`
+				} `json:"declaration_candidate"`
+			} `json:"conversation"`
+		}
+		if unmarshalErr := json.Unmarshal(body, &fixture); unmarshalErr != nil {
+			t.Fatalf("parse %s: %v", name, unmarshalErr)
+		}
+		candidate := fixture.Conversation.DeclarationCandidate
+		recovered, err := RecoverDeclarationOwnerReviewCanonicalJSON(candidate.Review.ReviewText)
+		if err != nil {
+			t.Fatalf("recover %s review payload: %v", name, err)
+		}
+		if candidate.CandidateHash != candidate.Review.CandidateHash || hashText(recovered) != candidate.CandidateHash {
+			t.Fatalf("%s candidate review hash does not authenticate exact canonical bytes", name)
+		}
+		if hashText(candidate.Review.ReviewText) != candidate.Review.ReviewHash {
+			t.Fatalf("%s review hash does not authenticate exact review text", name)
+		}
+		for _, message := range fixture.Conversation.Messages {
+			if message.Role == "assistant" && message.Content != candidate.Review.ReviewText {
+				t.Fatalf("%s assistant review projection diverges from candidate review", name)
+			}
+		}
+	}
+}
+
+func assertHostedGenesisConversationCandidateOpenAPI(t *testing.T) {
+	t.Helper()
+	openAPIBody, readErr := os.ReadFile(filepath.Join("..", "..", "docs", "contracts", "openapi.yaml"))
+	if readErr != nil {
+		t.Fatalf("read Host OpenAPI: %v", readErr)
+	}
+	openAPI := string(openAPIBody)
+	requestStart := strings.Index(openAPI, "    SoulHostedGenesisMintConversationRequest:")
+	requestEnd := strings.Index(openAPI, "    SoulHostedGenesisConversationResponse:")
+	if requestStart < 0 || requestEnd <= requestStart {
+		t.Fatal("Host OpenAPI missing bounded Hosted Genesis request component")
+	}
+	requestComponent := openAPI[requestStart:requestEnd]
+	if !strings.Contains(requestComponent, "candidate_action:") || !strings.Contains(requestComponent, "candidate_revision:") || !strings.Contains(requestComponent, "review_hash:") {
+		t.Fatal("Host OpenAPI request does not expose structural candidate_action bindings")
+	}
+	if strings.Contains(requestComponent, "declarations:") {
+		t.Fatal("Host OpenAPI request still permits client-authored declarations")
+	}
+}
+
 func assertFiveBodyContractSchemaCore(t *testing.T, schema map[string]any) {
 	t.Helper()
 	props := requireJSONMap(t, schema, "properties")
@@ -65,6 +214,15 @@ func assertFiveBodyContractOptionalEvidence(t *testing.T, schema map[string]any)
 		if requiredHas(capabilityRequired, optional) {
 			t.Fatalf("published capability schema must not require optional validation metadata %s", optional)
 		}
+	}
+	capabilityProps := requireJSONMap(t, capabilityItems, "properties")
+	capabilityName := requireJSONMap(t, capabilityProps, "capability")
+	if capabilityName["pattern"] != ProducedCapabilityIdentifierPattern {
+		t.Fatalf("published capability identifier pattern drift: %#v", capabilityName)
+	}
+	lastValidated := requireJSONMap(t, capabilityProps, "lastValidated")
+	if lastValidated["pattern"] != ProducedCapabilityOptionalRFC3339Pattern {
+		t.Fatalf("published lastValidated RFC3339 pattern drift: %#v", lastValidated)
 	}
 }
 

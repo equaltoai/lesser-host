@@ -1,6 +1,7 @@
 package hostedgenesis
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -10,17 +11,14 @@ import (
 )
 
 const (
-	// EnvDeclarationSchemaVersion gates the hosted genesis declaration extractor.
-	// Empty means the legacy v1 declaration lane. Operators can opt in to v2
-	// without changing AppTheory/MicroVM execution by setting this to "v2" or
-	// DeclarationSchemaVersionV2.
+	// EnvDeclarationSchemaVersion selects the hosted genesis declaration
+	// contract. Hosted-genesis has exactly one contract: the deployment must
+	// set this to "v2" or DeclarationSchemaVersionV2, and a missing/unknown
+	// value fails closed instead of selecting a builder.
 	EnvDeclarationSchemaVersion = "HOSTED_GENESIS_DECLARATION_SCHEMA_VERSION"
 	// EnvGuidanceVersion optionally pins the interview guidance version. Empty
 	// follows the selected schema version.
 	EnvGuidanceVersion = "HOSTED_GENESIS_GUIDANCE_VERSION"
-
-	DeclarationSchemaVersionV1 = "soul-mint-conversation-declaration.v1"
-	GuidanceVersionV1          = "soul-mint-conversation-guidance.v1"
 
 	DeclarationSchemaVersionV2 = "soul-five-body-schema.v2"
 	GuidanceVersionV2          = "soul-five-body-guidance.v2"
@@ -39,76 +37,80 @@ const (
 	fiveBodyReviewFindingsMaxItem = 12
 )
 
-// DeclarationContract names the selected hosted genesis schema/guidance lane.
-// It is stored in declaration evidence for v2 and remains empty in legacy
-// produced declarations so old v1 lanes keep byte shape when the flag is off.
+// DeclarationContract names the selected hosted genesis schema/guidance
+// contract. Hosted-genesis declaration production is five-body-only; the
+// contract is stored in produced declaration evidence.
 type DeclarationContract struct {
 	SchemaVersion   string
 	GuidanceVersion string
 }
 
-// LegacyDeclarationContract is the default, flag-disabled hosted genesis lane.
-func LegacyDeclarationContract() DeclarationContract {
-	return DeclarationContract{SchemaVersion: DeclarationSchemaVersionV1, GuidanceVersion: GuidanceVersionV1}
-}
-
-// FiveBodyDeclarationContract is the opt-in v2 five-body declaration lane.
+// FiveBodyDeclarationContract is the v2 five-body declaration contract — the
+// only declaration contract hosted-genesis production can select.
 func FiveBodyDeclarationContract() DeclarationContract {
 	return DeclarationContract{SchemaVersion: DeclarationSchemaVersionV2, GuidanceVersion: GuidanceVersionV2}
 }
 
-// DeclarationContractFromEnv returns the active declaration contract from the
-// process environment. Unsupported values intentionally collapse to v1 so a bad
-// opt-in cannot silently relax validation or partially enable v2.
-func DeclarationContractFromEnv() DeclarationContract {
-	schema := strings.ToLower(strings.TrimSpace(os.Getenv(EnvDeclarationSchemaVersion)))
-	guidance := strings.ToLower(strings.TrimSpace(os.Getenv(EnvGuidanceVersion)))
-	if schema == "v2" || schema == strings.ToLower(DeclarationSchemaVersionV2) || guidance == "v2" || guidance == strings.ToLower(GuidanceVersionV2) {
-		return FiveBodyDeclarationContract()
-	}
-	return LegacyDeclarationContract()
-}
+// ErrDeclarationContractUnconfigured fails hosted-genesis declaration
+// production closed when the contract selection does not explicitly name the
+// five-body contract. It is an operator configuration error, not a declaration
+// validation code: callers must surface it as operator_action_required and must
+// never substitute a different declaration builder.
+var ErrDeclarationContractUnconfigured = errors.New("hosted genesis declaration contract is not configured for five-body")
 
-// DeclarationContractFromVersions normalizes a caller-provided schema/guidance
-// pair. Empty values stay legacy for backwards compatibility.
-func DeclarationContractFromVersions(schemaVersion string, guidanceVersion string) DeclarationContract {
+// fiveBodyContract maps a schema/guidance version pair to the five-body
+// contract. At least one value must affirmatively select v2 and neither may
+// name anything else; every other combination fails closed.
+func fiveBodyContract(schemaVersion string, guidanceVersion string) (DeclarationContract, error) {
 	schema := strings.ToLower(strings.TrimSpace(schemaVersion))
 	guidance := strings.ToLower(strings.TrimSpace(guidanceVersion))
-	if schema == "v2" || schema == strings.ToLower(DeclarationSchemaVersionV2) || guidance == "v2" || guidance == strings.ToLower(GuidanceVersionV2) {
-		return FiveBodyDeclarationContract()
+	schemaSelects := schema == "v2" || schema == strings.ToLower(DeclarationSchemaVersionV2)
+	guidanceSelects := guidance == "v2" || guidance == strings.ToLower(GuidanceVersionV2)
+	schemaValid := schema == "" || schemaSelects
+	guidanceValid := guidance == "" || guidanceSelects
+	if (schemaSelects || guidanceSelects) && schemaValid && guidanceValid {
+		return FiveBodyDeclarationContract(), nil
 	}
-	return LegacyDeclarationContract()
+	return DeclarationContract{}, ErrDeclarationContractUnconfigured
 }
 
-// IsFiveBody reports whether the v2 five-body lane is active.
+// RequireFiveBodyDeclarationContractFromEnv returns the five-body declaration
+// contract selected by the process environment. Hosted-genesis production has
+// no other lane: a missing, conflicting, or unrecognized value returns
+// ErrDeclarationContractUnconfigured instead of a contract.
+func RequireFiveBodyDeclarationContractFromEnv() (DeclarationContract, error) {
+	return fiveBodyContract(os.Getenv(EnvDeclarationSchemaVersion), os.Getenv(EnvGuidanceVersion))
+}
+
+// ParseFiveBodyDeclarationContract parses a caller-provided schema/guidance
+// version pair with the same fail-closed rule as the env selector: missing or
+// unknown versions return ErrDeclarationContractUnconfigured, never a
+// substitute contract.
+func ParseFiveBodyDeclarationContract(schemaVersion string, guidanceVersion string) (DeclarationContract, error) {
+	return fiveBodyContract(schemaVersion, guidanceVersion)
+}
+
+// IsFiveBody reports whether the contract names the v2 five-body lane.
 func (c DeclarationContract) IsFiveBody() bool {
 	return strings.EqualFold(strings.TrimSpace(c.SchemaVersion), DeclarationSchemaVersionV2) || strings.EqualFold(strings.TrimSpace(c.GuidanceVersion), GuidanceVersionV2)
 }
 
-// Normalize fills missing contract fields consistently.
-func (c DeclarationContract) Normalize() DeclarationContract {
-	if c.IsFiveBody() {
-		return FiveBodyDeclarationContract()
-	}
-	return LegacyDeclarationContract()
-}
-
-// ValidateDeclarationContractVersions ensures a v2 extraction result carries
-// the exact Host-selected schema/guidance versions before declaration_ready.
-// Legacy callers intentionally keep their old no-version evidence shape.
+// ValidateDeclarationContractVersions ensures a typed candidate carries the
+// exact Host-selected five-body schema/guidance versions before
+// declaration_ready. A non-five-body contract fails closed as unconfigured.
 func ValidateDeclarationContractVersions(schemaVersion string, guidanceVersion string, contract DeclarationContract) error {
-	contract = contract.Normalize()
 	if !contract.IsFiveBody() {
-		return nil
+		return ErrDeclarationContractUnconfigured
 	}
-	if !strings.EqualFold(strings.TrimSpace(schemaVersion), contract.SchemaVersion) ||
-		!strings.EqualFold(strings.TrimSpace(guidanceVersion), contract.GuidanceVersion) {
+	canonical := FiveBodyDeclarationContract()
+	if !strings.EqualFold(strings.TrimSpace(schemaVersion), canonical.SchemaVersion) ||
+		!strings.EqualFold(strings.TrimSpace(guidanceVersion), canonical.GuidanceVersion) {
 		return NewDeclarationValidationError(DeclarationCodeInvalid)
 	}
 	return nil
 }
 
-// FiveBodyDeclaration captures the five first-class bodies extracted by the v2
+// FiveBodyDeclaration captures the five first-class bodies constructed by the v2
 // hosted genesis contract. Capabilities and transparency remain satellites.
 type FiveBodyDeclaration struct {
 	Identity   FiveBodySection  `json:"identity"`
@@ -210,22 +212,12 @@ func normalizeFiveBodyNotes(notes []string) []string {
 // refusal floor before any declaration_ready transition.
 func ValidateFiveBodyDeclaration(in FiveBodyDeclaration) error {
 	in = NormalizeFiveBodyDeclaration(in)
-	if strings.TrimSpace(in.Identity.Summary) == "" {
-		return NewDeclarationValidationError(DeclarationCodeFiveBodyIdentity)
+	for _, section := range declarationSectionOrder {
+		if err := validateDeclarationSection(section, in); err != nil {
+			return err
+		}
 	}
-	if strings.TrimSpace(in.Philosophy.Summary) == "" {
-		return NewDeclarationValidationError(DeclarationCodeFiveBodyPhilosophy)
-	}
-	if strings.TrimSpace(in.Discipline.Summary) == "" {
-		return NewDeclarationValidationError(DeclarationCodeFiveBodyDiscipline)
-	}
-	if strings.TrimSpace(in.Boundaries.Summary) == "" {
-		return NewDeclarationValidationError(DeclarationCodeFiveBodyBoundaries)
-	}
-	if strings.TrimSpace(in.Soul.Summary) == "" {
-		return NewDeclarationValidationError(DeclarationCodeFiveBodySoul)
-	}
-	return ValidateFiveBodyRefusals(in.Soul.Refusals)
+	return nil
 }
 
 // ValidateFiveBodyRefusals enforces minItems >= 3 and rejects generic refusal
@@ -272,7 +264,7 @@ func isConcreteRefusalField(raw string) bool {
 	return genericTokens < len(words)
 }
 
-// FiveBodyBoundaries maps the v2 soul.refusals floor into legacy Soul boundary
+// FiveBodyBoundaries maps the v2 soul.refusals floor into the Soul boundary
 // rows consumed by the current registration publication pipeline.
 func FiveBodyBoundaries(refusals []FiveBodyRefusalRule, now time.Time) []soul.BoundaryV2 {
 	refusals = NormalizeFiveBodyDeclaration(FiveBodyDeclaration{Soul: FiveBodySoulBody{Refusals: refusals}}).Soul.Refusals

@@ -32,12 +32,10 @@ import (
 // control-plane Server handle.
 //
 // GetHostedGenesisSession loads authoritative truth by tenant slug +
-// conversation id. UpdateHostedGenesisSession performs an expected-version +
-// expected-status conditional write; a stale version or status must fail as a
-// transaction condition error rather than silently overwriting state.
+// conversation id. Failure convergence uses one guarded transaction across the
+// authoritative session and its public projection.
 type CompletionStore interface {
 	GetHostedGenesisSession(ctx context.Context, instanceSlug string, conversationID string) (*models.HostedGenesisSession, error)
-	UpdateHostedGenesisSession(ctx context.Context, item *models.HostedGenesisSession, expectedVersion int64, expectedStatus hostedgenesis.Status) error
 	GetSoulAgentMintConversation(ctx context.Context, agentID string, conversationID string) (*models.SoulAgentMintConversation, error)
 	FailHostedGenesisSessionAndConversation(ctx context.Context, session *models.HostedGenesisSession, expectedVersion int64, expectedStatus hostedgenesis.Status, conversation *models.SoulAgentMintConversation) error
 }
@@ -63,21 +61,12 @@ func (t CompletionTurn) Validate() error {
 	return nil
 }
 
-// AssistantTurnCompletion is the durable outcome of a successful assistant turn
-// run inside the MicroVM. AssistantContent is the full trimmed assistant
-// response; MessageCount is the post-turn message count (accepted user turn +
-// produced assistant message). Usage is the provider usage for this turn.
-type AssistantTurnCompletion struct {
-	AssistantContent string
-	MessageCount     int
-	Usage            models.AIUsage
-}
-
 // CompletionFailure is the typed failure the workload records when a turn or
-// declaration extraction fails. It maps to hostedgenesis.Failure with bounded
+// declaration phase fails. It maps to hostedgenesis.Failure with bounded
 // recovery guidance authored by Host (clients never author recovery).
 type CompletionFailure struct {
 	Code      hostedgenesis.FailureCode
+	Class     hostedgenesis.FailureClass
 	Message   string
 	Retryable bool
 	Recovery  hostedgenesis.Recovery
@@ -110,94 +99,6 @@ func NewCompletionWriter(store CompletionStore, clock func() time.Time) *Complet
 	return &CompletionWriter{store: store, clock: clock}
 }
 
-// RecordAssistantTurnReady transitions an in_progress session to
-// assistant_turn_ready for the named turn, persisting the assistant checkpoint
-// reference and message count. It is idempotent per turn ID: a replay against a
-// session already at assistant_turn_ready (or beyond) returns
-// ErrCompletionConflict.
-//
-// The expected-status precondition is in_progress (the state the accept path
-// leaves the session in). The expected-version precondition is the loaded
-// session's current Version; the store's conditional update increments it.
-func (w *CompletionWriter) RecordAssistantTurnReady(ctx context.Context, turn CompletionTurn, completion AssistantTurnCompletion) (*models.HostedGenesisSession, error) {
-	if w == nil || w.store == nil {
-		return nil, ErrCompletionSessionMissing
-	}
-	if err := turn.Validate(); err != nil {
-		return nil, err
-	}
-	if strings.TrimSpace(completion.AssistantContent) == "" {
-		return nil, fmt.Errorf("hosted genesis completion requires non-empty assistant content")
-	}
-
-	session, err := w.store.GetHostedGenesisSession(ctx, turn.InstanceSlug, turn.ConversationID)
-	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrCompletionSessionMissing, err)
-	}
-	if err := assertTurnMatch(session, turn, hostedgenesis.StatusInProgress); err != nil {
-		return nil, err
-	}
-
-	now := w.clock()
-	progressed := cloneSessionForCompletion(session)
-	progressed.Status = string(hostedgenesis.StatusAssistantTurnReady)
-	progressed.MessageCount = maxInt(progressed.MessageCount, completion.MessageCount)
-	progressed.AssistantCheckpointRef = hostedgenesis.CheckpointRef("assistant", progressed.ConversationID, turn.TurnID)
-	progressed.Failure = nil
-	progressed.RequestID = strings.TrimSpace(turn.RequestID)
-	progressed.UpdatedAt = now
-	progressed.CompletedAt = time.Time{}
-
-	if err := w.store.UpdateHostedGenesisSession(ctx, progressed, session.Version, hostedgenesis.StatusInProgress); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrCompletionConflict, err)
-	}
-	return progressed, nil
-}
-
-// RecordDeclarationReady transitions a declaration_extraction_pending (or
-// assistant_turn_ready) session to declaration_ready with a publish-ready
-// DeclarationCheckpoint. The checkpoint must pass its Validate and the session's
-// CanPublish gate (enforced by the store model's BeforeUpdate).
-//
-// Idempotent per turn ID against the expected status precondition.
-func (w *CompletionWriter) RecordDeclarationReady(ctx context.Context, turn CompletionTurn, checkpoint hostedgenesis.DeclarationCheckpoint) (*models.HostedGenesisSession, error) {
-	if w == nil || w.store == nil {
-		return nil, ErrCompletionSessionMissing
-	}
-	if err := turn.Validate(); err != nil {
-		return nil, err
-	}
-	if err := checkpoint.Validate(); err != nil {
-		return nil, err
-	}
-
-	session, err := w.store.GetHostedGenesisSession(ctx, turn.InstanceSlug, turn.ConversationID)
-	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrCompletionSessionMissing, err)
-	}
-	expectedStatus := hostedgenesis.NormalizeStatus(session.Status)
-	if expectedStatus != hostedgenesis.StatusDeclarationExtractionPending && expectedStatus != hostedgenesis.StatusAssistantTurnReady {
-		return nil, fmt.Errorf("%w: session status %q is not declaration-extractable", ErrCompletionConflict, session.Status)
-	}
-	if err := assertTurnMatch(session, turn, expectedStatus); err != nil {
-		return nil, err
-	}
-
-	now := w.clock()
-	progressed := cloneSessionForCompletion(session)
-	progressed.Status = string(hostedgenesis.StatusDeclarationReady)
-	progressed.DeclarationCheckpoint = &checkpoint
-	progressed.Failure = nil
-	progressed.RequestID = strings.TrimSpace(turn.RequestID)
-	progressed.UpdatedAt = now
-	progressed.CompletedAt = now
-
-	if err := w.store.UpdateHostedGenesisSession(ctx, progressed, session.Version, expectedStatus); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrCompletionConflict, err)
-	}
-	return progressed, nil
-}
-
 // RecordFailure transitions a non-terminal session to failed with a typed
 // Failure envelope. A replay against an already-terminal session returns
 // ErrCompletionConflict.
@@ -210,6 +111,7 @@ func (w *CompletionWriter) RecordFailure(ctx context.Context, turn CompletionTur
 	}
 	f := hostedgenesis.Failure{
 		Code:      failure.Code,
+		Class:     failure.Class,
 		Message:   hostedgenesis.FailureMessage(failure.Code),
 		Retryable: failure.Retryable,
 		Recovery:  failure.Recovery,
@@ -224,7 +126,7 @@ func (w *CompletionWriter) RecordFailure(ctx context.Context, turn CompletionTur
 		return nil, fmt.Errorf("%w: %v", ErrCompletionSessionMissing, err)
 	}
 	expectedStatus := hostedgenesis.NormalizeStatus(session.Status)
-	if expectedStatus == hostedgenesis.StatusFailed || expectedStatus == hostedgenesis.StatusDeclarationReady {
+	if completionFailureStatusTerminal(expectedStatus) {
 		return nil, fmt.Errorf("%w: session is already terminal (%q)", ErrCompletionConflict, session.Status)
 	}
 	if err := assertTurnMatch(session, turn, expectedStatus); err != nil {
@@ -253,6 +155,7 @@ func (w *CompletionWriter) RecordFailure(ctx context.Context, turn CompletionTur
 	failedConversation := *conversation
 	failedConversation.Status = models.SoulMintConversationStatusFailed
 	failedConversation.StatusReason = f.Recovery.Reason
+	failedConversation.LatestTurnID = strings.TrimSpace(turn.TurnID)
 	failedConversation.RequestID = strings.TrimSpace(turn.RequestID)
 	failedConversation.UpdatedAt = now
 	failedConversation.CompletedAt = now
@@ -263,10 +166,20 @@ func (w *CompletionWriter) RecordFailure(ctx context.Context, turn CompletionTur
 	return progressed, nil
 }
 
+func completionFailureStatusTerminal(status hostedgenesis.Status) bool {
+	switch status {
+	case hostedgenesis.StatusFailed, hostedgenesis.StatusDeclarationReady, hostedgenesis.StatusPublished:
+		return true
+	default:
+		return false
+	}
+}
+
 func applyPriorRecoveryBudget(next hostedgenesis.Failure, prior *hostedgenesis.Failure) hostedgenesis.Failure {
 	if prior == nil ||
-		next.Code != hostedgenesis.FailureCodeDeclarationExtractionFailed ||
-		prior.Code != hostedgenesis.FailureCodeDeclarationExtractionFailed {
+		!isBoundedRecoveryFailure(next.Code) ||
+		!isBoundedRecoveryFailure(prior.Code) ||
+		(next.Code != prior.Code && next.Code != hostedgenesis.FailureCodeMicroVMUnavailable) {
 		return next
 	}
 	switch prior.Recovery.Action {
@@ -287,6 +200,16 @@ func applyPriorRecoveryBudget(next hostedgenesis.Failure, prior *hostedgenesis.F
 		}
 	}
 	return next
+}
+
+func isBoundedRecoveryFailure(code hostedgenesis.FailureCode) bool {
+	switch code {
+	case hostedgenesis.FailureCodeAssistantTurnFailed,
+		hostedgenesis.FailureCodeMicroVMUnavailable:
+		return true
+	default:
+		return false
+	}
 }
 
 // assertTurnMatch enforces the per-turn idempotency precondition. The loaded
@@ -327,6 +250,7 @@ func cloneSessionForCompletion(session *models.HostedGenesisSession) *models.Hos
 		cp := *session.DeclarationCheckpoint
 		copy.DeclarationCheckpoint = &cp
 	}
+	copy.DeclarationCandidate = session.DeclarationCandidate.Clone()
 	if session.Failure != nil {
 		failure := *session.Failure
 		copy.Failure = &failure
@@ -335,12 +259,9 @@ func cloneSessionForCompletion(session *models.HostedGenesisSession) *models.Hos
 		trace := *session.TraceIDs
 		copy.TraceIDs = &trace
 	}
-	return &copy
-}
-
-func maxInt(a, b int) int {
-	if a > b {
-		return a
+	if session.VMCheckpoint != nil {
+		checkpoint := *session.VMCheckpoint
+		copy.VMCheckpoint = &checkpoint
 	}
-	return b
+	return &copy
 }

@@ -4,12 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/mock"
-	runtimemicrovm "github.com/theory-cloud/apptheory/runtime/microvm"
+	runtimemicrovm "github.com/theory-cloud/apptheory/v2/runtime/microvm"
 	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
 	ttmocks "github.com/theory-cloud/tabletheory/v2/pkg/mocks"
 
@@ -20,7 +19,7 @@ import (
 
 // hostedGenesisH1D3RecoveryFixture builds the shared mock scaffolding for an
 // H1.3 recovery/reconciliation test: a hosted genesis session sitting in a
-// MicroVM-serviced pending state (in_progress or declaration_extraction_pending)
+// MicroVM-serviced pending state (in_progress or assistant_turn_ready)
 // with a populated MicroVMLifecycleRef, plus a stub dispatcher whose reconcile
 // behavior the caller controls via observedState/reconcileErr.
 func hostedGenesisH1D3RecoveryFixture(t *testing.T, status hostedgenesis.Status) (*mintConversationTestDB, *Server, models.SoulAgentRegistration, *stubMicroVMDispatcher) {
@@ -49,7 +48,7 @@ func hostedGenesisH1D3RecoveryFixture(t *testing.T, status hostedgenesis.Status)
 
 // hostedGenesisH1D3RecoverySessionFixture builds a recovery session in a
 // MicroVM-serviced pending state with the three MicroVM execution/cache refs
-// populated (the shape the H1.2 accept path or H1.3 extraction dispatch records
+// populated (the shape the H1.2 accept path or H1.3 actor dispatch records
 // so the H1.3 recover path can reach production reconstruction).
 func hostedGenesisH1D3RecoverySessionFixture(t *testing.T, reg models.SoulAgentRegistration, status hostedgenesis.Status) models.HostedGenesisSession {
 	t.Helper()
@@ -81,32 +80,6 @@ func hostedGenesisH1D3RecoverySessionFixture(t *testing.T, reg models.SoulAgentR
 		t.Fatalf("h1.3 recovery apply lifecycle ref: %v", err)
 	}
 	return session
-}
-
-// expectHostedGenesisExtractionDispatchWrite mocks the second TransactWrite the
-// H1.3 extraction dispatch path issues to persist the refreshed MicroVM
-// lifecycle ref on the authoritative HostedGenesisSession (the durable status
-// stays declaration_extraction_pending; only the execution/cache ref refreshes).
-// It reuses the TransactWriteBuilder mock a prior debit/progression expectation
-// installed so the two sequential TransactWrite calls share one builder mock.
-func expectHostedGenesisExtractionDispatchWrite(t *testing.T, tdb *mintConversationTestDB) {
-	t.Helper()
-	tb, _ := tdb.db.TransactWriteBuilder.(*ttmocks.MockTransactionBuilder)
-	if tb == nil {
-		tb = new(ttmocks.MockTransactionBuilder)
-		tdb.db.TransactWriteBuilder = tb
-	}
-	tdb.db.On("TransactWrite", mock.Anything, mock.Anything).Return(nil).Once()
-	tb.On("UpdateWithBuilder", mock.AnythingOfType("*models.HostedGenesisSession"), mock.Anything, mock.Anything).Return(tb).Once().Run(func(args mock.Arguments) {
-		session := testutil.RequireMockArg[*models.HostedGenesisSession](t, args, 0)
-		if hostedgenesis.NormalizeStatus(session.Status) != hostedgenesis.StatusDeclarationExtractionPending {
-			t.Fatalf("expected extraction dispatch to preserve declaration_extraction_pending, got %#v", session.Status)
-		}
-		if session.MicroVMLifecycleRef == nil || session.MicroVMExecutionID == "" || session.ExecutionStateRef == "" {
-			t.Fatalf("expected extraction dispatch to populate the three MicroVM refs, got %#v", session)
-		}
-	})
-	tb.On("Execute").Return(nil).Once()
 }
 
 // expectHostedGenesisH1D3ReconcileWrite mocks the read-only-ish TransactWrite
@@ -238,12 +211,6 @@ func TestH1_3_DeadExpiredVMLoudFailureNotNoop(t *testing.T) {
 func TestH1_3_ReconcileUnavailableIsLoudFailure(t *testing.T) {
 	_, s, reg, _ := hostedGenesisH1D3RecoveryFixture(t, hostedgenesis.StatusInProgress)
 	s.hostedGenesisMicroVMDispatcher = nil
-	syncLLMCalled := false
-	s.hostedGenesisAssistantRunner = func(_ context.Context, _ hostedGenesisAssistantRunInput) (hostedGenesisAssistantRunResult, error) {
-		syncLLMCalled = true
-		return hostedGenesisAssistantRunResult{}, nil
-	}
-
 	_, err := s.handleSoulInstanceRecoverMintConversation(newSoulInstanceBootstrapContext(
 		map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
 		nil,
@@ -251,140 +218,6 @@ func TestH1_3_ReconcileUnavailableIsLoudFailure(t *testing.T) {
 	))
 	if err == nil {
 		t.Fatalf("expected loud microvm-unavailable failure when dispatcher is unwired")
-	}
-	if syncLLMCalled {
-		t.Fatalf("recover path must not fall back to a synchronous LLM when reconstruction is unavailable")
-	}
-}
-
-// TestH1_3_RecoveryCoversDeclarationExtractionPending proves the recover path
-// covers declaration_extraction_pending: a session in that state with a
-// populated lifecycle ref is routed through production reconstruction (controller
-// get), not left as a permanent trap. A live VM preserves the pending status;
-// the extraction is serviced by the VM (dispatched on the complete path) or
-// fails loudly. This kills G7's permanent-trap half for recovery.
-func TestH1_3_RecoveryCoversDeclarationExtractionPending(t *testing.T) {
-	tdb, s, reg, dispatcher := hostedGenesisH1D3RecoveryFixture(t, hostedgenesis.StatusDeclarationExtractionPending)
-	dispatcher.observedState = runtimemicrovm.StateRunning
-	expectHostedGenesisH1D3ReconcileWrite(t, tdb, hostedgenesis.StatusDeclarationExtractionPending)
-
-	resp, err := s.handleSoulInstanceRecoverMintConversation(newSoulInstanceBootstrapContext(
-		map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
-		nil,
-		map[string]string{"id": reg.ID, "conversationId": mintConversationTestConversationID},
-	))
-	if err != nil {
-		t.Fatalf("unexpected recovery err: %v", err)
-	}
-	if dispatcher.reconcileCalls != 1 {
-		t.Fatalf("expected declaration_extraction_pending to be covered by controller get reconciliation, got %d", dispatcher.reconcileCalls)
-	}
-	if resp.Status != http.StatusOK {
-		t.Fatalf("expected 200 reconciled recovery response, got %#v", resp)
-	}
-	var out hostedGenesisConversationResponse
-	if err := json.Unmarshal(resp.Body, &out); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if out.Conversation.Status != models.SoulMintConversationStatusDeclarationExtractionPending {
-		t.Fatalf("expected durable declaration_extraction_pending preserved for live VM, got %#v", out.Conversation)
-	}
-}
-
-// TestH1_3_ExtractionDispatchIsIdempotentFollowOnRun proves
-// startHostedGenesisDeclarationExtraction dispatches a follow-on M16 controller
-// run command on the same MicroVM session via the dispatcher seam and that a
-// second call for an already-pending session does not re-debit or re-dispatch
-// (the pending status is set once; only the lifecycle ref refreshes). The
-// pending status is not a permanent trap: the VM services the extraction.
-func TestH1_3_ExtractionDispatchIsIdempotentFollowOnRun(t *testing.T) {
-	tdb := newMintConversationTestDB()
-	s := newMintConversationServer(tdb)
-	reg := mintConversationHandleReg()
-	dispatcher := &stubMicroVMDispatcher{t: t}
-	s.hostedGenesisMicroVMDispatcher = dispatcher
-	expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, soulInstanceBootstrapTestInstanceSlug)
-	stubMintConversationRegistration(t, tdb, reg)
-	stubSoulInstanceBootstrapDomainAndInstance(t, tdb, reg.DomainNormalized, soulInstanceBootstrapTestInstanceSlug)
-	stubMintConversationConversation(t, tdb, models.SoulAgentMintConversation{
-		AgentID:        reg.AgentID,
-		ConversationID: mintConversationTestConversationID,
-		Model:          "anthropic:claude-sonnet-4-6",
-		Messages:       encodeMintConversationBlob(`[{"role":"user","content":"describe yourself"},{"role":"assistant","content":"ready"}]`),
-		Status:         models.SoulMintConversationStatusAssistantTurnReady,
-		LatestTurnID:   "turn-ready",
-		CreatedAt:      time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC),
-	})
-	stubMintConversationIdentity(t, tdb, nil, theoryErrors.ErrItemNotFound)
-	expectSoulInstanceMintConversationExtractionDebit(t, tdb)
-	expectHostedGenesisExtractionDispatchWrite(t, tdb)
-
-	ctx := newSoulInstanceBootstrapContext(
-		map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
-		nil,
-		map[string]string{"id": reg.ID, "conversationId": mintConversationTestConversationID},
-	)
-	convCtx, appErr := s.requireSoulInstanceBootstrapConversationContext(ctx)
-	if appErr != nil {
-		t.Fatalf("load conv ctx: %v", appErr)
-	}
-	if err := s.startHostedGenesisDeclarationExtraction(ctx, convCtx); err != nil {
-		t.Fatalf("startHostedGenesisDeclarationExtraction: %v", err)
-	}
-	if dispatcher.calls != 1 {
-		t.Fatalf("expected exactly one follow-on extraction run dispatch, got %d", dispatcher.calls)
-	}
-	if dispatcher.lastBinding.ConversationID != mintConversationTestConversationID {
-		t.Fatalf("expected extraction dispatch bound to the pending conversation, got %#v", dispatcher.lastBinding)
-	}
-	// Calling again on the now-pending session must not re-debit (status already
-	// declaration_extraction_pending) and must not re-dispatch a run command.
-	if err := s.startHostedGenesisDeclarationExtraction(ctx, convCtx); err != nil {
-		t.Fatalf("idempotent second startHostedGenesisDeclarationExtraction: %v", err)
-	}
-	if dispatcher.calls != 1 {
-		t.Fatalf("expected no second dispatch for an already-pending session, got %d", dispatcher.calls)
-	}
-}
-
-// TestH1_3_ExtractionDispatchUnavailableIsLoud proves an unwired dispatcher on
-// the extraction dispatch path is fail-closed and loud: the pending extraction
-// is never a silent trap and never falls back to a non-MicroVM extraction path.
-func TestH1_3_ExtractionDispatchUnavailableIsLoud(t *testing.T) {
-	tdb := newMintConversationTestDB()
-	s := newMintConversationServer(tdb)
-	reg := mintConversationHandleReg()
-	s.hostedGenesisMicroVMDispatcher = nil
-	expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, soulInstanceBootstrapTestInstanceSlug)
-	stubMintConversationRegistration(t, tdb, reg)
-	stubSoulInstanceBootstrapDomainAndInstance(t, tdb, reg.DomainNormalized, soulInstanceBootstrapTestInstanceSlug)
-	stubMintConversationConversation(t, tdb, models.SoulAgentMintConversation{
-		AgentID:        reg.AgentID,
-		ConversationID: mintConversationTestConversationID,
-		Model:          "anthropic:claude-sonnet-4-6",
-		Messages:       encodeMintConversationBlob(`[{"role":"user","content":"describe yourself"},{"role":"assistant","content":"ready"}]`),
-		Status:         models.SoulMintConversationStatusAssistantTurnReady,
-		LatestTurnID:   "turn-ready",
-		CreatedAt:      time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC),
-	})
-	stubMintConversationIdentity(t, tdb, nil, theoryErrors.ErrItemNotFound)
-	expectSoulInstanceMintConversationExtractionDebit(t, tdb)
-
-	ctx := newSoulInstanceBootstrapContext(
-		map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
-		nil,
-		map[string]string{"id": reg.ID, "conversationId": mintConversationTestConversationID},
-	)
-	convCtx, appErr := s.requireSoulInstanceBootstrapConversationContext(ctx)
-	if appErr != nil {
-		t.Fatalf("load conv ctx: %v", appErr)
-	}
-	err := s.startHostedGenesisDeclarationExtraction(ctx, convCtx)
-	if err == nil {
-		t.Fatalf("expected loud microvm-unavailable failure when extraction dispatcher is unwired")
-	}
-	if !strings.Contains(err.Error(), "MicroVM extraction dispatch") {
-		t.Fatalf("expected typed microvm-unavailable extraction error, got %v", err)
 	}
 }
 
@@ -483,19 +316,16 @@ func runH1D3ReconciliationObservationCase(t *testing.T, status hostedgenesis.Sta
 	}
 }
 
-// TestH1_3_CompleteAssistantReadyWithoutDeclarationsDispatchesExtraction proves
-// the complete path services a declaration_extraction_pending transition by
-// dispatching a follow-on M16 controller run command on the same MicroVM
-// session via the dispatcher seam (not by enqueuing a user-visible queue
-// command). The pending extraction is VM-serviced; the pending status is not a
-// permanent trap. This is the production extraction-dispatch reachability site
-// (kills G7).
-func TestH1_3_CompleteAssistantReadyWithoutDeclarationsDispatchesExtraction(t *testing.T) {
+// TestH1_3_CompleteAssistantReadyWithoutDeclarationsRemainsReadOnly proves the
+// M11 gateway inversion: `/complete` is a polling/finalize gate, not a Host-side
+// declaration construction machine. Accepted user turns are delivered to the
+// AppTheory MicroVM actor; its phase tools own typed construction.
+func TestH1_3_CompleteAssistantReadyWithoutDeclarationsRemainsReadOnly(t *testing.T) {
 	tdb := newMintConversationTestDB()
 	s := newMintConversationServer(tdb)
 	reg := mintConversationHandleReg()
 	s.enqueueHostedGenesisMessage = func(_ context.Context, msg hostedgenesis.QueueMessage) error {
-		t.Fatalf("declaration extraction handoff must not enqueue a user-visible queue command: %#v", msg)
+		t.Fatalf("read-only completion must not enqueue a user-visible queue command: %#v", msg)
 		return nil
 	}
 	dispatcher := &stubMicroVMDispatcher{t: t}
@@ -513,8 +343,6 @@ func TestH1_3_CompleteAssistantReadyWithoutDeclarationsDispatchesExtraction(t *t
 		CreatedAt:      time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC),
 	})
 	stubMintConversationIdentity(t, tdb, nil, theoryErrors.ErrItemNotFound)
-	expectSoulInstanceMintConversationExtractionDebit(t, tdb)
-	expectHostedGenesisExtractionDispatchWrite(t, tdb)
 
 	resp, err := s.handleSoulInstanceCompleteMintConversation(newSoulInstanceBootstrapContext(
 		map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
@@ -531,13 +359,10 @@ func TestH1_3_CompleteAssistantReadyWithoutDeclarationsDispatchesExtraction(t *t
 	if err := json.Unmarshal(resp.Body, &out); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if out.Conversation.Status != models.SoulMintConversationStatusDeclarationExtractionPending || out.Conversation.ProducedDeclarations != nil {
-		t.Fatalf("expected declaration extraction progress without terminal declarations, got %#v", out)
+	if out.Conversation.Status != models.SoulMintConversationStatusAssistantTurnReady || out.Conversation.ProducedDeclarations != nil {
+		t.Fatalf("expected assistant-ready polling projection without terminal declarations, got %#v", out)
 	}
-	if dispatcher.calls != 1 {
-		t.Fatalf("expected exactly one follow-on M16 extraction run dispatch, got %d", dispatcher.calls)
-	}
-	if dispatcher.lastBinding.ConversationID != mintConversationTestConversationID {
-		t.Fatalf("expected extraction dispatch bound to the pending conversation, got %#v", dispatcher.lastBinding)
+	if dispatcher.calls != 0 || dispatcher.queueCalls != 0 {
+		t.Fatalf("complete without declarations must not dispatch provider work, dispatch=%d queue=%d", dispatcher.calls, dispatcher.queueCalls)
 	}
 }

@@ -10,22 +10,16 @@ import (
 	"strings"
 	"time"
 
-	apptheory "github.com/theory-cloud/apptheory/runtime"
+	apptheory "github.com/theory-cloud/apptheory/v2/runtime"
 	"github.com/theory-cloud/tabletheory/v2"
 	"github.com/theory-cloud/tabletheory/v2/pkg/core"
 	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
 
-	"github.com/equaltoai/lesser-host/internal/ai/llm"
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
 const (
-	// hostedGenesisAcceptedTurnRunTimeout bounds the synchronous assistant
-	// runner retained for non-production/test seams. H2.1 deletes that path; the
-	// production accept path dispatches the MicroVM and returns 202 well under
-	// this budget.
-	hostedGenesisAcceptedTurnRunTimeout = 90 * time.Second
 	// hostedGenesisAcceptedTurnDispatchTimeout bounds the M16 controller run
 	// dispatch on the production accept path. The accept path returns 202
 	// accepted-pending; the assistant turn itself runs inside the MicroVM and is
@@ -50,6 +44,7 @@ type hostedGenesisTurnSession struct {
 	idempotency        *models.SoulMintConversationIdempotency
 	conv               *models.SoulAgentMintConversation
 	session            *models.HostedGenesisSession
+	waitOnly           bool
 }
 
 func (s *Server) handleSoulMintConversationForRegistrationAsync(ctx *apptheory.Context, regCtx mintConversationRegistrationContext, instanceSlug string) (*apptheory.Response, error) {
@@ -70,24 +65,15 @@ func (s *Server) handleSoulMintConversationForRegistrationAsync(ctx *apptheory.C
 	if loadErr != nil {
 		return nil, loadErr
 	}
-	if session.modelSet == "" {
-		return nil, newAppTheoryError("app.bad_request", "model is required")
+	if appErr := requireHostedGenesisAcceptedTurnModel(session); appErr != nil {
+		return nil, appErr
 	}
 	if appErr := requireHostedGenesisMicroVMBindingReady(regCtx, session.session, instanceSlug, session.conversationID); appErr != nil {
 		return nil, appErr
 	}
-	if session.replayed {
-		return s.handleHostedGenesisReplayedTurn(ctx, regCtx, session, req)
+	if session.waitOnly || session.replayed {
+		return s.handleHostedGenesisWaitOnlyOrReplayedTurn(ctx, regCtx, session, req)
 	}
-	apiKey, apiKeyErr := s.apiKeyForMintConversationModel(ctx.Context(), session.modelSet)
-	if apiKeyErr != nil {
-		// Validate provider configuration before accepting a paid hosted-genesis
-		// execution handoff. Project 51 M4 deliberately keeps SQS out of this
-		// user-visible path; execution/recovery authority is the durable session
-		// plus AppTheory MicroVM execution/cache state.
-		return nil, apiKeyErr
-	}
-
 	updatedMessages, messagesJSON, err := serializeHostedGenesisAcceptedTurn(session, message)
 	if err != nil {
 		return nil, newAppTheoryError("app.internal", "failed to serialize conversation")
@@ -111,11 +97,7 @@ func (s *Server) handleSoulMintConversationForRegistrationAsync(ctx *apptheory.C
 		log.Printf("controlplane: hosted genesis accepted promotion update failed agent_hash=%s conversation_hash=%s err=%v", soulMintInstanceReadAuditHash(regCtx.agentIDHex), soulMintInstanceReadAuditHash(session.conversationID), appErr)
 	}
 
-	if hostedGenesisFinalAffirmationCompletesReview(session, message) {
-		return s.startHostedGenesisFinalAffirmationCompletion(ctx, regCtx, session, conv, req)
-	}
-
-	progressedSession, progressedConv, status, progressErr := s.progressHostedGenesisAcceptedTurn(ctx.Context(), regCtx, session, conv, updatedMessages, apiKey, strings.TrimSpace(ctx.RequestID))
+	progressedSession, progressedConv, status, progressErr := s.progressHostedGenesisAcceptedTurn(ctx.Context(), regCtx, session, conv, updatedMessages, strings.TrimSpace(ctx.RequestID))
 	if progressErr != nil {
 		return nil, progressErr
 	}
@@ -130,13 +112,23 @@ func (s *Server) handleSoulMintConversationForRegistrationAsync(ctx *apptheory.C
 	})
 }
 
+func (s *Server) handleHostedGenesisWaitOnlyOrReplayedTurn(ctx *apptheory.Context, regCtx mintConversationRegistrationContext, session hostedGenesisTurnSession, req soulMintConversationRequest) (*apptheory.Response, error) {
+	if session.waitOnly {
+		return s.handleHostedGenesisWaitOnlyTurn(ctx, regCtx, session, req)
+	}
+	return s.handleHostedGenesisReplayedTurn(ctx, regCtx, session, req)
+}
+
+func requireHostedGenesisAcceptedTurnModel(session hostedGenesisTurnSession) *apptheory.AppTheoryError {
+	if session.waitOnly || session.modelSet != "" {
+		return nil
+	}
+	return newAppTheoryError("app.bad_request", "model is required")
+}
+
 func (s *Server) handleHostedGenesisReplayedTurn(ctx *apptheory.Context, regCtx mintConversationRegistrationContext, session hostedGenesisTurnSession, req soulMintConversationRequest) (*apptheory.Response, error) {
 	if hostedGenesisReplayedTurnNeedsProgression(session) {
-		apiKey, apiKeyErr := s.apiKeyForMintConversationModel(ctx.Context(), session.modelSet)
-		if apiKeyErr != nil {
-			return nil, apiKeyErr
-		}
-		progressedSession, progressedConv, status, progressErr := s.progressHostedGenesisAcceptedTurn(ctx.Context(), regCtx, session, session.conv, session.existingMessages, apiKey, strings.TrimSpace(ctx.RequestID))
+		progressedSession, progressedConv, status, progressErr := s.progressHostedGenesisAcceptedTurn(ctx.Context(), regCtx, session, session.conv, session.existingMessages, strings.TrimSpace(ctx.RequestID))
 		if progressErr != nil {
 			return nil, progressErr
 		}
@@ -159,25 +151,8 @@ func (s *Server) handleHostedGenesisReplayedTurn(ctx *apptheory.Context, regCtx 
 	})
 }
 
-func (s *Server) startHostedGenesisFinalAffirmationCompletion(ctx *apptheory.Context, regCtx mintConversationRegistrationContext, session hostedGenesisTurnSession, conv *models.SoulAgentMintConversation, req soulMintConversationRequest) (*apptheory.Response, error) {
-	if !session.sessionIsNew {
-		session.session.Version = session.expectedVersion + 1
-	}
-	convCtx := soulInstanceBootstrapConversationContext{
-		soulInstanceBootstrapRegistrationContext: soulInstanceBootstrapRegistrationContext{
-			soulInstanceBootstrapContext: soulInstanceBootstrapContext{instanceSlug: strings.TrimSpace(session.session.InstanceSlug)},
-			reg:                          regCtx.reg,
-			inst:                         regCtx.inst,
-			agentIDHex:                   regCtx.agentIDHex,
-		},
-		session:        session.session,
-		conv:           conv,
-		conversationID: session.conversationID,
-	}
-	if err := s.startHostedGenesisDeclarationExtraction(ctx, convCtx); err != nil {
-		return nil, err
-	}
-	return hostedGenesisConversationJSONFromSession(http.StatusAccepted, convCtx.session, convCtx.conv, hostedGenesisProjectionOptions{
+func (s *Server) handleHostedGenesisWaitOnlyTurn(ctx *apptheory.Context, regCtx mintConversationRegistrationContext, session hostedGenesisTurnSession, req soulMintConversationRequest) (*apptheory.Response, error) {
+	return hostedGenesisConversationJSONFromSession(http.StatusAccepted, session.session, session.conv, hostedGenesisProjectionOptions{
 		RegistrationID:  regCtx.reg.ID,
 		RequestID:       strings.TrimSpace(ctx.RequestID),
 		CollapseCreated: true,
@@ -185,60 +160,6 @@ func (s *Server) startHostedGenesisFinalAffirmationCompletion(ctx *apptheory.Con
 		IdempotencyKey:  req.IdempotencyKey,
 		LesserRequestID: req.LesserRequestID,
 	})
-}
-
-func hostedGenesisFinalAffirmationCompletesReview(session hostedGenesisTurnSession, message string) bool {
-	if hostedgenesis.NormalizeStatus(string(session.expectedStatus)) != hostedgenesis.StatusAssistantTurnReady {
-		return false
-	}
-	if !hostedGenesisLastAssistantRequestedFinalAffirmation(session.existingMessages) {
-		return false
-	}
-	return hostedGenesisMessageAffirmsFinalDeclaration(message)
-}
-
-func hostedGenesisLastAssistantRequestedFinalAffirmation(messages []soulMintConversationMessage) bool {
-	for i := len(messages) - 1; i >= 0; i-- {
-		msg := messages[i]
-		if !strings.EqualFold(strings.TrimSpace(msg.Role), hostedGenesisTranscriptRoleAssistant) {
-			continue
-		}
-		content := strings.ToLower(strings.TrimSpace(msg.Content))
-		if content == "" {
-			return false
-		}
-		return strings.Contains(content, "do you affirm") &&
-			strings.Contains(content, "foundation of your minted soul") &&
-			strings.Contains(content, "inscribed")
-	}
-	return false
-}
-
-func hostedGenesisMessageAffirmsFinalDeclaration(message string) bool {
-	normalized := strings.ToLower(strings.TrimSpace(message))
-	if normalized == "" {
-		return false
-	}
-	normalized = strings.Trim(normalized, " \t\r\n.!?")
-	if normalized == "" {
-		return false
-	}
-	if strings.Contains(normalized, "not affirm") ||
-		strings.Contains(normalized, "do not affirm") ||
-		strings.Contains(normalized, "don't affirm") ||
-		strings.Contains(normalized, "change ") ||
-		strings.Contains(normalized, "correct ") ||
-		strings.Contains(normalized, "qualify ") ||
-		strings.Contains(normalized, "strike ") {
-		return false
-	}
-	switch normalized {
-	case "yes", "yes i affirm", "i affirm", "affirmed", "i do", "confirmed", "i confirm", "approved", "i approve", "proceed":
-		return true
-	}
-	return strings.Contains(normalized, "i affirm") ||
-		strings.Contains(normalized, "i confirm") ||
-		strings.Contains(normalized, "i approve")
 }
 
 func hostedGenesisReplayedTurnNeedsProgression(session hostedGenesisTurnSession) bool {
@@ -254,29 +175,9 @@ func hostedGenesisReplayedTurnNeedsProgression(session hostedGenesisTurnSession)
 		session.session.MicroVMLifecycleRef == nil
 }
 
-type hostedGenesisAssistantRunInput struct {
-	apiKey       string
-	modelSet     string
-	systemPrompt string
-	messages     []soulMintConversationMessage
-}
-
-type hostedGenesisAssistantRunResult struct {
-	fullResponse string
-	usage        models.AIUsage
-}
-
-func (s *Server) progressHostedGenesisAcceptedTurn(ctx context.Context, regCtx mintConversationRegistrationContext, session hostedGenesisTurnSession, conv *models.SoulAgentMintConversation, acceptedMessages []soulMintConversationMessage, apiKey string, requestID string) (*models.HostedGenesisSession, *models.SoulAgentMintConversation, int, *apptheory.AppTheoryError) {
+func (s *Server) progressHostedGenesisAcceptedTurn(ctx context.Context, regCtx mintConversationRegistrationContext, session hostedGenesisTurnSession, conv *models.SoulAgentMintConversation, acceptedMessages []soulMintConversationMessage, requestID string) (*models.HostedGenesisSession, *models.SoulAgentMintConversation, int, *apptheory.AppTheoryError) {
 	if session.session == nil || conv == nil {
 		return nil, nil, 0, newAppTheoryError("app.internal", "internal error")
-	}
-	// Provider key resolution already happened before this function is called. The
-	// key value is deliberately not used here: the accepted turn is handed to the
-	// MicroVM worker via non-authoritative SQS ids only, and the in-VM workload
-	// resolves provider credentials from its own least-privilege SSM path.
-	_ = apiKey
-	if s.hostedGenesisSyncAssistantFallbackEnabled && s.hostedGenesisMicroVMDispatcher == nil && s.hostedGenesisAssistantRunner != nil {
-		return s.progressHostedGenesisAcceptedTurnSync(ctx, regCtx, session, conv, acceptedMessages, apiKey, requestID)
 	}
 	if err := session.session.MicroVMSessionBinding().Validate(); err != nil {
 		log.Printf("controlplane: hosted genesis microvm binding invalid agent_hash=%s conversation_hash=%s err=%v", soulMintInstanceReadAuditHash(regCtx.agentIDHex), soulMintInstanceReadAuditHash(session.conversationID), err)
@@ -324,41 +225,6 @@ func hostedGenesisMicroVMDispatchQueueMessage(regCtx mintConversationRegistratio
 	return msg
 }
 
-// progressHostedGenesisAcceptedTurnSync is the retained non-production/test-only
-// synchronous assistant turn path. It is reachable only when
-// hostedGenesisSyncAssistantFallbackEnabled is explicitly true AND no MicroVM
-// dispatcher is wired; production never sets that guard. H2.1 deletes this path
-// and the hostedGenesisAssistantRunner field.
-func (s *Server) progressHostedGenesisAcceptedTurnSync(ctx context.Context, regCtx mintConversationRegistrationContext, session hostedGenesisTurnSession, conv *models.SoulAgentMintConversation, acceptedMessages []soulMintConversationMessage, apiKey string, requestID string) (*models.HostedGenesisSession, *models.SoulAgentMintConversation, int, *apptheory.AppTheoryError) {
-	runCtx, cancel := context.WithTimeout(detachedMintConversationContext(ctx), hostedGenesisAcceptedTurnRunTimeout)
-	defer cancel()
-
-	result, err := s.runHostedGenesisAcceptedAssistant(runCtx, hostedGenesisAssistantRunInput{
-		apiKey:       strings.TrimSpace(apiKey),
-		modelSet:     session.modelSet,
-		systemPrompt: buildMintConversationSystemPrompt(regCtx.reg),
-		messages:     append([]soulMintConversationMessage(nil), acceptedMessages...),
-	})
-	if err != nil || strings.TrimSpace(result.fullResponse) == "" {
-		log.Printf("controlplane: hosted genesis assistant turn failed agent_hash=%s conversation_hash=%s provider=%s failure_code=%s", soulMintInstanceReadAuditHash(regCtx.agentIDHex), soulMintInstanceReadAuditHash(session.conversationID), hostedGenesisProviderName(session.modelSet), hostedGenesisFailureAssistantTurnFailed)
-		failedSession, failedConv, appErr := s.persistHostedGenesisAcceptedTurnFailure(ctx, session, conv, acceptedMessages, hostedGenesisFailureAssistantTurnFailed, requestID, time.Now().UTC())
-		if appErr != nil {
-			return nil, nil, 0, appErr
-		}
-		// H1.4 (kills G10a): a failed turn surfaces as a loud non-2xx typed
-		// failure, not HTTP 200 with a failed body. The durable session is
-		// persisted as a retryable failed turn above; the returned typed error
-		// makes the public surface emit 502, never a silent 200-on-failure.
-		return failedSession, failedConv, http.StatusBadGateway, newAppTheoryError(appErrCodeAssistantTurnFailed, "hosted genesis assistant turn failed")
-	}
-
-	progressedSession, progressedConv, appErr := s.persistHostedGenesisAcceptedAssistantTurn(ctx, session, conv, acceptedMessages, result, requestID, time.Now().UTC())
-	if appErr != nil {
-		return nil, nil, 0, appErr
-	}
-	return progressedSession, progressedConv, http.StatusOK, nil
-}
-
 // persistHostedGenesisAcceptedMicroVMDispatch records the durable in_progress
 // HostedGenesisSession after a successful M16 controller run dispatch, applying
 // the non-authoritative MicroVM execution/cache lifecycle ref via
@@ -381,60 +247,6 @@ func (s *Server) persistHostedGenesisAcceptedMicroVMDispatch(ctx context.Context
 	progressedConv.RequestID = strings.TrimSpace(requestID)
 	progressedConv.UpdatedAt = now
 	if appErr := s.persistHostedGenesisProgression(ctx, session, progressedSession, progressedConv, string(progressedConv.Messages), "", progressedConv.Usage, now); appErr != nil {
-		return nil, nil, appErr
-	}
-	return progressedSession, progressedConv, nil
-}
-
-func (s *Server) runHostedGenesisAcceptedAssistant(ctx context.Context, in hostedGenesisAssistantRunInput) (hostedGenesisAssistantRunResult, error) {
-	if s != nil && s.hostedGenesisAssistantRunner != nil {
-		return s.hostedGenesisAssistantRunner(ctx, in)
-	}
-	llmMessages := make([]llm.MintConversationMessage, 0, len(in.messages))
-	for _, m := range in.messages {
-		llmMessages = append(llmMessages, llm.MintConversationMessage{
-			Role:    strings.ToLower(strings.TrimSpace(m.Role)),
-			Content: strings.TrimSpace(m.Content),
-		})
-	}
-	modelSet := strings.TrimSpace(in.modelSet)
-	switch {
-	case strings.HasPrefix(strings.ToLower(modelSet), "openai:"):
-		full, usage, err := llm.StreamMintConversationOpenAI(ctx, strings.TrimSpace(in.apiKey), modelSet, in.systemPrompt, llmMessages, func(string) {})
-		return hostedGenesisAssistantRunResult{fullResponse: full, usage: usage}, err
-	case strings.HasPrefix(strings.ToLower(modelSet), "anthropic:"):
-		full, usage, err := llm.StreamMintConversationAnthropic(ctx, strings.TrimSpace(in.apiKey), modelSet, in.systemPrompt, llmMessages, func(string) {})
-		return hostedGenesisAssistantRunResult{fullResponse: full, usage: usage}, err
-	default:
-		return hostedGenesisAssistantRunResult{}, fmt.Errorf("unsupported model set")
-	}
-}
-
-func (s *Server) persistHostedGenesisAcceptedAssistantTurn(ctx context.Context, session hostedGenesisTurnSession, conv *models.SoulAgentMintConversation, acceptedMessages []soulMintConversationMessage, result hostedGenesisAssistantRunResult, requestID string, now time.Time) (*models.HostedGenesisSession, *models.SoulAgentMintConversation, *apptheory.AppTheoryError) {
-	assistantMessage := soulMintConversationMessage{Role: "assistant", Content: strings.TrimSpace(result.fullResponse)}
-	updatedMessages := append(append([]soulMintConversationMessage(nil), acceptedMessages...), assistantMessage)
-	messagesJSON, err := json.Marshal(updatedMessages)
-	if err != nil {
-		return nil, nil, newAppTheoryError("app.internal", "failed to serialize conversation")
-	}
-	progressedSession := cloneHostedGenesisSession(session.session)
-	progressedConv := cloneSoulAgentMintConversation(conv)
-	usage := addAIUsage(session.existingUsage, result.usage)
-	progressedSession.Status = string(hostedgenesis.StatusAssistantTurnReady)
-	progressedSession.MessageCount = hostedGenesisMaxInt(progressedSession.MessageCount, len(updatedMessages))
-	progressedSession.AssistantCheckpointRef = hostedgenesis.CheckpointRef("assistant", progressedSession.ConversationID, session.turnID)
-	progressedSession.Failure = nil
-	progressedSession.RequestID = strings.TrimSpace(requestID)
-	progressedSession.UpdatedAt = now
-	progressedSession.CompletedAt = time.Time{}
-	progressedConv.Messages = string(messagesJSON)
-	progressedConv.Usage = usage
-	progressedConv.Status = models.SoulMintConversationStatusAssistantTurnReady
-	progressedConv.StatusReason = ""
-	progressedConv.LatestTurnID = session.turnID
-	progressedConv.RequestID = strings.TrimSpace(requestID)
-	progressedConv.UpdatedAt = now
-	if appErr := s.persistHostedGenesisProgression(ctx, session, progressedSession, progressedConv, string(messagesJSON), "", usage, now); appErr != nil {
 		return nil, nil, appErr
 	}
 	return progressedSession, progressedConv, nil
@@ -707,6 +519,14 @@ func (s *Server) loadExistingHostedGenesisTurnSession(ctx context.Context, sessi
 	session.session = hostSession
 	session.expectedStatus = hostedgenesis.NormalizeStatus(hostSession.Status)
 	session.expectedVersion = hostSession.Version
+	if appErr := hydrateHostedGenesisSessionRouteBinding(hostSession, regCtx, instanceSlug, session.conversationID); appErr != nil {
+		return hostedGenesisTurnSession{}, appErr
+	}
+	s.hydrateHostedGenesisConversationProjection(ctx, &session, regCtx.agentIDHex)
+	if hostedGenesisStatusRequiresWait(session.expectedStatus) {
+		session.waitOnly = true
+		return session, nil
+	}
 	turnAccepting := hostedGenesisStatusAcceptsTurn(session.expectedStatus)
 	replayOnly := session.idempotency != nil && hostedGenesisStatusAcceptsIdempotentReplay(session.expectedStatus)
 	if !turnAccepting && !replayOnly {
@@ -720,10 +540,6 @@ func (s *Server) loadExistingHostedGenesisTurnSession(ctx context.Context, sessi
 	if appErr := applyHostedGenesisSessionModel(&session, hostSession.Model); appErr != nil {
 		return hostedGenesisTurnSession{}, appErr
 	}
-	if appErr := hydrateHostedGenesisSessionRouteBinding(hostSession, regCtx, instanceSlug, session.conversationID); appErr != nil {
-		return hostedGenesisTurnSession{}, appErr
-	}
-	s.hydrateHostedGenesisCompatibilityConversation(ctx, &session, regCtx.agentIDHex)
 	if session.modelSet == "" {
 		session.modelSet = defaultSoulMintConversationModel
 	}
@@ -815,7 +631,16 @@ func requireHostedGenesisMicroVMBindingReady(regCtx mintConversationRegistration
 
 func hostedGenesisStatusAcceptsTurn(status hostedgenesis.Status) bool {
 	switch status {
-	case hostedgenesis.StatusInProgress, hostedgenesis.StatusAssistantTurnReady, hostedgenesis.StatusCreated:
+	case hostedgenesis.StatusAssistantTurnReady, hostedgenesis.StatusCreated:
+		return true
+	default:
+		return false
+	}
+}
+
+func hostedGenesisStatusRequiresWait(status hostedgenesis.Status) bool {
+	switch status {
+	case hostedgenesis.StatusInProgress:
 		return true
 	default:
 		return false
@@ -824,7 +649,7 @@ func hostedGenesisStatusAcceptsTurn(status hostedgenesis.Status) bool {
 
 func hostedGenesisStatusAcceptsIdempotentReplay(status hostedgenesis.Status) bool {
 	switch status {
-	case hostedgenesis.StatusDeclarationExtractionPending, hostedgenesis.StatusDeclarationReady:
+	case hostedgenesis.StatusDeclarationReady, hostedgenesis.StatusPublished:
 		return true
 	default:
 		return false
@@ -842,19 +667,19 @@ func applyHostedGenesisSessionModel(session *hostedGenesisTurnSession, storedMod
 	return nil
 }
 
-func (s *Server) hydrateHostedGenesisCompatibilityConversation(ctx context.Context, session *hostedGenesisTurnSession, agentIDHex string) {
+func (s *Server) hydrateHostedGenesisConversationProjection(ctx context.Context, session *hostedGenesisTurnSession, agentIDHex string) {
 	if session == nil {
 		return
 	}
 	conv, err := getSoulAgentItemBySK[models.SoulAgentMintConversation](s, ctx, agentIDHex, fmt.Sprintf("MINT_CONVERSATION#%s", session.conversationID))
-	// H1.4 (kills G10b): a compat-conversation hydrate error is surfaced, not
-	// swallowed. A not-found or absent compat conversation is benign (a new
-	// turn has no prior compat row) and remains a no-op; any other load error
+	// H1.4 (kills G10b): a public-projection hydrate error is surfaced, not
+	// swallowed. A not-found or absent public conversation projection is benign (a new
+	// turn has no prior public projection row) and remains a no-op; any other load error
 	// is a real storage failure and is logged loudly so it is not silently
-	// masked as "no compat conversation".
+	// masked as "no public conversation projection".
 	if err != nil {
 		if !theoryErrors.IsNotFound(err) {
-			log.Printf("controlplane: hosted genesis compat conversation hydrate failed agent_hash=%s conversation_hash=%s err=%v", soulMintInstanceReadAuditHash(agentIDHex), soulMintInstanceReadAuditHash(session.conversationID), err)
+			log.Printf("controlplane: hosted genesis public conversation projection hydrate failed agent_hash=%s conversation_hash=%s err=%v", soulMintInstanceReadAuditHash(agentIDHex), soulMintInstanceReadAuditHash(session.conversationID), err)
 		}
 		return
 	}
@@ -873,7 +698,7 @@ func (s *Server) hydrateHostedGenesisCompatibilityConversation(ctx context.Conte
 }
 
 func finishHostedGenesisTurnSession(registrationID string, session hostedGenesisTurnSession, req soulMintConversationRequest, message string, requestID string, now time.Time) (hostedGenesisTurnSession, *apptheory.AppTheoryError) {
-	session.requestHash = hostedGenesisRequestHash(registrationID, session.conversationID, session.modelSet, message)
+	session.requestHash = hostedGenesisRequestHash(registrationID, session.conversationID, session.modelSet, message, req.CandidateAction)
 	if appErr := validateHostedGenesisIdempotencyRequestHash(registrationID, &session, req, message); appErr != nil {
 		return hostedGenesisTurnSession{}, appErr
 	}
@@ -889,8 +714,8 @@ func validateHostedGenesisIdempotencyRequestHash(registrationID string, session 
 		return nil
 	}
 	modelSet := firstNonEmpty(req.Model, session.modelSet)
-	requestedHash := hostedGenesisRequestHash(registrationID, req.ConversationID, modelSet, message)
-	withoutConversationHash := hostedGenesisRequestHash(registrationID, "", modelSet, message)
+	requestedHash := hostedGenesisRequestHash(registrationID, req.ConversationID, modelSet, message, req.CandidateAction)
+	withoutConversationHash := hostedGenesisRequestHash(registrationID, "", modelSet, message, req.CandidateAction)
 	if storedHash == strings.TrimSpace(requestedHash) || storedHash == strings.TrimSpace(withoutConversationHash) {
 		session.requestHash = storedHash
 		return nil
@@ -901,6 +726,9 @@ func validateHostedGenesisIdempotencyRequestHash(registrationID string, session 
 func applyHostedGenesisAcceptedTurnToSession(session hostedGenesisTurnSession, req soulMintConversationRequest, reqHash string, requestID string, now time.Time) (hostedGenesisTurnSession, *apptheory.AppTheoryError) {
 	if session.session == nil {
 		return hostedGenesisTurnSession{}, newAppTheoryError("app.internal", "internal error")
+	}
+	if !session.sessionIsNew && session.session.DeclarationCandidate == nil {
+		return hostedGenesisTurnSession{}, newAppTheoryError("app.conflict", "restart_soul_bootstrap is required for a legacy hosted genesis lane")
 	}
 	incoming := hostedgenesis.TurnLedgerEntry{
 		TurnID:             strings.TrimSpace(session.turnID),
@@ -927,6 +755,9 @@ func applyHostedGenesisAcceptedTurnToSession(session hostedGenesisTurnSession, r
 	if decision.Replayed {
 		return session, nil
 	}
+	if appErr := advanceHostedGenesisCandidateForAcceptedTurn(&session, req.CandidateAction, decision.Turn.TurnID, now); appErr != nil {
+		return hostedGenesisTurnSession{}, appErr
+	}
 	session.session.Status = string(hostedgenesis.StatusInProgress)
 	session.session.Model = session.modelSet
 	session.session.TurnLedger = decision.Entries
@@ -945,6 +776,56 @@ func applyHostedGenesisAcceptedTurnToSession(session hostedGenesisTurnSession, r
 	session.session.UpdatedAt = now
 	session.session.CompletedAt = time.Time{}
 	return session, nil
+}
+
+func advanceHostedGenesisCandidateForAcceptedTurn(session *hostedGenesisTurnSession, action *hostedgenesis.DeclarationCandidateAction, turnID string, now time.Time) *apptheory.AppTheoryError {
+	if appErr := validateHostedGenesisCandidateActionPhase(session.session.DeclarationCandidate, action); appErr != nil {
+		return appErr
+	}
+	if session.sessionIsNew {
+		candidate, err := newHostedGenesisCandidateForAcceptedTurn(*session, turnID, now)
+		if err != nil {
+			return newAppTheoryError("app.internal", "failed to initialize typed declaration candidate")
+		}
+		session.session.DeclarationCandidate = candidate
+	}
+	if action != nil {
+		candidate, err := hostedgenesis.ApplyDeclarationCandidateAction(session.session.DeclarationCandidate, *action, turnID, now)
+		if err != nil {
+			return newAppTheoryError("app.conflict", "candidate_action does not match the exact owner review")
+		}
+		session.session.DeclarationCandidate = candidate
+		return nil
+	}
+	candidate := session.session.DeclarationCandidate.Clone()
+	candidate.SourceTurnID = turnID
+	candidate.UpdatedAt = now
+	if err := candidate.Validate(); err != nil {
+		return newAppTheoryError("app.conflict", "typed declaration candidate cannot bind the accepted turn")
+	}
+	session.session.DeclarationCandidate = candidate
+	return nil
+}
+
+func validateHostedGenesisCandidateActionPhase(candidate *hostedgenesis.DeclarationCandidate, action *hostedgenesis.DeclarationCandidateAction) *apptheory.AppTheoryError {
+	if candidate == nil {
+		return nil
+	}
+	if candidate.Phase == hostedgenesis.DeclarationCandidatePhaseReview && action == nil {
+		return newAppTheoryError("app.conflict", "a structurally bound candidate_action is required for owner review")
+	}
+	if candidate.Phase != hostedgenesis.DeclarationCandidatePhaseReview && action != nil {
+		return newAppTheoryError("app.conflict", "candidate_action is only valid for the current owner review")
+	}
+	return nil
+}
+
+func newHostedGenesisCandidateForAcceptedTurn(session hostedGenesisTurnSession, turnID string, now time.Time) (*hostedgenesis.DeclarationCandidate, error) {
+	return hostedgenesis.NewDeclarationCandidate(hostedgenesis.DeclarationCandidateBinding{
+		InstanceSlug: session.session.InstanceSlug, RegistrationID: session.session.RegistrationID,
+		AgentID: session.session.AgentID, ConversationID: session.session.ConversationID,
+		SourceTurnID: turnID, Model: session.modelSet,
+	}, now)
 }
 
 func buildHostedGenesisIdempotency(instanceSlug string, regCtx mintConversationRegistrationContext, session hostedGenesisTurnSession, req soulMintConversationRequest, reqHash string, now time.Time, requestID string) *models.SoulMintConversationIdempotency {
@@ -1067,6 +948,7 @@ func cloneHostedGenesisSession(session *models.HostedGenesisSession) *models.Hos
 		cp := *session.DeclarationCheckpoint
 		copy.DeclarationCheckpoint = &cp
 	}
+	copy.DeclarationCandidate = session.DeclarationCandidate.Clone()
 	if session.Failure != nil {
 		failure := *session.Failure
 		copy.Failure = &failure
@@ -1074,6 +956,10 @@ func cloneHostedGenesisSession(session *models.HostedGenesisSession) *models.Hos
 	if session.TraceIDs != nil {
 		trace := *session.TraceIDs
 		copy.TraceIDs = &trace
+	}
+	if session.VMCheckpoint != nil {
+		checkpoint := *session.VMCheckpoint
+		copy.VMCheckpoint = &checkpoint
 	}
 	return &copy
 }
@@ -1115,140 +1001,18 @@ func addHostedGenesisSessionWrite(tx core.TransactionBuilder, session *models.Ho
 		ub.Set("MicroVMExecutionID", session.MicroVMExecutionID)
 		ub.Set("MicroVMLifecycleRef", session.MicroVMLifecycleRef)
 		ub.Set("DeclarationCheckpoint", session.DeclarationCheckpoint)
+		ub.Set("DeclarationCandidate", session.DeclarationCandidate)
+		ub.Set("CandidateRevision", session.CandidateRevision)
+		ub.Set("CandidateHash", session.CandidateHash)
+		ub.Set("CandidatePhase", session.CandidatePhase)
 		ub.Set("Failure", session.Failure)
 		ub.Set("TraceIDs", session.TraceIDs)
+		ub.Set("VMCheckpoint", session.VMCheckpoint)
 		ub.Set("RequestID", session.RequestID)
 		ub.Set("UpdatedAt", session.UpdatedAt)
 		ub.Set("CompletedAt", session.CompletedAt)
 		ub.Add("Version", int64(1))
 		return nil
 	}, tabletheory.IfExists(), tabletheory.AtVersion(expectedVersion), tabletheory.Condition("Status", "=", string(expectedStatus)))
-	return nil
-}
-
-func (s *Server) startHostedGenesisDeclarationExtraction(ctx *apptheory.Context, convCtx soulInstanceBootstrapConversationContext) error {
-	if convCtx.session == nil {
-		return newAppTheoryError("app.internal", "internal error")
-	}
-	now := time.Now().UTC()
-	// H1.3 (kills G7): the pending extraction is serviced by dispatching a
-	// follow-on M16 controller run command on the same MicroVM session via the
-	// MicroVMDispatcher seam. The dispatch fires exactly once, on the transition
-	// into declaration_extraction_pending (the debit/persist block below). An
-	// already-pending session has already dispatched its extraction; re-entry is
-	// a no-op here and the recover path reconciles the in-VM extraction. The
-	// pending status is no longer a permanent trap: the VM services the
-	// extraction or the session fails loudly. An unwired dispatcher is
-	// fail-closed and loud; there is no silent fallback to a non-MicroVM
-	// extraction path. Hosted-genesis SQS may carry non-authoritative MicroVM
-	// dispatch/backfill/janitor commands, but declaration extraction does not
-	// rely on queue delivery, DLQ state, or AI-worker liveness.
-	transitioned := hostedgenesis.NormalizeStatus(convCtx.session.Status) != hostedgenesis.StatusDeclarationExtractionPending
-	if !transitioned {
-		return nil
-	}
-	expectedVersion := convCtx.session.Version
-	expectedStatus := hostedgenesis.NormalizeStatus(convCtx.session.Status)
-	convCtx.session.Status = string(hostedgenesis.StatusDeclarationExtractionPending)
-	convCtx.session.RequestID = strings.TrimSpace(ctx.RequestID)
-	convCtx.session.UpdatedAt = now
-	creditsDebited, appErr := s.debitSoulMintConversationCredits(
-		ctx.Context(),
-		convCtx.inst,
-		soulMintConversationExtractModule,
-		convCtx.conversationID,
-		firstNonEmpty(convCtx.conv.IdempotencyKey, ctx.RequestID),
-		soulMintConversationExtractBaseCredits,
-		now,
-		func(tx core.TransactionBuilder, creditsRequested int64) error {
-			if err := addHostedGenesisSessionWrite(tx, convCtx.session, false, expectedVersion, expectedStatus); err != nil {
-				return err
-			}
-			if convCtx.conv != nil {
-				update := &models.SoulAgentMintConversation{AgentID: convCtx.agentIDHex, ConversationID: convCtx.conversationID}
-				_ = update.UpdateKeys()
-				tx.UpdateWithBuilder(update, func(ub core.UpdateBuilder) error {
-					ub.Add("ChargedCredits", creditsRequested)
-					ub.Set("Status", models.SoulMintConversationStatusDeclarationExtractionPending)
-					ub.Set("StatusReason", "")
-					ub.Set("RequestID", strings.TrimSpace(ctx.RequestID))
-					ub.Set("UpdatedAt", now)
-					return nil
-				}, tabletheory.IfExists())
-			}
-			return nil
-		},
-	)
-	if appErr != nil {
-		return appErr
-	}
-	// The debit transaction above advances the HostedGenesisSession version by
-	// one while transitioning to declaration_extraction_pending. Keep the
-	// in-memory source-of-truth copy aligned before the follow-on dispatch
-	// refreshes lifecycle refs under optimistic locking.
-	convCtx.session.Version = expectedVersion + 1
-	if convCtx.conv != nil {
-		convCtx.conv.ChargedCredits += creditsDebited
-		convCtx.conv.Status = models.SoulMintConversationStatusDeclarationExtractionPending
-		convCtx.conv.StatusReason = ""
-		convCtx.conv.RequestID = strings.TrimSpace(ctx.RequestID)
-		convCtx.conv.UpdatedAt = now
-	}
-	return s.dispatchHostedGenesisDeclarationExtraction(ctx, convCtx, now)
-}
-
-// dispatchHostedGenesisDeclarationExtraction issues the follow-on M16
-// controller run command that services a declaration_extraction_pending session
-// inside the MicroVM. It refreshes the non-authoritative lifecycle ref on the
-// authoritative HostedGenesisSession so the recover path can reconstruct the
-// extraction. It fails closed and loudly when the dispatcher is unwired or the
-// dispatch is rejected; it never falls back to a synchronous control-plane
-// extraction path.
-func (s *Server) dispatchHostedGenesisDeclarationExtraction(ctx *apptheory.Context, convCtx soulInstanceBootstrapConversationContext, now time.Time) error {
-	if s.hostedGenesisMicroVMDispatcher == nil {
-		log.Printf("controlplane: hosted genesis extraction dispatch unavailable agent_hash=%s conversation_hash=%s", soulMintInstanceReadAuditHash(convCtx.agentIDHex), soulMintInstanceReadAuditHash(convCtx.conversationID))
-		return newAppTheoryError(appErrCodeMicroVMUnavailable, "MicroVM extraction dispatch is unavailable")
-	}
-	binding := convCtx.session.MicroVMSessionBinding()
-	if err := binding.Validate(); err != nil {
-		log.Printf("controlplane: hosted genesis extraction binding invalid agent_hash=%s conversation_hash=%s err=%v", soulMintInstanceReadAuditHash(convCtx.agentIDHex), soulMintInstanceReadAuditHash(convCtx.conversationID), err)
-		return newAppTheoryError(appErrCodeMicroVMUnavailable, "MicroVM extraction binding is invalid")
-	}
-	runCtx, cancel := context.WithTimeout(detachedMintConversationContext(ctx.Context()), hostedGenesisAcceptedTurnDispatchTimeout)
-	defer cancel()
-	dispatch, dispatchErr := s.hostedGenesisMicroVMDispatcher.DispatchMicroVMRun(runCtx, strings.TrimSpace(ctx.RequestID), binding)
-	if dispatchErr != nil {
-		log.Printf("controlplane: hosted genesis extraction dispatch failed agent_hash=%s conversation_hash=%s err=%v", soulMintInstanceReadAuditHash(convCtx.agentIDHex), soulMintInstanceReadAuditHash(convCtx.conversationID), dispatchErr)
-		return newAppTheoryError(appErrCodeMicroVMUnavailable, "MicroVM extraction dispatch failed")
-	}
-	progressedSession := cloneHostedGenesisSession(convCtx.session)
-	if err := progressedSession.ApplyMicroVMLifecycleRef(dispatch.LifecycleRef); err != nil {
-		log.Printf("controlplane: hosted genesis extraction lifecycle ref rejected agent_hash=%s conversation_hash=%s err=%v", soulMintInstanceReadAuditHash(convCtx.agentIDHex), soulMintInstanceReadAuditHash(convCtx.conversationID), err)
-		return newAppTheoryError("app.internal", "failed to record microvm extraction dispatch")
-	}
-	progressedSession.RequestID = strings.TrimSpace(ctx.RequestID)
-	progressedSession.UpdatedAt = now
-	if err := s.persistHostedGenesisExtractionDispatch(ctx.Context(), convCtx.session, progressedSession, convCtx.session.Version, now); err != nil {
-		return err
-	}
-	convCtx.session = progressedSession
-	return nil
-}
-
-// persistHostedGenesisExtractionDispatch records the refreshed MicroVM
-// lifecycle ref on the authoritative HostedGenesisSession after the follow-on
-// extraction run dispatch. The durable status stays
-// declaration_extraction_pending; only the non-authoritative execution/cache
-// ref is refreshed under expected-version/expected-status optimistic locking.
-func (s *Server) persistHostedGenesisExtractionDispatch(ctx context.Context, accepted *models.HostedGenesisSession, progressed *models.HostedGenesisSession, expectedVersion int64, now time.Time) *apptheory.AppTheoryError {
-	if s == nil || s.store == nil || s.store.DB == nil || accepted == nil || progressed == nil {
-		return newAppTheoryError("app.internal", "internal error")
-	}
-	if err := s.store.DB.TransactWrite(ctx, func(tx core.TransactionBuilder) error {
-		return addHostedGenesisSessionWrite(tx, progressed, false, expectedVersion, hostedgenesis.StatusDeclarationExtractionPending)
-	}); err != nil {
-		log.Printf("controlplane: hosted genesis extraction dispatch persist failed agent_hash=%s conversation_hash=%s err=%v", soulMintInstanceReadAuditHash(progressed.AgentID), soulMintInstanceReadAuditHash(progressed.ConversationID), err)
-		return newAppTheoryError("app.internal", "failed to persist microvm extraction dispatch")
-	}
 	return nil
 }

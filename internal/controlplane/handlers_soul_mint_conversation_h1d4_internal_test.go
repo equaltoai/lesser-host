@@ -14,7 +14,7 @@ import (
 
 	"github.com/stretchr/testify/mock"
 
-	runtimemicrovm "github.com/theory-cloud/apptheory/runtime/microvm"
+	runtimemicrovm "github.com/theory-cloud/apptheory/v2/runtime/microvm"
 	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
 	ttmocks "github.com/theory-cloud/tabletheory/v2/pkg/mocks"
 
@@ -68,13 +68,6 @@ func TestH1_4_RecoveryFallthroughIsDispatchOnlyNoSyncRerun(t *testing.T) {
 	dispatcher := stubHostedGenesisMicroVMDispatcher(t, s)
 	// Enable the retained non-production sync guard: recovery must STILL be
 	// dispatch-only and never reach the sync assistant runner.
-	s.hostedGenesisSyncAssistantFallbackEnabled = true
-	syncLLMCalled := false
-	s.hostedGenesisAssistantRunner = func(_ context.Context, _ hostedGenesisAssistantRunInput) (hostedGenesisAssistantRunResult, error) {
-		syncLLMCalled = true
-		return hostedGenesisAssistantRunResult{}, nil
-	}
-
 	expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, soulInstanceBootstrapTestInstanceSlug)
 	stubMintConversationRegistration(t, tdb, reg)
 	stubSoulInstanceBootstrapDomainAndInstance(t, tdb, reg.DomainNormalized, soulInstanceBootstrapTestInstanceSlug)
@@ -99,9 +92,6 @@ func TestH1_4_RecoveryFallthroughIsDispatchOnlyNoSyncRerun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected recovery err: %v", err)
 	}
-	if syncLLMCalled {
-		t.Fatalf("recover fallthrough must never re-run a turn synchronously, even with the sync guard enabled")
-	}
 	if dispatcher.calls != 1 {
 		t.Fatalf("expected recovery fallthrough to re-dispatch via the MicroVM controller, got %d dispatch calls", dispatcher.calls)
 	}
@@ -121,13 +111,6 @@ func TestH1_4_RecoveryFallthroughUnwiredDispatcherIsLoudNoSyncRerun(t *testing.T
 	reg := mintConversationHandleReg()
 	t.Setenv("ANTHROPIC_API_KEY", "anthropic-test-key")
 	s.hostedGenesisMicroVMDispatcher = nil
-	s.hostedGenesisSyncAssistantFallbackEnabled = true
-	syncLLMCalled := false
-	s.hostedGenesisAssistantRunner = func(_ context.Context, _ hostedGenesisAssistantRunInput) (hostedGenesisAssistantRunResult, error) {
-		syncLLMCalled = true
-		return hostedGenesisAssistantRunResult{}, nil
-	}
-
 	expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, soulInstanceBootstrapTestInstanceSlug)
 	stubMintConversationRegistration(t, tdb, reg)
 	stubSoulInstanceBootstrapDomainAndInstance(t, tdb, reg.DomainNormalized, soulInstanceBootstrapTestInstanceSlug)
@@ -151,9 +134,6 @@ func TestH1_4_RecoveryFallthroughUnwiredDispatcherIsLoudNoSyncRerun(t *testing.T
 	if err == nil {
 		t.Fatalf("expected loud microvm-unavailable failure when recovery dispatcher is unwired")
 	}
-	if syncLLMCalled {
-		t.Fatalf("recover fallthrough must not fall back to a synchronous LLM when the dispatcher is unwired")
-	}
 	appErr := requireAppTheoryError(t, err)
 	if appErr.Code != soulInstanceBootstrapCodeMicroVMUnavailable || appErr.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("expected typed microvm_unavailable 503, got %#v", appErr)
@@ -171,13 +151,6 @@ func TestH1_4_RecoveryFallthroughDispatchErrorIsLoudNoSyncRerun(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "anthropic-test-key")
 	dispatcher := &stubMicroVMDispatcher{t: t, dispatchErr: errors.New("controller run rejected")}
 	s.hostedGenesisMicroVMDispatcher = dispatcher
-	s.hostedGenesisSyncAssistantFallbackEnabled = true
-	syncLLMCalled := false
-	s.hostedGenesisAssistantRunner = func(_ context.Context, _ hostedGenesisAssistantRunInput) (hostedGenesisAssistantRunResult, error) {
-		syncLLMCalled = true
-		return hostedGenesisAssistantRunResult{}, nil
-	}
-
 	expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, soulInstanceBootstrapTestInstanceSlug)
 	stubMintConversationRegistration(t, tdb, reg)
 	stubSoulInstanceBootstrapDomainAndInstance(t, tdb, reg.DomainNormalized, soulInstanceBootstrapTestInstanceSlug)
@@ -200,9 +173,6 @@ func TestH1_4_RecoveryFallthroughDispatchErrorIsLoudNoSyncRerun(t *testing.T) {
 	))
 	if err == nil {
 		t.Fatalf("expected loud microvm-unavailable failure when recovery dispatch is rejected")
-	}
-	if syncLLMCalled {
-		t.Fatalf("recover fallthrough must not fall back to a synchronous LLM when the dispatch is rejected")
 	}
 	appErr := requireAppTheoryError(t, err)
 	if appErr.Code != soulInstanceBootstrapCodeMicroVMUnavailable || appErr.StatusCode != http.StatusServiceUnavailable {
@@ -241,15 +211,15 @@ func TestH1_4_ProductionQueueFailureSurfacesNon2xxNot200(t *testing.T) {
 }
 
 // TestH1_4_CompatHydrateErrorIsSurfacedNotSwallowed proves G10b is killed: a
-// compat-conversation hydrate error that is NOT a benign not-found is surfaced
+// public-projection hydrate error that is NOT a benign not-found is surfaced
 // (logged loudly) rather than silently swallowed. The hydrate helper logs the
 // real storage error and returns without poisoning the turn session; a benign
-// not-found stays a silent no-op (no compat row exists for a new turn).
+// not-found stays a silent no-op (no public projection row exists for a new turn).
 func TestH1_4_CompatHydrateErrorIsSurfacedNotSwallowed(t *testing.T) {
 	tdb := newMintConversationTestDB()
 	s := newMintConversationServer(tdb)
 	storageErr := errors.New("dynamodb provisioned throughput exceeded")
-	// Non-not-found hydrate error: the compat conversation load fails with a
+	// Non-not-found hydrate error: the public conversation projection load fails with a
 	// real storage error (not ErrItemNotFound).
 	tdb.qConv.On("First", mock.AnythingOfType("*models.SoulAgentMintConversation")).Return(storageErr).Once()
 
@@ -265,10 +235,10 @@ func TestH1_4_CompatHydrateErrorIsSurfacedNotSwallowed(t *testing.T) {
 	})
 
 	session := &hostedGenesisTurnSession{conversationID: mintConversationTestConversationID}
-	s.hydrateHostedGenesisCompatibilityConversation(context.Background(), session, "0xagent")
+	s.hydrateHostedGenesisConversationProjection(context.Background(), session, "0xagent")
 
 	logged := buf.String()
-	if !strings.Contains(logged, "compat conversation hydrate failed") {
+	if !strings.Contains(logged, "public conversation projection hydrate failed") {
 		t.Fatalf("expected compat hydrate error to be surfaced (logged), got log: %s", logged)
 	}
 	if !strings.Contains(logged, storageErr.Error()) {
@@ -276,13 +246,13 @@ func TestH1_4_CompatHydrateErrorIsSurfacedNotSwallowed(t *testing.T) {
 	}
 	// The hydrate error must not poison the turn session (no conv populated).
 	if session.conv != nil {
-		t.Fatalf("hydrate error must not populate a compat conversation: %#v", session.conv)
+		t.Fatalf("hydrate error must not populate a public conversation projection: %#v", session.conv)
 	}
 }
 
 // TestH1_4_CompatHydrateNotFoundStaysBenignNoop proves a benign not-found during
-// compat-conversation hydrate is NOT logged as a failure (a new turn has no
-// prior compat row) — the G10b kill surfaces only real errors, not the expected
+// public-projection hydrate is NOT logged as a failure (a new turn has no
+// prior public projection row) — the G10b kill surfaces only real errors, not the expected
 // absent-row case.
 func TestH1_4_CompatHydrateNotFoundStaysBenignNoop(t *testing.T) {
 	tdb := newMintConversationTestDB()
@@ -301,9 +271,9 @@ func TestH1_4_CompatHydrateNotFoundStaysBenignNoop(t *testing.T) {
 	})
 
 	session := &hostedGenesisTurnSession{conversationID: mintConversationTestConversationID}
-	s.hydrateHostedGenesisCompatibilityConversation(context.Background(), session, "0xagent")
+	s.hydrateHostedGenesisConversationProjection(context.Background(), session, "0xagent")
 
-	if strings.Contains(buf.String(), "compat conversation hydrate failed") {
+	if strings.Contains(buf.String(), "public conversation projection hydrate failed") {
 		t.Fatalf("benign not-found must not be logged as a hydrate failure: %s", buf.String())
 	}
 }
@@ -350,15 +320,17 @@ func TestH1_4_G10SilentFallbacksAreGone(t *testing.T) {
 	if strings.Contains(asyncSrc, "hostedGenesisFailureAssistantTurnFailed, requestID, time.Now().UTC())\n\t\tif appErr != nil {\n\t\t\treturn nil, nil, 0, appErr\n\t\t}\n\t\treturn failedSession, failedConv, http.StatusOK, nil") {
 		t.Fatalf("G10a swallow remains: sync turn-failure still returns http.StatusOK, nil")
 	}
-	if !strings.Contains(asyncSrc, "appErrCodeAssistantTurnFailed") {
-		t.Fatalf("G10a loud path missing: appErrCodeAssistantTurnFailed not referenced on the async turn-failure path")
+	for _, removed := range []string{"hostedGenesisSyncAssistantFallbackEnabled", "hostedGenesisAssistantRunner", "progressHostedGenesisAcceptedTurnSync"} {
+		if strings.Contains(asyncSrc, removed) {
+			t.Fatalf("G10a compatibility fallback remains: %s", removed)
+		}
 	}
 
-	// G10b: the compat-conversation hydrate swallow is replaced by a loud log.
+	// G10b: the public-projection hydrate swallow is replaced by a loud log.
 	if strings.Contains(asyncSrc, "if err != nil || conv == nil {\n\t\treturn\n\t}") {
 		t.Fatalf("G10b swallow remains: hydrate still swallows err with a single early return")
 	}
-	if !strings.Contains(asyncSrc, "compat conversation hydrate failed") {
+	if !strings.Contains(asyncSrc, "public conversation projection hydrate failed") {
 		t.Fatalf("G10b loud path missing: hydrate failure log marker absent")
 	}
 

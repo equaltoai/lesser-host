@@ -5,7 +5,7 @@ import (
 	"encoding/hex"
 	"strings"
 
-	apptheory "github.com/theory-cloud/apptheory/runtime"
+	apptheory "github.com/theory-cloud/apptheory/v2/runtime"
 
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
 	"github.com/equaltoai/lesser-host/internal/store/models"
@@ -16,6 +16,11 @@ func hostedGenesisSessionCompletionReplayReady(session *models.HostedGenesisSess
 		return false, soulMintConversationCompleteReasonInvalidState
 	}
 	switch hostedgenesis.NormalizeStatus(session.Status) {
+	case hostedgenesis.StatusPublished:
+		if !hostedGenesisPublishedSessionValid(session) {
+			return false, soulMintConversationCompleteReasonInvalidState
+		}
+		return true, ""
 	case hostedgenesis.StatusDeclarationReady:
 		if err := hostedgenesis.CanPublish(hostedgenesis.PublishGateInput{
 			Status:                hostedgenesis.StatusDeclarationReady,
@@ -39,12 +44,19 @@ func hostedGenesisSessionCompletionReplayReady(session *models.HostedGenesisSess
 		return false, soulMintConversationCompleteReasonInvalidState
 	case hostedgenesis.StatusCreated,
 		hostedgenesis.StatusInProgress,
-		hostedgenesis.StatusAssistantTurnReady,
-		hostedgenesis.StatusDeclarationExtractionPending:
+		hostedgenesis.StatusAssistantTurnReady:
 		return false, ""
 	default:
 		return false, soulMintConversationCompleteReasonInvalidState
 	}
+}
+
+func hostedGenesisPublishedSessionValid(session *models.HostedGenesisSession) bool {
+	if session == nil || hostedgenesis.NormalizeStatus(session.Status) != hostedgenesis.StatusPublished {
+		return false
+	}
+	_, err := hostedgenesis.NewConversationProjection(session.ToProjectionInput(), true)
+	return err == nil
 }
 
 func requireHostedGenesisSessionReadyForFinalize(session *models.HostedGenesisSession, statusMessage string, emptyDeclMessage string) *apptheory.AppTheoryError {

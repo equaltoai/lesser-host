@@ -11,6 +11,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/codebuild"
 	cbtypes "github.com/aws/aws-sdk-go-v2/service/codebuild/types"
+	"github.com/aws/aws-sdk-go-v2/service/iam"
+	iamtypes "github.com/aws/aws-sdk-go-v2/service/iam/types"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 	smtypes "github.com/aws/aws-sdk-go-v2/service/secretsmanager/types"
@@ -1072,17 +1074,19 @@ func TestManagedInstanceKeyReceiptJSONParsing(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestStartUpdateDeployRunnerWithMode_DoesNotPreflightTargetAccountAccess(t *testing.T) {
+func TestStartUpdateDeployRunnerWithMode_RepairsTrustWithoutReadingTargetSecrets(t *testing.T) {
 	t.Parallel()
 
 	cb := &fakeCodebuild{startOut: &codebuild.StartBuildOutput{Build: &cbtypes.Build{Id: aws.String("run1")}}}
 	stsClient := &fakeSTS{err: errors.New("AccessDenied")}
+	iamClient := &fakeIAM{getOut: &iam.GetRoleOutput{Role: &iamtypes.Role{AssumeRolePolicyDocument: aws.String(testExternalManagementRootTrust)}}}
 	srv := &Server{
 		cfg: config.Config{
 			Stage:                             "live",
+			ManagedOrgVendingRoleARN:          "arn:aws:iam::902552026581:role/lesser-host-org-vending",
 			ManagedInstanceRoleName:           "OrganizationAccountAccessRole",
 			ManagedProvisionRunnerProjectName: "runner-project",
-			ManagedProvisionRunnerRoleARN:     "arn:aws:iam::693925625407:role/runner",
+			ManagedProvisionRunnerRoleARN:     testDeployRunnerRoleARN,
 			ArtifactBucketName:                "artifact-bucket",
 			ManagedLesserGitHubOwner:          "equaltoai",
 			ManagedLesserGitHubRepo:           "lesser",
@@ -1090,8 +1094,7 @@ func TestStartUpdateDeployRunnerWithMode_DoesNotPreflightTargetAccountAccess(t *
 		cb:  cb,
 		sts: stsClient,
 		iamFactory: func(context.Context, string, string, string, string, string) (iamAPI, error) {
-			t.Fatalf("startUpdateDeployRunnerWithMode must not preflight target-account IAM")
-			return nil, errors.New("unexpected target IAM preflight")
+			return iamClient, nil
 		},
 	}
 	job := &models.UpdateJob{
@@ -1119,6 +1122,8 @@ func TestStartUpdateDeployRunnerWithMode_DoesNotPreflightTargetAccountAccess(t *
 	require.NoError(t, err)
 	require.Equal(t, "run1", runID)
 	require.Empty(t, stsClient.lastArn)
+	require.Len(t, iamClient.updateInputs, 1)
+	require.Len(t, iamClient.getInputs, 2)
 	require.Len(t, cb.startInputs, 1)
 	require.Equal(t, "lesser-host/deploy/theory", updateStartBuildEnvValue(cb.startInputs[0], "DEPLOY_EXTERNAL_ID"))
 	require.Equal(t, job.LesserHostInstanceKeySecretARN, updateStartBuildEnvValue(cb.startInputs[0], "LESSER_HOST_INSTANCE_KEY_SECRET_ID"))
@@ -1268,10 +1273,12 @@ func TestAdvanceUpdateReceiptIngest_SuccessMovesToVerify(t *testing.T) {
 	}).Once()
 	st := store.New(db)
 
-	s3Client := &fakeS3{out: &s3.GetObjectOutput{Body: io.NopCloser(strings.NewReader(`{"app":"x","base_domain":"d"}`))}}
-	srv := &Server{cfg: config.Config{ArtifactBucketName: "bucket"}, store: st, s3: s3Client}
+	s3Client := &fakeS3{out: &s3.GetObjectOutput{Body: io.NopCloser(strings.NewReader(
+		`{"app":"x","base_domain":"d","soul_binding_integration":{"version":1,"source":"deploy-runner-managed-profile","secret_arn":"arn:aws:secretsmanager:us-east-1:123456789012:secret:dev/slug/soul-binding-integration-Ab12Cd","key_id":"5b0a2f9f8a3f0d3c8a3b1e0f2c4d6e8f0a1b2c3d4e5f60718293a4b5c6d7e8f9","instance_slug":"slug","stage":"dev","verified_at":"2026-06-27T00:00:00Z"}}`,
+	))}}
+	srv := &Server{cfg: config.Config{Stage: "lab", ArtifactBucketName: "bucket"}, store: st, s3: s3Client}
 
-	job := &models.UpdateJob{ID: "j1", InstanceSlug: "slug", Status: models.UpdateJobStatusRunning, Step: updateStepReceiptIngest, MaxAttempts: 2}
+	job := &models.UpdateJob{ID: "j1", InstanceSlug: "slug", AccountID: "123456789012", Region: "us-east-1", Status: models.UpdateJobStatusRunning, Step: updateStepReceiptIngest, MaxAttempts: 2}
 	delay, done, err := srv.advanceUpdateReceiptIngest(context.Background(), job, "req", time.Unix(1, 0).UTC())
 	require.NoError(t, err)
 	require.False(t, done)

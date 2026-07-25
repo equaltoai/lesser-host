@@ -5,8 +5,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/theory-cloud/apptheory/pkg/limited"
-	apptheory "github.com/theory-cloud/apptheory/runtime"
+	"github.com/theory-cloud/apptheory/v2/pkg/limited"
+	apptheory "github.com/theory-cloud/apptheory/v2/runtime"
 
 	"github.com/equaltoai/lesser-host/internal/httpx"
 )

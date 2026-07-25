@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	runtimemicrovm "github.com/theory-cloud/apptheory/runtime/microvm"
+	runtimemicrovm "github.com/theory-cloud/apptheory/v2/runtime/microvm"
 
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis/completion"
@@ -31,9 +31,9 @@ const (
 // hookServer serves the AppTheory M16 MicroVM image lifecycle hooks on the
 // configured port. Each hook path receives a sanitized microvm.LifecycleEvent
 // JSON body and drives it through AppTheory's real lifecycle adapter
-// (DefaultRealLifecycleContract + NewLifecycleAdapter). The run hook
-// additionally executes the assistant turn + declaration extraction and durably
-// records completion to HostedGenesisSession truth.
+// (DefaultRealLifecycleContract + NewLifecycleAdapter). The run hook executes
+// one typed candidate phase or provider-free finalization and durably records
+// it to HostedGenesisSession truth.
 //
 // The server is fail-closed: unknown hooks, malformed events, unsupported
 // transitions, and execution failures surface as a failed LifecycleResult with a
@@ -86,7 +86,7 @@ func (b hookBinding) completionTurn() completion.CompletionTurn {
 // newHookServer builds the workload's hook dispatcher over the framework's M16
 // real lifecycle adapter. It fails closed at startup if the contract or handler
 // set is invalid. Handlers are the workload's per-hook behavior; the run handler
-// executes the assistant turn + declaration extraction.
+// executes one typed candidate phase.
 func newHookServer(runner *turnRunner, namespace string) (*hookServer, error) {
 	contract := runtimemicrovm.DefaultRealLifecycleContract()
 	adapter, err := runtimemicrovm.NewLifecycleAdapter(
@@ -133,12 +133,14 @@ const hookPathPrefix = "/aws/lambda-microvms/runtime/v1"
 // question is whether ANY request reaches the app, at what path, and whether a
 // handler panics. The hook handlers, paths, and empty-body tolerance are
 // unchanged; the catch-all is not a security boundary (the specific hook paths
-// still go through handleHook).
+// still go through handleHook). Request bodies are never logged because an
+// unmatched application route can carry private provider material.
 func (s *hookServer) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc(hookPathPrefix+"/validate", s.handleHook(runtimemicrovm.HookValidate))
 	mux.HandleFunc(hookPathPrefix+"/run", s.handleRunHook)
 	mux.HandleFunc(hostedgenesis.MicroVMTurnEndpointPath, s.handleTurnEndpoint)
+	mux.HandleFunc(hostedgenesis.MicroVMProcessMemoryCanaryEndpointPath, s.handleProcessMemoryCanaryEndpoint)
 	mux.HandleFunc(hookPathPrefix+"/ready", s.handleHook(runtimemicrovm.HookReady))
 	mux.HandleFunc(hookPathPrefix+"/suspend", s.handleHook(runtimemicrovm.HookSuspend))
 	mux.HandleFunc(hookPathPrefix+"/resume", s.handleHook(runtimemicrovm.HookResume))
@@ -152,44 +154,17 @@ func (s *hookServer) routes() http.Handler {
 }
 
 // handleCatchAll acknowledges any path the workload does not register, logging
-// the method + path + first N bytes of body so a build that calls an unexpected
-// path (e.g. a different prefix or a short /<hook> path) is visible in the
-// CloudWatch build log group. It returns 200 so the AWS service does not retry
-// an unmatched path into a build timeout during diagnosis. This is diagnostic,
-// not a security boundary: the specific hook paths still go through handleHook,
-// and the build hooks carry no body to log. Body logging is capped at
-// logBodyCap bytes; the /run payload is a tenant string, not a secret.
+// the method + path so a build that calls an unexpected path is visible in the
+// CloudWatch log group. It returns 200 so the AWS service does not retry an
+// unmatched path into a build timeout during diagnosis. The request body is
+// deliberately ignored and never logged.
 func (s *hookServer) handleCatchAll(w http.ResponseWriter, r *http.Request) {
-	bodyPreview := readBodyPreview(r, logBodyCap)
-	slog.Info(serviceName+": unmatched path", //nolint:gosec // G706: method/path/preview are structured slog attributes (JSON-encoded key/values), not a log format string.
+	slog.Info(serviceName+": unmatched path", //nolint:gosec // G706: method/path are structured slog attributes (JSON-encoded key/values), not a log format string.
 		slog.String("method", r.Method),
 		slog.String("path", r.URL.Path),
 		slog.String("remote", r.RemoteAddr),
-		slog.String("body_preview", bodyPreview),
 	)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "unmatched"})
-}
-
-// logBodyCap is the maximum number of bytes of request body the catch-all logs.
-// The build hooks (/ready, /validate) send no body; the /run payload is a tenant
-// string, not a secret. Capping prevents a large body from flooding the log.
-const logBodyCap = 512
-
-// readBodyPreview reads up to the first n bytes of the request body for logging
-// by the catch-all. It restores the body so downstream code (none currently, but
-// defensively) can still read it. A read error is surfaced as a preview marker
-// rather than failing the request.
-func readBodyPreview(r *http.Request, n int) string {
-	if r.Body == nil {
-		return ""
-	}
-	preview, err := io.ReadAll(io.LimitReader(r.Body, int64(n)))
-	_ = r.Body.Close()
-	r.Body = io.NopCloser(strings.NewReader(string(preview)))
-	if err != nil {
-		return "<read error: " + err.Error() + ">"
-	}
-	return string(preview)
 }
 
 // requestLoggingMiddleware logs every request at the START (method, path,
@@ -337,8 +312,12 @@ func (s *hookServer) acceptTurnEndpoint(ctx context.Context, event runtimemicrov
 		return result
 	}
 	turn := binding.completionTurn()
+	telemetry := newTurnLifecycleTelemetry(turn)
+	telemetry.emit("accepted", "turn_accepted", "", "")
+	telemetry.emit("store_preflight", "store_preflight_started", "", "")
 	preparedRunner, preparedInput, err := s.runner.prepareTurn(ctx, turn)
 	if err != nil {
+		telemetry.emit("store_preflight", "store_preflight_failed", "", "store_error")
 		// The controller must observe this failure before it acknowledges invoke.
 		// The AI worker then persists microvm_unavailable with its own Host store;
 		// the workload cannot be expected to record a failure through the store that
@@ -354,7 +333,9 @@ func (s *hookServer) acceptTurnEndpoint(ctx context.Context, event runtimemicrov
 		result.Error = &runtimemicrovm.SafeError{Code: hookErrorCode, Message: "hosted genesis turn store is unavailable", RequestID: strings.TrimSpace(event.RequestID)}
 		return result
 	}
-	s.runTurnDetached(preparedRunner, turn, preparedInput)
+	telemetry.bind(preparedInput)
+	telemetry.emit("store_preflight", "store_preflight_completed", "", "")
+	s.runTurnDetached(preparedRunner, turn, preparedInput, telemetry)
 	return result
 }
 
@@ -374,9 +355,9 @@ func (s *hookServer) validateTurnEndpointEvent(event runtimemicrovm.LifecycleEve
 	return hookBinding{}.fromEvent(event)
 }
 
-func (s *hookServer) runTurnDetached(runner *turnRunner, turn completion.CompletionTurn, in turnInput) {
+func (s *hookServer) runTurnDetached(runner *turnRunner, turn completion.CompletionTurn, in turnInput, telemetry *turnLifecycleTelemetry) {
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		ctx, cancel := context.WithTimeout(context.Background(), runner.workloadTimeout())
 		defer cancel()
 		slog.Info(serviceName+": turn execution started", //nolint:gosec // G706: ids are structured slog attrs, not a format string.
 			slog.String("instance_slug", turn.InstanceSlug),
@@ -384,7 +365,7 @@ func (s *hookServer) runTurnDetached(runner *turnRunner, turn completion.Complet
 			slog.String("turn_id", turn.TurnID),
 			slog.String("request_id", turn.RequestID),
 		)
-		if err := runner.runPreparedTurnAndPersist(ctx, turn, in); err != nil {
+		if err := runner.runPreparedTurnAndPersist(ctx, turn, in, telemetry); err != nil {
 			slog.Error(serviceName+": turn execution failed", //nolint:gosec // G706: ids/error are structured slog attrs, not a format string.
 				slog.String("instance_slug", turn.InstanceSlug),
 				slog.String("conversation_id", turn.ConversationID),
@@ -465,8 +446,8 @@ func validateHook(_ context.Context, _ runtimemicrovm.LifecycleEvent) error {
 	return nil
 }
 
-// runHook returns the run lifecycle handler that executes the assistant turn +
-// declaration extraction and durably records completion.
+// runHook returns the lifecycle handler that executes one typed candidate phase
+// or deterministic finalization and records it durably.
 func runHook(runner *turnRunner) runtimemicrovm.LifecycleHandler {
 	return func(ctx context.Context, event runtimemicrovm.LifecycleEvent) error {
 		if runner == nil {
@@ -602,7 +583,7 @@ func (s *hookServer) httpServer(addr string) *http.Server {
 //     address BEFORE the connection is handed to srv.Serve — this is below the
 //     HTTP layer, so even a TLS-mismatch / protocol-error connection is logged.
 //     Accept errors are logged too. Only remote addresses are logged here (no
-//     payloads); payloads are already logged by the catch-all up to logBodyCap.
+//     payloads); request bodies are never logged.
 //  2. A keepalive goroutine logs "alive" every keepaliveInterval until Serve
 //     returns, proving the app is still running after "listening" (vs. having
 //     exited silently). The ticker is stopped when Serve returns.
@@ -674,7 +655,7 @@ const keepaliveInterval = 10 * time.Second
 // — or any protocol error) still reaches Accept and is logged here, even though
 // it would never produce a "request received" line from the request-logging
 // middleware. Accept errors are logged too. Only remote addresses are logged
-// (no payloads); payloads are already logged by the catch-all up to logBodyCap.
+// (no payloads); request bodies are never logged.
 type loggingListener struct {
 	net.Listener
 }

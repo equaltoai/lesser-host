@@ -3,7 +3,7 @@ package controlplane
 import (
 	"strings"
 
-	apptheory "github.com/theory-cloud/apptheory/runtime"
+	apptheory "github.com/theory-cloud/apptheory/v2/runtime"
 
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
@@ -30,10 +30,6 @@ func soulRegistrationAuthorityModel(reg *models.SoulAgentRegistration) string {
 		return models.SoulAuthorityModelWalletPrincipal
 	}
 	return ""
-}
-
-func isRegistrationInstanceTrust(reg *models.SoulAgentRegistration) bool {
-	return normalizeSoulAuthorityModel(soulRegistrationAuthorityModel(reg)) == models.SoulAuthorityModelInstanceTrust
 }
 
 func soulIdentityAuthorityModel(identity *models.SoulAgentIdentity) string {

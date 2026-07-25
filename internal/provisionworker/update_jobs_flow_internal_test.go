@@ -31,9 +31,9 @@ import (
 
 const (
 	testManagedUpdateTrustBaseURL    = "https://example.test"
-	testManagedUpdateReceiptJSON     = `{"app":"x","base_domain":"d","managed_instance_key":{"version":1,"source":"deploy-runner-managed-profile","secret_arn":"arn:aws:secretsmanager:us-east-1:123456789012:secret:slug/instance-key","key_id":"38ed91d202121369e6ad8f501c2839590ba5427b51cf16422f446d99f031601b","instance_slug":"slug","stage":"live","rotated":true,"verified_at":"2026-06-27T00:00:00Z"}}`
-	testManagedUpdateBodyReceiptJSON = `{"version":1,"stage":"dev","base_domain":"d","lesser_body_version":"v0.2.3"}`
-	testManagedUpdateMCPReceiptJSON  = `{"version":1,"stage":"dev","base_domain":"d","lesser_body_version":"v0.2.3","mcp_url":"https://api.dev.example.test/mcp/{actor}","mcp_lambda_arn":"arn:aws:lambda:us-east-1:123:function:mcp"}`
+	testManagedUpdateReceiptJSON     = `{"app":"x","base_domain":"d","managed_instance_key":{"version":1,"source":"deploy-runner-managed-profile","secret_arn":"arn:aws:secretsmanager:us-east-1:123456789012:secret:slug/instance-key","key_id":"38ed91d202121369e6ad8f501c2839590ba5427b51cf16422f446d99f031601b","instance_slug":"slug","stage":"live","rotated":true,"verified_at":"2026-06-27T00:00:00Z"},"soul_binding_integration":{"version":1,"source":"deploy-runner-managed-profile","secret_arn":"arn:aws:secretsmanager:us-east-1:123456789012:secret:live/slug/soul-binding-integration-Ab12Cd","key_id":"5b0a2f9f8a3f0d3c8a3b1e0f2c4d6e8f0a1b2c3d4e5f60718293a4b5c6d7e8f9","instance_slug":"slug","stage":"live","verified_at":"2026-06-27T00:00:00Z"}}`
+	testManagedUpdateBodyReceiptJSON = `{"version":1,"stage":"live","base_domain":"d","lesser_body_version":"v1.0.8","soul_binding_integration":{"version":1,"source":"deploy-runner-managed-profile","secret_arn":"arn:aws:secretsmanager:us-east-1:123456789012:secret:live/slug/soul-binding-integration-Ab12Cd","key_id":"5b0a2f9f8a3f0d3c8a3b1e0f2c4d6e8f0a1b2c3d4e5f60718293a4b5c6d7e8f9","instance_slug":"slug","stage":"live","verified_at":"2026-06-27T00:00:00Z"}}`
+	testManagedUpdateMCPReceiptJSON  = `{"version":1,"stage":"live","base_domain":"d","lesser_body_version":"v1.0.8","mcp_url":"https://api.live.example.test/mcp/{actor}","mcp_lambda_arn":"arn:aws:lambda:us-east-1:123:function:mcp","soul_binding_integration":{"version":1,"source":"deploy-runner-managed-profile","secret_arn":"arn:aws:secretsmanager:us-east-1:123456789012:secret:live/slug/soul-binding-integration-Ab12Cd","key_id":"5b0a2f9f8a3f0d3c8a3b1e0f2c4d6e8f0a1b2c3d4e5f60718293a4b5c6d7e8f9","instance_slug":"slug","stage":"live","verified_at":"2026-06-27T00:00:00Z"}}`
 )
 
 func TestRunManagedUpdateStateMachine_HappyPath(t *testing.T) {
@@ -212,6 +212,7 @@ func TestRunManagedUpdateStateMachine_HappyPath(t *testing.T) {
 	require.Equal(t, models.UpdateJobStatusOK, job.Status)
 	require.NotEmpty(t, job.RunURL)
 	require.NotEmpty(t, job.LesserHostInstanceKeySecretARN)
+	require.Equal(t, "arn:aws:secretsmanager:us-east-1:123456789012:secret:live/slug/soul-binding-integration-Ab12Cd", job.SoulBindingIntegrationSecretARN)
 	require.NotEmpty(t, job.ReceiptJSON)
 	require.True(t, job.VerifyTranslationOK != nil && *job.VerifyTranslationOK, "translation verify failed: %s", job.VerifyTranslationErr)
 	require.True(t, job.VerifyTrustOK != nil && *job.VerifyTrustOK, "trust verify failed: %s", job.VerifyTrustErr)
@@ -303,7 +304,7 @@ func TestRunManagedUpdateStateMachine_BodyOnlyCompletesIndependently(t *testing.
 		ManagedOrgVendingRoleARN:          "arn:aws:iam::123456789012:role/vending",
 		ManagedLesserGitHubOwner:          "equaltoai",
 		ManagedLesserGitHubRepo:           "lesser",
-		ManagedLesserBodyDefaultVersion:   "v0.2.3",
+		ManagedLesserBodyDefaultVersion:   "v1.0.8",
 		ManagedLesserBodyGitHubOwner:      "equaltoai",
 		ManagedLesserBodyGitHubRepo:       "lesser-body",
 	}
@@ -311,7 +312,7 @@ func TestRunManagedUpdateStateMachine_BodyOnlyCompletesIndependently(t *testing.
 	st := store.New(db)
 	sqsClient := &fakeSQS{}
 	srv := NewServer(cfg, st, nil, nil, nil, sqsClient, cb, s3Client)
-	srv.releaseHTTPClient = newHappyManagedLesserBodyReleaseClient(t, managedStageLive, "v0.2.3")
+	srv.releaseHTTPClient = newHappyManagedLesserBodyReleaseClient(t, managedStageLive, "v1.0.8")
 
 	fsm := &fakeSecretsManager{
 		describeErr: &smtypes.ResourceNotFoundException{},
@@ -331,7 +332,7 @@ func TestRunManagedUpdateStateMachine_BodyOnlyCompletesIndependently(t *testing.
 		InstanceSlug:              "slug",
 		Status:                    models.UpdateJobStatusQueued,
 		LesserVersion:             "v1.2.6",
-		LesserBodyVersion:         "v0.2.3",
+		LesserBodyVersion:         "v1.0.8",
 		BodyOnly:                  true,
 		LesserHostBaseURL:         "https://lab.example.com",
 		LesserHostAttestationsURL: "https://lab.example.com",
@@ -364,13 +365,13 @@ func TestRunManagedUpdateStateMachine_BodyOnlyCompletesIndependently(t *testing.
 	require.NoError(t, srv.runManagedUpdateStateMachine(ctx, job, "req", now.Add(1*time.Minute)))
 	require.Equal(t, updateStepDone, job.Step)
 	require.Equal(t, models.UpdateJobStatusOK, job.Status)
-	require.Equal(t, "v0.2.3", job.LesserBodyVersion)
+	require.Equal(t, "v1.0.8", job.LesserBodyVersion)
 	require.Equal(t, updatePhaseStatusSucceeded, job.BodyStatus)
 	require.Equal(t, updatePhaseStatusSkipped, job.MCPStatus)
 
 	require.Len(t, cb.startInputs, 1)
 	require.Equal(t, "lesser-body", envValue(cb.startInputs[0], "RUN_MODE"))
-	require.Equal(t, "v0.2.3", envValue(cb.startInputs[0], "LESSER_BODY_VERSION"))
+	require.Equal(t, "v1.0.8", envValue(cb.startInputs[0], "LESSER_BODY_VERSION"))
 	require.Empty(t, envValue(cb.startInputs[0], "BODY_ENABLED"))
 }
 
@@ -459,7 +460,7 @@ func TestRunManagedUpdateStateMachine_MCPOnlySkipsLesserAndBodyDeploy(t *testing
 		ManagedOrgVendingRoleARN:          "arn:aws:iam::123456789012:role/vending",
 		ManagedLesserGitHubOwner:          "equaltoai",
 		ManagedLesserGitHubRepo:           "lesser",
-		ManagedLesserBodyDefaultVersion:   "v0.2.3",
+		ManagedLesserBodyDefaultVersion:   "v1.0.8",
 		ManagedLesserBodyGitHubOwner:      "equaltoai",
 		ManagedLesserBodyGitHubRepo:       "lesser-body",
 	}
@@ -487,7 +488,7 @@ func TestRunManagedUpdateStateMachine_MCPOnlySkipsLesserAndBodyDeploy(t *testing
 		InstanceSlug:              "slug",
 		Status:                    models.UpdateJobStatusQueued,
 		LesserVersion:             "v1.2.6",
-		LesserBodyVersion:         "v0.2.3",
+		LesserBodyVersion:         "v1.0.8",
 		MCPOnly:                   true,
 		LesserHostBaseURL:         "https://lab.example.com",
 		LesserHostAttestationsURL: "https://lab.example.com",
@@ -524,8 +525,9 @@ func TestRunManagedUpdateStateMachine_MCPOnlySkipsLesserAndBodyDeploy(t *testing
 
 	require.Len(t, cb.startInputs, 1)
 	require.Equal(t, "lesser-mcp", envValue(cb.startInputs[0], "RUN_MODE"))
-	require.Equal(t, "v0.2.3", envValue(cb.startInputs[0], "LESSER_BODY_VERSION"))
+	require.Equal(t, "v1.0.8", envValue(cb.startInputs[0], "LESSER_BODY_VERSION"))
 	require.Equal(t, "true", envValue(cb.startInputs[0], "BODY_ENABLED"))
+	require.Equal(t, "true", envValue(cb.startInputs[0], "INSTANCE_PLANE_ENABLED"))
 }
 
 func TestUpdateJob_ProcessableAndMissingConfig(t *testing.T) {

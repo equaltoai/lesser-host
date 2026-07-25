@@ -6,24 +6,20 @@ import (
 	"errors"
 	"net/http"
 	"os"
-	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/aws/aws-lambda-go/events"
-	"github.com/santhosh-tekuri/jsonschema/v6"
-	apptheory "github.com/theory-cloud/apptheory/runtime"
-	runtimemicrovm "github.com/theory-cloud/apptheory/runtime/microvm"
+	apptheory "github.com/theory-cloud/apptheory/v2/runtime"
+	runtimemicrovm "github.com/theory-cloud/apptheory/v2/runtime/microvm"
 	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
 
-	"github.com/equaltoai/lesser-host/internal/ai/llm"
 	"github.com/equaltoai/lesser-host/internal/artifacts"
 	"github.com/equaltoai/lesser-host/internal/config"
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
-	"github.com/equaltoai/lesser-host/internal/hostedgenesis/mintprompt"
-	"github.com/equaltoai/lesser-host/internal/soul"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
@@ -45,6 +41,8 @@ type fakeHostedGenesisStore struct {
 	convErr    error
 	idemErr    error
 	updateErr  error
+	updateErrs []error
+	updateHook func(*fakeHostedGenesisStore)
 	putErr     error
 }
 
@@ -132,6 +130,16 @@ func (f *fakeHostedGenesisStore) UpdateHostedGenesisSession(_ context.Context, i
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if len(f.updateErrs) > 0 {
+		err := f.updateErrs[0]
+		f.updateErrs = f.updateErrs[1:]
+		if err != nil {
+			if f.updateHook != nil {
+				f.updateHook(f)
+			}
+			return err
+		}
+	}
 	if f.updateErr != nil {
 		return f.updateErr
 	}
@@ -292,7 +300,10 @@ func hostedGenesisWorkerSQSMessage(t *testing.T, msg hostedgenesis.QueueMessage)
 	if err != nil {
 		t.Fatalf("marshal queue message: %v", err)
 	}
-	return events.SQSMessage{Body: string(body)}
+	return events.SQSMessage{
+		Body:       string(body),
+		Attributes: map[string]string{hostedGenesisSQSApproximateReceiveCount: "1"},
+	}
 }
 
 func TestHostedGenesisQueueMessageDispatchesDurableKinds(t *testing.T) {
@@ -312,22 +323,133 @@ func TestHostedGenesisQueueMessageDispatchesDurableKinds(t *testing.T) {
 
 	st := newHostedGenesisWorkerStore("turn-worker")
 	srv = NewServer(config.Config{}, st, artifacts.New(""), fakeComprehend{}, fakeRekognition{})
-	err := srv.handleHostedGenesisQueueMessage(ctx, hostedGenesisWorkerSQSMessage(t, hostedGenesisWorkerQueueMessage(hostedgenesis.StepAssistantTurn, "turn-worker")))
-	if err != nil {
-		t.Fatalf("unexpected assistant queue error: %v", err)
-	}
-	assertHostedGenesisWorkerFailure(t, st, hostedGenesisFailureLLMUnavailable)
-
-	st = newHostedGenesisWorkerStore("turn-worker")
-	srv = NewServer(config.Config{}, st, artifacts.New(""), fakeComprehend{}, fakeRekognition{})
 	dispatcher := &stubHostedGenesisWorkerMicroVMDispatcher{t: t}
 	srv.hostedGenesisMicroVMDispatcher = dispatcher
-	err = srv.handleHostedGenesisQueueMessage(ctx, hostedGenesisWorkerSQSMessage(t, hostedGenesisWorkerQueueMessage(hostedgenesis.StepMicroVMDispatch, "turn-worker")))
+	err := srv.handleHostedGenesisQueueMessage(ctx, hostedGenesisWorkerSQSMessage(t, hostedGenesisWorkerQueueMessage(hostedgenesis.StepMicroVMDispatch, "turn-worker")))
 	if err != nil {
 		t.Fatalf("unexpected microvm queue error: %v", err)
 	}
 	if dispatcher.startCalls != 1 || dispatcher.invokeCalls != 1 {
 		t.Fatalf("expected queue to dispatch microvm start+invoke, got start=%d invoke=%d", dispatcher.startCalls, dispatcher.invokeCalls)
+	}
+}
+
+func TestHostedGenesisQueueDeliveryCountTerminalizesLifecyclePersistence(t *testing.T) {
+	t.Parallel()
+
+	transientErr := errors.New("dynamodb unavailable")
+	for _, receiveCount := range []int{1, hostedGenesisQueueMaxReceiveCount - 1} {
+		st := newHostedGenesisWorkerStore("turn-worker")
+		st.updateErrs = []error{transientErr}
+		srv := NewServer(config.Config{}, st, artifacts.New(""), fakeComprehend{}, fakeRekognition{})
+		srv.hostedGenesisMicroVMDispatcher = &stubHostedGenesisWorkerMicroVMDispatcher{t: t}
+		msg := hostedGenesisWorkerSQSMessage(t, hostedGenesisWorkerQueueMessage(hostedgenesis.StepMicroVMDispatch, "turn-worker"))
+		msg.Attributes[hostedGenesisSQSApproximateReceiveCount] = strconv.Itoa(receiveCount)
+
+		err := srv.handleHostedGenesisQueueMessage(&apptheory.EventContext{RequestID: "worker-req"}, msg)
+		if !errors.Is(err, transientErr) {
+			t.Fatalf("receive count %d must remain retryable, got %v", receiveCount, err)
+		}
+		if st.putCount != 0 || hostedgenesis.NormalizeStatus(st.session.Status) != hostedgenesis.StatusInProgress {
+			t.Fatalf("receive count %d prematurely terminalized state: session=%#v putCount=%d", receiveCount, st.session, st.putCount)
+		}
+	}
+
+	st := newHostedGenesisWorkerStore("turn-worker")
+	st.updateErrs = []error{transientErr}
+	srv := NewServer(config.Config{}, st, artifacts.New(""), fakeComprehend{}, fakeRekognition{})
+	srv.hostedGenesisMicroVMDispatcher = &stubHostedGenesisWorkerMicroVMDispatcher{t: t}
+	msg := hostedGenesisWorkerSQSMessage(t, hostedGenesisWorkerQueueMessage(hostedgenesis.StepMicroVMDispatch, "turn-worker"))
+	msg.Attributes[hostedGenesisSQSApproximateReceiveCount] = strconv.Itoa(hostedGenesisQueueMaxReceiveCount)
+
+	if err := srv.handleHostedGenesisQueueMessage(&apptheory.EventContext{RequestID: "worker-req"}, msg); err != nil {
+		t.Fatalf("final delivery terminal projection failed: %v", err)
+	}
+	assertHostedGenesisWorkerFailure(t, st, hostedGenesisFailureInvalidCompletionState)
+}
+
+func TestHostedGenesisQueueReceiveCountMatchesCDKRedriveContract(t *testing.T) {
+	t.Parallel()
+
+	stack, err := os.ReadFile("../../cdk/lib/lesser-host-stack.ts")
+	if err != nil {
+		t.Fatalf("read CDK stack: %v", err)
+	}
+	queueStart := strings.Index(string(stack), `const hostedGenesisQueue = new sqs.Queue`)
+	if queueStart < 0 {
+		t.Fatal("CDK hosted-genesis queue definition is missing")
+	}
+	queueDefinition := string(stack[queueStart:])
+	queueEnd := strings.Index(queueDefinition, `const provisionDLQ`)
+	if queueEnd < 0 {
+		t.Fatal("CDK hosted-genesis queue definition boundary is missing")
+	}
+	queueDefinition = queueDefinition[:queueEnd]
+	want := "maxReceiveCount: " + strconv.Itoa(hostedGenesisQueueMaxReceiveCount)
+	if !strings.Contains(queueDefinition, want) {
+		t.Fatalf("worker final-delivery limit diverges from CDK redrive contract; want %q in %q", want, queueDefinition)
+	}
+}
+
+func TestHostedGenesisMicroVMDispatchPermanentValidationFailureProjectsOnce(t *testing.T) {
+	t.Parallel()
+
+	st := newHostedGenesisWorkerStore("turn-worker")
+	candidate, err := hostedgenesis.NewDeclarationCandidate(hostedgenesis.DeclarationCandidateBinding{
+		InstanceSlug: st.session.InstanceSlug, RegistrationID: st.session.RegistrationID,
+		AgentID: st.session.AgentID, ConversationID: st.session.ConversationID,
+		SourceTurnID: st.session.LatestTurnID, Model: st.session.Model,
+	}, st.session.CreatedAt)
+	if err != nil {
+		t.Fatalf("build declaration candidate: %v", err)
+	}
+	candidate.CandidateHash = "sha256:" + strings.Repeat("f", 64)
+	st.session.DeclarationCandidate = candidate
+	srv := NewServer(config.Config{}, st, artifacts.New(""), fakeComprehend{}, fakeRekognition{})
+	dispatcher := &stubHostedGenesisWorkerMicroVMDispatcher{t: t}
+	srv.hostedGenesisMicroVMDispatcher = dispatcher
+
+	err = srv.processHostedGenesisMicroVMDispatch(
+		context.Background(),
+		"worker-req",
+		hostedGenesisWorkerQueueMessage(hostedgenesis.StepMicroVMDispatch, "turn-worker"),
+		1,
+	)
+	if err != nil {
+		t.Fatalf("permanent validation failure projection failed: %v", err)
+	}
+	if dispatcher.startCalls != 1 || dispatcher.invokeCalls != 0 {
+		t.Fatalf("permanent lifecycle validation failure must stop before invoke, got start=%d invoke=%d", dispatcher.startCalls, dispatcher.invokeCalls)
+	}
+	assertHostedGenesisWorkerFailure(t, st, hostedGenesisFailureInvalidCompletionState)
+}
+
+func TestHostedGenesisMicroVMDispatchFinalDeliveryDoesNotOverwriteAdvancedLane(t *testing.T) {
+	t.Parallel()
+
+	st := newHostedGenesisWorkerStore("turn-worker")
+	st.updateErrs = []error{theoryErrors.ErrConditionFailed}
+	st.updateHook = func(store *fakeHostedGenesisStore) {
+		store.session.Version++
+		store.session.Status = string(hostedgenesis.StatusAssistantTurnReady)
+		store.conv.Status = models.SoulMintConversationStatusAssistantTurnReady
+	}
+	srv := NewServer(config.Config{}, st, artifacts.New(""), fakeComprehend{}, fakeRekognition{})
+	srv.hostedGenesisMicroVMDispatcher = &stubHostedGenesisWorkerMicroVMDispatcher{t: t}
+
+	err := srv.processHostedGenesisMicroVMDispatch(
+		context.Background(),
+		"worker-req",
+		hostedGenesisWorkerQueueMessage(hostedgenesis.StepMicroVMDispatch, "turn-worker"),
+		hostedGenesisQueueMaxReceiveCount,
+	)
+	if !errors.Is(err, theoryErrors.ErrConditionFailed) {
+		t.Fatalf("stale final delivery must preserve the atomic condition failure, got %v", err)
+	}
+	if st.putCount != 0 || st.session.Version != 1 ||
+		hostedgenesis.NormalizeStatus(st.session.Status) != hostedgenesis.StatusAssistantTurnReady ||
+		st.conv.Status != models.SoulMintConversationStatusAssistantTurnReady {
+		t.Fatalf("stale final delivery overwrote advanced lane: session=%#v conversation=%#v putCount=%d", st.session, st.conv, st.putCount)
 	}
 }
 
@@ -339,7 +461,7 @@ func TestHostedGenesisMicroVMDispatchStartsPersistsLifecycleAndInvokes(t *testin
 	dispatcher := &stubHostedGenesisWorkerMicroVMDispatcher{t: t}
 	srv.hostedGenesisMicroVMDispatcher = dispatcher
 
-	err := srv.processHostedGenesisMicroVMDispatch(context.Background(), "worker-req", hostedGenesisWorkerQueueMessage(hostedgenesis.StepMicroVMDispatch, "turn-worker"))
+	err := srv.processHostedGenesisMicroVMDispatch(context.Background(), "worker-req", hostedGenesisWorkerQueueMessage(hostedgenesis.StepMicroVMDispatch, "turn-worker"), 1)
 	if err != nil {
 		t.Fatalf("unexpected microvm dispatch error: %v", err)
 	}
@@ -366,7 +488,7 @@ func TestHostedGenesisMicroVMDispatchStartsPersistsLifecycleAndInvokes(t *testin
 	}
 }
 
-func TestHostedGenesisMicroVMDispatchStartsFreshWhenPriorLifecycleExists(t *testing.T) {
+func TestHostedGenesisMicroVMDispatchReusesValidatedPriorLifecycle(t *testing.T) {
 	t.Parallel()
 
 	st := newHostedGenesisWorkerStore("turn-worker")
@@ -383,21 +505,53 @@ func TestHostedGenesisMicroVMDispatchStartsFreshWhenPriorLifecycleExists(t *test
 	dispatcher := &stubHostedGenesisWorkerMicroVMDispatcher{t: t}
 	srv.hostedGenesisMicroVMDispatcher = dispatcher
 
-	err = srv.processHostedGenesisMicroVMDispatch(context.Background(), "worker-req", hostedGenesisWorkerQueueMessage(hostedgenesis.StepMicroVMDispatch, "turn-worker"))
+	err = srv.processHostedGenesisMicroVMDispatch(context.Background(), "worker-req", hostedGenesisWorkerQueueMessage(hostedgenesis.StepMicroVMDispatch, "turn-worker"), 1)
 	if err != nil {
 		t.Fatalf("unexpected microvm dispatch error: %v", err)
 	}
-	if dispatcher.startCalls != 1 || dispatcher.invokeCalls != 1 || dispatcher.dispatchCalls != 0 {
-		t.Fatalf("expected fresh start+invoke despite previous lifecycle, got start=%d invoke=%d dispatch=%d", dispatcher.startCalls, dispatcher.invokeCalls, dispatcher.dispatchCalls)
+	if dispatcher.ensureCalls != 1 || dispatcher.startCalls != 0 || dispatcher.invokeCalls != 1 || dispatcher.dispatchCalls != 0 {
+		t.Fatalf("expected validated lifecycle reuse + invoke, got ensure=%d start=%d invoke=%d dispatch=%d", dispatcher.ensureCalls, dispatcher.startCalls, dispatcher.invokeCalls, dispatcher.dispatchCalls)
 	}
 
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	if st.session == nil || st.session.Version != 4 {
-		t.Fatalf("expected fresh lifecycle persist to advance version, got %#v", st.session)
+		t.Fatalf("expected reused lifecycle persist to advance version, got %#v", st.session)
 	}
 	if !strings.Contains(st.session.ExecutionStateRef, "#running@7") {
-		t.Fatalf("expected refreshed running lifecycle execution ref, got %q", st.session.ExecutionStateRef)
+		t.Fatalf("expected revalidated running lifecycle execution ref, got %q", st.session.ExecutionStateRef)
+	}
+}
+
+func TestHostedGenesisMicroVMDispatchRelaunchesWhenPriorLifecycleExpired(t *testing.T) {
+	t.Parallel()
+
+	st := newHostedGenesisWorkerStore("turn-worker")
+	binding := st.session.MicroVMSessionBinding()
+	previous, err := hostedGenesisWorkerMicroVMDispatchResult(t, "previous-req", binding, runtimemicrovm.CommandRun)
+	if err != nil {
+		t.Fatalf("seed lifecycle ref: %v", err)
+	}
+	if applyErr := st.session.ApplyMicroVMLifecycleRef(previous.LifecycleRef); applyErr != nil {
+		t.Fatalf("apply previous lifecycle ref: %v", applyErr)
+	}
+	st.session.Version = 3
+	srv := NewServer(config.Config{}, st, artifacts.New(""), fakeComprehend{}, fakeRekognition{})
+	dispatcher := &stubHostedGenesisWorkerMicroVMDispatcher{t: t, ensureErr: hostedgenesis.ErrMicroVMRelaunchRequired}
+	srv.hostedGenesisMicroVMDispatcher = dispatcher
+
+	err = srv.processHostedGenesisMicroVMDispatch(context.Background(), "worker-req", hostedGenesisWorkerQueueMessage(hostedgenesis.StepMicroVMDispatch, "turn-worker"), 1)
+	if err != nil {
+		t.Fatalf("unexpected microvm relaunch dispatch error: %v", err)
+	}
+	if dispatcher.ensureCalls != 1 || dispatcher.startCalls != 1 || dispatcher.invokeCalls != 1 || dispatcher.dispatchCalls != 0 {
+		t.Fatalf("expected checkpoint relaunch + invoke, got ensure=%d start=%d invoke=%d dispatch=%d", dispatcher.ensureCalls, dispatcher.startCalls, dispatcher.invokeCalls, dispatcher.dispatchCalls)
+	}
+
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if st.session == nil || st.session.Version != 4 {
+		t.Fatalf("expected relaunched lifecycle persist to advance version, got %#v", st.session)
 	}
 }
 
@@ -414,7 +568,7 @@ func TestHostedGenesisMicroVMDispatchAllowsManagedStageAliasBoundary(t *testing.
 	dispatcher := &stubHostedGenesisWorkerMicroVMDispatcher{t: t}
 	srv.hostedGenesisMicroVMDispatcher = dispatcher
 
-	err := srv.processHostedGenesisMicroVMDispatch(context.Background(), "worker-req", hostedGenesisWorkerQueueMessage(hostedgenesis.StepMicroVMDispatch, "turn-worker"))
+	err := srv.processHostedGenesisMicroVMDispatch(context.Background(), "worker-req", hostedGenesisWorkerQueueMessage(hostedgenesis.StepMicroVMDispatch, "turn-worker"), 1)
 	if err != nil {
 		t.Fatalf("unexpected managed-stage alias dispatch error: %v", err)
 	}
@@ -438,6 +592,9 @@ func TestNewHostedGenesisWorkerMicroVMDispatcherConfigPaths(t *testing.T) {
 		ControllerEndpoint:     "https://microvm-controller.example.test",
 		AuthTokenSSMParam:      "/lesser-host/test/microvm/auth-token",
 		ImageRef:               "image:test",
+		ImageVersion:           "29",
+		ExecutionRoleARN:       "arn:aws:iam::123456789012:role/hosted-genesis-test",
+		RuntimeLogGroup:        "/aws/lambda/microvms/hosted-genesis-test",
 		NetworkConnectorRef:    "network:test",
 		IngressConnectorRefs:   []string{"ingress:test"},
 		EgressConnectorRefs:    []string{"egress:test"},
@@ -495,7 +652,7 @@ func TestHostedGenesisMicroVMDispatchFallbackDispatcherPersistsLifecycle(t *test
 	dispatcher := &legacyOnlyHostedGenesisWorkerMicroVMDispatcher{t: t}
 	srv.hostedGenesisMicroVMDispatcher = dispatcher
 
-	err := srv.processHostedGenesisMicroVMDispatch(context.Background(), "worker-req", hostedGenesisWorkerQueueMessage(hostedgenesis.StepMicroVMDispatch, "turn-worker"))
+	err := srv.processHostedGenesisMicroVMDispatch(context.Background(), "worker-req", hostedGenesisWorkerQueueMessage(hostedgenesis.StepMicroVMDispatch, "turn-worker"), 1)
 	if err != nil {
 		t.Fatalf("unexpected fallback microvm dispatch error: %v", err)
 	}
@@ -526,17 +683,6 @@ func TestHostedGenesisMicroVMDispatchHelpers(t *testing.T) {
 		t.Fatalf("nil conversation/session must not be dispatch ready")
 	}
 
-	st = newHostedGenesisWorkerStore("turn-worker")
-	if got := mintConversationMessageCountWorker(st.conv); got != 1 {
-		t.Fatalf("expected one decoded message, got %d", got)
-	}
-	st.conv.Messages = models.EncodeSoulMintConversationBlob(`not-json`)
-	if got := mintConversationMessageCountWorker(st.conv); got != 0 {
-		t.Fatalf("invalid transcript count must fail closed, got %d", got)
-	}
-	if got := mintConversationMessageCountWorker(nil); got != 0 {
-		t.Fatalf("nil transcript count must be zero, got %d", got)
-	}
 }
 
 func TestCloneHostedGenesisSessionForWorkerDeepCopiesMutableFields(t *testing.T) {
@@ -565,6 +711,17 @@ func TestCloneHostedGenesisSessionForWorkerDeepCopiesMutableFields(t *testing.T)
 		Recovery:  hostedgenesis.Recovery{Action: hostedgenesis.RecoveryActionRetrySameStep},
 	}
 	source.TraceIDs = &hostedgenesis.TraceIDs{HostRequestID: "host-req"}
+	source.VMCheckpoint = &hostedgenesis.VMCheckpointMetadata{
+		Sequence:     1,
+		Ref:          hostedgenesis.CheckpointRef("vm-actor", source.ConversationID, "assistant-1-turn-worker"),
+		Hash:         "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		Step:         "assistant_turn",
+		Action:       "ask",
+		StatusFrom:   string(hostedgenesis.StatusInProgress),
+		StatusTo:     string(hostedgenesis.StatusAssistantTurnReady),
+		Runtime:      "hosted-genesis-microvm-workload/v1",
+		LatestTurnID: "turn-worker",
+	}
 
 	cloned := cloneHostedGenesisSessionForWorker(source)
 	if cloned == source || cloned == nil {
@@ -575,12 +732,14 @@ func TestCloneHostedGenesisSessionForWorkerDeepCopiesMutableFields(t *testing.T)
 	source.DeclarationCheckpoint.DeclarationID = hostedGenesisWorkerMutated
 	source.Failure.Message = hostedGenesisWorkerMutated
 	source.TraceIDs.HostRequestID = hostedGenesisWorkerMutated
+	source.VMCheckpoint.Action = hostedGenesisWorkerMutated
 
 	if cloned.TurnLedger[0].TurnID != "turn-worker" ||
 		cloned.MicroVMLifecycleRef.SessionID != "conv-worker" ||
 		cloned.DeclarationCheckpoint.DeclarationID != "decl-1" ||
 		cloned.Failure.Message != "failed" ||
-		cloned.TraceIDs.HostRequestID != "host-req" {
+		cloned.TraceIDs.HostRequestID != "host-req" ||
+		cloned.VMCheckpoint.Action != "ask" {
 		t.Fatalf("clone shared mutable state with source: %#v", cloned)
 	}
 	if cloneHostedGenesisSessionForWorker(nil) != nil {
@@ -594,7 +753,7 @@ func TestHostedGenesisMicroVMDispatchFailsClosedWhenDispatcherUnavailable(t *tes
 	st := newHostedGenesisWorkerStore("turn-worker")
 	srv := NewServer(config.Config{}, st, artifacts.New(""), fakeComprehend{}, fakeRekognition{})
 
-	err := srv.processHostedGenesisMicroVMDispatch(context.Background(), "worker-req", hostedGenesisWorkerQueueMessage(hostedgenesis.StepMicroVMDispatch, "turn-worker"))
+	err := srv.processHostedGenesisMicroVMDispatch(context.Background(), "worker-req", hostedGenesisWorkerQueueMessage(hostedgenesis.StepMicroVMDispatch, "turn-worker"), 1)
 	if err != nil {
 		t.Fatalf("unexpected microvm-unavailable handling error: %v", err)
 	}
@@ -609,7 +768,7 @@ func TestHostedGenesisMicroVMDispatchFailsClosedOnInvokeError(t *testing.T) {
 	dispatcher := &stubHostedGenesisWorkerMicroVMDispatcher{t: t, invokeErr: errors.New("invoke unavailable")}
 	srv.hostedGenesisMicroVMDispatcher = dispatcher
 
-	err := srv.processHostedGenesisMicroVMDispatch(context.Background(), "worker-req", hostedGenesisWorkerQueueMessage(hostedgenesis.StepMicroVMDispatch, "turn-worker"))
+	err := srv.processHostedGenesisMicroVMDispatch(context.Background(), "worker-req", hostedGenesisWorkerQueueMessage(hostedgenesis.StepMicroVMDispatch, "turn-worker"), 1)
 	if err != nil {
 		t.Fatalf("unexpected invoke failure handling error: %v", err)
 	}
@@ -636,12 +795,12 @@ func TestHostedGenesisMicroVMDispatchRetriesWhenFailurePersistenceFails(t *testi
 	dispatcher := &stubHostedGenesisWorkerMicroVMDispatcher{t: t, invokeErr: errors.New("workload preflight failed")}
 	srv.hostedGenesisMicroVMDispatcher = dispatcher
 
-	err = srv.processHostedGenesisMicroVMDispatch(context.Background(), "worker-req", hostedGenesisWorkerQueueMessage(hostedgenesis.StepMicroVMDispatch, "turn-worker"))
+	err = srv.processHostedGenesisMicroVMDispatch(context.Background(), "worker-req", hostedGenesisWorkerQueueMessage(hostedgenesis.StepMicroVMDispatch, "turn-worker"), 1)
 	if err == nil {
 		t.Fatal("expected lifecycle-persistence error so SQS retries the dispatch message")
 	}
-	if dispatcher.startCalls != 1 || dispatcher.invokeCalls != 0 {
-		t.Fatalf("expected fresh lifecycle persist failure before invoke, got start=%d invoke=%d", dispatcher.startCalls, dispatcher.invokeCalls)
+	if dispatcher.ensureCalls != 1 || dispatcher.startCalls != 0 || dispatcher.invokeCalls != 0 {
+		t.Fatalf("expected lifecycle revalidation persist failure before invoke, got ensure=%d start=%d invoke=%d", dispatcher.ensureCalls, dispatcher.startCalls, dispatcher.invokeCalls)
 	}
 
 	st.mu.Lock()
@@ -684,7 +843,7 @@ func TestHostedGenesisMicroVMDispatchRetriesAuthoritativeReadFailures(t *testing
 			dispatcher := &stubHostedGenesisWorkerMicroVMDispatcher{t: t}
 			srv.hostedGenesisMicroVMDispatcher = dispatcher
 
-			err := srv.processHostedGenesisMicroVMDispatch(context.Background(), "worker-req", hostedGenesisWorkerQueueMessage(hostedgenesis.StepMicroVMDispatch, "turn-worker"))
+			err := srv.processHostedGenesisMicroVMDispatch(context.Background(), "worker-req", hostedGenesisWorkerQueueMessage(hostedgenesis.StepMicroVMDispatch, "turn-worker"), 1)
 			if !errors.Is(err, readErr) {
 				t.Fatalf("expected authoritative %s read error to remain retryable, got %v", tt.name, err)
 			}
@@ -713,7 +872,7 @@ func TestHostedGenesisMicroVMDispatchFailurePersistenceIsAtomic(t *testing.T) {
 	dispatcher := &stubHostedGenesisWorkerMicroVMDispatcher{t: t, invokeErr: errors.New("workload preflight failed")}
 	srv.hostedGenesisMicroVMDispatcher = dispatcher
 
-	err = srv.processHostedGenesisMicroVMDispatch(context.Background(), "worker-req", hostedGenesisWorkerQueueMessage(hostedgenesis.StepMicroVMDispatch, "turn-worker"))
+	err = srv.processHostedGenesisMicroVMDispatch(context.Background(), "worker-req", hostedGenesisWorkerQueueMessage(hostedgenesis.StepMicroVMDispatch, "turn-worker"), 1)
 	if err == nil {
 		t.Fatal("expected atomic failure-persistence error so SQS retries the dispatch message")
 	}
@@ -731,7 +890,7 @@ func TestHostedGenesisMicroVMDispatchFailsSessionWhenConversationIsMissing(t *te
 	dispatcher := &stubHostedGenesisWorkerMicroVMDispatcher{t: t}
 	srv.hostedGenesisMicroVMDispatcher = dispatcher
 
-	err := srv.processHostedGenesisMicroVMDispatch(context.Background(), "worker-req", hostedGenesisWorkerQueueMessage(hostedgenesis.StepMicroVMDispatch, "turn-worker"))
+	err := srv.processHostedGenesisMicroVMDispatch(context.Background(), "worker-req", hostedGenesisWorkerQueueMessage(hostedgenesis.StepMicroVMDispatch, "turn-worker"), 1)
 	if err != nil {
 		t.Fatalf("unexpected missing-conversation failure projection error: %v", err)
 	}
@@ -752,120 +911,13 @@ func TestHostedGenesisMicroVMDispatchRetriesWhenLifecyclePersistenceFails(t *tes
 	dispatcher := &stubHostedGenesisWorkerMicroVMDispatcher{t: t}
 	srv.hostedGenesisMicroVMDispatcher = dispatcher
 
-	err := srv.processHostedGenesisMicroVMDispatch(context.Background(), "worker-req", hostedGenesisWorkerQueueMessage(hostedgenesis.StepMicroVMDispatch, "turn-worker"))
+	err := srv.processHostedGenesisMicroVMDispatch(context.Background(), "worker-req", hostedGenesisWorkerQueueMessage(hostedgenesis.StepMicroVMDispatch, "turn-worker"), 1)
 	if err == nil {
 		t.Fatal("expected lifecycle-persistence error so SQS retries the dispatch message")
 	}
 	if dispatcher.startCalls != 1 || dispatcher.invokeCalls != 0 {
 		t.Fatalf("failed lifecycle persistence must stop before invoke, got start=%d invoke=%d", dispatcher.startCalls, dispatcher.invokeCalls)
 	}
-}
-
-func TestHostedGenesisWorkerReloadsDurableTurnBeforeFailureWrite(t *testing.T) {
-	t.Parallel()
-
-	st := newHostedGenesisWorkerStore("turn-worker")
-	srv := NewServer(config.Config{}, st, artifacts.New(""), fakeComprehend{}, fakeRekognition{})
-
-	err := srv.processHostedGenesisAssistantTurn(context.Background(), "worker-req", hostedGenesisWorkerQueueMessage(hostedgenesis.StepAssistantTurn, "turn-worker"))
-	if err != nil {
-		t.Fatalf("unexpected worker error: %v", err)
-	}
-
-	st.mu.Lock()
-	defer st.mu.Unlock()
-	if st.putCount != 1 || st.conv == nil {
-		t.Fatalf("expected one fail-closed conversation write, putCount=%d conv=%#v", st.putCount, st.conv)
-	}
-	if st.conv.Status != models.SoulMintConversationStatusFailed || st.conv.StatusReason != hostedGenesisFailureLLMUnavailable {
-		t.Fatalf("expected llm_unavailable failure after reload, got %#v", st.conv)
-	}
-	if decoded := models.DecodeSoulMintConversationBlob(st.conv.Messages); !strings.Contains(decoded, "reload-safe-user-turn") {
-		t.Fatalf("worker lost persisted user turn on failure write: %q", decoded)
-	}
-	if strings.Contains(st.conv.Messages, "reload-safe-user-turn") {
-		t.Fatalf("worker stored raw transcript instead of encoded private field: %q", st.conv.Messages)
-	}
-}
-
-func TestHostedGenesisWorkerRetriesWhenTerminalFailureProjectionFails(t *testing.T) {
-	tests := []struct {
-		name string
-		run  func(*Server, *fakeHostedGenesisStore) error
-	}{
-		{
-			name: "assistant prepare",
-			run: func(srv *Server, _ *fakeHostedGenesisStore) error {
-				return srv.processHostedGenesisAssistantTurn(context.Background(), "worker-req", hostedGenesisWorkerQueueMessage(hostedgenesis.StepAssistantTurn, "turn-worker"))
-			},
-		},
-		{
-			name: "declaration prepare",
-			run: func(srv *Server, st *fakeHostedGenesisStore) error {
-				st.conv.Status = models.SoulMintConversationStatusDeclarationExtractionPending
-				st.session.Status = string(hostedgenesis.StatusDeclarationExtractionPending)
-				return srv.processHostedGenesisDeclarationExtraction(context.Background(), "worker-req", hostedGenesisWorkerQueueMessage(hostedgenesis.StepDeclarationExtraction, "turn-worker"))
-			},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			st := newHostedGenesisWorkerStore("turn-worker")
-			st.conv.Messages = models.EncodeSoulMintConversationBlob(`not-json`)
-			st.putErr = errors.New("failure projection unavailable")
-			srv := NewServer(config.Config{}, st, artifacts.New(""), fakeComprehend{}, fakeRekognition{})
-
-			err := tt.run(srv, st)
-			if !errors.Is(err, st.putErr) {
-				t.Fatalf("expected terminal failure persistence error to remain retryable, got %v", err)
-			}
-			if hostedgenesis.NormalizeStatus(st.session.Status) == hostedgenesis.StatusFailed || st.conv.Status == models.SoulMintConversationStatusFailed {
-				t.Fatalf("failed atomic terminal projection must leave both rows retryable: session=%s conversation=%s", st.session.Status, st.conv.Status)
-			}
-		})
-	}
-}
-
-func TestHostedGenesisWorkerRejectsMismatchedIdempotencyTurn(t *testing.T) {
-	t.Parallel()
-
-	st := newHostedGenesisWorkerStore("turn-original")
-	srv := NewServer(config.Config{}, st, artifacts.New(""), fakeComprehend{}, fakeRekognition{})
-
-	err := srv.processHostedGenesisAssistantTurn(context.Background(), "worker-req", hostedGenesisWorkerQueueMessage(hostedgenesis.StepAssistantTurn, "turn-replayed-wrong"))
-	if err != nil {
-		t.Fatalf("unexpected worker error: %v", err)
-	}
-
-	assertHostedGenesisWorkerFailure(t, st, hostedGenesisFailureInvalidCompletionState)
-}
-
-func TestHostedGenesisAssistantTurnDropsStaleConversation(t *testing.T) {
-	t.Parallel()
-
-	st := newHostedGenesisWorkerStore("turn-worker")
-	st.conv.Status = models.SoulMintConversationStatusAssistantTurnReady
-	st.session.Status = string(hostedgenesis.StatusAssistantTurnReady)
-	srv := NewServer(config.Config{}, st, artifacts.New(""), fakeComprehend{}, fakeRekognition{})
-
-	err := srv.processHostedGenesisAssistantTurn(context.Background(), "worker-req", hostedGenesisWorkerQueueMessage(hostedgenesis.StepAssistantTurn, "turn-worker"))
-	if err != nil || st.putCount != 0 {
-		t.Fatalf("expected stale assistant turn to drop without write, put=%d err=%v", st.putCount, err)
-	}
-}
-
-func TestHostedGenesisAssistantTurnRejectsInvalidTranscript(t *testing.T) {
-	t.Parallel()
-
-	st := newHostedGenesisWorkerStore("turn-worker")
-	st.conv.Messages = models.EncodeSoulMintConversationBlob(`not-json`)
-	srv := NewServer(config.Config{}, st, artifacts.New(""), fakeComprehend{}, fakeRekognition{})
-
-	err := srv.processHostedGenesisAssistantTurn(context.Background(), "worker-req", hostedGenesisWorkerQueueMessage(hostedgenesis.StepAssistantTurn, "turn-worker"))
-	if err != nil {
-		t.Fatalf("unexpected invalid transcript error: %v", err)
-	}
-	assertHostedGenesisWorkerFailure(t, st, hostedGenesisFailureInvalidCompletionState)
 }
 
 func TestHostedGenesisJobValidationRejectsTenantBoundaryMismatch(t *testing.T) {
@@ -875,7 +927,7 @@ func TestHostedGenesisJobValidationRejectsTenantBoundaryMismatch(t *testing.T) {
 	st.domain.InstanceSlug = "other-instance"
 	srv := NewServer(config.Config{}, st, artifacts.New(""), fakeComprehend{}, fakeRekognition{})
 
-	reg, conv, session, err := srv.loadAndValidateHostedGenesisJob(context.Background(), st, hostedGenesisWorkerQueueMessage(hostedgenesis.StepAssistantTurn, "turn-worker"))
+	reg, conv, session, err := srv.loadAndValidateHostedGenesisJob(context.Background(), st, hostedGenesisWorkerQueueMessage(hostedgenesis.StepMicroVMDispatch, "turn-worker"))
 	if err != nil || reg != nil || conv != nil || session != nil {
 		t.Fatalf("expected boundary mismatch to drop job, reg=%#v conv=%#v session=%#v err=%v", reg, conv, session, err)
 	}
@@ -889,7 +941,7 @@ func TestHostedGenesisJobValidationAtomicallyFailsSessionIdentityMismatch(t *tes
 	st.session.RegistrationID = "other-registration"
 	srv := NewServer(config.Config{}, st, artifacts.New(""), fakeComprehend{}, fakeRekognition{})
 
-	reg, conv, session, err := srv.loadAndValidateHostedGenesisJob(context.Background(), st, hostedGenesisWorkerQueueMessage(hostedgenesis.StepAssistantTurn, "turn-worker"))
+	reg, conv, session, err := srv.loadAndValidateHostedGenesisJob(context.Background(), st, hostedGenesisWorkerQueueMessage(hostedgenesis.StepMicroVMDispatch, "turn-worker"))
 	if err != nil || reg != nil || conv != nil || session != nil {
 		t.Fatalf("expected session identity mismatch to drop job, reg=%#v conv=%#v session=%#v err=%v", reg, conv, session, err)
 	}
@@ -901,7 +953,7 @@ func TestHostedGenesisJobValidationAllowsMissingIdempotencyKey(t *testing.T) {
 
 	st := newHostedGenesisWorkerStore("turn-worker")
 	srv := NewServer(config.Config{}, st, artifacts.New(""), fakeComprehend{}, fakeRekognition{})
-	msg := hostedGenesisWorkerQueueMessage(hostedgenesis.StepAssistantTurn, "turn-worker")
+	msg := hostedGenesisWorkerQueueMessage(hostedgenesis.StepMicroVMDispatch, "turn-worker")
 	msg.IdempotencyKey = ""
 
 	reg, conv, session, err := srv.loadAndValidateHostedGenesisJob(context.Background(), st, msg)
@@ -918,7 +970,7 @@ func TestHostedGenesisJobValidationDropsRegistrationMismatch(t *testing.T) {
 
 	st := newHostedGenesisWorkerStore("turn-worker")
 	srv := NewServer(config.Config{}, st, artifacts.New(""), fakeComprehend{}, fakeRekognition{})
-	msg := hostedGenesisWorkerQueueMessage(hostedgenesis.StepAssistantTurn, "turn-worker")
+	msg := hostedGenesisWorkerQueueMessage(hostedgenesis.StepMicroVMDispatch, "turn-worker")
 	msg.AgentID = "0x" + strings.Repeat("55", 32)
 
 	reg, conv, session, err := srv.loadAndValidateHostedGenesisJob(context.Background(), st, msg)
@@ -927,526 +979,39 @@ func TestHostedGenesisJobValidationDropsRegistrationMismatch(t *testing.T) {
 	}
 }
 
-func TestHostedGenesisDeclarationExtractionProgressSafeFailures(t *testing.T) {
-	t.Parallel()
-
-	t.Run("user only conversation remains progress safe", func(t *testing.T) {
-		t.Parallel()
-
-		st := newHostedGenesisWorkerStore("turn-worker")
-		st.conv.Status = models.SoulMintConversationStatusDeclarationExtractionPending
-		st.session.Status = string(hostedgenesis.StatusDeclarationExtractionPending)
-		srv := NewServer(config.Config{}, st, artifacts.New(""), fakeComprehend{}, fakeRekognition{})
-
-		err := srv.processHostedGenesisDeclarationExtraction(context.Background(), "worker-req", hostedGenesisWorkerQueueMessage(hostedgenesis.StepDeclarationExtraction, "turn-worker"))
-		if err != nil {
-			t.Fatalf("unexpected declaration extraction error: %v", err)
-		}
-		assertHostedGenesisWorkerFailure(t, st, hostedGenesisFailureInvalidCompletionState)
-	})
-
-	t.Run("assistant transcript without provider key fails closed", func(t *testing.T) {
-		t.Parallel()
-
-		st := newHostedGenesisWorkerStore("turn-worker")
-		st.conv.Status = models.SoulMintConversationStatusDeclarationExtractionPending
-		st.session.Status = string(hostedgenesis.StatusDeclarationExtractionPending)
-		st.conv.Messages = models.EncodeSoulMintConversationBlob(`[{"role":"user","content":"describe"},{"role":"assistant","content":"draft"}]`)
-		srv := NewServer(config.Config{}, st, artifacts.New(""), fakeComprehend{}, fakeRekognition{})
-		ctx := &apptheory.EventContext{RequestID: "worker-req"}
-
-		err := srv.handleHostedGenesisQueueMessage(ctx, hostedGenesisWorkerSQSMessage(t, hostedGenesisWorkerQueueMessage(hostedgenesis.StepDeclarationExtraction, "turn-worker")))
-		if err != nil {
-			t.Fatalf("unexpected declaration queue error: %v", err)
-		}
-		assertHostedGenesisWorkerFailure(t, st, hostedGenesisFailureLLMUnavailable)
-	})
-}
-
-func TestHostedGenesisDeclarationExtractionDropsNonPendingStatus(t *testing.T) {
-	t.Parallel()
-
-	st := newHostedGenesisWorkerStore("turn-worker")
-	st.conv.Status = models.SoulMintConversationStatusAssistantTurnReady
-	st.session.Status = string(hostedgenesis.StatusAssistantTurnReady)
-	st.conv.Messages = models.EncodeSoulMintConversationBlob(`[{"role":"user","content":"describe"},{"role":"assistant","content":"draft"}]`)
-	srv := NewServer(config.Config{}, st, artifacts.New(""), fakeComprehend{}, fakeRekognition{})
-
-	err := srv.processHostedGenesisDeclarationExtraction(context.Background(), "worker-req", hostedGenesisWorkerQueueMessage(hostedgenesis.StepDeclarationExtraction, "turn-worker"))
-	if err != nil || st.putCount != 0 {
-		t.Fatalf("expected non-pending extraction to drop without write, put=%d err=%v", st.putCount, err)
-	}
-}
-
-func TestHostedGenesisDeclarationExtractionRejectsInvalidTranscript(t *testing.T) {
-	t.Parallel()
-
-	st := newHostedGenesisWorkerStore("turn-worker")
-	st.conv.Status = models.SoulMintConversationStatusDeclarationExtractionPending
-	st.session.Status = string(hostedgenesis.StatusDeclarationExtractionPending)
-	st.conv.Messages = models.EncodeSoulMintConversationBlob(`not-json`)
-	srv := NewServer(config.Config{}, st, artifacts.New(""), fakeComprehend{}, fakeRekognition{})
-
-	err := srv.processHostedGenesisDeclarationExtraction(context.Background(), "worker-req", hostedGenesisWorkerQueueMessage(hostedgenesis.StepDeclarationExtraction, "turn-worker"))
-	if err != nil {
-		t.Fatalf("unexpected invalid extraction transcript error: %v", err)
-	}
-	assertHostedGenesisWorkerFailure(t, st, hostedGenesisFailureInvalidCompletionState)
-}
-
-func TestHostedGenesisWorkerCompletesAssistantAndDeclarationTurns(t *testing.T) {
-	t.Setenv("OPENAI_API_KEY", hostedGenesisWorkerOpenAIKey)
-	oldAssistant := runHostedGenesisAssistantModel
-	oldDeclaration := runHostedGenesisDeclarationModel
-	t.Cleanup(func() {
-		runHostedGenesisAssistantModel = oldAssistant
-		runHostedGenesisDeclarationModel = oldDeclaration
-	})
-	runHostedGenesisAssistantModel = func(_ context.Context, apiKey string, modelSet string, systemPrompt string, messages []llm.MintConversationMessage) (string, models.AIUsage, error) {
-		if apiKey != hostedGenesisWorkerOpenAIKey || modelSet != hostedGenesisWorkerOpenAIModel || !strings.Contains(systemPrompt, hostedGenesisWorkerAgentDomain) || len(messages) != 1 {
-			t.Fatalf("unexpected assistant model input: key=%q model=%q prompt=%q messages=%#v", apiKey, modelSet, systemPrompt, messages)
-		}
-		return "assistant ready", models.AIUsage{Provider: testProviderOpenAI, Model: "gpt-test", InputTokens: 2, OutputTokens: 3}, nil
-	}
-	runHostedGenesisDeclarationModel = func(_ context.Context, apiKey string, modelSet string, in llm.MintConversationDeclarationsInput) (llm.MintConversationDeclarationsDraft, models.AIUsage, error) {
-		if apiKey != hostedGenesisWorkerOpenAIKey || modelSet != hostedGenesisWorkerOpenAIModel || in.Registration.Domain != hostedGenesisWorkerAgentDomain || len(in.Messages) != 2 {
-			t.Fatalf("unexpected declaration model input: key=%q model=%q in=%#v", apiKey, modelSet, in)
-		}
-		return validHostedGenesisDraft(), models.AIUsage{Provider: testProviderOpenAI, Model: "gpt-test", TotalTokens: 11}, nil
-	}
-
-	assistantStore := newHostedGenesisWorkerStore("turn-worker")
-	assistantStore.conv.Model = hostedGenesisWorkerOpenAIModel
-	assistantStore.session.Model = hostedGenesisWorkerOpenAIModel
-	srv := NewServer(config.Config{}, assistantStore, artifacts.New(""), fakeComprehend{}, fakeRekognition{})
-	err := srv.processHostedGenesisAssistantTurn(context.Background(), "worker-req", hostedGenesisWorkerQueueMessage(hostedgenesis.StepAssistantTurn, "turn-worker"))
-	if err != nil {
-		t.Fatalf("unexpected assistant success error: %v", err)
-	}
-	assertHostedGenesisAssistantReady(t, assistantStore)
-
-	declarationStore := newHostedGenesisWorkerStore("turn-worker")
-	declarationStore.conv.Model = hostedGenesisWorkerOpenAIModel
-	declarationStore.conv.Status = models.SoulMintConversationStatusDeclarationExtractionPending
-	declarationStore.session.Status = string(hostedgenesis.StatusDeclarationExtractionPending)
-	declarationStore.session.Model = hostedGenesisWorkerOpenAIModel
-	declarationStore.conv.Messages = models.EncodeSoulMintConversationBlob(`[{"role":"user","content":"describe"},{"role":"assistant","content":"assistant ready"}]`)
-	srv = NewServer(config.Config{}, declarationStore, artifacts.New(""), fakeComprehend{}, fakeRekognition{})
-	err = srv.processHostedGenesisDeclarationExtraction(context.Background(), "worker-req", hostedGenesisWorkerQueueMessage(hostedgenesis.StepDeclarationExtraction, "turn-worker"))
-	if err != nil {
-		t.Fatalf("unexpected declaration success error: %v", err)
-	}
-	assertHostedGenesisDeclarationReady(t, declarationStore)
-}
-
-func TestHostedGenesisWorkerFailsClosedOnEmptyAssistantResponse(t *testing.T) {
-	t.Setenv("OPENAI_API_KEY", hostedGenesisWorkerOpenAIKey)
-	oldAssistant := runHostedGenesisAssistantModel
-	t.Cleanup(func() { runHostedGenesisAssistantModel = oldAssistant })
-	runHostedGenesisAssistantModel = func(context.Context, string, string, string, []llm.MintConversationMessage) (string, models.AIUsage, error) {
-		return "", models.AIUsage{}, nil
-	}
-
-	st := newHostedGenesisWorkerStore("turn-worker")
-	st.conv.Model = hostedGenesisWorkerOpenAIModel
-	st.session.Model = hostedGenesisWorkerOpenAIModel
-	srv := NewServer(config.Config{}, st, artifacts.New(""), fakeComprehend{}, fakeRekognition{})
-	err := srv.processHostedGenesisAssistantTurn(context.Background(), "worker-req", hostedGenesisWorkerQueueMessage(hostedgenesis.StepAssistantTurn, "turn-worker"))
-	if err != nil {
-		t.Fatalf("unexpected empty assistant response error: %v", err)
-	}
-	assertHostedGenesisWorkerFailure(t, st, hostedGenesisFailureAssistantTurnFailed)
-}
-
-func TestHostedGenesisWorkerFailsClosedOnInvalidDeclarationDraft(t *testing.T) {
-	t.Setenv("OPENAI_API_KEY", hostedGenesisWorkerOpenAIKey)
-	oldDeclaration := runHostedGenesisDeclarationModel
-	t.Cleanup(func() { runHostedGenesisDeclarationModel = oldDeclaration })
-	runHostedGenesisDeclarationModel = func(context.Context, string, string, llm.MintConversationDeclarationsInput) (llm.MintConversationDeclarationsDraft, models.AIUsage, error) {
-		draft := validHostedGenesisDraft()
-		draft.SelfDescription.Purpose = "short"
-		return draft, models.AIUsage{}, nil
-	}
-
-	st := newHostedGenesisWorkerStore("turn-worker")
-	st.conv.Model = hostedGenesisWorkerOpenAIModel
-	st.conv.Status = models.SoulMintConversationStatusDeclarationExtractionPending
-	st.session.Status = string(hostedgenesis.StatusDeclarationExtractionPending)
-	st.session.Model = hostedGenesisWorkerOpenAIModel
-	st.conv.Messages = models.EncodeSoulMintConversationBlob(`[{"role":"user","content":"describe"},{"role":"assistant","content":"assistant ready"}]`)
-	srv := NewServer(config.Config{}, st, artifacts.New(""), fakeComprehend{}, fakeRekognition{})
-	err := srv.processHostedGenesisDeclarationExtraction(context.Background(), "worker-req", hostedGenesisWorkerQueueMessage(hostedgenesis.StepDeclarationExtraction, "turn-worker"))
-	if err != nil {
-		t.Fatalf("unexpected invalid declaration draft error: %v", err)
-	}
-	assertHostedGenesisWorkerFailureWithReason(t, st, hostedGenesisFailureInvalidProducedDeclarations, string(hostedgenesis.DeclarationCodeSelfDescription))
-}
-
-func TestHostedGenesisWorkerReturnsDeclarationModelError(t *testing.T) {
-	t.Setenv("OPENAI_API_KEY", hostedGenesisWorkerOpenAIKey)
-	oldDeclaration := runHostedGenesisDeclarationModel
-	t.Cleanup(func() { runHostedGenesisDeclarationModel = oldDeclaration })
-	runHostedGenesisDeclarationModel = func(context.Context, string, string, llm.MintConversationDeclarationsInput) (llm.MintConversationDeclarationsDraft, models.AIUsage, error) {
-		return llm.MintConversationDeclarationsDraft{}, models.AIUsage{}, context.Canceled
-	}
-
-	st := newHostedGenesisWorkerStore("turn-worker")
-	st.conv.Model = hostedGenesisWorkerOpenAIModel
-	st.conv.Status = models.SoulMintConversationStatusDeclarationExtractionPending
-	st.session.Status = string(hostedgenesis.StatusDeclarationExtractionPending)
-	st.session.Model = hostedGenesisWorkerOpenAIModel
-	st.conv.Messages = models.EncodeSoulMintConversationBlob(`[{"role":"user","content":"describe"},{"role":"assistant","content":"assistant ready"}]`)
-	srv := NewServer(config.Config{}, st, artifacts.New(""), fakeComprehend{}, fakeRekognition{})
-	err := srv.processHostedGenesisDeclarationExtraction(context.Background(), "worker-req", hostedGenesisWorkerQueueMessage(hostedgenesis.StepDeclarationExtraction, "turn-worker"))
-	if err == nil {
-		t.Fatalf("expected declaration model error")
-	}
-	assertHostedGenesisWorkerFailure(t, st, hostedGenesisFailureDeclarationExtractionFailed)
-}
-
+// TestHostedGenesisWorkerFailsClosedWithoutDeclarationContract proves the
+// aiworker fallback path never selects the legacy declaration lane: with a
+// provider key configured but no five-body contract selection, both the
+// assistant and declaration prepare steps persist operator_action_required
+// before any model call, and the legacy boundaries.required code is
+// unreachable.
 func TestHostedGenesisWorkerRequiresStoreAndContext(t *testing.T) {
 	t.Parallel()
-
 	srv := &Server{}
-	if err := srv.processHostedGenesisAssistantTurn(context.Background(), "worker-req", hostedGenesisWorkerQueueMessage(hostedgenesis.StepAssistantTurn, "turn-worker")); err == nil {
-		t.Fatalf("expected assistant turn store initialization error")
-	}
-	if err := srv.processHostedGenesisDeclarationExtraction(context.Background(), "worker-req", hostedGenesisWorkerQueueMessage(hostedgenesis.StepDeclarationExtraction, "turn-worker")); err == nil {
-		t.Fatalf("expected declaration extraction store initialization error")
-	}
 	if err := srv.handleHostedGenesisQueueMessage(nil, events.SQSMessage{}); err == nil {
 		t.Fatalf("expected nil event context error")
 	}
 }
 
-func TestHostedGenesisAPIKeyUsesProviderEnvironment(t *testing.T) {
-	t.Setenv("OPENAI_API_KEY", " openai-env ")
-	openAIKey, err := hostedGenesisAPIKey(context.Background(), "openai:gpt-5")
-	if err != nil || openAIKey != "openai-env" {
-		t.Fatalf("expected openai env key, key=%q err=%v", openAIKey, err)
-	}
-	t.Setenv("ANTHROPIC_API_KEY", "")
-	t.Setenv("CLAUDE_API_KEY", " claude-env ")
-	claudeKey, err := hostedGenesisAPIKey(context.Background(), "anthropic:claude-sonnet-4-6")
-	if err != nil || claudeKey != "claude-env" {
-		t.Fatalf("expected claude env key, key=%q err=%v", claudeKey, err)
-	}
-	if _, err := hostedGenesisAPIKey(context.Background(), "deterministic"); err == nil {
-		t.Fatalf("expected unsupported model error")
-	}
-}
-
-func TestHostedGenesisModelRunnersRejectUnsupportedModel(t *testing.T) {
-	t.Parallel()
-
-	if _, _, err := runHostedGenesisAssistantModel(context.Background(), "key", "deterministic", "system", nil); err == nil {
-		t.Fatalf("expected unsupported assistant model error")
-	}
-	if _, _, err := runHostedGenesisDeclarationModel(context.Background(), "key", "deterministic", llm.MintConversationDeclarationsInput{}); err == nil {
-		t.Fatalf("expected unsupported declaration model error")
-	}
-}
-
-func TestHostedGenesisTranscriptAndStatusHelpers(t *testing.T) {
-	t.Parallel()
-
-	messages, err := decodeHostedGenesisMessages(models.EncodeSoulMintConversationBlob(`[{"role":"user","content":"hello"},{"role":"assistant","content":"ready"}]`))
-	if err != nil || !hostedGenesisHasAssistant(messages) {
-		t.Fatalf("expected decoded assistant transcript, messages=%#v err=%v", messages, err)
-	}
-	if _, err := decodeHostedGenesisMessages(`not-json`); err == nil {
-		t.Fatalf("expected invalid transcript json error")
-	}
-
-	if !hostedGenesisDomainActive(&models.Domain{Status: models.DomainStatusVerified}) ||
-		!hostedGenesisDomainActive(&models.Domain{Status: models.DomainStatusActive}) ||
-		hostedGenesisDomainActive(&models.Domain{Status: models.DomainStatusPending}) {
-		t.Fatalf("domain active helper mismatch")
-	}
-	if hostedGenesisProvider("anthropic:claude") != "anthropic" || hostedGenesisProvider("deterministic") != "unknown" {
-		t.Fatalf("provider helper mismatch")
-	}
-	if got := hostedGenesisAuditHash(" agent-1 "); !strings.HasPrefix(got, "sha256:") || len(got) != len("sha256:")+16 {
-		t.Fatalf("unexpected audit hash: %q", got)
-	}
-	if hostedGenesisAuditHash("") != "" || firstNonEmptyWorker(" ", "\n") != "" {
-		t.Fatalf("empty helper inputs should stay empty")
-	}
-	var srv *Server
-	if st, ok := srv.hostedGenesisStore(); ok || st != nil {
-		t.Fatalf("nil server should not expose hosted genesis store")
-	}
-}
-
-func TestHostedGenesisPromptAndUsageHelpers(t *testing.T) {
-	t.Parallel()
-
-	reg := newHostedGenesisWorkerStore("turn-worker").reg
-	reg.Capabilities = []string{"planning"}
-	prompt := hostedGenesisSystemPrompt(reg)
-	if !strings.Contains(prompt, hostedGenesisWorkerAgentDomain) || !strings.Contains(prompt, "planning") {
-		t.Fatalf("system prompt omitted registration context: %q", prompt)
-	}
-	if prompt != mintprompt.MintConversationSystemPrompt(reg) || strings.Contains(prompt, "minted on-chain") || !strings.Contains(prompt, mintprompt.CanonicalFinalAffirmationQuestion) {
-		t.Fatalf("direct worker prompt drifted from shared hosted genesis prompt: %q", prompt)
-	}
-
-	usage := addAIUsageWorker(models.AIUsage{Provider: testProviderOpenAI, InputTokens: 1}, models.AIUsage{Model: "gpt", InputTokens: 2, OutputTokens: 3, DurationMs: 4, ToolCalls: 1})
-	if usage.Provider != testProviderOpenAI || usage.Model != "gpt" || usage.InputTokens != 3 || usage.OutputTokens != 3 || usage.TotalTokens != 5 || usage.DurationMs != 4 || usage.ToolCalls != 1 {
-		t.Fatalf("usage merge mismatch: %#v", usage)
-	}
-}
-
-func TestHostedGenesisDeclarationsDraftBuilder(t *testing.T) {
-	t.Parallel()
-
-	decl, err := buildHostedGenesisDeclarationsDraft(validHostedGenesisDraft(), time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC), "anthropic:claude-sonnet-4-6")
-	if err != nil {
-		t.Fatalf("unexpected declarations draft error: %v", err)
-	}
-	if decl.SelfDescription.AuthoredBy != hostedGenesisSelfDescriptionAuthoredByAgent ||
-		decl.SelfDescription.MintingModel != "anthropic:claude-sonnet-4-6" ||
-		len(decl.Capabilities) != 1 ||
-		len(decl.Boundaries) != 1 ||
-		decl.Transparency == nil {
-		t.Fatalf("unexpected produced declarations: %#v", decl)
-	}
-	badDraft := validHostedGenesisDraft()
-	badDraft.SelfDescription.Purpose = "short"
-	if _, err := buildHostedGenesisDeclarationsDraft(badDraft, time.Now(), "openai:gpt-5"); err == nil {
-		t.Fatalf("expected invalid self-description error")
-	}
-}
-
-func TestHostedGenesisDeclarationsDraftBuilderLegacyMarshalsWithoutV2EvidenceKeys(t *testing.T) {
-	t.Parallel()
-
-	decl, err := buildHostedGenesisDeclarationsDraftForContract(validHostedGenesisDraft(), time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC), "anthropic:claude-sonnet-4-6", hostedgenesis.LegacyDeclarationContract())
-	if err != nil {
-		t.Fatalf("unexpected declarations draft error: %v", err)
-	}
-	body, err := json.Marshal(decl)
-	if err != nil {
-		t.Fatalf("marshal produced declarations: %v", err)
-	}
-	assertHostedGenesisJSONKeysAbsent(t, body, "schemaVersion", "guidanceVersion", "fiveBodies", "adversarialReview")
-}
-
-func TestHostedGenesisDeclarationsDraftBuilderAllowsEmptyCapabilities(t *testing.T) {
-	t.Parallel()
-
-	draft := validHostedGenesisDraft()
-	draft.Capabilities = nil
-	decl, err := buildHostedGenesisDeclarationsDraft(draft, time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC), "anthropic:claude-sonnet-4-6", []string{"simulacrum.hosted-first-default"})
-	if err != nil {
-		t.Fatalf("unexpected empty-capabilities error: %v", err)
-	}
-	if len(decl.Capabilities) != 0 {
-		t.Fatalf("expected no fallback capabilities, got %#v", decl.Capabilities)
-	}
-}
-
-func TestHostedGenesisDeclarationsDraftBuilderDropsPlaceholder(t *testing.T) {
-	t.Parallel()
-
-	draft := validHostedGenesisDraft()
-	draft.Capabilities = []soul.CapabilityV2{{Capability: "simulacrum.hosted-first-default", Scope: "placeholder", ClaimLevel: "self-declared"}}
-	decl, err := buildHostedGenesisDeclarationsDraft(draft, time.Now(), "openai:gpt-5")
-	if err != nil {
-		t.Fatalf("unexpected placeholder-only capabilities error: %v", err)
-	}
-	if len(decl.Capabilities) != 0 {
-		t.Fatalf("expected placeholder capability to be dropped, got %#v", decl.Capabilities)
-	}
-}
-
-func TestHostedGenesisDeclarationsDraftBuilderRequiresBoundary(t *testing.T) {
-	t.Parallel()
-
-	noBoundaryDraft := validHostedGenesisDraft()
-	noBoundaryDraft.Boundaries = nil
-	if _, err := buildHostedGenesisDeclarationsDraft(noBoundaryDraft, time.Now(), "openai:gpt-5"); err == nil || err.Error() != string(hostedgenesis.DeclarationCodeBoundaries) {
-		t.Fatalf("expected required boundary error, got %v", err)
-	}
-}
-
-func validHostedGenesisDraft() llm.MintConversationDeclarationsDraft {
-	return llm.MintConversationDeclarationsDraft{
-		SelfDescription: soul.SelfDescriptionV2{
-			Purpose: "Help users plan hosted soul genesis with explicit safety limits.",
-		},
-		Capabilities: []soul.CapabilityV2{
-			{Capability: "hosted_genesis_planning", Scope: "Draft safe registration declarations."},
-		},
-		Boundaries: []llm.MintConversationBoundaryDraft{
-			{Category: "refusal", Statement: "I will not reveal credentials.", Rationale: "protects operators"},
-		},
-	}
-}
-
-func TestHostedGenesisFiveBodyPromptAndInputAreFlagGated(t *testing.T) {
-	t.Setenv(hostedgenesis.EnvDeclarationSchemaVersion, "")
-	reg := newHostedGenesisWorkerStore("turn-worker").reg
-	legacyPrompt := hostedGenesisSystemPrompt(reg)
-	if strings.Contains(legacyPrompt, hostedgenesis.DeclarationSchemaVersionV2) || strings.Contains(legacyPrompt, "Phase 1 — identity") {
-		t.Fatalf("v1 prompt must remain unchanged while flag disabled: %q", legacyPrompt)
-	}
-	legacyInput := hostedGenesisDeclarationInput(reg, []hostedGenesisMessage{{Role: "user", Content: "hello"}}, hostedgenesis.DeclarationContractFromEnv())
-	if legacyInput.SchemaVersion != "" || legacyInput.GuidanceVersion != "" {
-		t.Fatalf("v1 extraction input must not carry v2 version evidence: %#v", legacyInput)
-	}
-
-	t.Setenv(hostedgenesis.EnvDeclarationSchemaVersion, "v2")
-	v2Prompt := hostedGenesisSystemPrompt(reg)
-	if !strings.Contains(v2Prompt, hostedgenesis.DeclarationSchemaVersionV2) || !strings.Contains(v2Prompt, "Phase 5 — soul") {
-		t.Fatalf("v2 prompt missing contract evidence: %q", v2Prompt)
-	}
-	v2Input := hostedGenesisDeclarationInput(reg, []hostedGenesisMessage{{Role: "user", Content: "hello"}}, hostedgenesis.DeclarationContractFromEnv())
-	if v2Input.SchemaVersion != hostedgenesis.DeclarationSchemaVersionV2 || v2Input.GuidanceVersion != hostedgenesis.GuidanceVersionV2 {
-		t.Fatalf("v2 extraction input missing versions: %#v", v2Input)
-	}
-}
-
-func TestHostedGenesisFiveBodyDeclarationsDraftBuilder(t *testing.T) {
-	t.Parallel()
-
-	contract := hostedgenesis.FiveBodyDeclarationContract()
-	now := time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC)
-	decl, err := buildHostedGenesisDeclarationsDraftForContract(validHostedGenesisFiveBodyDraft(), now, "openai:gpt-5", contract)
-	if err != nil {
-		t.Fatalf("unexpected v2 declaration error: %v", err)
-	}
-	if decl.SchemaVersion != hostedgenesis.DeclarationSchemaVersionV2 || decl.GuidanceVersion != hostedgenesis.GuidanceVersionV2 || decl.AdversarialReview == nil {
-		t.Fatalf("expected v2 version and review evidence, got %#v", decl)
-	}
-	if decl.FiveBodies == nil || decl.FiveBodies.Identity.Summary == "" || len(decl.Boundaries) != 3 || !strings.Contains(decl.Boundaries[0].Statement, "closest safe path") {
-		t.Fatalf("expected five bodies mapped to three refusal boundaries, got %#v", decl)
-	}
-	if decl.SelfDescription.Purpose != decl.FiveBodies.Identity.Summary || decl.SelfDescription.MintingModel != "openai:gpt-5" {
-		t.Fatalf("expected lossless v1 mapping for publication, got %#v", decl.SelfDescription)
-	}
-}
-
-func TestHostedGenesisFiveBodyDeclarationsConformToPublishedSchemaWithSparseOptionalEvidence(t *testing.T) {
-	t.Parallel()
-
-	contract := hostedgenesis.FiveBodyDeclarationContract()
-	decl, err := buildHostedGenesisDeclarationsDraftForContract(validHostedGenesisFiveBodyDraft(), time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC), "openai:gpt-5", contract)
-	if err != nil {
-		t.Fatalf("unexpected v2 declaration error: %v", err)
-	}
-	body, err := json.Marshal(decl)
-	if err != nil {
-		t.Fatalf("marshal produced declarations: %v", err)
-	}
-	for _, omitted := range []string{`"notes"`, `"lastValidated"`, `"validationRef"`, `"degradesTo"`} {
-		if strings.Contains(string(body), omitted) {
-			t.Fatalf("expected sparse v2 declaration to omit optional %s, got %s", omitted, string(body))
-		}
-	}
-	validateHostedGenesisPublishedFiveBodySchema(t, body)
-}
-
-func TestHostedGenesisFiveBodyDeclarationsRejectGenericRefusals(t *testing.T) {
-	t.Parallel()
-
-	draft := validHostedGenesisFiveBodyDraft()
-	draft.FiveBodies.Soul.Refusals[0].Bypass = "unsafe requests"
-	_, err := buildHostedGenesisDeclarationsDraftForContract(draft, time.Now(), "openai:gpt-5", hostedgenesis.FiveBodyDeclarationContract())
-	if got := hostedgenesis.DeclarationValidationCodeFromError(err); got != hostedgenesis.DeclarationCodeSoulRefusalsBad {
-		t.Fatalf("expected generic refusal rejection, got err=%v code=%q", err, got)
-	}
-}
-
-func TestHostedGenesisFiveBodyDeclarationsRequireVersionEvidence(t *testing.T) {
-	t.Parallel()
-
-	draft := validHostedGenesisFiveBodyDraft()
-	draft.GuidanceVersion = ""
-	_, err := buildHostedGenesisDeclarationsDraftForContract(draft, time.Now(), "openai:gpt-5", hostedgenesis.FiveBodyDeclarationContract())
-	if got := hostedgenesis.DeclarationValidationCodeFromError(err); got != hostedgenesis.DeclarationCodeInvalid {
-		t.Fatalf("expected missing v2 guidance evidence to fail closed, got err=%v code=%q", err, got)
-	}
-}
-
-func validHostedGenesisFiveBodyDraft() llm.MintConversationDeclarationsDraft {
-	contract := hostedgenesis.FiveBodyDeclarationContract()
-	return llm.MintConversationDeclarationsDraft{
-		SchemaVersion:   contract.SchemaVersion,
-		GuidanceVersion: contract.GuidanceVersion,
-		FiveBodies: hostedgenesis.FiveBodyDeclaration{
-			Identity:   hostedgenesis.FiveBodySection{Summary: "I am Acme Steward, a hosted/off-chain agent for operator support."},
-			Philosophy: hostedgenesis.FiveBodySection{Summary: "I value narrow authority, auditability, and direct statements of uncertainty."},
-			Discipline: hostedgenesis.FiveBodySection{Summary: "I use the named cadence, keep evidence, and pause on unclear authority."},
-			Boundaries: hostedgenesis.FiveBodySection{Summary: "I protect tenant isolation, credentials, and human publish gates."},
-			Soul: hostedgenesis.FiveBodySoulBody{
-				Summary: "I preserve Host safety invariants even when asked to move faster.",
-				Refusals: []hostedgenesis.FiveBodyRefusalRule{
-					{Bypass: "Skip checksum verification for a managed release", Invariant: "consumer release verification must run before deploy", ClosestSafePath: "run managed-release-certification on the published artifact"},
-					{Bypass: "Return a raw Instance API key on reread", Invariant: "Host stores and compares only sha256 key hashes", ClosestSafePath: "issue a new key through controlled rotation and show only the hash id"},
-					{Bypass: "Finalize without explicit human authorization", Invariant: "hosted genesis keeps a human publish gate", ClosestSafePath: "return declaration_ready and wait for the finalize call"},
-				},
-			},
-		},
-		Capabilities: []soul.CapabilityV2{{Capability: "operator_support", Scope: "Help operators reason about hosted genesis state.", ClaimLevel: "self-declared"}},
-		Transparency: map[string]any{"modelProviderUncertainty": "unit test", "operationalNotes": "deterministic", "selfDeclaredNotice": "self-declared"},
-	}
-}
-
-func assertHostedGenesisJSONKeysAbsent(t *testing.T, body []byte, keys ...string) {
-	t.Helper()
-	var parsed map[string]any
-	if err := json.Unmarshal(body, &parsed); err != nil {
-		t.Fatalf("parse produced declarations: %v\n%s", err, string(body))
-	}
-	for _, key := range keys {
-		if _, ok := parsed[key]; ok {
-			t.Fatalf("expected produced declarations to omit %q, got %s", key, string(body))
-		}
-	}
-}
-
-func validateHostedGenesisPublishedFiveBodySchema(t *testing.T, body []byte) {
-	t.Helper()
-	var parsed any
-	if err := json.Unmarshal(body, &parsed); err != nil {
-		t.Fatalf("parse produced declarations: %v\n%s", err, string(body))
-	}
-	if err := mustCompileHostedGenesisPublishedFiveBodySchema(t).Validate(parsed); err != nil {
-		t.Fatalf("produced declarations did not validate against published schema: %v\n%s", err, string(body))
-	}
-}
-
-func mustCompileHostedGenesisPublishedFiveBodySchema(t *testing.T) *jsonschema.Schema {
-	t.Helper()
-	schemaPath := filepath.Join("..", "..", "docs", "contracts", "soul-five-body.schema.v2.json")
-	raw, readErr := os.ReadFile(schemaPath)
-	if readErr != nil {
-		t.Fatalf("read published five-body schema: %v", readErr)
-	}
-	var doc any
-	if unmarshalErr := json.Unmarshal(raw, &doc); unmarshalErr != nil {
-		t.Fatalf("parse published five-body schema: %v", unmarshalErr)
-	}
-	compiler := jsonschema.NewCompiler()
-	compiler.DefaultDraft(jsonschema.Draft2020)
-	if addErr := compiler.AddResource(schemaPath, doc); addErr != nil {
-		t.Fatalf("add published five-body schema resource: %v", addErr)
-	}
-	schema, compileErr := compiler.Compile(schemaPath)
-	if compileErr != nil {
-		t.Fatalf("compile published five-body schema: %v", compileErr)
-	}
-	return schema
-}
-
+// TestHostedGenesisSystemPromptMatchesSharedBuilderAndFailsClosed proves the
+// worker prompt is byte-identical to the shared five-body builder and that a
+// non-five-body contract fails closed instead of selecting another prompt.
+// TestHostedGenesisDeclarationsDraftBuilderRejectsNonFiveBodyContract proves
+// the aiworker builder has exactly one lane: a contract that does not name the
+// five-body lane fails closed with the unconfigured-contract error, and the
+// retired boundaries.required code is unreachable from this builder.
+// setHostedGenesisFiveBodyContractEnv selects the five-body declaration
+// contract the way the deployed ai-worker env does. Fresh hosted-genesis
+// production has no legacy lane, so path tests must opt in explicitly.
 type stubHostedGenesisWorkerMicroVMDispatcher struct {
 	t              *testing.T
 	startCalls     int
+	ensureCalls    int
 	invokeCalls    int
 	dispatchCalls  int
 	reconcileCalls int
 	startErr       error
+	ensureErr      error
 	invokeErr      error
 	dispatchErr    error
 	lastBinding    hostedgenesis.MicroVMSessionBinding
@@ -1479,6 +1044,32 @@ func (d *stubHostedGenesisWorkerMicroVMDispatcher) StartMicroVMRun(ctx context.C
 		return hostedgenesis.MicroVMDispatchResult{}, d.startErr
 	}
 	return hostedGenesisWorkerMicroVMDispatchResult(d.t, requestID, binding, runtimemicrovm.CommandRun)
+}
+
+func (d *stubHostedGenesisWorkerMicroVMDispatcher) EnsureMicroVMTurnSession(ctx context.Context, requestID string, binding hostedgenesis.MicroVMSessionBinding, ref hostedgenesis.MicroVMLifecycleRef) (hostedgenesis.MicroVMDispatchResult, error) {
+	d.t.Helper()
+	d.ensureCalls++
+	d.lastBinding = binding
+	if err := ref.Validate(binding); err != nil {
+		return hostedgenesis.MicroVMDispatchResult{}, err
+	}
+	if d.ensureErr != nil {
+		return hostedgenesis.MicroVMDispatchResult{}, d.ensureErr
+	}
+	return hostedGenesisWorkerMicroVMDispatchResult(d.t, requestID, binding, runtimemicrovm.CommandGet)
+}
+
+func (d *stubHostedGenesisWorkerMicroVMDispatcher) InvokeMicroVMTurn(ctx context.Context, requestID string, binding hostedgenesis.MicroVMSessionBinding) error {
+	d.t.Helper()
+	d.invokeCalls++
+	d.lastBinding = binding
+	if strings.TrimSpace(requestID) == "" {
+		d.t.Fatalf("stub microvm dispatcher received empty invoke request id")
+	}
+	if err := binding.Validate(); err != nil {
+		d.t.Fatalf("stub microvm dispatcher received invalid invoke binding: %v", err)
+	}
+	return d.invokeErr
 }
 
 func (d *stubHostedGenesisWorkerMicroVMDispatcher) WaitAndInvokeMicroVMTurn(ctx context.Context, requestID string, binding hostedgenesis.MicroVMSessionBinding) (hostedgenesis.MicroVMDispatchResult, error) {
@@ -1554,49 +1145,5 @@ func assertHostedGenesisWorkerFailureWithReason(t *testing.T, st *fakeHostedGene
 	}
 	if st.session == nil || hostedgenesis.NormalizeStatus(st.session.Status) != hostedgenesis.StatusFailed || st.session.Failure == nil || string(st.session.Failure.Code) != reason {
 		t.Fatalf("expected session %s failure, got %#v", reason, st.session)
-	}
-}
-
-func assertHostedGenesisAssistantReady(t *testing.T, st *fakeHostedGenesisStore) {
-	t.Helper()
-	st.mu.Lock()
-	defer st.mu.Unlock()
-	if st.putCount != 1 || st.conv == nil {
-		t.Fatalf("expected one assistant write, putCount=%d conv=%#v", st.putCount, st.conv)
-	}
-	if st.conv.Status != models.SoulMintConversationStatusAssistantTurnReady || st.conv.StatusReason != "" {
-		t.Fatalf("expected assistant-ready status, got %#v", st.conv)
-	}
-	if st.session == nil || hostedgenesis.NormalizeStatus(st.session.Status) != hostedgenesis.StatusAssistantTurnReady || st.session.AssistantCheckpointRef == "" {
-		t.Fatalf("expected assistant-ready session checkpoint, got %#v", st.session)
-	}
-	decoded := models.DecodeSoulMintConversationBlob(st.conv.Messages)
-	if !strings.Contains(decoded, "assistant ready") || strings.Contains(st.conv.Messages, "assistant ready") {
-		t.Fatalf("assistant transcript encoding mismatch raw=%q decoded=%q", st.conv.Messages, decoded)
-	}
-	if st.conv.Usage.TotalTokens != 5 || st.conv.RequestID != "req-host" {
-		t.Fatalf("assistant metadata mismatch: %#v", st.conv)
-	}
-}
-
-func assertHostedGenesisDeclarationReady(t *testing.T, st *fakeHostedGenesisStore) {
-	t.Helper()
-	st.mu.Lock()
-	defer st.mu.Unlock()
-	if st.putCount != 1 || st.conv == nil {
-		t.Fatalf("expected one declaration write, putCount=%d conv=%#v", st.putCount, st.conv)
-	}
-	if st.conv.Status != models.SoulMintConversationStatusDeclarationReady || st.conv.CompletedAt.IsZero() {
-		t.Fatalf("expected declaration-ready status, got %#v", st.conv)
-	}
-	if st.session == nil || hostedgenesis.NormalizeStatus(st.session.Status) != hostedgenesis.StatusDeclarationReady || st.session.DeclarationCheckpoint == nil {
-		t.Fatalf("expected declaration-ready session checkpoint, got %#v", st.session)
-	}
-	decoded := models.DecodeSoulMintConversationBlob(st.conv.ProducedDeclarations)
-	if !strings.Contains(decoded, "hosted_genesis_planning") || strings.Contains(st.conv.ProducedDeclarations, "hosted_genesis_planning") {
-		t.Fatalf("declaration encoding mismatch raw=%q decoded=%q", st.conv.ProducedDeclarations, decoded)
-	}
-	if st.conv.Usage.TotalTokens != 11 || st.conv.RequestID != "req-host" {
-		t.Fatalf("declaration metadata mismatch: %#v", st.conv)
 	}
 }

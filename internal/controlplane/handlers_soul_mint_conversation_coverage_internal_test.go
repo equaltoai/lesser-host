@@ -3,13 +3,14 @@ package controlplane
 import (
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/ethereum/go-ethereum/accounts"
 	"github.com/ethereum/go-ethereum/crypto"
-	apptheory "github.com/theory-cloud/apptheory/runtime"
+	apptheory "github.com/theory-cloud/apptheory/v2/runtime"
 
 	"github.com/stretchr/testify/mock"
 
@@ -71,7 +72,7 @@ func baseHostedGenesisSessionFromLegacyConversationForTest(conv models.SoulAgent
 		status = hostedgenesis.StatusFailed
 	}
 	messageCount := mintConversationMessageCount(&conv)
-	return models.HostedGenesisSession{
+	session := models.HostedGenesisSession{
 		InstanceSlug:   soulInstanceBootstrapTestInstanceSlug,
 		RegistrationID: registrationID,
 		AgentID:        conv.AgentID,
@@ -86,6 +87,44 @@ func baseHostedGenesisSessionFromLegacyConversationForTest(conv models.SoulAgent
 		UpdatedAt:      now,
 		CompletedAt:    conv.CompletedAt,
 	}
+	if status == hostedgenesis.StatusCreated || status == hostedgenesis.StatusInProgress || status == hostedgenesis.StatusAssistantTurnReady {
+		binding := hostedgenesis.DeclarationCandidateBinding{
+			InstanceSlug: session.InstanceSlug, RegistrationID: session.RegistrationID, AgentID: session.AgentID,
+			ConversationID: session.ConversationID, SourceTurnID: firstNonEmpty(session.LatestTurnID, "turn-legacy-test"), Model: session.Model,
+		}
+		candidate, _ := hostedgenesis.NewDeclarationCandidate(binding, session.CreatedAt)
+		if strings.Contains(models.DecodeSoulMintConversationBlob(conv.Messages), "Hosted Genesis owner review") {
+			candidate = controlplaneCompleteReviewCandidateForTest(binding, session.CreatedAt)
+		}
+		session.DeclarationCandidate = candidate
+	}
+	return session
+}
+
+func controlplaneCompleteReviewCandidateForTest(binding hostedgenesis.DeclarationCandidateBinding, now time.Time) *hostedgenesis.DeclarationCandidate {
+	candidate, _ := hostedgenesis.NewDeclarationCandidate(binding, now)
+	calls := []struct{ name, body string }{
+		{hostedgenesis.DeclarationToolIdentityPut, `{"section":{"summary":"I am the tenant-bound Hosted Genesis actor.","notes":[]}}`},
+		{hostedgenesis.DeclarationToolPhilosophyPut, `{"section":{"summary":"I prefer auditable durable truth over implicit authority.","notes":[]}}`},
+		{hostedgenesis.DeclarationToolDisciplinePut, `{"section":{"summary":"I ground, act, record, and re-ground at each checkpoint.","notes":[]}}`},
+		{hostedgenesis.DeclarationToolBoundariesPut, `{"section":{"summary":"I remain within the managed instance and require owner authority.","notes":[]}}`},
+		{hostedgenesis.DeclarationToolSoulPut, `{"section":{"summary":"Exact reviewed truth is load-bearing.","notes":[],"refusals":[{"bypass":"skip the candidate hash check","invariant":"exact reviewed bytes remain authoritative","closestSafePath":"submit a matching structural affirmation"},{"bypass":"reuse another tenant session","invariant":"tenant and session guards must match","closestSafePath":"restart in the correct managed instance"},{"bypass":"call a provider after affirmation","invariant":"finalization remains deterministic","closestSafePath":"publish the exact affirmed candidate bytes"}]},"selfDescription":{"purpose":"Construct a typed Hosted Genesis declaration.","constraints":"Remain tenant bound.","commitments":"Preserve exact durable truth.","limitations":"No provider after affirmation.","authoredBy":"agent","mintingModel":"anthropic:claude-sonnet-4-6"},"capabilities":[],"transparency":{"modelProviderUncertainty":"Provider content is self-declared.","operationalNotes":"Host validates every section.","selfDeclaredNotice":"Self-declared until publication."}}`},
+	}
+	for i, call := range calls {
+		var payload map[string]any
+		_ = json.Unmarshal([]byte(call.body), &payload)
+		payload["candidateRevision"] = candidate.Revision
+		payload["candidateHash"] = candidate.CandidateHash
+		payloadBytes, _ := json.Marshal(payload)
+		next, result, _ := hostedgenesis.ApplyDeclarationTool(candidate, hostedgenesis.DeclarationToolRequest{
+			ToolName: call.name, ToolCallID: fmt.Sprintf("call-%d", i), ExpectedRevision: candidate.Revision,
+			ExpectedHash: candidate.CandidateHash, SourceTurnID: binding.SourceTurnID, Payload: payloadBytes,
+		}, now.Add(time.Duration(i)*time.Second))
+		if result.Accepted {
+			candidate = next
+		}
+	}
+	return candidate
 }
 
 func applyHostedGenesisTurnLedgerFromLegacyForTest(session *models.HostedGenesisSession, conv models.SoulAgentMintConversation, now time.Time) {
@@ -143,6 +182,8 @@ func setHostedGenesisLegacyDeclarationCheckpointForTest(session *models.HostedGe
 		AgentID:         conv.AgentID,
 		MessageCount:    messageCount,
 		Model:           conv.Model,
+		SchemaVersion:   produced.Declarations.SchemaVersion,
+		GuidanceVersion: produced.Declarations.GuidanceVersion,
 		RequestID:       requestID,
 	}
 	return session.DeclarationCheckpoint.Validate() == nil

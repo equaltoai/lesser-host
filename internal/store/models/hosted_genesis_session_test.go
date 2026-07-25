@@ -49,6 +49,37 @@ func TestHostedGenesisSessionRejectsUngatedTerminalStates(t *testing.T) {
 	failed.Status = string(hostedgenesis.StatusFailed)
 	failed.Failure = nil
 	require.ErrorIs(t, failed.BeforeCreate(), hostedgenesis.ErrInvalidFailureRecovery)
+
+	published := validHostedGenesisSessionModel()
+	published.Status = string(hostedgenesis.StatusPublished)
+	checkpoint := validHostedGenesisDeclarationCheckpoint()
+	published.DeclarationCheckpoint = &checkpoint
+	require.ErrorIs(t, published.BeforeCreate(), hostedgenesis.ErrInvalidPublicationCheckpoint)
+}
+
+func TestHostedGenesisSessionAcceptsBoundPublishedState(t *testing.T) {
+	t.Parallel()
+
+	session := validHostedGenesisSessionModel()
+	session.Status = string(hostedgenesis.StatusPublished)
+	checkpoint := validHostedGenesisDeclarationCheckpoint()
+	session.DeclarationCheckpoint = &checkpoint
+	session.Publication = &hostedgenesis.PublicationCheckpoint{
+		RegistrationID:       session.RegistrationID,
+		ConversationID:       session.ConversationID,
+		AgentID:              strings.TrimSpace(session.AgentID),
+		Version:              1,
+		RegistrationSHA256:   strings.Repeat("b", 64),
+		RegistrationIssuedAt: checkpoint.ProducedAt,
+		PublishedAt:          checkpoint.ProducedAt.Add(time.Minute),
+	}
+	require.NoError(t, session.BeforeCreate())
+
+	projection, err := hostedgenesis.NewConversationProjection(session.ToProjectionInput(), true)
+	require.NoError(t, err)
+	require.Equal(t, hostedgenesis.StatusPublished, projection.Status)
+	require.Equal(t, 1, projection.PublishedVersion)
+	require.Equal(t, session.Publication.PublishedAt, projection.PublishedAt)
 }
 
 func TestHostedGenesisSessionRejectsInvalidTurnLedger(t *testing.T) {
@@ -57,6 +88,20 @@ func TestHostedGenesisSessionRejectsInvalidTurnLedger(t *testing.T) {
 	session := validHostedGenesisSessionModel()
 	session.TurnLedger = append(session.TurnLedger, session.TurnLedger[0])
 	require.ErrorIs(t, session.BeforeCreate(), hostedgenesis.ErrDuplicateTurnID)
+}
+
+func TestHostedGenesisSessionRejectsCandidateFromAnotherTurn(t *testing.T) {
+	t.Parallel()
+
+	session := validHostedGenesisSessionModel()
+	session.Model = "openai:gpt-5.4"
+	candidate, err := hostedgenesis.NewDeclarationCandidate(hostedgenesis.DeclarationCandidateBinding{
+		InstanceSlug: session.InstanceSlug, RegistrationID: session.RegistrationID, AgentID: session.AgentID,
+		ConversationID: session.ConversationID, SourceTurnID: "turn_other", Model: session.Model,
+	}, session.CreatedAt)
+	require.NoError(t, err)
+	session.DeclarationCandidate = candidate
+	require.ErrorContains(t, session.BeforeCreate(), "declaration candidate binding does not match hosted genesis session")
 }
 
 func TestHostedGenesisSessionModelHasNoSecretBearingFields(t *testing.T) {
@@ -208,6 +253,8 @@ func validHostedGenesisDeclarationCheckpoint() hostedgenesis.DeclarationCheckpoi
 		AgentID:         "0x2222222222222222222222222222222222222222222222222222222222222222",
 		MessageCount:    2,
 		Model:           "openai:gpt-5.4",
+		SchemaVersion:   hostedgenesis.DeclarationSchemaVersionV2,
+		GuidanceVersion: hostedgenesis.GuidanceVersionV2,
 		RequestID:       "req_123",
 	}
 }

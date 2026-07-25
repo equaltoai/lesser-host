@@ -4,7 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"io"
+	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -13,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	runtimemicrovm "github.com/theory-cloud/apptheory/runtime/microvm"
+	runtimemicrovm "github.com/theory-cloud/apptheory/v2/runtime/microvm"
 
 	"github.com/equaltoai/lesser-host/internal/ai/llm"
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
@@ -149,17 +150,24 @@ func TestRecoverMiddleware_RecoversPanic(t *testing.T) {
 	}
 }
 
-// TestReadBodyPreview_Capped proves readBodyPreview reads at most n bytes and
-// restores the body for downstream readers.
-func TestReadBodyPreview_Capped(t *testing.T) {
-	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("hello world body"))
-	preview := readBodyPreview(req, 5)
-	if preview != "hello" {
-		t.Fatalf("expected first 5 bytes, got %q", preview)
+// TestHookServer_CatchAllNeverLogsRequestBody proves even an unmatched route
+// cannot put prompts, transcripts, provider output, or secrets into telemetry.
+func TestHookServer_CatchAllNeverLogsRequestBody(t *testing.T) {
+	const privateBody = `{"prompt":"private-prompt","api_key":"private-key"}`
+	var logs bytes.Buffer
+	priorLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(priorLogger) })
+
+	srv := newTestHookServer(t, nil)
+	req := httptest.NewRequest(http.MethodPost, "/unmatched", strings.NewReader(privateBody))
+	rec := httptest.NewRecorder()
+	srv.routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected catch-all 200, got %d", rec.Code)
 	}
-	rest, _ := io.ReadAll(req.Body)
-	if string(rest) != "hello" {
-		t.Fatalf("expected restored body to be the previewed bytes, got %q", string(rest))
+	if strings.Contains(logs.String(), "private-prompt") || strings.Contains(logs.String(), "private-key") || strings.Contains(logs.String(), "body_preview") {
+		t.Fatalf("catch-all telemetry leaked request body: %s", logs.String())
 	}
 }
 
@@ -249,110 +257,140 @@ func TestHookServer_ReadyHookEmptyBody200(t *testing.T) {
 // TestHookServer_RunHookExecutesTurn proves the /run hook drives the adapter to
 // running and executes the assistant turn for an in_progress session,
 // persisting assistant_turn_ready to session truth.
-func TestHookServer_RunHookExecutesTurn(t *testing.T) {
-	assistantChunk := "data: " + mustMarshal(map[string]any{
-		"id": "chatcmpl_test", "object": "chat.completion.chunk", "created": 1, "model": "gpt-test",
-		"choices": []any{map[string]any{"index": 0, "delta": map[string]any{"role": "assistant", "content": "I am acme."}, "finish_reason": nil}},
-	}) + "\n\ndata: [DONE]\n\n"
-	declBody := mustMarshal(map[string]any{
-		"id": "chatcmpl_test", "object": "chat.completion", "created": 1, "model": "gpt-test",
-		"choices": []any{map[string]any{"index": 0, "message": map[string]any{"role": "assistant", "content": mustMarshal(validDeclarationDraft())}}},
-		"usage":   map[string]any{"prompt_tokens": 5, "completion_tokens": 7, "total_tokens": 12},
-	})
-	llmSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		bodyBytes, _ := io.ReadAll(r.Body)
-		_ = r.Body.Close()
-		if strings.Contains(string(bodyBytes), `"stream":true`) {
-			w.Header().Set("Content-Type", "text/event-stream")
-			_, _ = w.Write([]byte(assistantChunk))
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(declBody))
-	}))
-	t.Cleanup(llmSrv.Close)
-	withOpenAIBaseURL(t, llmSrv.URL, "sk-test")
-	llm.ConfigureProviderHTTPClient(&http.Client{Timeout: 5 * time.Second})
-	t.Cleanup(func() { llm.ConfigureProviderHTTPClient(nil) })
-
+func TestHookServer_RunHookExecutesTypedSectionTurn(t *testing.T) {
+	setFiveBodyContractEnv(t)
+	t.Setenv("OPENAI_API_KEY", "sk-test")
 	turnStore, compStore, _ := baseTurnInput()
-	writer := completion.NewCompletionWriter(compStore, func() time.Time { return time.Unix(3000, 0).UTC() })
-	runner := &turnRunner{store: turnStore, writer: writer, nowFunc: func() time.Time { return time.Unix(3000, 0).UTC() }}
+	runner := &turnRunner{store: turnStore, writer: completion.NewCompletionWriter(compStore, fixedClock), nowFunc: fixedClock, phaseRunner: successfulIdentityPhaseRunner(t, "I will ask about philosophy next.")}
 	srv := newTestHookServer(t, runner)
 
 	event := validEvent(runtimemicrovm.HookRun, runtimemicrovm.StateValidated)
 	body, _ := json.Marshal(event)
-	req := httptest.NewRequest(http.MethodPost, hookPathPrefix+"/run", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
-	srv.routes().ServeHTTP(rec, req)
-
+	srv.routes().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, hookPathPrefix+"/run", bytes.NewReader(body)))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
 	var result runtimemicrovm.LifecycleResult
 	if err := json.NewDecoder(rec.Body).Decode(&result); err != nil {
-		t.Fatalf("decode result: %v", err)
+		t.Fatal(err)
 	}
 	if result.State != runtimemicrovm.StateRunning {
-		t.Fatalf("expected running state from run hook, got %q (err=%v)", result.State, result.Error)
+		t.Fatalf("expected running state, got %#v", result)
 	}
 	if got := hostedgenesis.NormalizeStatus(compStore.session.Status); got != hostedgenesis.StatusAssistantTurnReady {
-		t.Fatalf("expected session assistant_turn_ready after run hook, got %q", got)
+		t.Fatalf("expected assistant_turn_ready, got %q", got)
+	}
+	if compStore.session.DeclarationCandidate == nil || compStore.session.DeclarationCandidate.Revision != 1 {
+		t.Fatalf("typed candidate checkpoint missing: %#v", compStore.session)
 	}
 }
 
-// TestHookServer_TurnEndpointExecutesTurn proves Host's application-level
-// MicroVM turn endpoint reaches the same run handler as the lifecycle /run path
-// without using the AWS-reserved lifecycle URL as the externally proxied
-// application endpoint.
-func TestHookServer_TurnEndpointExecutesTurn(t *testing.T) {
-	assistantChunk := "data: " + mustMarshal(map[string]any{
-		"id": "chatcmpl_test", "object": "chat.completion.chunk", "created": 1, "model": "gpt-test",
-		"choices": []any{map[string]any{"index": 0, "delta": map[string]any{"role": "assistant", "content": "I am acme."}, "finish_reason": nil}},
-	}) + "\n\ndata: [DONE]\n\n"
-	declBody := mustMarshal(map[string]any{
-		"id": "chatcmpl_test", "object": "chat.completion", "created": 1, "model": "gpt-test",
-		"choices": []any{map[string]any{"index": 0, "message": map[string]any{"role": "assistant", "content": mustMarshal(validDeclarationDraft())}}},
-		"usage":   map[string]any{"prompt_tokens": 5, "completion_tokens": 7, "total_tokens": 12},
-	})
-	llmSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		bodyBytes, _ := io.ReadAll(r.Body)
-		_ = r.Body.Close()
-		if strings.Contains(string(bodyBytes), `"stream":true`) {
-			w.Header().Set("Content-Type", "text/event-stream")
-			_, _ = w.Write([]byte(assistantChunk))
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(declBody))
-	}))
-	t.Cleanup(llmSrv.Close)
-	withOpenAIBaseURL(t, llmSrv.URL, "sk-test")
-	llm.ConfigureProviderHTTPClient(&http.Client{Timeout: 5 * time.Second})
-	t.Cleanup(func() { llm.ConfigureProviderHTTPClient(nil) })
-
+func TestHookServer_TurnEndpointExecutesTypedSectionTurn(t *testing.T) {
+	setFiveBodyContractEnv(t)
+	t.Setenv("OPENAI_API_KEY", "sk-test")
 	turnStore, compStore, _ := baseTurnInput()
-	writer := completion.NewCompletionWriter(compStore, func() time.Time { return time.Unix(3100, 0).UTC() })
-	runner := &turnRunner{store: turnStore, writer: writer, nowFunc: func() time.Time { return time.Unix(3100, 0).UTC() }}
+	runner := &turnRunner{store: turnStore, writer: completion.NewCompletionWriter(compStore, fixedClock), nowFunc: fixedClock, phaseRunner: successfulIdentityPhaseRunner(t, "I will ask about philosophy next.")}
 	srv := newTestHookServer(t, runner)
 
 	event := validEvent(runtimemicrovm.HookRun, runtimemicrovm.StateRunning)
 	body, _ := json.Marshal(event)
-	req := httptest.NewRequest(http.MethodPost, hostedgenesis.MicroVMTurnEndpointPath, bytes.NewReader(body))
 	rec := httptest.NewRecorder()
-	srv.routes().ServeHTTP(rec, req)
-
+	srv.routes().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, hostedgenesis.MicroVMTurnEndpointPath, bytes.NewReader(body)))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
 	var result runtimemicrovm.LifecycleResult
 	if err := json.NewDecoder(rec.Body).Decode(&result); err != nil {
-		t.Fatalf("decode result: %v", err)
+		t.Fatal(err)
 	}
 	if result.State != runtimemicrovm.StateRunning || result.Hook != runtimemicrovm.HookRun {
-		t.Fatalf("expected run/running result, got hook=%q state=%q err=%v", result.Hook, result.State, result.Error)
+		t.Fatalf("unexpected result: %#v", result)
 	}
 	waitForHostedGenesisStatus(t, compStore, hostedgenesis.StatusAssistantTurnReady)
+}
+
+// The endpoint acknowledgement remains detached from the provider duration;
+// no AppTheory ProviderIdlePolicy is introduced for this runnable actor.
+func TestHookServer_TurnEndpointDetachedProviderOutlivesFormerIdleBoundary(t *testing.T) {
+	setFiveBodyContractEnv(t)
+	t.Setenv("OPENAI_API_KEY", "sk-test")
+	var logs bytes.Buffer
+	priorLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(priorLogger) })
+	providerStarted := make(chan struct{}, 1)
+	releaseProvider := make(chan struct{})
+	turnStore, compStore, _ := baseTurnInput()
+	runner := &turnRunner{
+		store: turnStore, writer: completion.NewCompletionWriter(compStore, fixedClock), nowFunc: fixedClock,
+		providerCallTimeout: 2 * time.Second, workloadExecutionTimeout: 3 * time.Second, providerHeartbeatInterval: 10 * time.Millisecond,
+		phaseRunner: func(ctx context.Context, _ string, input llm.MintConversationPhaseInput, handler llm.MintConversationPhaseToolHandler, sink llm.ProviderTelemetrySink) (llm.MintConversationPhaseOutput, error) {
+			if sink != nil {
+				sink(llm.ProviderTelemetryEvent{EventType: "request_start"})
+			}
+			providerStarted <- struct{}{}
+			<-releaseProvider
+			result, err := handler(ctx, llm.MintConversationPhaseToolCall{Name: hostedgenesis.DeclarationToolIdentityPut, CallID: "identity", Arguments: boundPhaseToolArgs(t, input, `{"section":{"summary":"I am the tenant-bound conversation actor.","notes":[]}}`)})
+			if err != nil || !result.Accepted {
+				return llm.MintConversationPhaseOutput{}, fmt.Errorf("identity tool: %w", err)
+			}
+			if sink != nil {
+				sink(llm.ProviderTelemetryEvent{EventType: "provider_call_completed", LastEvent: true, ToolCalls: 1})
+			}
+			return llm.MintConversationPhaseOutput{AssistantContent: "I will ask about philosophy next."}, nil
+		},
+	}
+	srv := newTestHookServer(t, runner)
+	event := validEvent(runtimemicrovm.HookRun, runtimemicrovm.StateRunning)
+	body, _ := json.Marshal(event)
+	rec := httptest.NewRecorder()
+	srv.routes().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, hostedgenesis.MicroVMTurnEndpointPath, bytes.NewReader(body)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected immediate acknowledgement, got %d: %s", rec.Code, rec.Body.String())
+	}
+	select {
+	case <-providerStarted:
+	case <-time.After(time.Second):
+		t.Fatal("detached provider did not start")
+	}
+	time.Sleep(80 * time.Millisecond)
+	if got := hostedgenesis.NormalizeStatus(compStore.session.Status); got != hostedgenesis.StatusInProgress {
+		t.Fatalf("provider should remain pending, got %q", got)
+	}
+	close(releaseProvider)
+	waitForHostedGenesisStatus(t, compStore, hostedgenesis.StatusAssistantTurnReady)
+	text := logs.String()
+	for _, want := range []string{"turn execution started", "provider_call_heartbeat", `"event_type":"persist_completed"`, "turn execution completed"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("runtime logging missed %q: %s", want, text)
+		}
+	}
+	for _, forbidden := range []string{"sk-test", "tenant-bound conversation actor", `"messages"`} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("runtime logging leaked %q: %s", forbidden, text)
+		}
+	}
+}
+
+func successfulIdentityPhaseRunner(t *testing.T, assistant string) declarationPhaseRunner {
+	t.Helper()
+	return func(ctx context.Context, _ string, input llm.MintConversationPhaseInput, handler llm.MintConversationPhaseToolHandler, sink llm.ProviderTelemetrySink) (llm.MintConversationPhaseOutput, error) {
+		if input.Section != hostedgenesis.DeclarationSectionIdentity {
+			return llm.MintConversationPhaseOutput{}, fmt.Errorf("unexpected section %s", input.Section)
+		}
+		if sink != nil {
+			sink(llm.ProviderTelemetryEvent{EventType: "request_start"})
+		}
+		result, err := handler(ctx, llm.MintConversationPhaseToolCall{Name: hostedgenesis.DeclarationToolIdentityPut, CallID: "identity", Arguments: boundPhaseToolArgs(t, input, `{"section":{"summary":"I am the tenant-bound conversation actor.","notes":[]}}`)})
+		if err != nil || !result.Accepted {
+			return llm.MintConversationPhaseOutput{}, fmt.Errorf("identity tool rejected: %w", err)
+		}
+		if sink != nil {
+			sink(llm.ProviderTelemetryEvent{EventType: "provider_call_completed", LastEvent: true, ToolCalls: 1})
+		}
+		return llm.MintConversationPhaseOutput{AssistantContent: assistant}, nil
+	}
 }
 
 // TestHookServer_TurnEndpointStorePreflightFailureIsControllerVisible proves a
@@ -383,6 +421,175 @@ func TestHookServer_TurnEndpointStorePreflightFailureIsControllerVisible(t *test
 	}
 	if result.State != runtimemicrovm.StateFailed || result.Error == nil || result.Error.Code != hookErrorCode {
 		t.Fatalf("expected controller-visible store preflight failure, got state=%q error=%#v", result.State, result.Error)
+	}
+}
+
+// TestHookServer_ProcessMemoryCanaryEndpointStoresNonceHashOnlyAndVerifiesSurvival
+// proves the lab-only process-memory canary initializes a random nonce inside
+// process memory, returns only hash/correlation metadata, and verifies survival
+// by hash after a simulated resume invoke. The plaintext nonce never appears in
+// the response body, request body, or Host checkpoint marker.
+func TestHookServer_ProcessMemoryCanaryEndpointStoresNonceHashOnlyAndVerifiesSurvival(t *testing.T) {
+	t.Setenv("STAGE", "lab")
+	processMemoryCanaries.reset()
+	t.Cleanup(processMemoryCanaries.reset)
+
+	srv := newTestHookServer(t, nil)
+	event := validEvent(runtimemicrovm.HookRun, runtimemicrovm.StateRunning)
+	event.Metadata["canary"] = processMemoryCanaryMetadataValue
+	event.Metadata["checkpoint_marker"] = "checkpoint:host-safe-only"
+
+	init := invokeProcessMemoryCanary(t, srv, event)
+	assertCanaryInitializedWithSafeMetadata(t, init, "checkpoint:host-safe-only")
+
+	event.RequestID = "req-resume"
+	event.State = runtimemicrovm.StateReady
+	event.Metadata["expected_nonce_hash"] = init.NonceHash
+
+	verified := invokeProcessMemoryCanary(t, srv, event)
+	assertCanarySurvivedWithSameHash(t, init, verified)
+}
+
+func invokeProcessMemoryCanary(t *testing.T, srv *hookServer, event runtimemicrovm.LifecycleEvent) processMemoryCanaryResult {
+	t.Helper()
+	body, _ := json.Marshal(event)
+	rec := httptest.NewRecorder()
+	srv.routes().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, hostedgenesis.MicroVMProcessMemoryCanaryEndpointPath, bytes.NewReader(body)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected canary 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var result processMemoryCanaryResult
+	if err := json.NewDecoder(rec.Body).Decode(&result); err != nil {
+		t.Fatalf("decode canary result: %v", err)
+	}
+	return result
+}
+
+func assertCanaryInitializedWithSafeMetadata(t *testing.T, init processMemoryCanaryResult, wantCheckpointMarker string) {
+	t.Helper()
+	if !init.Initialized || init.MemoryPreserved != nil {
+		t.Fatalf("expected initialized result without survival verdict, got %#v", init)
+	}
+	if !strings.HasPrefix(init.NonceHash, "sha256:") || init.CorrelationID == "" {
+		t.Fatalf("expected hash + correlation only, got %#v", init)
+	}
+	if init.CheckpointMarker != wantCheckpointMarker {
+		t.Fatalf("expected checkpoint marker to round-trip, got %q", init.CheckpointMarker)
+	}
+	assertCanaryResultHasSafeVocabulary(t, init)
+}
+
+func assertCanaryResultHasSafeVocabulary(t *testing.T, result processMemoryCanaryResult) {
+	t.Helper()
+	payload, err := marshalCanaryResult(result)
+	if err != nil {
+		t.Fatalf("marshal canary result: %v", err)
+	}
+	lower := strings.ToLower(string(payload))
+	for _, forbidden := range []string{
+		"plaintext_nonce",
+		"nonce_plaintext",
+		"nonce_value",
+		"bearer_token",
+		"authorization",
+		"aws_access_key_id",
+		"aws_secret_access_key",
+		"aws_session_token",
+		"instance-api-key",
+		"provider_secret",
+		"wallet_signature",
+		"raw transcript",
+		"endpoint_token",
+		"x-aws-proxy-auth",
+	} {
+		if strings.Contains(lower, forbidden) {
+			t.Fatalf("canary response leaked forbidden vocabulary %q: %s", forbidden, lower)
+		}
+	}
+}
+
+func assertCanarySurvivedWithSameHash(t *testing.T, init, verified processMemoryCanaryResult) {
+	t.Helper()
+	assertCanaryResultHasSafeVocabulary(t, verified)
+	if verified.MemoryPreserved == nil || !*verified.MemoryPreserved {
+		t.Fatalf("expected memory_preserved=true from same process, got %#v", verified)
+	}
+	if verified.NonceHash != init.NonceHash || verified.CorrelationID != init.CorrelationID {
+		t.Fatalf("expected same hash/correlation after verify, init=%#v verified=%#v", init, verified)
+	}
+}
+
+// TestProcessMemoryCanaryReportsFalseWhenProcessStateIsMissing proves a resumed
+// workload with no in-process entry returns memory_preserved=false using only the
+// caller-supplied expected hash. It does not recreate or persist plaintext state.
+func TestProcessMemoryCanaryReportsFalseWhenProcessStateIsMissing(t *testing.T) {
+	t.Setenv("STAGE", "lab")
+	processMemoryCanaries.reset()
+	t.Cleanup(processMemoryCanaries.reset)
+
+	event := validEvent(runtimemicrovm.HookRun, runtimemicrovm.StateReady)
+	event.Metadata["canary"] = processMemoryCanaryMetadataValue
+	event.Metadata["expected_nonce_hash"] = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	result, status, err := processMemoryCanaries.initializeOrObserve(event, event.Metadata["expected_nonce_hash"])
+	if err != nil {
+		t.Fatalf("expected missing state to be a measured false result, got err=%v", err)
+	}
+	if status != http.StatusOK {
+		t.Fatalf("expected 200 status, got %d", status)
+	}
+	if result.MemoryPreserved == nil || *result.MemoryPreserved {
+		t.Fatalf("expected memory_preserved=false, got %#v", result)
+	}
+	if result.Initialized {
+		t.Fatalf("expected no new initialization when verifying missing process state, got %#v", result)
+	}
+}
+
+func TestProcessMemoryCanaryFailsClosedWithoutCanaryMetadata(t *testing.T) {
+	t.Setenv("STAGE", "lab")
+	processMemoryCanaries.reset()
+	t.Cleanup(processMemoryCanaries.reset)
+
+	event := validEvent(runtimemicrovm.HookRun, runtimemicrovm.StateRunning)
+	_, status, err := processMemoryCanaries.initializeOrObserve(event, "")
+	if err == nil {
+		t.Fatal("expected missing canary metadata to fail closed")
+	}
+	if status != http.StatusBadRequest {
+		t.Fatalf("expected 400 for missing canary metadata, got %d", status)
+	}
+}
+
+func TestProcessMemoryCanaryFailsClosedOutsideLabStage(t *testing.T) {
+	t.Setenv("STAGE", "live")
+	processMemoryCanaries.reset()
+	t.Cleanup(processMemoryCanaries.reset)
+
+	event := validEvent(runtimemicrovm.HookRun, runtimemicrovm.StateRunning)
+	event.Metadata["canary"] = processMemoryCanaryMetadataValue
+	_, status, err := processMemoryCanaries.initializeOrObserve(event, "")
+	if err == nil {
+		t.Fatal("expected non-lab process-memory canary to fail closed")
+	}
+	if status != http.StatusForbidden {
+		t.Fatalf("expected 403 outside lab stage, got %d", status)
+	}
+}
+
+func TestProcessMemoryCanaryRejectsUnsafeCheckpointMarker(t *testing.T) {
+	t.Setenv("STAGE", "lab")
+	processMemoryCanaries.reset()
+	t.Cleanup(processMemoryCanaries.reset)
+
+	event := validEvent(runtimemicrovm.HookRun, runtimemicrovm.StateRunning)
+	event.Metadata["canary"] = processMemoryCanaryMetadataValue
+	event.Metadata["checkpoint_marker"] = "checkpoint:bearer-token"
+	_, status, err := processMemoryCanaries.initializeOrObserve(event, "")
+	if err == nil {
+		t.Fatal("expected unsafe checkpoint marker to fail closed")
+	}
+	if status != http.StatusBadRequest {
+		t.Fatalf("expected 400 for unsafe checkpoint marker, got %d", status)
 	}
 }
 

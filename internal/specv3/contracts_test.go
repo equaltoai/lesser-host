@@ -72,6 +72,7 @@ func TestV3ContractFixturesValidate(t *testing.T) {
 				filepath.Join(fixturesDir, "hosted-genesis.conversation.in-progress.example.json"),
 				filepath.Join(fixturesDir, "hosted-genesis.conversation.assistant-turn-ready.example.json"),
 				filepath.Join(fixturesDir, "hosted-genesis.conversation.completed-declaration-ready.example.json"),
+				filepath.Join(fixturesDir, "hosted-genesis.conversation.published.example.json"),
 				filepath.Join(fixturesDir, "hosted-genesis.conversation.failed.example.json"),
 			},
 		},

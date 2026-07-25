@@ -12,11 +12,14 @@ import (
 	"time"
 
 	"github.com/aws/aws-lambda-go/events"
-	runtimemicrovm "github.com/theory-cloud/apptheory/runtime/microvm"
-	microvmtestkit "github.com/theory-cloud/apptheory/testkit/microvm"
+	runtimemicrovm "github.com/theory-cloud/apptheory/v2/runtime/microvm"
+	microvmtestkit "github.com/theory-cloud/apptheory/v2/testkit/microvm"
 
+	"github.com/equaltoai/lesser-host/internal/config"
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
 )
+
+const controllerTestTrue = "true"
 
 func TestControllerEventFailsClosedWhenDisabled(t *testing.T) {
 	t.Parallel()
@@ -76,7 +79,7 @@ func TestControllerEventGateNoLongerLabOnly(t *testing.T) {
 	if strings.Contains(src, `getenv("STAGE")) != "lab"`) {
 		t.Fatalf("H1.5 regression: controller still lab-gates on STAGE != \"lab\"; the runtime lab gate should be removed (fail-closed auth preserved)")
 	}
-	if !strings.Contains(src, `getenv("APPTHEORY_MICROVM_CONTROLLER_AUTH_REQUIRED")) != "true"`) {
+	if !strings.Contains(src, `getenv("APPTHEORY_MICROVM_CONTROLLER_AUTH_REQUIRED")) != "`+controllerTestTrue+`"`) {
 		t.Fatalf("H1.5 regression: fail-closed AUTH_REQUIRED check missing from controller gate")
 	}
 	if !strings.Contains(src, `getenv("APPTHEORY_MICROVM_CONTROLLER_AUTH_DEFAULT")) != runtimemicrovm.ControllerAuthDefaultDeny`) {
@@ -100,6 +103,12 @@ func TestRuntimeControllerUsesHostOwnedMicroVMRegistry(t *testing.T) {
 	}
 	if !strings.Contains(src, "HostedGenesisMicroVMReconstructionHook") {
 		t.Fatalf("expected missing/stale MicroVM registry cache to reconstruct from Host HostedGenesisSession truth")
+	}
+	if !strings.Contains(src, "HOSTED_GENESIS_MICROVM_MAXIMUM_DURATION_SECONDS") {
+		t.Fatalf("expected controller runtime to read Host-configured AppTheory MicroVM maximum duration")
+	}
+	if strings.Contains(src, "HOSTED_GENESIS_MICROVM_IDLE_") {
+		t.Fatalf("hosted genesis controller must not configure endpoint-idle suspension for asynchronous provider work")
 	}
 }
 
@@ -278,6 +287,35 @@ func TestControllerCSVAndFirstStringNormalize(t *testing.T) {
 	}
 }
 
+func TestControllerMaximumDurationEnvParsesAppTheoryRunPolicy(t *testing.T) {
+	t.Parallel()
+
+	getenv := func(key string) string {
+		switch key {
+		case "HOSTED_GENESIS_MICROVM_MAXIMUM_DURATION_SECONDS":
+			return "450"
+		default:
+			return ""
+		}
+	}
+	if got := microVMInt32Env(getenv, "HOSTED_GENESIS_MICROVM_MAXIMUM_DURATION_SECONDS", config.HostedGenesisMicroVMDefaultMaximumDurationSeconds, 0, config.HostedGenesisMicroVMDefaultMaximumDurationSeconds); got != 450 {
+		t.Fatalf("maximum duration parse = %d, want 450", got)
+	}
+	if err := runtimemicrovm.ValidateProviderRunInput(runtimemicrovm.ProviderRunInput{
+		RequestID:              "req",
+		TenantID:               "slug:demo",
+		Namespace:              hostedgenesis.MicroVMNamespace,
+		SessionID:              "conv",
+		AuthContext:            runtimemicrovm.AuthContext{Subject: hostedgenesis.MicroVMAuthSubject, TenantID: "slug:demo", Namespace: hostedgenesis.MicroVMNamespace},
+		ImageRef:               "image-ref",
+		NetworkConnectorRef:    "network-ref",
+		MaximumDurationSeconds: 450,
+		Logging:                runtimemicrovm.ProviderLogging{Disabled: true},
+	}); err != nil {
+		t.Fatalf("configured AppTheory run policy should validate: %v", err)
+	}
+}
+
 func testControllerApp(t *testing.T) interface {
 	ServeAPIGatewayV2(context.Context, events.APIGatewayV2HTTPRequest) events.APIGatewayV2HTTPResponse
 } {
@@ -291,6 +329,8 @@ func testControllerApp(t *testing.T) interface {
 			"ingress-ref",
 		},
 		EgressNetworkConnectorRefs: []string{"egress-ref"},
+		MaximumDurationSeconds:     config.HostedGenesisMicroVMDefaultMaximumDurationSeconds,
+		Logging:                    &runtimemicrovm.ProviderLogging{Disabled: true},
 	})
 	if err != nil {
 		t.Fatalf("NewMicroVMControllerRuntime: %v", err)

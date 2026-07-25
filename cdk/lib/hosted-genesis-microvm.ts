@@ -18,6 +18,36 @@ import type { Construct } from "constructs";
 export const HOSTED_GENESIS_MICROVM_NAMESPACE = "hosted-genesis" as const;
 export const HOSTED_GENESIS_MICROVM_SOURCE_OF_TRUTH =
   "host-dynamodb-hosted-genesis-session" as const;
+export const HOSTED_GENESIS_MICROVM_MAXIMUM_DURATION_SECONDS = 28800 as const;
+export const HOSTED_GENESIS_PROVIDER_HTTP_TIMEOUT_SECONDS = 27900 as const;
+export const HOSTED_GENESIS_PROVIDER_CALL_TIMEOUT_SECONDS = 27900 as const;
+export const HOSTED_GENESIS_WORKLOAD_EXECUTION_TIMEOUT_SECONDS = 28200 as const;
+export const HOSTED_GENESIS_TERMINAL_PERSISTENCE_MARGIN_SECONDS = 300 as const;
+export const HOSTED_GENESIS_RUNTIME_CLEANUP_MARGIN_SECONDS = 600 as const;
+export const HOSTED_GENESIS_MICROVM_CONFIG_JSON_ENV =
+  "HOSTED_GENESIS_MICROVM_CONFIG_JSON" as const;
+
+// #955/#957: the hosted-genesis five-body declaration contract (#928) is
+// selected by environment — RequireFiveBodyDeclarationContractFromEnv
+// (internal/hostedgenesis/fivebody.go) fails closed with
+// operator_action_required unless these env vars select v2. The env keys
+// and values below mirror the Go constants EnvDeclarationSchemaVersion /
+// EnvGuidanceVersion and DeclarationSchemaVersionV2 / GuidanceVersionV2. The
+// full version strings (not the accepted "v2" aliases) are used deliberately so
+// the deployed template itself is explicit contract evidence, matching the
+// live Ptah guidance bundle (soul-five-body-guidance.v2). The readers are the
+// MicroVM guest workload (cmd/hosted-genesis-microvm-workload/runner.go) and
+// the ai-worker fallback lane (internal/aiworker/hosted_genesis.go); the
+// control plane never reads the contract, so it deliberately does not carry
+// these vars.
+export const HOSTED_GENESIS_DECLARATION_SCHEMA_VERSION_ENV =
+  "HOSTED_GENESIS_DECLARATION_SCHEMA_VERSION" as const;
+export const HOSTED_GENESIS_GUIDANCE_VERSION_ENV =
+  "HOSTED_GENESIS_GUIDANCE_VERSION" as const;
+export const HOSTED_GENESIS_DECLARATION_SCHEMA_VERSION_V2 =
+  "soul-five-body-schema.v2" as const;
+export const HOSTED_GENESIS_GUIDANCE_VERSION_V2 =
+  "soul-five-body-guidance.v2" as const;
 
 // P52 H1 step 2 (F1): the AWS-managed base MicroVM image ARN. This is the
 // foundation the entire MicroVM-only genesis program sits on — H1.1–H1.5 merged
@@ -290,6 +320,10 @@ export function configureHostedGenesisMicrovm(
       egressNetworkConnectors: [egressConnector],
       environmentVariables: [
         {
+          key: "STAGE",
+          value: props.stage,
+        },
+        {
           key: "HOSTED_GENESIS_MICROVM_NAMESPACE",
           value: HOSTED_GENESIS_MICROVM_NAMESPACE,
         },
@@ -301,12 +335,43 @@ export function configureHostedGenesisMicrovm(
           key: "STATE_TABLE_NAME",
           value: props.stateTable.tableName,
         },
+        {
+          key: HOSTED_GENESIS_DECLARATION_SCHEMA_VERSION_ENV,
+          value: HOSTED_GENESIS_DECLARATION_SCHEMA_VERSION_V2,
+        },
+        {
+          key: HOSTED_GENESIS_GUIDANCE_VERSION_ENV,
+          value: HOSTED_GENESIS_GUIDANCE_VERSION_V2,
+        },
+        {
+          key: "HOSTED_GENESIS_PROVIDER_HTTP_TIMEOUT_SECONDS",
+          value: String(HOSTED_GENESIS_PROVIDER_HTTP_TIMEOUT_SECONDS),
+        },
+        {
+          key: "HOSTED_GENESIS_PROVIDER_CALL_TIMEOUT_SECONDS",
+          value: String(HOSTED_GENESIS_PROVIDER_CALL_TIMEOUT_SECONDS),
+        },
+        {
+          key: "HOSTED_GENESIS_WORKLOAD_EXECUTION_TIMEOUT_SECONDS",
+          value: String(HOSTED_GENESIS_WORKLOAD_EXECUTION_TIMEOUT_SECONDS),
+        },
+        {
+          key: "HOSTED_GENESIS_MICROVM_MAXIMUM_DURATION_SECONDS",
+          value: String(HOSTED_GENESIS_MICROVM_MAXIMUM_DURATION_SECONDS),
+        },
+        {
+          key: "HOSTED_GENESIS_TERMINAL_PERSISTENCE_MARGIN_SECONDS",
+          value: String(HOSTED_GENESIS_TERMINAL_PERSISTENCE_MARGIN_SECONDS),
+        },
+        {
+          key: "HOSTED_GENESIS_RUNTIME_CLEANUP_MARGIN_SECONDS",
+          value: String(HOSTED_GENESIS_RUNTIME_CLEANUP_MARGIN_SECONDS),
+        },
       ],
       hooks: {},
       logging: {
         cloudWatch: {
           logGroup: `/aws/lambda/microvms/${props.namePrefix}_hosted_genesis`,
-          logStream: "build",
         },
       },
       resources: [{ minimumMemoryInMiB: 2048 }],
@@ -392,6 +457,9 @@ export function configureHostedGenesisMicrovm(
           HOSTED_GENESIS_MICROVM_SOURCE_OF_TRUTH:
             HOSTED_GENESIS_MICROVM_SOURCE_OF_TRUTH,
           HOSTED_GENESIS_MICROVM_AUTH_TOKEN_SHA256: authTokenSha256,
+          HOSTED_GENESIS_MICROVM_MAXIMUM_DURATION_SECONDS: String(
+            HOSTED_GENESIS_MICROVM_MAXIMUM_DURATION_SECONDS,
+          ),
           STATE_TABLE_NAME: props.stateTable.tableName,
         },
       },
@@ -466,6 +534,9 @@ export function configureHostedGenesisMicrovm(
       dispatchFn,
       controller.endpoint,
       microvmImage.microvmImageArn,
+      microvmImage.latestActiveImageVersion,
+      executionRole.roleArn,
+      `/aws/lambda/microvms/${props.namePrefix}_hosted_genesis`,
       [
         ingressConnector.networkConnectorArn,
         shellIngressConnector.networkConnectorArn,
@@ -546,6 +617,9 @@ function grantFunctionMicroVMDispatch(
   fn: lambda.Function,
   controllerEndpoint: string,
   imageArn: string,
+  imageVersion: string,
+  executionRoleArn: string,
+  runtimeLogGroup: string,
   ingressConnectorArns: string[],
   egressConnectorArns: string[],
   authTokenSSMParamName: string,
@@ -573,34 +647,61 @@ function grantFunctionMicroVMDispatch(
     }),
   );
 
-  // Inject the env vars controlplane.NewServer's HTTP dispatcher constructor
-  // reads: the governed controller endpoint, the auth-token SSM param name
-  // (the raw token is fetched at runtime, never committed), and the non-secret
-  // image/network-connector refs the control plane sends in the POST /microvms
-  // run body. addEnvironment is the CDK-supported way to append env vars to a
-  // Function constructed elsewhere.
-  fn.addEnvironment("HOSTED_GENESIS_MICROVM_ENABLED", "true");
+  // Inject one compact config env var read by controlplane.NewServer /
+  // ai-worker. It carries the same AppTheory POST /microvms run inputs the
+  // legacy per-variable env carried — governed controller endpoint, auth-token
+  // SSM param name (raw token fetched at runtime), image ref, ingress/egress
+  // refs and MaximumDurationSeconds — but avoids duplicating long
+  // APPTHEORY_MICROVM_* key names on already-large deployment Lambdas. The
+  // compact field names are Host-private CDK/runtime contract, not a public API.
+  // addEnvironment is the CDK-supported way to append env vars to a Function
+  // constructed elsewhere.
   fn.addEnvironment(
-    "APPTHEORY_MICROVM_CONTROLLER_ENDPOINT",
+    HOSTED_GENESIS_MICROVM_CONFIG_JSON_ENV,
+    hostedGenesisMicroVMDispatchConfigJSON(
+      controllerEndpoint,
+      authTokenSSMParamName,
+      imageArn,
+      imageVersion,
+      executionRoleArn,
+      runtimeLogGroup,
+      ingressConnectorArns,
+      egressConnectorArns,
+    ),
+  );
+}
+
+function hostedGenesisMicroVMDispatchConfigJSON(
+  controllerEndpoint: string,
+  authTokenSSMParamName: string,
+  imageArn: string,
+  imageVersion: string,
+  executionRoleArn: string,
+  runtimeLogGroup: string,
+  ingressConnectorArns: string[],
+  egressConnectorArns: string[],
+): string {
+  return cdk.Fn.join("", [
+    '{"v":2,"ep":"',
     controllerEndpoint,
-  );
-  fn.addEnvironment(
-    "HOSTED_GENESIS_MICROVM_AUTH_TOKEN_SSM_PARAM",
+    '","ap":"',
     authTokenSSMParamName,
-  );
-  fn.addEnvironment("APPTHEORY_MICROVM_IMAGE_REF", imageArn);
-  fn.addEnvironment(
-    "APPTHEORY_MICROVM_INGRESS_NETWORK_CONNECTOR_REFS",
+    '","img":"',
+    imageArn,
+    '","iv":"',
+    imageVersion,
+    '","er":"',
+    executionRoleArn,
+    '","lg":"',
+    runtimeLogGroup,
+    '","in":"',
     ingressConnectorArns.join(","),
-  );
-  fn.addEnvironment(
-    "APPTHEORY_MICROVM_EGRESS_NETWORK_CONNECTOR_REFS",
+    '","eg":"',
     egressConnectorArns.join(","),
-  );
-  fn.addEnvironment(
-    "APPTHEORY_MICROVM_NETWORK_CONNECTOR_REFS",
-    egressConnectorArns.join(","),
-  );
+    '","max":',
+    String(HOSTED_GENESIS_MICROVM_MAXIMUM_DURATION_SECONDS),
+    "}",
+  ]);
 }
 
 // ssmParamArn formats the full ARN for an SSM parameter name (the parameter is
@@ -843,7 +944,12 @@ function createHostedGenesisMicrovmImageBuildRole(
     // docs specify lambda.amazonaws.com as the trust principal; the
     // microvms.lambda.amazonaws.com form is rejected by IAM as an invalid
     // principal (CREATE fails with "IAM Invalid principal in policy").
-    assumedBy: new iam.ServicePrincipal("lambda.amazonaws.com"),
+    // AWS Lambda MicroVMs require both sts:AssumeRole and sts:TagSession on
+    // build/execution role trust. withSessionTags() adds the latter without
+    // broadening the service principal.
+    assumedBy: new iam.ServicePrincipal(
+      "lambda.amazonaws.com",
+    ).withSessionTags(),
   });
 
   // Fetch the workload code artifact tarball from the CDK asset staging bucket.
@@ -959,7 +1065,13 @@ function createHostedGenesisMicrovmExecutionRole(
     // AWS Lambda MicroVMs assume this role via lambda.amazonaws.com trust
     // (microvms.lambda.amazonaws.com is rejected by IAM as an invalid
     // principal — see the build role comment above).
-    assumedBy: new iam.ServicePrincipal("lambda.amazonaws.com"),
+    // AWS Lambda MicroVMs require both sts:AssumeRole and sts:TagSession on
+    // build/execution role trust. The live role previously allowed only
+    // AssumeRole, which prevented the service's tagged runtime session from
+    // delivering stdout/stderr even though the role had Logs permissions.
+    assumedBy: new iam.ServicePrincipal(
+      "lambda.amazonaws.com",
+    ).withSessionTags(),
   });
 
   // DynamoDB read/write on the Host state table only. The workload reads
@@ -999,13 +1111,31 @@ function createHostedGenesisMicrovmExecutionRole(
     }),
   );
 
-  // X-Ray trace emission + CloudWatch Logs for the in-VM process observability
-  // (the workload wires apptheory observability hooks). Scoped managed policies
-  // only — no administrative actions.
-  role.addManagedPolicy(
-    iam.ManagedPolicy.fromAwsManagedPolicyName(
-      "service-role/AWSLambdaBasicExecutionRole",
-    ),
+  // Runtime stdout/stderr delivery uses this role, not the controller Lambda's
+  // role. Grant exactly the AWS-documented actions. CreateLogGroup cannot be
+  // resource-scoped; stream creation and writes are limited to the canonical
+  // hosted-genesis MicroVM log group. AppTheory remains the only RunMicrovm
+  // lifecycle path and propagates this role through executionRole.
+  role.addToPolicy(
+    new iam.PolicyStatement({
+      sid: "CreateMicrovmRuntimeLogGroup",
+      actions: ["logs:CreateLogGroup"],
+      resources: ["*"],
+    }),
+  );
+  role.addToPolicy(
+    new iam.PolicyStatement({
+      sid: "WriteMicrovmRuntimeLogs",
+      actions: ["logs:CreateLogStream", "logs:PutLogEvents"],
+      resources: [
+        cdk.Stack.of(scope).formatArn({
+          service: "logs",
+          resource: "log-group",
+          resourceName: `/aws/lambda/microvms/${namePrefix}_hosted_genesis:*`,
+          arnFormat: cdk.ArnFormat.COLON_RESOURCE_NAME,
+        }),
+      ],
+    }),
   );
 
   cdk.Tags.of(role).add("Service", "lesser-host");

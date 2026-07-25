@@ -11,9 +11,13 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
-	runtimemicrovm "github.com/theory-cloud/apptheory/runtime/microvm"
-	microvmtestkit "github.com/theory-cloud/apptheory/testkit/microvm"
+	runtimemicrovm "github.com/theory-cloud/apptheory/v2/runtime/microvm"
+	microvmtestkit "github.com/theory-cloud/apptheory/v2/testkit/microvm"
 )
+
+func testMicroVMLoggingDisabled() *runtimemicrovm.ProviderLogging {
+	return &runtimemicrovm.ProviderLogging{Disabled: true}
+}
 
 func TestMicroVMControllerRuntimeExercisesAppTheoryM16Commands(t *testing.T) {
 	t.Parallel()
@@ -27,6 +31,7 @@ func TestMicroVMControllerRuntimeExercisesAppTheoryM16Commands(t *testing.T) {
 		NetworkConnectorRef:         "arn:aws:lambda:us-east-1:123456789012:network-connector/hosted-genesis-egress",
 		IngressNetworkConnectorRefs: []string{"HTTP_INGRESS"},
 		EgressNetworkConnectorRefs:  []string{"arn:aws:lambda:us-east-1:123456789012:network-connector/hosted-genesis-egress"},
+		Logging:                     testMicroVMLoggingDisabled(),
 	})
 	require.NoError(t, err)
 
@@ -103,6 +108,7 @@ func TestMicroVMControllerRuntimeSafeEnvelopeRejectsForbiddenFields(t *testing.T
 		Registry:            runtimemicrovm.NewMemorySessionRegistry(),
 		ImageRef:            "image-ref",
 		NetworkConnectorRef: "network-ref",
+		Logging:             testMicroVMLoggingDisabled(),
 	})
 	require.NoError(t, err)
 
@@ -124,7 +130,7 @@ func TestMicroVMLifecycleRefReconcilesExecutionCacheOnly(t *testing.T) {
 
 	binding := testMicroVMBinding()
 	provider := microvmtestkit.NewFakeProvider()
-	runtime, err := NewMicroVMControllerRuntime(MicroVMControllerRuntimeConfig{Provider: provider, Registry: runtimemicrovm.NewMemorySessionRegistry(), ImageRef: "image-ref", NetworkConnectorRef: "network-ref"})
+	runtime, err := NewMicroVMControllerRuntime(MicroVMControllerRuntimeConfig{Provider: provider, Registry: runtimemicrovm.NewMemorySessionRegistry(), ImageRef: "image-ref", NetworkConnectorRef: "network-ref", Logging: testMicroVMLoggingDisabled()})
 	require.NoError(t, err)
 
 	run, err := runtime.Run(context.Background(), "req-run", binding)
@@ -167,7 +173,7 @@ func TestMicroVMLifecycleRefReconcilesExecutionCacheOnly(t *testing.T) {
 	})
 	require.ErrorIs(t, err, ErrStaleMicroVMRegistryState)
 
-	lostRegistryRuntime, err := NewMicroVMControllerRuntime(MicroVMControllerRuntimeConfig{Provider: microvmtestkit.NewFakeProvider(), Registry: runtimemicrovm.NewMemorySessionRegistry(), ImageRef: "image-ref", NetworkConnectorRef: "network-ref"})
+	lostRegistryRuntime, err := NewMicroVMControllerRuntime(MicroVMControllerRuntimeConfig{Provider: microvmtestkit.NewFakeProvider(), Registry: runtimemicrovm.NewMemorySessionRegistry(), ImageRef: "image-ref", NetworkConnectorRef: "network-ref", Logging: testMicroVMLoggingDisabled()})
 	require.NoError(t, err)
 	_, err = lostRegistryRuntime.Command(context.Background(), runtimemicrovm.CommandGet, "req-lost", binding)
 	require.Error(t, err, "registry/cache loss must not invent Host business state without reconstruction")
@@ -182,6 +188,7 @@ func TestMicroVMControllerRuntimeUsesAppTheoryM16WithoutLocalAdapter(t *testing.
 		Registry:            runtimemicrovm.NewMemorySessionRegistry(),
 		ImageRef:            "image-ref",
 		NetworkConnectorRef: "network-ref",
+		Logging:             testMicroVMLoggingDisabled(),
 	})
 	require.NoError(t, err)
 	require.NotNil(t, runtime.Controller())
@@ -211,7 +218,7 @@ func TestMicroVMLabCanaryHarnessExercisesM16LifecycleAndSecretChecks(t *testing.
 
 	binding := testMicroVMBinding()
 	provider := microvmtestkit.NewFakeProviderWithTime(time.Date(2026, 6, 25, 19, 0, 0, 0, time.UTC))
-	runtime, err := NewMicroVMControllerRuntime(MicroVMControllerRuntimeConfig{Provider: provider, Registry: runtimemicrovm.NewMemorySessionRegistry(), ImageRef: "image-ref", NetworkConnectorRef: "network-ref"})
+	runtime, err := NewMicroVMControllerRuntime(MicroVMControllerRuntimeConfig{Provider: provider, Registry: runtimemicrovm.NewMemorySessionRegistry(), ImageRef: "image-ref", NetworkConnectorRef: "network-ref", Logging: testMicroVMLoggingDisabled()})
 	require.NoError(t, err)
 
 	responses := make([]runtimemicrovm.ControllerResponse, 0, 8)

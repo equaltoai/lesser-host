@@ -19,14 +19,12 @@ func TestStatusTransitionTable(t *testing.T) {
 	}{
 		{StatusCreated, StatusInProgress},
 		{StatusInProgress, StatusAssistantTurnReady},
-		{StatusInProgress, StatusDeclarationExtractionPending},
+		{StatusInProgress, StatusDeclarationReady},
 		{StatusAssistantTurnReady, StatusInProgress},
-		{StatusAssistantTurnReady, StatusDeclarationExtractionPending},
-		{StatusDeclarationExtractionPending, StatusDeclarationReady},
+		{StatusDeclarationReady, StatusPublished},
 		{StatusCreated, StatusFailed},
 		{StatusInProgress, StatusFailed},
 		{StatusAssistantTurnReady, StatusFailed},
-		{StatusDeclarationExtractionPending, StatusFailed},
 	}
 	for _, tt := range legal {
 		t.Run(string(tt.from)+"_to_"+string(tt.to), func(t *testing.T) {
@@ -40,9 +38,10 @@ func TestStatusTransitionTable(t *testing.T) {
 		to   Status
 	}{
 		{StatusCreated, StatusDeclarationReady},
-		{StatusInProgress, StatusDeclarationReady},
-		{StatusDeclarationExtractionPending, StatusAssistantTurnReady},
+		{StatusAssistantTurnReady, StatusCreated},
 		{StatusDeclarationReady, StatusInProgress},
+		{StatusDeclarationReady, StatusFailed},
+		{StatusPublished, StatusDeclarationReady},
 		{StatusFailed, StatusInProgress},
 	}
 	for _, tt := range illegal {
@@ -51,6 +50,50 @@ func TestStatusTransitionTable(t *testing.T) {
 			require.ErrorIs(t, ValidateTransition(tt.from, tt.to), ErrInvalidStatusTransition)
 		})
 	}
+}
+
+func TestPublishedProjectionRequiresBoundPublicationCheckpoint(t *testing.T) {
+	t.Parallel()
+
+	declaration := validDeclarationCheckpoint()
+	publishedAt := declaration.ProducedAt.Add(time.Minute)
+	publication := PublicationCheckpoint{
+		RegistrationID:       declaration.RegistrationID,
+		ConversationID:       declaration.ConversationID,
+		AgentID:              declaration.AgentID,
+		Version:              1,
+		RegistrationSHA256:   strings.Repeat("b", 64),
+		RegistrationIssuedAt: declaration.ProducedAt,
+		PublishedAt:          publishedAt,
+	}
+	projection, err := NewConversationProjection(ProjectionInput{
+		RegistrationID:        declaration.RegistrationID,
+		ConversationID:        declaration.ConversationID,
+		AgentID:               declaration.AgentID,
+		Status:                StatusPublished,
+		MessageCount:          declaration.MessageCount,
+		DeclarationCheckpoint: &declaration,
+		Publication:           &publication,
+		CompletedAt:           declaration.ProducedAt,
+	}, true)
+	require.NoError(t, err)
+	require.Equal(t, StatusPublished, projection.Status)
+	require.Equal(t, 1, projection.PublishedVersion)
+	require.Equal(t, publishedAt, projection.PublishedAt)
+	require.Nil(t, projection.DeclarationCheckpoint)
+	require.Nil(t, projection.Failure)
+	require.Zero(t, projection.PollAfterSeconds)
+
+	publication.ConversationID = "conv_other"
+	_, err = NewConversationProjection(ProjectionInput{
+		RegistrationID:        declaration.RegistrationID,
+		ConversationID:        declaration.ConversationID,
+		AgentID:               declaration.AgentID,
+		Status:                StatusPublished,
+		DeclarationCheckpoint: &declaration,
+		Publication:           &publication,
+	}, true)
+	require.ErrorIs(t, err, ErrInvalidPublicationCheckpoint)
 }
 
 func TestCreatedCollapsesForInstanceKeyRead(t *testing.T) {
@@ -106,7 +149,8 @@ func TestFailedRecoveryActionsAreServerAuthoredAndBounded(t *testing.T) {
 
 	failure := Failure{
 		Code:      FailureCodeLLMUnavailable,
-		Message:   "assistant turn failed before declaration extraction",
+		Class:     FailureClassProviderAPIFailure,
+		Message:   "assistant turn failed during current declaration section",
 		Retryable: true,
 		Recovery: Recovery{
 			Action:            RecoveryActionRetrySameStep,
@@ -116,8 +160,13 @@ func TestFailedRecoveryActionsAreServerAuthoredAndBounded(t *testing.T) {
 		},
 	}
 	require.NoError(t, failure.Validate())
+	require.Equal(t, FailureClassProviderTimeout, NormalizeFailureClass(" provider_timeout "))
+	require.Equal(t, FailureClassProviderAPIFailure, NormalizeFailureClass("private arbitrary detail"))
 
 	failure.Recovery.Action = RecoveryAction("caller_supplied_shell_command")
+	require.ErrorIs(t, failure.Validate(), ErrInvalidFailureRecovery)
+	failure.Recovery.Action = RecoveryActionRetrySameStep
+	failure.Class = FailureClass("private_detail")
 	require.ErrorIs(t, failure.Validate(), ErrInvalidFailureRecovery)
 }
 
@@ -180,6 +229,8 @@ func validDeclarationCheckpoint() DeclarationCheckpoint {
 		AgentID:         "0x2222222222222222222222222222222222222222222222222222222222222222",
 		MessageCount:    2,
 		Model:           "openai:gpt-5.4",
+		SchemaVersion:   DeclarationSchemaVersionV2,
+		GuidanceVersion: GuidanceVersionV2,
 		RequestID:       "req_123",
 	}
 }

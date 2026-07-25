@@ -4,13 +4,19 @@ import (
 	"fmt"
 	"strings"
 
-	runtimemicrovm "github.com/theory-cloud/apptheory/runtime/microvm"
+	runtimemicrovm "github.com/theory-cloud/apptheory/v2/runtime/microvm"
 )
 
 const (
 	// MicroVMTurnEndpointPath is Host's application-level MicroVM turn endpoint.
 	// It deliberately does not use the AWS-reserved lifecycle /run hook path.
 	MicroVMTurnEndpointPath = "/hosted-genesis/turn"
+
+	// MicroVMProcessMemoryCanaryEndpointPath is the lab-only workload endpoint used
+	// to prove whether AppTheory/AWS Lambda MicroVM suspend/resume preserves process
+	// memory. It stores only a random non-secret nonce in process memory and returns
+	// hash/correlation metadata through the AppTheory controller invoke route.
+	MicroVMProcessMemoryCanaryEndpointPath = "/hosted-genesis/lab/process-memory-canary"
 
 	// MicroVMTurnPort is the workload port the hosted-genesis turn endpoint
 	// serves. AppTheory's controller invoke route uses this value only as the

@@ -64,7 +64,7 @@ func managedUpdateRunnerJob(step string) *models.UpdateJob {
 		Region:                         "us-east-1",
 		BaseDomain:                     "slug.example.com",
 		LesserVersion:                  "v1.2.6",
-		LesserBodyVersion:              "v0.2.3",
+		LesserBodyVersion:              "v1.0.8",
 		LesserHostBaseURL:              "https://lab.example.com",
 		LesserHostAttestationsURL:      "https://lab.example.com",
 		LesserHostInstanceKeySecretARN: "arn:aws:secretsmanager:us-east-1:123456789012:secret:key",
@@ -376,7 +376,7 @@ func TestAdvanceUpdateBodyDeployStart_Branches(t *testing.T) {
 				Stage:                             "lab",
 			},
 			store:             st,
-			releaseHTTPClient: newHappyManagedLesserBodyReleaseClient(t, managedStageDev, "v0.2.3"),
+			releaseHTTPClient: newHappyManagedLesserBodyReleaseClient(t, managedStageDev, "v1.0.8"),
 			cb:                cb,
 		}
 		job := managedUpdateRunnerJob(updateStepBodyDeployStart)
@@ -481,7 +481,7 @@ func TestAdvanceUpdateBodyDeployWait_UsesReceiptWhenTrackedRunIsStale(t *testing
 		store: st,
 		s3: &fakeS3{byKey: map[string]*s3.GetObjectOutput{
 			"managed/updates/slug/job-1/body-state.json": {
-				Body: io.NopCloser(strings.NewReader(`{"version":1,"stage":"dev","base_domain":"slug.example.com","lesser_body_version":"v0.1.14"}`)),
+				Body: io.NopCloser(strings.NewReader(`{"version":1,"stage":"dev","base_domain":"slug.example.com","lesser_body_version":"v0.1.14","soul_binding_integration":{"version":1,"source":"deploy-runner-managed-profile","secret_arn":"arn:aws:secretsmanager:us-east-1:123456789012:secret:dev/slug/soul-binding-integration-Ab12Cd","key_id":"5b0a2f9f8a3f0d3c8a3b1e0f2c4d6e8f0a1b2c3d4e5f60718293a4b5c6d7e8f9","instance_slug":"slug","stage":"dev","verified_at":"2026-06-27T00:00:00Z"}}`)),
 			},
 		}},
 	}
@@ -573,7 +573,7 @@ func assertUpdateRunnerStartRetriesThenFails(
 		cb:                &fakeCodebuild{startErr: errors.New("boom")},
 	}
 	if step == updateStepBodyDeployStart {
-		srv.releaseHTTPClient = newHappyManagedLesserBodyReleaseClient(t, managedStageDev, "v0.2.3")
+		srv.releaseHTTPClient = newHappyManagedLesserBodyReleaseClient(t, managedStageDev, "v1.0.8")
 	}
 	job := managedUpdateRunnerJob(step)
 

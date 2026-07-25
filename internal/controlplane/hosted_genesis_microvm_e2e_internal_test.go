@@ -11,8 +11,10 @@ import (
 	"testing"
 	"time"
 
-	runtimemicrovm "github.com/theory-cloud/apptheory/runtime/microvm"
+	"github.com/stretchr/testify/require"
+	runtimemicrovm "github.com/theory-cloud/apptheory/v2/runtime/microvm"
 
+	"github.com/equaltoai/lesser-host/internal/config"
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
 )
 
@@ -28,9 +30,8 @@ import (
 //     /microvms/{session_id}) -> live VM preserves the pending ref
 //     (assistant_turn_ready is reached by the in-VM workload writing session
 //     truth out-of-band, modeled here by the stub controller keeping the
-//     session running); a follow-on extraction run dispatches on the same
-//     session (declaration_extraction_pending -> declaration_ready is the
-//     workload completing in-VM).
+//     session running); a follow-on actor turn dispatches on the same session,
+//     preserving the conversation-lifetime MicroVM identity.
 //  2. Kill-VM recovery: dispatch run -> in_progress; the stub controller
 //     reports the session terminated (the VM was killed mid-turn); reconcile
 //     get surfaces Terminal=true -> the recover path maps it to a loud
@@ -91,25 +92,25 @@ func TestH1_5_E2E_HappyPathAndKillVMRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("happy path: poll reconcile failed: %v", err)
 	}
-	if reconcile.Terminal {
+	if reconcile.CannotCompletePendingTurn {
 		t.Fatalf("happy path: a live VM must not be Terminal; expected pending preserved, got terminal reconcile %#v", reconcile)
 	}
 	if reconcile.LifecycleRef.LifecycleState != runtimemicrovm.StateRunning {
 		t.Fatalf("happy path: expected running observed state on live VM, got %q", reconcile.LifecycleRef.LifecycleState)
 	}
 
-	// In-VM extraction: a follow-on run dispatch on the same session (the
-	// declaration_extraction_pending -> declaration_ready transition is serviced
-	// by the VM). The dispatcher allocates the same session id (binding-bound).
-	extraction, err := dispatcher.DispatchMicroVMRun(context.Background(), "req_e2e_extract", binding)
+	// A follow-on actor turn dispatches on the same binding. Typed section tools
+	// execute inside that conversation-lifetime MicroVM; Host only proves the
+	// AppTheory controller preserves the same bound session id here.
+	continuation, err := dispatcher.DispatchMicroVMRun(context.Background(), "req_e2e_continue", binding)
 	if err != nil {
-		t.Fatalf("happy path: extraction dispatch failed: %v", err)
+		t.Fatalf("happy path: actor continuation dispatch failed: %v", err)
 	}
-	if extraction.LifecycleRef.SessionID != binding.ConversationID {
-		t.Fatalf("happy path: extraction dispatch ref bound to wrong session: %#v", extraction.LifecycleRef)
+	if continuation.LifecycleRef.SessionID != binding.ConversationID {
+		t.Fatalf("happy path: continuation dispatch ref bound to wrong session: %#v", continuation.LifecycleRef)
 	}
-	if extraction.LifecycleRef.LifecycleState != runtimemicrovm.StateRunning {
-		t.Fatalf("happy path: extraction expected running state, got %q", extraction.LifecycleRef.LifecycleState)
+	if continuation.LifecycleRef.LifecycleState != runtimemicrovm.StateRunning {
+		t.Fatalf("happy path: continuation expected running state, got %q", continuation.LifecycleRef.LifecycleState)
 	}
 
 	// --- Kill-VM recovery arc (extracted to keep the happy-path test under the
@@ -145,7 +146,7 @@ func h1_5KillVMRecoveryArc(t *testing.T, dispatcher hostedgenesis.MicroVMDispatc
 	if err != nil {
 		t.Fatalf("kill-vm: recover reconcile failed: %v", err)
 	}
-	if !killedReconcile.Terminal {
+	if !killedReconcile.CannotCompletePendingTurn {
 		t.Fatalf("kill-vm: a terminated VM must be Terminal so recover maps to loud failed, got non-terminal %#v", killedReconcile)
 	}
 	if killedReconcile.LifecycleRef.LifecycleState != runtimemicrovm.StateTerminated {
@@ -167,11 +168,11 @@ func h1_5KillVMRecoveryArc(t *testing.T, dispatcher hostedgenesis.MicroVMDispatc
 	}
 }
 
-// TestH1_5_E2E_MaximumDurationSecondsWired proves the H1.5 timeout-budget
-// wiring: the dispatcher-sized MaximumDurationSeconds (config, decision 7) is
-// set on the dispatched POST /microvms run body so the MicroVM session is
-// bounded for the longest LLM turn plus in-VM extraction. The stub controller
-// records the value it received on the run body.
+// TestH1_5_E2E_MaximumDurationSecondsWired proves the H1.5/M11 timeout-budget
+// wiring: the dispatcher-sized MaximumDurationSeconds is set on the dispatched
+// POST /microvms run body while ProviderIdlePolicy is omitted. AWS measures
+// idleness using inbound endpoint traffic, so applying it to detached provider
+// work would suspend a still-running actor.
 func TestH1_5_E2E_MaximumDurationSecondsWired(t *testing.T) {
 	cfg := microVMWiringTestConfig()
 	const wantMaxDuration = int32(300)
@@ -202,20 +203,93 @@ func TestH1_5_E2E_MaximumDurationSecondsWired(t *testing.T) {
 	if got := stub.capturedMaxDuration(); got != wantMaxDuration {
 		t.Fatalf("expected MaximumDurationSeconds=%d on the run request, got %d", wantMaxDuration, got)
 	}
+	if idle := stub.capturedIdlePolicy(); idle != nil {
+		t.Fatalf("asynchronous hosted-genesis run must omit ProviderIdlePolicy, got %#v", idle)
+	}
+}
+
+func TestH1_5_E2E_CompactMicroVMEnvWiresAppTheoryRunRequest(t *testing.T) {
+	stub := newMaxDurationCapturingControllerServer(t, "stub-bearer")
+	controllerSrv := httptest.NewServer(stub.handler())
+	t.Cleanup(controllerSrv.Close)
+
+	t.Setenv(config.HostedGenesisMicroVMConfigJSONEnv, `{
+		"v": 2,
+		"ep": "`+controllerSrv.URL+`/microvms",
+		"ap": "/lesser-host/lab/hosted-genesis/microvm/auth-token",
+		"img": "arn:aws:lambda::microvm-image/hosted-genesis:compact",
+		"iv": "29",
+		"er": "arn:aws:iam::123456789012:role/hosted-genesis-test",
+		"lg": "/aws/lambda/microvms/hosted-genesis-test",
+		"in": "arn:aws:lambda::network-connector/http-ingress:compact,arn:aws:lambda::network-connector/shell-ingress:compact",
+		"eg": "arn:aws:lambda::network-connector/internet-egress:compact",
+		"max": 450
+	}`)
+	cfg := config.Load()
+
+	dispatcher := newHostedGenesisMicroVMDispatcher(context.Background(), cfg, stubSSMGetter{
+		param: cfg.HostedGenesisMicroVM.AuthTokenSSMParam,
+		token: stub.inner.token,
+	}.GetParameter, hostedGenesisMicroVMDispatcherOptions{})
+	if dispatcher == nil {
+		t.Fatalf("expected dispatcher from compact env config, got nil")
+	}
+	binding := hostedgenesis.MicroVMSessionBinding{
+		InstanceSlug:   "acme",
+		RegistrationID: "reg_compact",
+		AgentID:        "agent_compact",
+		ConversationID: "conv_compact_001",
+		TurnID:         "turn_1",
+	}
+	if _, err := dispatcher.DispatchMicroVMRun(context.Background(), "req_compact", binding); err != nil {
+		t.Fatalf("compact config dispatch failed: %v", err)
+	}
+
+	payload := stub.payload
+	require.Equal(t, "arn:aws:lambda::microvm-image/hosted-genesis:compact", payload.ImageRef)
+	require.Equal(t, "29", payload.ImageVersion)
+	if payload.NetworkConnectorRef != "arn:aws:lambda::network-connector/internet-egress:compact" {
+		t.Fatalf("compact config network connector did not reach AppTheory run request: %#v", payload)
+	}
+	if len(payload.IngressNetworkConnectorRefs) != 2 ||
+		payload.IngressNetworkConnectorRefs[0] != "arn:aws:lambda::network-connector/http-ingress:compact" ||
+		payload.IngressNetworkConnectorRefs[1] != "arn:aws:lambda::network-connector/shell-ingress:compact" {
+		t.Fatalf("compact config ingress refs did not reach AppTheory run request: %#v", payload)
+	}
+	if len(payload.EgressNetworkConnectorRefs) != 1 ||
+		payload.EgressNetworkConnectorRefs[0] != "arn:aws:lambda::network-connector/internet-egress:compact" {
+		t.Fatalf("compact config egress refs did not reach AppTheory run request: %#v", payload)
+	}
+	if payload.MaximumDurationSeconds != 450 {
+		t.Fatalf("compact config maximum duration did not reach AppTheory run request: %#v", payload)
+	}
+	if payload.IdlePolicy != nil {
+		t.Fatalf("compact config must not inject AppTheory idle suspension: %#v", payload.IdlePolicy)
+	}
 }
 
 // maxDurationCapturingControllerServer wraps the stub controller and captures
-// the maximum_duration_seconds passed in the POST /microvms run body so the E2E
-// harness can assert the timeout-budget wiring without calling AWS.
+// the lifetime policy passed in the POST /microvms run body so the E2E harness
+// can assert timeout-budget wiring without calling AWS.
 type maxDurationCapturingControllerServer struct {
-	inner    *stubControllerServer
-	captured *int32
+	inner   *stubControllerServer
+	payload capturedMicroVMRunPayload
 }
 
 func newMaxDurationCapturingControllerServer(t *testing.T, token string) *maxDurationCapturingControllerServer {
 	t.Helper()
 	inner := newStubControllerServer(token)
-	return &maxDurationCapturingControllerServer{inner: inner, captured: new(int32)}
+	return &maxDurationCapturingControllerServer{inner: inner}
+}
+
+type capturedMicroVMRunPayload struct {
+	ImageRef                    string                             `json:"image_ref"`
+	ImageVersion                string                             `json:"image_version"`
+	NetworkConnectorRef         string                             `json:"network_connector_ref"`
+	IngressNetworkConnectorRefs []string                           `json:"ingress_network_connector_refs"`
+	EgressNetworkConnectorRefs  []string                           `json:"egress_network_connector_refs"`
+	MaximumDurationSeconds      int32                              `json:"maximum_duration_seconds"`
+	IdlePolicy                  *runtimemicrovm.ProviderIdlePolicy `json:"idle_policy"`
 }
 
 func (s *maxDurationCapturingControllerServer) handler() http.Handler {
@@ -227,11 +301,7 @@ func (s *maxDurationCapturingControllerServer) handler() http.Handler {
 			body, err := io.ReadAll(r.Body)
 			_ = r.Body.Close()
 			if err == nil {
-				var payload struct {
-					MaximumDurationSeconds int32 `json:"maximum_duration_seconds"`
-				}
-				_ = json.Unmarshal(body, &payload)
-				*s.captured = payload.MaximumDurationSeconds
+				_ = json.Unmarshal(body, &s.payload)
 			}
 			r.Body = io.NopCloser(bytes.NewReader(body))
 		}
@@ -239,7 +309,13 @@ func (s *maxDurationCapturingControllerServer) handler() http.Handler {
 	})
 }
 
-func (s *maxDurationCapturingControllerServer) capturedMaxDuration() int32 { return *s.captured }
+func (s *maxDurationCapturingControllerServer) capturedMaxDuration() int32 {
+	return s.payload.MaximumDurationSeconds
+}
+
+func (s *maxDurationCapturingControllerServer) capturedIdlePolicy() *runtimemicrovm.ProviderIdlePolicy {
+	return s.payload.IdlePolicy
+}
 
 // TestH1_5_E2E_HarnessConfigCompleteGuard is a lightweight guard that the
 // harness's wiring-test config satisfies config.HostedGenesisMicroVMConfig.Complete
@@ -249,7 +325,7 @@ func (s *maxDurationCapturingControllerServer) capturedMaxDuration() int32 { ret
 func TestH1_5_E2E_HarnessConfigCompleteGuard(t *testing.T) {
 	cfg := microVMWiringTestConfig()
 	if !cfg.HostedGenesisMicroVM.Complete() {
-		t.Fatalf("E2E harness config must be Complete (enabled + endpoint + auth token + image + egress), got %#v", cfg.HostedGenesisMicroVM)
+		t.Fatalf("E2E harness config must be Complete (enabled + endpoint + auth token + image + egress + maximum duration), got %#v", cfg.HostedGenesisMicroVM)
 	}
 	if !strings.HasPrefix(cfg.HostedGenesisMicroVM.ImageRef, "arn:") {
 		t.Fatalf("E2E harness config image ref drifted: %q", cfg.HostedGenesisMicroVM.ImageRef)

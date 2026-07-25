@@ -18,7 +18,7 @@ import (
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
-	apptheory "github.com/theory-cloud/apptheory/runtime"
+	apptheory "github.com/theory-cloud/apptheory/v2/runtime"
 	"github.com/theory-cloud/tabletheory/v2/pkg/core"
 	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
 	ttmocks "github.com/theory-cloud/tabletheory/v2/pkg/mocks"
@@ -484,6 +484,7 @@ func assertSoulPublicAgentBoolPointer(t *testing.T, name string, got *bool, want
 
 	if got == nil {
 		t.Fatalf("expected public agent %s=%v, got nil (agent=%#v)", name, want, agent)
+		return
 	}
 	if *got != want {
 		t.Fatalf("expected public agent %s=%v, got %v (agent=%#v)", name, want, *got, agent)
