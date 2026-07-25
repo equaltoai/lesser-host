@@ -15,7 +15,7 @@ import (
 	ssmtypes "github.com/aws/aws-sdk-go-v2/service/ssm/types"
 	"github.com/stripe/stripe-go/v79"
 
-	apptheory "github.com/theory-cloud/apptheory/runtime"
+	apptheory "github.com/theory-cloud/apptheory/v2/runtime"
 	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
 
 	"github.com/stretchr/testify/mock"

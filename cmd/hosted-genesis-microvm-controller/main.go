@@ -15,8 +15,8 @@ import (
 
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-lambda-go/lambda"
-	apptheory "github.com/theory-cloud/apptheory/runtime"
-	runtimemicrovm "github.com/theory-cloud/apptheory/runtime/microvm"
+	apptheory "github.com/theory-cloud/apptheory/v2/runtime"
+	runtimemicrovm "github.com/theory-cloud/apptheory/v2/runtime/microvm"
 
 	"github.com/equaltoai/lesser-host/internal/config"
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis"

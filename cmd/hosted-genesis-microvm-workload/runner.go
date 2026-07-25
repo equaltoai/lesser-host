@@ -230,11 +230,18 @@ func (r *turnRunner) runDeclarationPhaseAndPersist(ctx context.Context, turn com
 		phaseRunner = llm.RunMintConversationPhase
 	}
 	candidate := in.session.DeclarationCandidate
+	providerAttemptOrdinalBase := declarationProviderAttemptOrdinalBase(
+		candidate.ProviderAttempts,
+		turn.TurnID,
+		candidate.CurrentSection,
+		candidate.Revision,
+		candidate.CandidateHash,
+	)
 	evidence := &providerEvidenceTracker{}
 	output, err := phaseRunner(providerCtx, apiKey, llm.MintConversationPhaseInput{
 		ModelSet: in.modelSet, SystemPrompt: in.systemPrompt, Messages: append([]llm.MintConversationMessage(nil), in.messages...),
 		Section: candidate.CurrentSection, CandidateRevision: candidate.Revision, CandidateHash: candidate.CandidateHash, SourceTurnID: turn.TurnID,
-	}, r.declarationPhaseToolHandler(in, turn, evidence), r.declarationProviderObserver(providerCtx, in, turn, candidate, providerTelemetry, evidence))
+	}, r.declarationPhaseToolHandler(in, turn, evidence), r.declarationProviderObserver(providerCtx, in, turn, candidate, providerAttemptOrdinalBase, providerTelemetry, evidence))
 	if evidence.errValue() != nil {
 		telemetry.emit("declaration_phase", "provider_evidence_persist_failed", string(decision.action), string(hostedgenesis.FailureClassProviderEvidenceStore))
 		return r.recordFailure(ctx, turn, hostedgenesis.FailureCodeAssistantTurnFailed, "persist provider attempt evidence", telemetry, hostedgenesis.FailureClassProviderEvidenceStore)
@@ -269,11 +276,14 @@ func (tracker *providerEvidenceTracker) errValue() error {
 	return tracker.err
 }
 
-func (r *turnRunner) declarationProviderObserver(ctx context.Context, in *turnInput, turn completion.CompletionTurn, candidate *hostedgenesis.DeclarationCandidate, telemetry *providerCallTelemetry, evidence *providerEvidenceTracker) llm.ProviderTelemetrySink {
+func (r *turnRunner) declarationProviderObserver(ctx context.Context, in *turnInput, turn completion.CompletionTurn, candidate *hostedgenesis.DeclarationCandidate, ordinalBase int64, telemetry *providerCallTelemetry, evidence *providerEvidenceTracker) llm.ProviderTelemetrySink {
 	return func(event llm.ProviderTelemetryEvent) {
 		telemetry.observe(event)
 		if !providerAttemptEvidenceEvent(event.EventType) {
 			return
+		}
+		if event.SDKAttemptOrdinal > 0 {
+			event.SDKAttemptOrdinal += ordinalBase
 		}
 		evidence.record(r.checkpointProviderAttemptEvidence(ctx, in, turn, candidate.CurrentSection, candidate.Revision, candidate.CandidateHash, event))
 	}
@@ -397,6 +407,20 @@ func hasProviderAttemptBinding(attempts []hostedgenesis.DeclarationProviderAttem
 		}
 	}
 	return false
+}
+
+func declarationProviderAttemptOrdinalBase(attempts []hostedgenesis.DeclarationProviderAttempt, turnID string, section hostedgenesis.DeclarationSection, revision int64, candidateHash string) int64 {
+	turnID = strings.TrimSpace(turnID)
+	candidateHash = strings.TrimSpace(candidateHash)
+	var base int64
+	for _, attempt := range attempts {
+		if attempt.SourceTurnID == turnID && attempt.Section == section &&
+			attempt.CandidateRevision == revision && attempt.CandidateHash == candidateHash &&
+			attempt.SDKAttemptOrdinal > base {
+			base = attempt.SDKAttemptOrdinal
+		}
+	}
+	return base
 }
 
 func maxInt64Runner(a, b int64) int64 {

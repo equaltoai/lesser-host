@@ -23,7 +23,7 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/ethereum/go-ethereum/rpc"
-	apptheory "github.com/theory-cloud/apptheory/runtime"
+	apptheory "github.com/theory-cloud/apptheory/v2/runtime"
 	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/attestations"

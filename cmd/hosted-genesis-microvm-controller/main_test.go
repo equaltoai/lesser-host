@@ -12,8 +12,8 @@ import (
 	"time"
 
 	"github.com/aws/aws-lambda-go/events"
-	runtimemicrovm "github.com/theory-cloud/apptheory/runtime/microvm"
-	microvmtestkit "github.com/theory-cloud/apptheory/testkit/microvm"
+	runtimemicrovm "github.com/theory-cloud/apptheory/v2/runtime/microvm"
+	microvmtestkit "github.com/theory-cloud/apptheory/v2/testkit/microvm"
 
 	"github.com/equaltoai/lesser-host/internal/config"
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
@@ -310,6 +310,7 @@ func TestControllerMaximumDurationEnvParsesAppTheoryRunPolicy(t *testing.T) {
 		ImageRef:               "image-ref",
 		NetworkConnectorRef:    "network-ref",
 		MaximumDurationSeconds: 450,
+		Logging:                runtimemicrovm.ProviderLogging{Disabled: true},
 	}); err != nil {
 		t.Fatalf("configured AppTheory run policy should validate: %v", err)
 	}
@@ -329,6 +330,7 @@ func testControllerApp(t *testing.T) interface {
 		},
 		EgressNetworkConnectorRefs: []string{"egress-ref"},
 		MaximumDurationSeconds:     config.HostedGenesisMicroVMDefaultMaximumDurationSeconds,
+		Logging:                    &runtimemicrovm.ProviderLogging{Disabled: true},
 	})
 	if err != nil {
 		t.Fatalf("NewMicroVMControllerRuntime: %v", err)

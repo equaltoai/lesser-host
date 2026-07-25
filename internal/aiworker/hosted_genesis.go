@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-lambda-go/events"
-	apptheory "github.com/theory-cloud/apptheory/runtime"
+	apptheory "github.com/theory-cloud/apptheory/v2/runtime"
 
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
 	"github.com/equaltoai/lesser-host/internal/manageddomain"

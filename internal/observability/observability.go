@@ -6,7 +6,7 @@ import (
 	"os"
 	"strings"
 
-	apptheory "github.com/theory-cloud/apptheory/runtime"
+	apptheory "github.com/theory-cloud/apptheory/v2/runtime"
 
 	"github.com/equaltoai/lesser-host/internal/hostmetrics"
 )

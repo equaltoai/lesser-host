@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	runtimemicrovm "github.com/theory-cloud/apptheory/runtime/microvm"
+	runtimemicrovm "github.com/theory-cloud/apptheory/v2/runtime/microvm"
 )
 
 // ErrMicroVMDispatchUnavailable is the fail-closed error returned when the

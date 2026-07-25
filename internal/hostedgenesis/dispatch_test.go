@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
-	runtimemicrovm "github.com/theory-cloud/apptheory/runtime/microvm"
+	runtimemicrovm "github.com/theory-cloud/apptheory/v2/runtime/microvm"
 )
 
 // stubControllerServer is an httptest.Server-backed stub of the governed
@@ -556,6 +556,10 @@ func TestHTTPControllerDispatcherPassesAppTheoryRuntimeEnvelopeWithoutSecretsOrI
 		EgressNetworkConnectorRefs:  payload.EgressNetworkConnectorRefs,
 		SessionSpec:                 payload.SessionSpec,
 		MaximumDurationSeconds:      payload.MaximumDurationSeconds,
+		ExecutionRoleArn:            "arn:aws:iam::123456789012:role/hosted-genesis",
+		Logging: runtimemicrovm.ProviderLogging{CloudWatch: &runtimemicrovm.ProviderCloudWatchLogging{
+			LogGroup: "/aws/lambda/microvms/hosted-genesis",
+		}},
 	}))
 	rawLower := strings.ToLower(rawBody)
 	require.NotContains(t, rawLower, "idle_policy", "asynchronous hosted-genesis work must omit AWS endpoint-idle suspension")

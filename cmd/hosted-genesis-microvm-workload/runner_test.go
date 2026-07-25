@@ -31,6 +31,8 @@ type fakeTurnStore struct {
 	completion    *fakeCompletionStore
 	checkpointErr error
 	assistantErr  error
+	checkpoints   []int64
+	assistants    []int64
 }
 
 func (f *fakeTurnStore) GetHostedGenesisSession(_ context.Context, _, _ string) (*models.HostedGenesisSession, error) {
@@ -67,6 +69,7 @@ func (f *fakeTurnStore) CheckpointHostedGenesisCandidate(_ context.Context, item
 	copy.CandidatePhase = string(copy.DeclarationCandidate.Phase)
 	copy.Version = expectedVersion + 1
 	f.session = copy
+	f.checkpoints = append(f.checkpoints, expectedVersion)
 	if f.completion != nil {
 		f.completion.session = cloneSessionForRunner(copy)
 	}
@@ -87,6 +90,7 @@ func (f *fakeTurnStore) RecordHostedGenesisAssistantTurnAndConversation(_ contex
 	copy.Version = expectedVersion + 1
 	convCopy := *conversation
 	f.session, f.conv = copy, &convCopy
+	f.assistants = append(f.assistants, expectedVersion)
 	if f.completion != nil {
 		f.completion.session, f.completion.conversation = cloneSessionForRunner(copy), &convCopy
 	}
@@ -507,6 +511,140 @@ func TestProviderAttemptEvidenceCanRetryAfterCheckpointFailure(t *testing.T) {
 	}
 }
 
+type providerAttemptRecoveryCase struct {
+	name            string
+	section         hostedgenesis.DeclarationSection
+	durableOrdinals int64
+	wantOrdinal     int64
+}
+
+func TestRecoveryRebasesProviderAttemptOrdinalForExactCandidateTuple(t *testing.T) {
+	for _, test := range []providerAttemptRecoveryCase{
+		{name: "soul", section: hostedgenesis.DeclarationSectionSoul, durableOrdinals: 4, wantOrdinal: 5},
+		{name: "discipline", section: hostedgenesis.DeclarationSectionDiscipline, durableOrdinals: 1, wantOrdinal: 2},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			runProviderAttemptRecoveryCase(t, test)
+		})
+	}
+}
+
+func runProviderAttemptRecoveryCase(t *testing.T, test providerAttemptRecoveryCase) {
+	t.Helper()
+	setFiveBodyContractEnv(t)
+	t.Setenv("OPENAI_API_KEY", "test-key")
+	store, comp, turn := baseTurnInput()
+	candidate := runnerCandidateAtSection(t, store.session.DeclarationCandidate, test.section)
+	candidate = runnerCandidateWithProviderAttempts(t, candidate, test.durableOrdinals)
+	initialVersion := store.session.Version
+	initialLatestTurnID := store.session.LatestTurnID
+	initialAttemptCount := len(candidate.ProviderAttempts)
+	store.session.DeclarationCandidate = candidate
+	store.session.CandidateRevision = candidate.Revision
+	store.session.CandidateHash = candidate.CandidateHash
+	store.session.CandidatePhase = string(candidate.Phase)
+	store.session.Failure = &hostedgenesis.Failure{
+		Code:      hostedgenesis.FailureCodeAssistantTurnFailed,
+		Class:     hostedgenesis.FailureClassProviderEvidenceStore,
+		Message:   hostedgenesis.FailureMessage(hostedgenesis.FailureCodeAssistantTurnFailed),
+		Retryable: true,
+		Recovery:  hostedgenesis.Recovery{Action: hostedgenesis.RecoveryActionRetrySameStep},
+	}
+	comp.session = cloneSessionForRunner(store.session)
+
+	runner := &turnRunner{
+		store:       store,
+		writer:      completion.NewCompletionWriter(comp, fixedClock),
+		nowFunc:     fixedClock,
+		phaseRunner: recoveryPhaseRunner(t, test, turn, candidate),
+	}
+	if err := runner.runTurnAndPersist(t.Context(), turn); err != nil {
+		t.Fatal(err)
+	}
+	assertProviderAttemptRecovery(t, store, turn, candidate, initialVersion, initialLatestTurnID, initialAttemptCount, test.wantOrdinal)
+}
+
+func recoveryPhaseRunner(t *testing.T, test providerAttemptRecoveryCase, turn completion.CompletionTurn, candidate *hostedgenesis.DeclarationCandidate) declarationPhaseRunner {
+	t.Helper()
+	return func(_ context.Context, _ string, input llm.MintConversationPhaseInput, _ llm.MintConversationPhaseToolHandler, sink llm.ProviderTelemetrySink) (llm.MintConversationPhaseOutput, error) {
+		if input.SourceTurnID != turn.TurnID || input.Section != test.section ||
+			input.CandidateRevision != candidate.Revision || input.CandidateHash != candidate.CandidateHash {
+			t.Fatalf("provider input lost exact candidate tuple: %#v", input)
+		}
+		sink(llm.ProviderTelemetryEvent{
+			Provider: "openai", Model: "gpt-test", Phase: "declaration_phase", EventType: "sdk_http_attempt",
+			SDKAttemptOrdinal: 1, SDKRetryBudget: llm.DefaultProviderSDKRetryBudget, HTTPStatus: 200,
+			ProviderRequestID: "req_provider_recovery", DurationMS: 17,
+		})
+		sink(llm.ProviderTelemetryEvent{
+			Provider: "openai", Model: "gpt-test", Phase: "declaration_phase", EventType: "provider_call_completed",
+			OutputBytes: 24, OutputSHA256: strings.Repeat("c", 64), TotalTokens: 11,
+		})
+		return llm.MintConversationPhaseOutput{AssistantContent: "Recovery turn completed."}, nil
+	}
+}
+
+func assertProviderAttemptRecovery(t *testing.T, store *fakeTurnStore, turn completion.CompletionTurn, candidate *hostedgenesis.DeclarationCandidate, initialVersion int64, initialLatestTurnID string, initialAttemptCount int, wantOrdinal int64) {
+	t.Helper()
+	got := store.session
+	if hostedgenesis.NormalizeStatus(got.Status) != hostedgenesis.StatusAssistantTurnReady {
+		t.Fatalf("recovery status = %q, want assistant_turn_ready", got.Status)
+	}
+	if got.Failure != nil {
+		t.Fatalf("recovery retained failure: %#v", got.Failure)
+	}
+	if len(got.DeclarationCandidate.ProviderAttempts) != initialAttemptCount+1 {
+		t.Fatalf("recovery persisted %d attempts, want exactly %d", len(got.DeclarationCandidate.ProviderAttempts), initialAttemptCount+1)
+	}
+	attempt := got.DeclarationCandidate.ProviderAttempts[len(got.DeclarationCandidate.ProviderAttempts)-1]
+	if attempt.SDKAttemptOrdinal != wantOrdinal {
+		t.Fatalf("recovery SDK ordinal = %d, want %d: %#v", attempt.SDKAttemptOrdinal, wantOrdinal, attempt)
+	}
+	if attempt.OutputBytes != 24 || attempt.OutputSHA256 != strings.Repeat("c", 64) || attempt.TotalTokens != 11 {
+		t.Fatalf("zero-ordinal completion did not enrich rebased attempt: %#v", attempt)
+	}
+	assertProviderAttemptRecoveryVersions(t, store, initialVersion)
+	assertProviderAttemptRecoveryBindings(t, got, turn, candidate, initialLatestTurnID)
+}
+
+func assertProviderAttemptRecoveryVersions(t *testing.T, store *fakeTurnStore, initialVersion int64) {
+	t.Helper()
+	if store.session.Version != initialVersion+3 || len(store.checkpoints) != 2 ||
+		store.checkpoints[0] != initialVersion || store.checkpoints[1] != initialVersion+1 ||
+		len(store.assistants) != 1 || store.assistants[0] != initialVersion+2 {
+		t.Fatalf("recovery versions were not monotonic: initial=%d final=%d checkpoints=%v assistants=%v", initialVersion, store.session.Version, store.checkpoints, store.assistants)
+	}
+}
+
+func assertProviderAttemptRecoveryBindings(t *testing.T, got *models.HostedGenesisSession, turn completion.CompletionTurn, candidate *hostedgenesis.DeclarationCandidate, initialLatestTurnID string) {
+	t.Helper()
+	if got.LatestTurnID != initialLatestTurnID || got.LatestTurnID != turn.TurnID {
+		t.Fatalf("recovery changed LatestTurnID: got=%q initial=%q turn=%q", got.LatestTurnID, initialLatestTurnID, turn.TurnID)
+	}
+	if got.InstanceSlug != candidate.InstanceSlug || got.RegistrationID != candidate.RegistrationID ||
+		!strings.EqualFold(got.AgentID, candidate.AgentID) || got.ConversationID != candidate.ConversationID {
+		t.Fatalf("recovery changed candidate owner bindings: session=%#v candidate=%#v", got, candidate)
+	}
+	if got.CandidateRevision != candidate.Revision || got.CandidateHash != candidate.CandidateHash ||
+		got.CandidatePhase != string(candidate.Phase) || got.DeclarationCandidate.SourceTurnID != turn.TurnID {
+		t.Fatalf("recovery changed candidate state bindings: session=%#v candidate=%#v", got, candidate)
+	}
+}
+
+func TestDeclarationProviderAttemptOrdinalBaseUsesExactTupleMaximum(t *testing.T) {
+	attempts := []hostedgenesis.DeclarationProviderAttempt{
+		{SourceTurnID: "turn-1", Section: hostedgenesis.DeclarationSectionSoul, CandidateRevision: 4, CandidateHash: "sha256:current", SDKAttemptOrdinal: 4},
+		{SourceTurnID: "turn-1", Section: hostedgenesis.DeclarationSectionSoul, CandidateRevision: 4, CandidateHash: "sha256:current", SDKAttemptOrdinal: 2},
+		{SourceTurnID: "turn-other", Section: hostedgenesis.DeclarationSectionSoul, CandidateRevision: 4, CandidateHash: "sha256:current", SDKAttemptOrdinal: 91},
+		{SourceTurnID: "turn-1", Section: hostedgenesis.DeclarationSectionDiscipline, CandidateRevision: 4, CandidateHash: "sha256:current", SDKAttemptOrdinal: 92},
+		{SourceTurnID: "turn-1", Section: hostedgenesis.DeclarationSectionSoul, CandidateRevision: 3, CandidateHash: "sha256:current", SDKAttemptOrdinal: 93},
+		{SourceTurnID: "turn-1", Section: hostedgenesis.DeclarationSectionSoul, CandidateRevision: 4, CandidateHash: "sha256:other", SDKAttemptOrdinal: 94},
+	}
+	if got := declarationProviderAttemptOrdinalBase(attempts, " turn-1 ", hostedgenesis.DeclarationSectionSoul, 4, " sha256:current "); got != 4 {
+		t.Fatalf("exact-tuple ordinal base = %d, want 4", got)
+	}
+}
+
 func assertStrictSoulPhaseRequest(t *testing.T, request map[string]any) {
 	t.Helper()
 	if got, ok := request["max_completion_tokens"].(float64); !ok || got != 8192 {
@@ -718,6 +856,11 @@ func completeRunnerCandidate(t *testing.T, candidate *hostedgenesis.DeclarationC
 
 func runnerCandidateAtSoul(t *testing.T, candidate *hostedgenesis.DeclarationCandidate) *hostedgenesis.DeclarationCandidate {
 	t.Helper()
+	return runnerCandidateAtSection(t, candidate, hostedgenesis.DeclarationSectionSoul)
+}
+
+func runnerCandidateAtSection(t *testing.T, candidate *hostedgenesis.DeclarationCandidate, section hostedgenesis.DeclarationSection) *hostedgenesis.DeclarationCandidate {
+	t.Helper()
 	calls := []struct {
 		name string
 		body string
@@ -728,6 +871,9 @@ func runnerCandidateAtSoul(t *testing.T, candidate *hostedgenesis.DeclarationCan
 		{hostedgenesis.DeclarationToolBoundariesPut, `{"section":{"summary":"I remain within the managed instance and require owner authority.","notes":[]}}`},
 	}
 	for i, call := range calls {
+		if candidate.CurrentSection == section {
+			return candidate
+		}
 		payload := bindCandidateToolPayload(t, candidate, call.body)
 		next, result, err := hostedgenesis.ApplyDeclarationTool(candidate, hostedgenesis.DeclarationToolRequest{
 			ToolName: call.name, ToolCallID: fmt.Sprintf("soul-boundary-%d", i), ExpectedRevision: candidate.Revision,
@@ -735,6 +881,26 @@ func runnerCandidateAtSoul(t *testing.T, candidate *hostedgenesis.DeclarationCan
 		}, fixedClock().Add(time.Duration(i)*time.Second))
 		if err != nil || !result.Accepted || next == nil {
 			t.Fatalf("advance candidate to soul with %s: result=%#v err=%v", call.name, result, err)
+		}
+		candidate = next
+	}
+	if candidate.CurrentSection != section {
+		t.Fatalf("cannot advance runner candidate to section %q", section)
+	}
+	return candidate
+}
+
+func runnerCandidateWithProviderAttempts(t *testing.T, candidate *hostedgenesis.DeclarationCandidate, ordinals int64) *hostedgenesis.DeclarationCandidate {
+	t.Helper()
+	for ordinal := int64(1); ordinal <= ordinals; ordinal++ {
+		next, err := hostedgenesis.ApplyDeclarationProviderAttempt(candidate, hostedgenesis.DeclarationProviderAttemptUpdate{
+			Provider: "openai", Model: "gpt-test", Phase: "declaration_phase", Section: candidate.CurrentSection,
+			SourceTurnID: candidate.SourceTurnID, CandidateRevision: candidate.Revision, CandidateHash: candidate.CandidateHash,
+			SDKAttemptOrdinal: ordinal, SDKRetryBudget: llm.DefaultProviderSDKRetryBudget, HTTPStatus: 200,
+			ProviderRequestID: fmt.Sprintf("req_prior_%d", ordinal), DurationMS: 10 + ordinal,
+		}, fixedClock().Add(time.Duration(ordinal)*time.Second))
+		if err != nil {
+			t.Fatalf("seed durable provider attempt %d: %v", ordinal, err)
 		}
 		candidate = next
 	}

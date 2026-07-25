@@ -3,7 +3,7 @@ package observability
 import (
 	"testing"
 
-	apptheory "github.com/theory-cloud/apptheory/runtime"
+	apptheory "github.com/theory-cloud/apptheory/v2/runtime"
 )
 
 func TestNew_ProvidesHooks(t *testing.T) {

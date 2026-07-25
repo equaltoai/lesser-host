@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 	ttmocks "github.com/theory-cloud/tabletheory/v2/pkg/mocks"
 
-	apptheory "github.com/theory-cloud/apptheory/runtime"
+	apptheory "github.com/theory-cloud/apptheory/v2/runtime"
 
 	"github.com/equaltoai/lesser-host/internal/store"
 )
