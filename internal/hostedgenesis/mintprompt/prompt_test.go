@@ -70,6 +70,25 @@ func TestMintConversationSystemPrompt_HostedOffchainHygiene(t *testing.T) {
 	}
 }
 
+func TestMintConversationSystemPrompt_CapabilityPayloadContract(t *testing.T) {
+	got := mustFiveBodyPrompt(t, &models.SoulAgentRegistration{})
+	for _, want := range []string{
+		`"capability":"operator_support"`,
+		`"scope":"Help operators inspect hosted genesis status."`,
+		`"claimLevel":"self-declared"`,
+		`"lastValidated":""`,
+		`"validationRef":""`,
+		`"degradesTo":""`,
+		"RFC3339",
+		"2026-07-25T17:22:19Z",
+		"usually empty for a self-declared prototype",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected capability payload guidance %q, got: %q", want, got)
+		}
+	}
+}
+
 func TestMintConversationSystemPrompt_FiveBodyContract(t *testing.T) {
 	got := mustFiveBodyPrompt(t, &models.SoulAgentRegistration{})
 	for _, want := range []string{

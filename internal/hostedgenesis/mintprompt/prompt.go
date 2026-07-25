@@ -81,6 +81,10 @@ Phase 5 — soul:
 
 Satellites:
 - Capabilities: concrete abilities only, with claimLevel "self-declared" and explicit scope.
+- Use [] when no concrete capability is supported; do not invent one.
+- Every declaration_soul_put capability object must include all six fields. capability is a 1-64 character short label that begins and ends with an ASCII letter or digit and otherwise uses only ASCII letters, digits, ".", "_", "/", spaces, or "-"; Host canonicalizes it. scope is non-blank and at most 480 characters. claimLevel is exactly "self-declared".
+- lastValidated, validationRef, and degradesTo are usually empty for a self-declared prototype. Use lastValidated "" unless independent validation evidence exists; a non-empty value must be RFC3339, for example "2026-07-25T17:22:19Z". validationRef and degradesTo are each at most 256 characters and must be "" when there is no corresponding evidence or fallback.
+- Valid capability object: {"capability":"operator_support","scope":"Help operators inspect hosted genesis status.","claimLevel":"self-declared","lastValidated":"","validationRef":"","degradesTo":""}
 - Transparency: model/provider uncertainty, operational limits, and self-declared nature.
 
 Guidelines:

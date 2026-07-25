@@ -417,9 +417,33 @@ func producedCapabilitiesSchema() map[string]any {
 		"items": map[string]any{
 			"type": "object", "additionalProperties": false,
 			"properties": map[string]any{
-				"capability": map[string]any{"type": "string"}, "scope": map[string]any{"type": "string"},
-				"claimLevel":    map[string]any{"type": "string", "enum": []string{"self-declared"}},
-				"lastValidated": map[string]any{"type": "string"}, "validationRef": map[string]any{"type": "string"}, "degradesTo": map[string]any{"type": "string"},
+				"capability": map[string]any{
+					"type": "string", "minLength": 1, "maxLength": hostedgenesis.MaxProducedCapabilityIdentifierLength,
+					"pattern":     hostedgenesis.ProducedCapabilityEvidencePattern,
+					"description": `A short capability label using ASCII letters or digits plus ".", "_", "/", space, or "-"; begin and end with a letter or digit. Example: "operator_support".`,
+				},
+				"scope": map[string]any{
+					"type": "string", "minLength": 1, "maxLength": hostedgenesis.MaxProducedCapabilityScopeLength,
+					"pattern":     hostedgenesis.ProducedCapabilityNonWhitespacePattern,
+					"description": `A concrete non-blank scope for this capability. Example: "Help operators inspect hosted genesis status.".`,
+				},
+				"claimLevel": map[string]any{
+					"type": "string", "enum": []string{"self-declared"},
+					"description": `Use exactly "self-declared". Example: "self-declared".`,
+				},
+				"lastValidated": map[string]any{
+					"type": "string", "maxLength": hostedgenesis.MaxProducedCapabilityLastValidatedLength,
+					"pattern":     hostedgenesis.ProducedCapabilityOptionalRFC3339Pattern,
+					"description": `Use "" when there is no independent validation evidence; otherwise use RFC3339. Example: ""; validated example: "2026-07-25T17:22:19Z".`,
+				},
+				"validationRef": map[string]any{
+					"type": "string", "maxLength": hostedgenesis.MaxProducedCapabilityMetadataLength,
+					"description": `Reference for independent validation evidence, or "" when none exists. Example: "".`,
+				},
+				"degradesTo": map[string]any{
+					"type": "string", "maxLength": hostedgenesis.MaxProducedCapabilityMetadataLength,
+					"description": `Fallback capability identifier when this capability degrades, or "" when none is declared. Example: "".`,
+				},
 			}, "required": []string{"capability", "scope", "claimLevel", "lastValidated", "validationRef", "degradesTo"},
 		},
 	}
