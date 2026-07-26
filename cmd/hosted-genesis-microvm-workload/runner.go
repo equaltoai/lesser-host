@@ -113,7 +113,8 @@ func validateTurnInputCandidate(session *models.HostedGenesisSession, modelSet s
 func declarationCandidateMatchesTurnSession(candidate *hostedgenesis.DeclarationCandidate, session *models.HostedGenesisSession, modelSet string) bool {
 	return candidate.InstanceSlug == strings.ToLower(strings.TrimSpace(session.InstanceSlug)) &&
 		candidate.RegistrationID == strings.TrimSpace(session.RegistrationID) && strings.EqualFold(candidate.AgentID, session.AgentID) &&
-		candidate.ConversationID == session.ConversationID && candidate.Model == modelSet
+		candidate.ConversationID == session.ConversationID &&
+		strings.EqualFold(modelselection.CanonicalModelSet(candidate.Model), modelselection.CanonicalModelSet(modelSet))
 }
 
 func (r *turnRunner) runTurnAndPersist(ctx context.Context, turn completion.CompletionTurn) error {

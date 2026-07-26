@@ -139,7 +139,7 @@ func (s *Server) handleSoulInstanceRetryableMintConversationRecovery(ctx *appthe
 		if !convCtx.session.Failure.Retryable || convCtx.session.Failure.Recovery.MaxAttempts <= 0 {
 			return nil, false, nil
 		}
-		if err := validateHostedGenesisMicroVMRecoveryCheckpoint(convCtx.session); err != nil {
+		if err := validateHostedGenesisMicroVMRecoveryCheckpointForRetry(convCtx.session); err != nil {
 			return nil, true, soulInstanceBootstrapConversationErrorFromAppError(newAppTheoryError(appErrCodeConflict, "conversation recovery checkpoint is unavailable"))
 		}
 		resp, err := s.handleSoulInstanceMicroVMUnavailableRetry(ctx, convCtx, started)
@@ -243,6 +243,20 @@ func validateHostedGenesisMicroVMRecoveryCheckpoint(session *models.HostedGenesi
 		return err
 	}
 	return validateHostedGenesisMicroVMRecoveryActorCheckpoint(session, checkpoint)
+}
+
+// Store/preflight failures can happen before the workload has produced an
+// actor checkpoint. They still have a durable session binding that can be
+// retried from a fresh MicroVM. If a checkpoint is present, keep validating it
+// strictly so recovery never replays from an invalid or unrelated checkpoint.
+func validateHostedGenesisMicroVMRecoveryCheckpointForRetry(session *models.HostedGenesisSession) error {
+	if session == nil {
+		return fmt.Errorf("missing session")
+	}
+	if session.VMCheckpoint == nil {
+		return nil
+	}
+	return validateHostedGenesisMicroVMRecoveryCheckpoint(session)
 }
 
 func validateHostedGenesisMicroVMRecoveryTurns(session *models.HostedGenesisSession, checkpoint hostedgenesis.VMCheckpointMetadata) error {
@@ -423,7 +437,7 @@ func (s *Server) retryHostedGenesisMicroVMUnavailable(ctx *apptheory.Context, co
 		convCtx.session.Failure.Recovery.MaxAttempts <= 0 {
 		return nil, nil, newAppTheoryError(appErrCodeConflict, "conversation recovery requires a fresh soul bootstrap")
 	}
-	if err := validateHostedGenesisMicroVMRecoveryCheckpoint(convCtx.session); err != nil {
+	if err := validateHostedGenesisMicroVMRecoveryCheckpointForRetry(convCtx.session); err != nil {
 		return nil, nil, newAppTheoryError(appErrCodeConflict, "conversation recovery checkpoint is unavailable")
 	}
 	if s.hostedGenesisMicroVMDispatcher == nil {
