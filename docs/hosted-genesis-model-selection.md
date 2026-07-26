@@ -36,7 +36,10 @@ internal/advanced escape hatch for generic AI configuration, legacy stored
 conversations, and provider adapter tests. It is not required and is not
 accepted as a new Hosted Genesis model selection.
 
-OpenAI sends `ReasoningEffort=medium` through the SDK's
-`ChatCompletionNewParams.ReasoningEffort`. Claude sends
+OpenAI sends `ReasoningParam{Effort: medium}` through the SDK's
+`responses.ResponseNewParams.Reasoning` on both Hosted Genesis mint paths. The
+phase tool loop uses the Responses function-tool output items and feeds the
+checkpoint result back as a `function_call_output`; the retained stream consumes
+`response.output_text.delta` events. Claude sends
 `OutputConfig.Effort=medium` through the SDK's `MessageNewParams`; both the
 phase-tool and retained streaming provider paths use the registry setting.
