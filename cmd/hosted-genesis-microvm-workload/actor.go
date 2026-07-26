@@ -3,6 +3,7 @@ package main
 import (
 	"strings"
 
+	"github.com/equaltoai/lesser-host/internal/ai/modelselection"
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
 )
 
@@ -85,21 +86,17 @@ func (a conversationActor) checkpoint(in turnInput, turn completionTurnView, dec
 type completionTurnView struct{ turnID, requestID string }
 
 func providerFamily(modelSet string) string {
-	modelSet = strings.ToLower(strings.TrimSpace(modelSet))
-	switch {
-	case strings.HasPrefix(modelSet, "openai:"):
-		return "openai"
-	case strings.HasPrefix(modelSet, "anthropic:"):
-		return "anthropic"
-	default:
+	definition, err := modelselection.ResolveModelSet(modelSet)
+	if err != nil {
 		return "unknown"
 	}
+	return definition.Provider
 }
 
 func providerModelID(modelSet string) string {
-	modelSet = strings.TrimSpace(modelSet)
-	if _, model, ok := strings.Cut(modelSet, ":"); ok {
-		return strings.TrimSpace(model)
+	definition, err := modelselection.ResolveModelSet(modelSet)
+	if err == nil {
+		return definition.ConcreteModel
 	}
-	return modelSet
+	return strings.TrimSpace(modelSet)
 }

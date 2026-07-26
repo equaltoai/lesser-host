@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/theory-cloud/tabletheory/v2/pkg/validation"
 
+	"github.com/equaltoai/lesser-host/internal/ai/modelselection"
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
 )
 
@@ -102,6 +103,21 @@ func TestHostedGenesisSessionRejectsCandidateFromAnotherTurn(t *testing.T) {
 	require.NoError(t, err)
 	session.DeclarationCandidate = candidate
 	require.ErrorContains(t, session.BeforeCreate(), "declaration candidate binding does not match hosted genesis session")
+}
+
+func TestHostedGenesisSessionAcceptsAliasBoundCanonicalCandidate(t *testing.T) {
+	t.Parallel()
+
+	session := validHostedGenesisSessionModel()
+	session.Model = modelselection.AliasOpenAI
+	candidate, err := hostedgenesis.NewDeclarationCandidate(hostedgenesis.DeclarationCandidateBinding{
+		InstanceSlug: session.InstanceSlug, RegistrationID: session.RegistrationID, AgentID: session.AgentID,
+		ConversationID: session.ConversationID, SourceTurnID: session.LatestTurnID,
+		Model: modelselection.CanonicalModelSet(session.Model),
+	}, session.CreatedAt)
+	require.NoError(t, err)
+	session.DeclarationCandidate = candidate
+	require.NoError(t, session.BeforeCreate())
 }
 
 func TestHostedGenesisSessionModelHasNoSecretBearingFields(t *testing.T) {

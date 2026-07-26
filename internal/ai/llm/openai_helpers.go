@@ -11,6 +11,7 @@ import (
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
 
+	"github.com/equaltoai/lesser-host/internal/ai/modelselection"
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
@@ -27,17 +28,11 @@ type openAIJSONSchemaBatchConfig struct {
 var openAIHTTPClient option.HTTPClient
 
 func openAIModelFromSet(modelSet string) (string, error) {
-	modelSet = strings.TrimSpace(modelSet)
-	if !strings.HasPrefix(strings.ToLower(modelSet), "openai:") {
-		return "", fmt.Errorf("unsupported openai model set %q", modelSet)
+	definition, err := modelselection.ResolveModelSetForProvider(modelSet, modelselection.ProviderOpenAI)
+	if err != nil {
+		return "", fmt.Errorf("unsupported openai model set %q: %w", strings.TrimSpace(modelSet), err)
 	}
-
-	model := strings.TrimSpace(strings.TrimPrefix(modelSet, "openai:"))
-	if model == "" {
-		return "", fmt.Errorf("openai model is required")
-	}
-
-	return model, nil
+	return definition.ConcreteModel, nil
 }
 
 func openAIClientForKey(apiKey string) openai.Client {

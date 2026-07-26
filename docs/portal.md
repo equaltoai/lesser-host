@@ -87,7 +87,9 @@ Instance responses include `managed: true` when the instance has lesser.host-man
 Config includes (subject to roadmap evolution):
 - previews/safety/renders toggles and policies
 - moderation provider flags
-- AI model set + batching mode + pricing multiplier
+- AI model alias (`gpt-5.6-luna` or `claude-sonnet-5` for Hosted Genesis),
+  batching mode, and pricing multiplier; provider:model remains an advanced
+  internal compatibility form
 
 ### Provisioning (managed hosting)
 

@@ -320,7 +320,7 @@ func testHostedGenesisDeclarationReadySession(raw string, requestID string) *mod
 		ConversationID:  session.ConversationID,
 		AgentID:         session.AgentID,
 		MessageCount:    session.MessageCount,
-		Model:           "anthropic:claude-sonnet-4-6",
+		Model:           "claude-sonnet-5",
 		SchemaVersion:   hostedgenesis.DeclarationSchemaVersionV2,
 		GuidanceVersion: hostedgenesis.GuidanceVersionV2,
 		RequestID:       requestID,
@@ -357,7 +357,7 @@ func TestHostedGenesisSessionHelperBranches(t *testing.T) {
 		t.Fatalf("failed session should not accept a new turn")
 	}
 
-	session := hostedGenesisTurnSession{modelSet: "anthropic:claude-sonnet-4-6"}
+	session := hostedGenesisTurnSession{modelSet: "claude-sonnet-5"}
 	if err := applyHostedGenesisSessionModel(&session, "openai:gpt-5"); err == nil {
 		t.Fatalf("expected model conflict")
 	}

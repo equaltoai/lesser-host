@@ -14,6 +14,7 @@ import (
 	"github.com/theory-cloud/tabletheory/v2"
 	"github.com/theory-cloud/tabletheory/v2/pkg/core"
 
+	"github.com/equaltoai/lesser-host/internal/ai/modelselection"
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
@@ -329,7 +330,7 @@ func hostedGenesisSessionHasBoundTypedCandidate(session *models.HostedGenesisSes
 		strings.EqualFold(candidate.AgentID, session.AgentID) &&
 		candidate.ConversationID == strings.TrimSpace(session.ConversationID) &&
 		candidate.SourceTurnID == strings.TrimSpace(session.LatestTurnID) &&
-		candidate.Model == strings.TrimSpace(session.Model) &&
+		strings.EqualFold(modelselection.CanonicalModelSet(candidate.Model), modelselection.CanonicalModelSet(session.Model)) &&
 		candidate.Revision == session.CandidateRevision &&
 		candidate.CandidateHash == strings.TrimSpace(session.CandidateHash) &&
 		string(candidate.Phase) == strings.TrimSpace(session.CandidatePhase)

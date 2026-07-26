@@ -445,7 +445,7 @@ func testMintConversationDecl() soulMintConversationProducedDeclarations {
 		SelfDescription: soul.SelfDescriptionV2{
 			Purpose:      "Help users plan travel with explicit limitations.",
 			AuthoredBy:   "agent",
-			MintingModel: "openai:gpt-5.4",
+			MintingModel: "gpt-5.6-luna",
 		},
 		Capabilities: []soul.CapabilityV2{
 			{Capability: "travel_planning", Scope: "Draft itineraries.", ClaimLevel: "self-declared"},
@@ -610,7 +610,7 @@ func testMintConversationPromptAndAPIKeys(t *testing.T) {
 
 	s := &Server{}
 	t.Setenv("OPENAI_API_KEY", "openai-env")
-	if got, appErr := s.apiKeyForMintConversationModel(t.Context(), "openai:gpt-5.4"); appErr != nil || got != "openai-env" {
+	if got, appErr := s.apiKeyForMintConversationModel(t.Context(), "gpt-5.6-luna"); appErr != nil || got != "openai-env" {
 		t.Fatalf("unexpected openai api key: %q %#v", got, appErr)
 	}
 	t.Setenv("OPENAI_API_KEY", "")
@@ -908,11 +908,11 @@ func testMintConversationHandleRejectsModelChangeForExistingConversation(t *test
 		*dest = models.SoulAgentMintConversation{
 			AgentID:        reg.AgentID,
 			ConversationID: mintConversationTestConversationID,
-			Model:          "anthropic:claude-sonnet-4-6",
+			Model:          "claude-sonnet-5",
 			Status:         models.SoulMintConversationStatusInProgress,
 		}
 	}).Once()
-	body := mustMarshalJSON(t, soulMintConversationRequest{ConversationID: mintConversationTestConversationID, Model: "openai:gpt-5.4", Message: "hello"})
+	body := mustMarshalJSON(t, soulMintConversationRequest{ConversationID: mintConversationTestConversationID, Model: "gpt-5.6-luna", Message: "hello"})
 	ctx := adminCtx()
 	ctx.Params = map[string]string{"id": reg.ID}
 	ctx.Request.Body = body

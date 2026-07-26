@@ -12,6 +12,7 @@ import (
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/shared"
 
+	"github.com/equaltoai/lesser-host/internal/ai/modelselection"
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
@@ -68,10 +69,14 @@ func RunMintConversationPhase(ctx context.Context, apiKey string, in MintConvers
 	if err := validateMintConversationPhaseInput(in); err != nil {
 		return MintConversationPhaseOutput{}, err
 	}
-	switch {
-	case strings.HasPrefix(strings.ToLower(strings.TrimSpace(in.ModelSet)), "openai:"):
+	definition, err := modelselection.ResolveModelSet(strings.TrimSpace(in.ModelSet))
+	if err != nil {
+		return MintConversationPhaseOutput{}, err
+	}
+	switch definition.Provider {
+	case modelselection.ProviderOpenAI:
 		return runMintConversationPhaseOpenAI(ctx, apiKey, in, handler, telemetry)
-	case strings.HasPrefix(strings.ToLower(strings.TrimSpace(in.ModelSet)), "anthropic:"):
+	case modelselection.ProviderAnthropic:
 		return runMintConversationPhaseAnthropic(ctx, apiKey, in, handler, telemetry)
 	default:
 		return MintConversationPhaseOutput{}, fmt.Errorf("unsupported model set %q", in.ModelSet)
@@ -87,10 +92,11 @@ func validateMintConversationPhaseInput(in MintConversationPhaseInput) error {
 }
 
 func runMintConversationPhaseOpenAI(ctx context.Context, apiKey string, in MintConversationPhaseInput, handler MintConversationPhaseToolHandler, telemetry ProviderTelemetrySink) (MintConversationPhaseOutput, error) {
-	model, err := openAIModelFromSet(in.ModelSet)
+	definition, err := modelselection.ResolveModelSetForProvider(in.ModelSet, modelselection.ProviderOpenAI)
 	if err != nil {
 		return MintConversationPhaseOutput{}, err
 	}
+	model := definition.ConcreteModel
 	tool := openAIMintConversationPhaseTool(in.Section)
 	messages := buildOpenAIConversationMessages(mintConversationPhaseSystemPrompt(in), in.Messages)
 	usage := models.AIUsage{Provider: "openai", Model: model}
@@ -106,6 +112,9 @@ func runMintConversationPhaseOpenAI(ctx context.Context, apiKey string, in MintC
 			MaxCompletionTokens: openai.Int(mintConversationPhaseOpenAIMaxCompletionTokens(in.Section)),
 			ParallelToolCalls:   openai.Bool(false),
 			Tools:               []openai.ChatCompletionToolParam{tool},
+		}
+		if definition.ReasoningEffort == modelselection.ReasoningEffortMedium {
+			params.ReasoningEffort = shared.ReasoningEffortMedium
 		}
 		if toolEnabled {
 			params.ToolChoice = openai.ChatCompletionToolChoiceOptionUnionParam{OfAuto: openai.String("auto")}
@@ -201,10 +210,11 @@ func acceptedMintConversationPhaseOutcome(section hostedgenesis.DeclarationSecti
 }
 
 func runMintConversationPhaseAnthropic(ctx context.Context, apiKey string, in MintConversationPhaseInput, handler MintConversationPhaseToolHandler, telemetry ProviderTelemetrySink) (MintConversationPhaseOutput, error) {
-	model, err := anthropicModelFromSet(in.ModelSet)
+	definition, err := modelselection.ResolveModelSetForProvider(in.ModelSet, modelselection.ProviderAnthropic)
 	if err != nil {
 		return MintConversationPhaseOutput{}, err
 	}
+	model := anthropic.Model(definition.ConcreteModel)
 	messages := buildAnthropicConversationMessages(in.Messages)
 	usage := models.AIUsage{Provider: "anthropic", Model: string(model)}
 	toolEnabled := true
@@ -219,6 +229,9 @@ func runMintConversationPhaseAnthropic(ctx context.Context, apiKey string, in Mi
 			System:   []anthropic.TextBlockParam{{Text: mintConversationPhaseSystemPrompt(in)}},
 			Messages: messages,
 			Tools:    []anthropic.ToolUnionParam{anthropicMintConversationPhaseTool(in.Section)},
+		}
+		if definition.ReasoningEffort == modelselection.ReasoningEffortMedium {
+			params.OutputConfig = anthropic.OutputConfigParam{Effort: anthropic.OutputConfigEffortMedium}
 		}
 		if toolEnabled {
 			params.ToolChoice = anthropic.ToolChoiceUnionParam{OfAuto: &anthropic.ToolChoiceAutoParam{DisableParallelToolUse: anthropic.Bool(true)}}

@@ -276,12 +276,13 @@
 				</div>
 				<div class="config__field">
 					<TextField
-						label="Model set"
+						label="Model alias or advanced model set"
 						bind:value={form.ai_model_set}
-						placeholder="default"
+						placeholder="gpt-5.6-luna"
 						invalid={Boolean(fieldErrors.ai_model_set)}
 						errorMessage={fieldErrors.ai_model_set}
 					/>
+					<Text size="sm" color="secondary">Use a supported alias for hosted-genesis defaults; provider:model remains an internal advanced escape hatch.</Text>
 				</div>
 				<div class="config__field">
 					<Text size="sm">Batching mode</Text>

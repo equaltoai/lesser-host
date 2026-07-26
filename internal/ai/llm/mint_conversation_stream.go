@@ -8,7 +8,9 @@ import (
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/openai/openai-go"
+	"github.com/openai/openai-go/shared"
 
+	"github.com/equaltoai/lesser-host/internal/ai/modelselection"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
@@ -45,16 +47,17 @@ func StreamMintConversationOpenAIWithTelemetry(
 	onDelta func(string),
 	telemetry ProviderTelemetrySink,
 ) (string, models.AIUsage, error) {
-	model, err := openAIModelFromSet(modelSet)
+	definition, err := modelselection.ResolveModelSetForProvider(modelSet, modelselection.ProviderOpenAI)
 	if err != nil {
 		return "", models.AIUsage{}, err
 	}
+	model := definition.ConcreteModel
 	recorder := newProviderTelemetryRecorder("openai", model, "assistant_stream", telemetry)
 	recorder.emit(ProviderTelemetryEvent{EventType: "request_start"})
 
 	client := openAIClientForKey(apiKey)
 	start := time.Now()
-	stream := client.Chat.Completions.NewStreaming(ctx, newOpenAIMintConversationStreamParams(model, systemPrompt, messages))
+	stream := client.Chat.Completions.NewStreaming(ctx, newOpenAIMintConversationStreamParamsWithEffort(model, definition.ReasoningEffort, systemPrompt, messages))
 
 	acc := openai.ChatCompletionAccumulator{}
 	for stream.Next() {
@@ -127,7 +130,11 @@ func StreamMintConversationOpenAIWithTelemetry(
 }
 
 func newOpenAIMintConversationStreamParams(model string, systemPrompt string, messages []MintConversationMessage) openai.ChatCompletionNewParams {
-	return openai.ChatCompletionNewParams{
+	return newOpenAIMintConversationStreamParamsWithEffort(model, "", systemPrompt, messages)
+}
+
+func newOpenAIMintConversationStreamParamsWithEffort(model string, reasoningEffort string, systemPrompt string, messages []MintConversationMessage) openai.ChatCompletionNewParams {
+	params := openai.ChatCompletionNewParams{
 		Model: openai.ChatModel(model),
 		Messages: buildOpenAIConversationMessages(
 			systemPrompt,
@@ -138,6 +145,10 @@ func newOpenAIMintConversationStreamParams(model string, systemPrompt string, me
 			IncludeUsage: openai.Bool(true),
 		},
 	}
+	if reasoningEffort == modelselection.ReasoningEffortMedium {
+		params.ReasoningEffort = shared.ReasoningEffortMedium
+	}
+	return params
 }
 
 // StreamMintConversationAnthropic streams a chat completion from Anthropic, calling onDelta
@@ -164,21 +175,26 @@ func StreamMintConversationAnthropicWithTelemetry(
 	onDelta func(string),
 	telemetry ProviderTelemetrySink,
 ) (string, models.AIUsage, error) {
-	model, err := anthropicModelFromSet(modelSet)
+	definition, err := modelselection.ResolveModelSetForProvider(modelSet, modelselection.ProviderAnthropic)
 	if err != nil {
 		return "", models.AIUsage{}, err
 	}
+	model := anthropic.Model(definition.ConcreteModel)
 	recorder := newProviderTelemetryRecorder("anthropic", string(model), "assistant_stream", telemetry)
 	recorder.emit(ProviderTelemetryEvent{EventType: "request_start"})
 
 	client := anthropicClientForKey(apiKey)
 	start := time.Now()
-	stream := client.Messages.NewStreaming(ctx, anthropic.MessageNewParams{
+	params := anthropic.MessageNewParams{
 		Model:     model,
 		MaxTokens: 4096,
 		System:    []anthropic.TextBlockParam{{Text: systemPrompt}},
 		Messages:  buildAnthropicConversationMessages(messages),
-	})
+	}
+	if definition.ReasoningEffort == modelselection.ReasoningEffortMedium {
+		params.OutputConfig = anthropic.OutputConfigParam{Effort: anthropic.OutputConfigEffortMedium}
+	}
+	stream := client.Messages.NewStreaming(ctx, params)
 	defer stream.Close()
 
 	state := anthropicStreamTelemetryState{}

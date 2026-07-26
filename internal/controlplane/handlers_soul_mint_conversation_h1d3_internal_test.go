@@ -36,7 +36,7 @@ func hostedGenesisH1D3RecoveryFixture(t *testing.T, status hostedgenesis.Status)
 	stubSoulInstanceRecoveryConversation(t, tdb, models.SoulAgentMintConversation{
 		AgentID:        reg.AgentID,
 		ConversationID: mintConversationTestConversationID,
-		Model:          "anthropic:claude-sonnet-4-6",
+		Model:          "claude-sonnet-5",
 		Messages:       encodeMintConversationBlob(`[{"role":"user","content":"stuck user turn"}]`),
 		Status:         string(status),
 		LatestTurnID:   "turn-stuck",
@@ -280,7 +280,7 @@ func runH1D3ReconciliationObservationCase(t *testing.T, status hostedgenesis.Sta
 	stubSoulInstanceRecoveryConversation(t, tdb, models.SoulAgentMintConversation{
 		AgentID:        reg.AgentID,
 		ConversationID: mintConversationTestConversationID,
-		Model:          "anthropic:claude-sonnet-4-6",
+		Model:          "claude-sonnet-5",
 		Messages:       encodeMintConversationBlob(`[{"role":"user","content":"stuck user turn"},{"role":"assistant","content":"ready"}]`),
 		Status:         convStatus,
 		LatestTurnID:   "turn-stuck",
@@ -336,7 +336,7 @@ func TestH1_3_CompleteAssistantReadyWithoutDeclarationsRemainsReadOnly(t *testin
 	stubMintConversationConversation(t, tdb, models.SoulAgentMintConversation{
 		AgentID:        reg.AgentID,
 		ConversationID: mintConversationTestConversationID,
-		Model:          "anthropic:claude-sonnet-4-6",
+		Model:          "claude-sonnet-5",
 		Messages:       encodeMintConversationBlob(`[{"role":"user","content":"describe yourself"},{"role":"assistant","content":"ready"}]`),
 		Status:         models.SoulMintConversationStatusAssistantTurnReady,
 		LatestTurnID:   "turn-ready",
