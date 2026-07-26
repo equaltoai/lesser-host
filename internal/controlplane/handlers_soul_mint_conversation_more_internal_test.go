@@ -1312,8 +1312,8 @@ func testDebitSoulMintConversationBudgetConflicts(t *testing.T) {
 		dest := testutil.RequireMockArg[*models.InstanceBudgetMonth](t, args, 0)
 		*dest = models.InstanceBudgetMonth{InstanceSlug: "inst1", Month: "2026-03", IncludedCredits: 4, UsedCredits: 3}
 	}).Once()
-	if _, appErr := s.debitSoulMintConversationCredits(t.Context(), inst, "module", "target", "req", 5, now, nil); appErr == nil || appErr.Code != appErrCodeConflict {
-		t.Fatalf("expected insufficient credits conflict, got %#v", appErr)
+	if _, appErr := s.debitSoulMintConversationCredits(t.Context(), inst, "module", "target", "req", 5, now, nil); appErr == nil || appErr.Code != appTheoryCodeBudgetExhausted || appErr.StatusCode != http.StatusConflict {
+		t.Fatalf("expected typed budget exhaustion, got %#v", appErr)
 	}
 }
 
@@ -1382,7 +1382,7 @@ func testDebitSoulMintConversationOverageAndFailures(t *testing.T) {
 		}
 	})
 
-	t.Run("transaction condition failure becomes conflict", func(t *testing.T) {
+	t.Run("transaction condition failure becomes typed budget exhaustion", func(t *testing.T) {
 		s, db, qBudget, tb := newMintConversationDebitServer()
 		inst := &models.Instance{Slug: "inst1"}
 
@@ -1395,8 +1395,8 @@ func testDebitSoulMintConversationOverageAndFailures(t *testing.T) {
 		tb.On("UpdateWithBuilder", mock.AnythingOfType("*models.InstanceBudgetMonth"), mock.Anything, mock.Anything).Return(tb).Once()
 		tb.On("Execute").Return(theoryErrors.ErrConditionFailed).Once()
 
-		if _, appErr := s.debitSoulMintConversationCredits(t.Context(), inst, "module", "target", "req-1", 5, now, nil); appErr == nil || appErr.Code != appErrCodeConflict {
-			t.Fatalf("expected condition-failed conflict, got %#v", appErr)
+		if _, appErr := s.debitSoulMintConversationCredits(t.Context(), inst, "module", "target", "req-1", 5, now, nil); appErr == nil || appErr.Code != appTheoryCodeBudgetExhausted || appErr.StatusCode != http.StatusConflict {
+			t.Fatalf("expected condition-failed budget exhaustion, got %#v", appErr)
 		}
 	})
 

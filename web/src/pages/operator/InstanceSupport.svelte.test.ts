@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 const source = readFileSync(join(process.cwd(), 'src/pages/operator/InstanceSupport.svelte'), 'utf8');
+const operatorSource = readFileSync(join(process.cwd(), 'src/pages/Operator.svelte'), 'utf8');
 
 describe('InstanceSupport route changes', () => {
 	it('loads data from the slug effect instead of only at mount', () => {
@@ -19,5 +20,11 @@ describe('InstanceSupport route changes', () => {
 		expect(source).toContain('const generation = ++loadGeneration;');
 		expect(source).toContain('if (generation !== loadGeneration) return;');
 		expect(source).toContain('if (loadedSlug !== targetSlug) return;');
+	});
+
+	it('mounts current-month budget controls and derives edit access from the server-returned role', () => {
+		expect(source).toContain('<InstanceMonthlyBudget');
+		expect(source).toContain("canEdit={role === 'admin'}");
+		expect(operatorSource).toContain('role={me.role}');
 	});
 });

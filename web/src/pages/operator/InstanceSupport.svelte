@@ -1,6 +1,6 @@
 <!--
 @component
-Operator Instances — read-only support view re-skinned for the M2.1 dark
+Operator Instances — read-mostly support view re-skinned for the M2.1 dark
 warm-charcoal chrome.
 
 Project 39 M3.3 (issue #447). One page covers both routes the issue
@@ -21,9 +21,10 @@ Behavior preserved:
   401 → logout / login navigation guard; same `pollUntil` UpdateJob
   polling contract with abort-on-slug-change semantics; same
   `validateManagedReleaseTag` input validation.
-- No operator-only routes added; this surface re-uses the customer
-  portal endpoints intentionally (operator support view re-uses the
-  same data shape so support and customer self-serve diverge minimally).
+- Read paths continue to re-use customer portal endpoints intentionally.
+  Current-month budget adjustment uses the existing admin-only
+  `/api/v1/instances/{slug}/budgets/{month}` route after explicit UI
+  confirmation; no new route or authorization path is introduced.
 
 Posture preserved:
 - Strict-CSP-safe: no inline scripts / styles / third-party origins;
@@ -40,6 +41,7 @@ Source: docs/enumerated-changes-web-ui-rework-2026-05-24.md M3.3
 <script lang="ts">
 	import { onDestroy } from 'svelte';
 
+	import InstanceMonthlyBudget from './InstanceMonthlyBudget.svelte';
 	import { type ApiError, safeHref } from 'src/lib/api/http';
 	import type { BudgetMonthResponse, ListBudgetsResponse } from 'src/lib/api/portalUsage';
 	import { portalListBudgets } from 'src/lib/api/portalUsage';
@@ -59,7 +61,7 @@ Source: docs/enumerated-changes-web-ui-rework-2026-05-24.md M3.3
 	import type { StatCardStatus } from 'src/lib/shell';
 	import { Alert, Button, Card, CopyButton, DefinitionItem, DefinitionList, Heading, Spinner, Text, TextField } from 'src/lib/ui';
 
-	let { token, slug } = $props<{ token: string; slug?: string }>();
+	let { token, slug, role } = $props<{ token: string; slug?: string; role: string }>();
 
 	let slugInput = $state('');
 
@@ -555,9 +557,11 @@ Source: docs/enumerated-changes-web-ui-rework-2026-05-24.md M3.3
 			{/if}
 		</Card>
 
+		<InstanceMonthlyBudget token={token} slug={instance.slug} canEdit={role === 'admin'} />
+
 		<Card variant="outlined" padding="lg">
 			{#snippet header()}
-				<Heading level={3} size="lg">Budgets</Heading>
+				<Heading level={3} size="lg">Budget history</Heading>
 			{/snippet}
 			{#if budgets && budgets.budgets.length === 0}
 				<Alert variant="info" title="No budgets">

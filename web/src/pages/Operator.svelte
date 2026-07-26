@@ -192,9 +192,9 @@
 			{:else if operatorRoute.kind === 'releases'}
 				<Releases token={$session.token} />
 			{:else if operatorRoute.kind === 'instances'}
-				<InstanceSupport token={$session.token} />
+				<InstanceSupport token={$session.token} role={me.role} />
 			{:else if operatorRoute.kind === 'instanceDetail'}
-				<InstanceSupport token={$session.token} slug={operatorRoute.slug} />
+				<InstanceSupport token={$session.token} slug={operatorRoute.slug} role={me.role} />
 			{:else if operatorRoute.kind === 'tipRegistry'}
 				<TipRegistry token={$session.token} />
 			{:else if operatorRoute.kind === 'tipRegistryOperation'}
