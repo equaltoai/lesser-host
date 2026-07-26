@@ -449,7 +449,7 @@ func microVMUnavailableRecoverySequenceFixtures(t *testing.T, reg models.SoulAge
 	staleConversation := models.SoulAgentMintConversation{
 		AgentID:        reg.AgentID,
 		ConversationID: mintConversationTestConversationID,
-		Model:          "anthropic:claude-sonnet-4-6",
+		Model:          "claude-sonnet-5",
 		Messages:       encodeMintConversationBlob(`[{"role":"user","content":"describe the agent"},{"role":"assistant","content":"prior actor answer"},{"role":"user","content":"current accepted turn"}]`),
 		Status:         models.SoulMintConversationStatusInProgress,
 		LatestTurnID:   staleSession.LatestTurnID,
@@ -471,7 +471,7 @@ func registrationWaitObservationFixtures(t *testing.T, reg models.SoulAgentRegis
 	staleConversation := models.SoulAgentMintConversation{
 		AgentID:        reg.AgentID,
 		ConversationID: mintConversationTestConversationID,
-		Model:          "anthropic:claude-sonnet-4-6",
+		Model:          "claude-sonnet-5",
 		Messages:       encodeMintConversationBlob(`[{"role":"user","content":"private pending turn"}]`),
 		Status:         models.SoulMintConversationStatusInProgress,
 		LatestTurnID:   "turn-stuck",
@@ -536,7 +536,7 @@ func runWaitOnlyReadObservationCase(t *testing.T, state runtimemicrovm.Lifecycle
 	staleConversation := models.SoulAgentMintConversation{
 		AgentID:        reg.AgentID,
 		ConversationID: mintConversationTestConversationID,
-		Model:          "anthropic:claude-sonnet-4-6",
+		Model:          "claude-sonnet-5",
 		Messages:       encodeMintConversationBlob(`[{"role":"user","content":"private pending turn"}]`),
 		Status:         models.SoulMintConversationStatusInProgress,
 		LatestTurnID:   "turn-stuck",

@@ -707,7 +707,7 @@ func TestSoulInstanceMintConversation_StartReturnsJSONWithoutQueueAuthority(t *t
 	expectSoulInstanceMintConversationDebit(t, tdb, reg.AgentID, true)
 	resp, err := s.handleSoulInstanceMintConversation(newSoulInstanceBootstrapContext(
 		map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
-		mustMarshalJSON(t, soulMintConversationRequest{Model: "anthropic:claude-sonnet-4-6", Message: soulInstanceBootstrapTestConversationMessage, IdempotencyKey: soulInstanceBootstrapTestIdempotencyKey, CorrelationID: "corr-1"}),
+		mustMarshalJSON(t, soulMintConversationRequest{Model: "claude-sonnet-5", Message: soulInstanceBootstrapTestConversationMessage, IdempotencyKey: soulInstanceBootstrapTestIdempotencyKey, CorrelationID: "corr-1"}),
 		map[string]string{"id": reg.ID},
 	))
 	if err != nil {
@@ -745,7 +745,7 @@ func TestSoulInstanceMintConversation_AssistantFailurePersistsTypedFailure(t *te
 
 	resp, err := s.handleSoulInstanceMintConversation(newSoulInstanceBootstrapContext(
 		map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
-		mustMarshalJSON(t, soulMintConversationRequest{Model: "anthropic:claude-sonnet-4-6", Message: soulInstanceBootstrapTestConversationMessage, IdempotencyKey: soulInstanceBootstrapTestIdempotencyKey, CorrelationID: "corr-1"}),
+		mustMarshalJSON(t, soulMintConversationRequest{Model: "claude-sonnet-5", Message: soulInstanceBootstrapTestConversationMessage, IdempotencyKey: soulInstanceBootstrapTestIdempotencyKey, CorrelationID: "corr-1"}),
 		map[string]string{"id": reg.ID},
 	))
 	if err == nil {
@@ -767,7 +767,7 @@ func TestSoulInstanceMintConversation_IdempotentRetryDoesNotDebitOrAppend(t *tes
 	t.Setenv("ANTHROPIC_API_KEY", "anthropic-test-key")
 	dispatcher := stubHostedGenesisMicroVMDispatcher(t, s)
 	idemKey := "idem-retry-1"
-	reqHash := hostedGenesisRequestHash(reg.ID, "", "anthropic:claude-sonnet-4-6", soulInstanceBootstrapTestConversationMessage)
+	reqHash := hostedGenesisRequestHash(reg.ID, "", "claude-sonnet-5", soulInstanceBootstrapTestConversationMessage)
 
 	expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, soulInstanceBootstrapTestInstanceSlug)
 	stubMintConversationRegistration(t, tdb, reg)
@@ -791,7 +791,7 @@ func TestSoulInstanceMintConversation_IdempotentRetryDoesNotDebitOrAppend(t *tes
 	stubMintConversationConversation(t, tdb, models.SoulAgentMintConversation{
 		AgentID:        reg.AgentID,
 		ConversationID: mintConversationTestConversationID,
-		Model:          "anthropic:claude-sonnet-4-6",
+		Model:          "claude-sonnet-5",
 		Messages:       encodeMintConversationBlob(`[{"role":"user","content":"hello"}]`),
 		Status:         models.SoulMintConversationStatusInProgress,
 		LatestTurnID:   "turn-existing",
@@ -803,7 +803,7 @@ func TestSoulInstanceMintConversation_IdempotentRetryDoesNotDebitOrAppend(t *tes
 	session := hostedGenesisSessionFromLegacyConversationForTest(tdb, models.SoulAgentMintConversation{
 		AgentID:        reg.AgentID,
 		ConversationID: mintConversationTestConversationID,
-		Model:          "anthropic:claude-sonnet-4-6",
+		Model:          "claude-sonnet-5",
 		Status:         models.SoulMintConversationStatusInProgress,
 		LatestTurnID:   "turn-existing",
 		RequestID:      "req-original",
@@ -818,7 +818,7 @@ func TestSoulInstanceMintConversation_IdempotentRetryDoesNotDebitOrAppend(t *tes
 	}).Once()
 	resp, err := s.handleSoulInstanceMintConversation(newSoulInstanceBootstrapContext(
 		map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
-		mustMarshalJSON(t, soulMintConversationRequest{ConversationID: mintConversationTestConversationID, Model: "anthropic:claude-sonnet-4-6", Message: soulInstanceBootstrapTestConversationMessage, IdempotencyKey: idemKey, CorrelationID: "corr-retry"}),
+		mustMarshalJSON(t, soulMintConversationRequest{ConversationID: mintConversationTestConversationID, Model: "claude-sonnet-5", Message: soulInstanceBootstrapTestConversationMessage, IdempotencyKey: idemKey, CorrelationID: "corr-retry"}),
 		map[string]string{"id": reg.ID},
 	))
 	if err != nil {
@@ -864,7 +864,7 @@ func TestSoulInstanceMintConversation_ContinueRejectsModelChange(t *testing.T) {
 	stubMintConversationConversation(t, tdb, models.SoulAgentMintConversation{
 		AgentID:        reg.AgentID,
 		ConversationID: mintConversationTestConversationID,
-		Model:          "anthropic:claude-sonnet-4-6",
+		Model:          "claude-sonnet-5",
 		Status:         models.SoulMintConversationStatusAssistantTurnReady,
 		LatestTurnID:   "turn-ready",
 		CreatedAt:      time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC),
@@ -872,7 +872,7 @@ func TestSoulInstanceMintConversation_ContinueRejectsModelChange(t *testing.T) {
 
 	_, err := s.handleSoulInstanceMintConversation(newSoulInstanceBootstrapContext(
 		map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
-		mustMarshalJSON(t, soulMintConversationRequest{ConversationID: mintConversationTestConversationID, Model: "openai:gpt-5.4", Message: soulInstanceBootstrapTestConversationMessage}),
+		mustMarshalJSON(t, soulMintConversationRequest{ConversationID: mintConversationTestConversationID, Model: "gpt-5.6-luna", Message: soulInstanceBootstrapTestConversationMessage}),
 		map[string]string{"id": reg.ID},
 	))
 	appErr := requireAppTheoryError(t, err)
@@ -894,7 +894,7 @@ func TestSoulInstanceMintConversation_ContinueUsesStoredModelAndMessages(t *test
 	stubMintConversationConversation(t, tdb, models.SoulAgentMintConversation{
 		AgentID:        reg.AgentID,
 		ConversationID: mintConversationTestConversationID,
-		Model:          "anthropic:claude-sonnet-4-6",
+		Model:          "claude-sonnet-5",
 		Messages:       encodeMintConversationBlob(`[{"role":"user","content":"first"},{"role":"assistant","content":"reply"}]`),
 		Status:         models.SoulMintConversationStatusAssistantTurnReady,
 		Usage:          models.AIUsage{TotalTokens: 9},
@@ -943,7 +943,7 @@ func TestSoulInstanceGetRegistrationMintConversation_ReturnsStatusEnvelopeWithSa
 	stubMintConversationConversation(t, tdb, models.SoulAgentMintConversation{
 		AgentID:              reg.AgentID,
 		ConversationID:       mintConversationTestConversationID,
-		Model:                "anthropic:claude-sonnet-4-6",
+		Model:                "claude-sonnet-5",
 		Messages:             encodeMintConversationBlob(`[{"role":"user","content":"` + hostedGenesisBenignCredentialSafetyProse + `"},{"role":"assistant","content":"private_key=abcdefghijklmnopqrstuvwxyz012345"}]`),
 		ProducedDeclarations: encodeMintConversationBlob(`{"private":true}`),
 		Status:               models.SoulMintConversationStatusCompleted,
@@ -1021,7 +1021,7 @@ func TestSoulInstanceCompleteMintConversation_ReturnsCompletedConversationReplay
 	stubMintConversationConversation(t, tdb, models.SoulAgentMintConversation{
 		AgentID:              reg.AgentID,
 		ConversationID:       mintConversationTestConversationID,
-		Model:                "anthropic:claude-sonnet-4-6",
+		Model:                "claude-sonnet-5",
 		ProducedDeclarations: encodeMintConversationBlob(string(declBytes)),
 		Status:               models.SoulMintConversationStatusCompleted,
 		CreatedAt:            time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC),
@@ -1074,7 +1074,7 @@ func TestSoulInstanceCompleteMintConversation_ReplaysHostedContractEmptyDeclarat
 	stubMintConversationConversation(t, tdb, models.SoulAgentMintConversation{
 		AgentID:              reg.AgentID,
 		ConversationID:       mintConversationTestConversationID,
-		Model:                "anthropic:claude-sonnet-4-6",
+		Model:                "claude-sonnet-5",
 		ProducedDeclarations: encodeMintConversationBlob(string(declBytes)),
 		Status:               models.SoulMintConversationStatusCompleted,
 		CreatedAt:            time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC),

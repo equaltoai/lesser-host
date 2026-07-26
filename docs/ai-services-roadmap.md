@@ -116,6 +116,13 @@ Model sets (examples):
 - OpenAI: `openai:gpt-5.2-2025-12-11`, `openai:gpt-5-2025-08-07`, `openai:gpt-5-mini-2025-08-07`
 - Anthropic: `anthropic:claude-sonnet-4-5-20250929`, `anthropic:claude-haiku-4-5-20251001`, `anthropic:claude-opus-4-5-20251101`
 
+Hosted Genesis has a narrower operator-facing selection surface: callers use
+`gpt-5.6-luna` (OpenAI) or `claude-sonnet-5` (Claude), both resolved with
+medium reasoning effort. The provider-prefixed `provider:model` form remains
+an internal/advanced escape hatch for generic AI configuration and legacy
+stored conversations; it is not required or accepted at the Hosted Genesis
+request boundary.
+
 ## Batching design
 
 Batch at two layers:

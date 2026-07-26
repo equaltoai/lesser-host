@@ -15,6 +15,7 @@ import (
 	"github.com/theory-cloud/tabletheory/v2/pkg/core"
 	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
 
+	"github.com/equaltoai/lesser-host/internal/ai/modelselection"
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
@@ -48,15 +49,18 @@ type hostedGenesisTurnSession struct {
 }
 
 func (s *Server) handleSoulMintConversationForRegistrationAsync(ctx *apptheory.Context, regCtx mintConversationRegistrationContext, instanceSlug string) (*apptheory.Response, error) {
-	if publishGuardErr := s.ensureMintConversationAgentNotPublished(ctx.Context(), regCtx.agentIDHex); publishGuardErr != nil {
-		return nil, publishGuardErr
-	}
 	req, message, err := requireMintConversationMessage(ctx)
 	if err != nil {
 		return nil, err
 	}
 	if validationErr := validateHostedGenesisRequestIDs(&req); validationErr != nil {
 		return nil, validationErr
+	}
+	if modelErr := validateHostedGenesisModelRequest(req); modelErr != nil {
+		return nil, modelErr
+	}
+	if publishGuardErr := s.ensureMintConversationAgentNotPublished(ctx.Context(), regCtx.agentIDHex); publishGuardErr != nil {
+		return nil, publishGuardErr
 	}
 
 	now := time.Now().UTC()
@@ -110,6 +114,19 @@ func (s *Server) handleSoulMintConversationForRegistrationAsync(ctx *apptheory.C
 		IdempotencyKey:  req.IdempotencyKey,
 		LesserRequestID: req.LesserRequestID,
 	})
+}
+
+func validateHostedGenesisModelRequest(req soulMintConversationRequest) *apptheory.AppTheoryError {
+	if strings.TrimSpace(req.Model) == "" {
+		if req.modelProvided {
+			return newAppTheoryError("app.bad_request", (&modelselection.AliasError{}).Error())
+		}
+		return nil
+	}
+	if _, err := modelselection.ResolveAlias(req.Model); err != nil {
+		return newAppTheoryError("app.bad_request", err.Error())
+	}
+	return nil
 }
 
 func (s *Server) handleHostedGenesisWaitOnlyOrReplayedTurn(ctx *apptheory.Context, regCtx mintConversationRegistrationContext, session hostedGenesisTurnSession, req soulMintConversationRequest) (*apptheory.Response, error) {
@@ -343,15 +360,11 @@ func hostedGenesisSessionFailureFromReason(reason string) *hostedgenesis.Failure
 }
 
 func hostedGenesisProviderName(modelSet string) string {
-	modelSet = strings.ToLower(strings.TrimSpace(modelSet))
-	switch {
-	case strings.HasPrefix(modelSet, "openai:"):
-		return "openai"
-	case strings.HasPrefix(modelSet, "anthropic:"):
-		return "anthropic"
-	default:
+	definition, err := modelselection.ResolveModelSet(modelSet)
+	if err != nil {
 		return hostedGenesisProviderUnknown
 	}
+	return definition.Provider
 }
 
 func cloneSoulAgentMintConversation(conv *models.SoulAgentMintConversation) *models.SoulAgentMintConversation {
@@ -824,7 +837,9 @@ func newHostedGenesisCandidateForAcceptedTurn(session hostedGenesisTurnSession, 
 	return hostedgenesis.NewDeclarationCandidate(hostedgenesis.DeclarationCandidateBinding{
 		InstanceSlug: session.session.InstanceSlug, RegistrationID: session.session.RegistrationID,
 		AgentID: session.session.AgentID, ConversationID: session.session.ConversationID,
-		SourceTurnID: turnID, Model: session.modelSet,
+		// The Hosted Genesis request/session stores the operator-facing alias;
+		// the existing declaration candidate contract remains provider:model.
+		SourceTurnID: turnID, Model: modelselection.CanonicalModelSet(session.modelSet),
 	}, now)
 }
 

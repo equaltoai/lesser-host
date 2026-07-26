@@ -74,7 +74,7 @@ func TestH1_4_RecoveryFallthroughIsDispatchOnlyNoSyncRerun(t *testing.T) {
 	stubSoulInstanceRecoveryConversation(t, tdb, models.SoulAgentMintConversation{
 		AgentID:        reg.AgentID,
 		ConversationID: mintConversationTestConversationID,
-		Model:          "anthropic:claude-sonnet-4-6",
+		Model:          "claude-sonnet-5",
 		Messages:       encodeMintConversationBlob(`[{"role":"user","content":"stuck user turn"}]`),
 		Status:         models.SoulMintConversationStatusInProgress,
 		LatestTurnID:   "turn-stuck",
@@ -117,7 +117,7 @@ func TestH1_4_RecoveryFallthroughUnwiredDispatcherIsLoudNoSyncRerun(t *testing.T
 	stubSoulInstanceRecoveryConversation(t, tdb, models.SoulAgentMintConversation{
 		AgentID:        reg.AgentID,
 		ConversationID: mintConversationTestConversationID,
-		Model:          "anthropic:claude-sonnet-4-6",
+		Model:          "claude-sonnet-5",
 		Messages:       encodeMintConversationBlob(`[{"role":"user","content":"stuck user turn"}]`),
 		Status:         models.SoulMintConversationStatusInProgress,
 		LatestTurnID:   "turn-stuck",
@@ -157,7 +157,7 @@ func TestH1_4_RecoveryFallthroughDispatchErrorIsLoudNoSyncRerun(t *testing.T) {
 	stubSoulInstanceRecoveryConversation(t, tdb, models.SoulAgentMintConversation{
 		AgentID:        reg.AgentID,
 		ConversationID: mintConversationTestConversationID,
-		Model:          "anthropic:claude-sonnet-4-6",
+		Model:          "claude-sonnet-5",
 		Messages:       encodeMintConversationBlob(`[{"role":"user","content":"stuck user turn"}]`),
 		Status:         models.SoulMintConversationStatusInProgress,
 		LatestTurnID:   "turn-stuck",

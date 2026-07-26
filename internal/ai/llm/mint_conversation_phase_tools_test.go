@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/equaltoai/lesser-host/internal/ai/modelselection"
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
 )
 
@@ -24,6 +25,70 @@ func TestMintConversationPhaseProviderLoopsRepairCurrentSectionAndReachText(t *t
 		t.Run(test.name, func(t *testing.T) {
 			assertMintConversationPhaseProviderRepair(t, test.modelSet, test.provider, test.responses)
 		})
+	}
+}
+
+func TestHostedGenesisAliasesRouteWithMediumReasoningEffort(t *testing.T) {
+	for _, test := range []hostedGenesisAliasTestCase{
+		{name: "openai", alias: modelselection.AliasOpenAI, provider: modelselection.ProviderOpenAI, model: "gpt-5.6-luna"},
+		{name: "anthropic", alias: modelselection.AliasAnthropic, provider: modelselection.ProviderAnthropic, model: "claude-sonnet-5"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			assertHostedGenesisAliasProviderRequest(t, test)
+		})
+	}
+}
+
+type hostedGenesisAliasTestCase struct {
+	name     string
+	alias    string
+	provider string
+	model    string
+}
+
+func assertHostedGenesisAliasProviderRequest(t *testing.T, test hostedGenesisAliasTestCase) {
+	t.Helper()
+	responses := openAIMintConversationPhaseResponses(t)
+	if test.provider == modelselection.ProviderAnthropic {
+		responses = anthropicMintConversationPhaseResponses(t)
+	}
+	_, requests := installMintConversationPhaseProvider(t, test.provider, [][]byte{responses[2]})
+	_, err := RunMintConversationPhase(t.Context(), "provider-test-key", MintConversationPhaseInput{
+		ModelSet: test.alias, SystemPrompt: "Construct the current section.",
+		Messages: []MintConversationMessage{{Role: "user", Content: "I am tenant bound."}},
+		Section:  hostedgenesis.DeclarationSectionIdentity, CandidateRevision: 0,
+		CandidateHash: "sha256:" + strings.Repeat("a", 64), SourceTurnID: "turn-alias",
+	}, func(context.Context, MintConversationPhaseToolCall) (hostedgenesis.DeclarationToolResult, error) {
+		t.Fatal("alias effort test should complete with provider text, not a tool call")
+		return hostedgenesis.DeclarationToolResult{}, nil
+	}, nil)
+	if err != nil {
+		t.Fatalf("alias phase failed: %v", err)
+	}
+	if len(*requests) != 1 {
+		t.Fatalf("expected one provider request, got %d", len(*requests))
+	}
+	var body map[string]any
+	if err := json.Unmarshal((*requests)[0], &body); err != nil {
+		t.Fatal(err)
+	}
+	if body["model"] != test.model {
+		t.Fatalf("provider model = %#v, want %q", body["model"], test.model)
+	}
+	assertHostedGenesisAliasEffort(t, test.provider, body)
+}
+
+func assertHostedGenesisAliasEffort(t *testing.T, provider string, body map[string]any) {
+	t.Helper()
+	if provider == modelselection.ProviderOpenAI {
+		if body["reasoning_effort"] != modelselection.ReasoningEffortMedium {
+			t.Fatalf("OpenAI reasoning_effort = %#v", body["reasoning_effort"])
+		}
+		return
+	}
+	outputConfig, ok := body["output_config"].(map[string]any)
+	if !ok || outputConfig["effort"] != modelselection.ReasoningEffortMedium {
+		t.Fatalf("Anthropic output_config = %#v", body["output_config"])
 	}
 }
 

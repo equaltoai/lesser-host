@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/equaltoai/lesser-host/internal/ai"
+	"github.com/equaltoai/lesser-host/internal/ai/modelselection"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
@@ -41,7 +42,7 @@ func defaultInstanceTrustConfig() instanceTrustConfig {
 		ModerationViralityMin: 0,
 
 		AIEnabled:              false,
-		AIModelSet:             "openai:gpt-5-mini-2025-08-07",
+		AIModelSet:             modelselection.DefaultAlias,
 		AIBatchingMode:         aiBatchingModeNone,
 		AIBatchMaxItems:        8,
 		AIBatchMaxTotalBytes:   64 * 1024,

@@ -20,7 +20,7 @@ function fakeInstance(overrides: Partial<InstanceResponse> = {}): InstanceRespon
 		moderation_trigger: 'on_reports',
 		moderation_virality_min: 0,
 		ai_enabled: false,
-		ai_model_set: 'default',
+		ai_model_set: 'gpt-5.6-luna',
 		ai_batching_mode: 'none',
 		ai_batch_max_items: 10,
 		ai_batch_max_total_bytes: 1024,
@@ -39,7 +39,7 @@ describe('instanceConfig', () => {
 
 		const req = buildUpdateInstanceConfigRequest(form);
 		expect(req.render_policy).toBe('suspicious');
-		expect(req.ai_model_set).toBe('default');
+		expect(req.ai_model_set).toBe('gpt-5.6-luna');
 		expect(req.ai_batch_max_items).toBe(10);
 	});
 
@@ -55,4 +55,3 @@ describe('instanceConfig', () => {
 		expect(errors.moderation_virality_min).toBeDefined();
 	});
 });
-

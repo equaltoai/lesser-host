@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/equaltoai/lesser-host/internal/ai/llm"
+	"github.com/equaltoai/lesser-host/internal/ai/modelselection"
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis/completion"
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis/mintprompt"
@@ -737,9 +738,9 @@ var providerSSMLoaders = map[string]ssmKeyLoader{
 // env-first path is preserved for local tests that set OPENAI_API_KEY directly.
 // A missing key in both env and SSM fails closed.
 func providerAPIKey(ctx context.Context, modelSet string) (string, error) {
-	modelSetNorm := strings.ToLower(strings.TrimSpace(modelSet))
+	definition, resolveErr := modelselection.ResolveModelSet(strings.TrimSpace(modelSet))
 	switch {
-	case strings.HasPrefix(modelSetNorm, "openai:"):
+	case resolveErr == nil && definition.Provider == modelselection.ProviderOpenAI:
 		if k := strings.TrimSpace(os.Getenv("OPENAI_API_KEY")); k != "" {
 			return k, nil
 		}
@@ -752,7 +753,7 @@ func providerAPIKey(ctx context.Context, modelSet string) (string, error) {
 			return "", errors.New("openai provider key not configured")
 		}
 		return k, nil
-	case strings.HasPrefix(modelSetNorm, "anthropic:"):
+	case resolveErr == nil && definition.Provider == modelselection.ProviderAnthropic:
 		if k := strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY")); k != "" {
 			return k, nil
 		}
