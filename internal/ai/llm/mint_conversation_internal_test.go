@@ -14,6 +14,7 @@ import (
 
 	"github.com/anthropics/anthropic-sdk-go"
 
+	"github.com/equaltoai/lesser-host/internal/ai/modelselection"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
@@ -306,7 +307,7 @@ func requireSchemaMap(t *testing.T, src map[string]any, key string) map[string]a
 func TestMintConversationStreamingHelpers(t *testing.T) {
 	t.Parallel()
 
-	openAIMessages := buildOpenAIConversationMessages("  system prompt  ", []MintConversationMessage{
+	openAIMessages := buildOpenAIResponseInput("  system prompt  ", []MintConversationMessage{
 		{Role: " user ", Content: " hello "},
 		{Role: "assistant", Content: " world "},
 		{Role: "ignored", Content: "skip"},
@@ -314,6 +315,15 @@ func TestMintConversationStreamingHelpers(t *testing.T) {
 	})
 	if len(openAIMessages) != 3 {
 		t.Fatalf("expected 3 OpenAI messages, got %d", len(openAIMessages))
+	}
+	openAIRequestInput, err := json.Marshal(openAIMessages)
+	if err != nil {
+		t.Fatalf("marshal OpenAI input: %v", err)
+	}
+	for _, required := range []string{`"role":"system"`, `"content":"system prompt"`, `"role":"user"`, `"content":"hello"`, `"role":"assistant"`, `"content":"world"`} {
+		if !strings.Contains(string(openAIRequestInput), required) {
+			t.Fatalf("Responses input missing %q: %s", required, openAIRequestInput)
+		}
 	}
 
 	anthropicMessages := buildAnthropicConversationMessages([]MintConversationMessage{
@@ -337,17 +347,27 @@ func TestMintConversationStreamingHelpers(t *testing.T) {
 func TestOpenAIMintConversationStreamParamsCapsOutputTokens(t *testing.T) {
 	t.Parallel()
 
-	params := newOpenAIMintConversationStreamParams("gpt-test", "system", []MintConversationMessage{
+	params := newOpenAIMintConversationStreamParamsWithEffort("gpt-test", modelselection.ReasoningEffortMedium, "system", []MintConversationMessage{
 		{Role: "user", Content: "hello"},
 	})
 	body, err := json.Marshal(params)
 	if err != nil {
 		t.Fatalf("marshal params: %v", err)
 	}
-	if !strings.Contains(string(body), `"max_completion_tokens":4096`) {
-		t.Fatalf("expected max_completion_tokens cap in request params, got %s", string(body))
+	if !strings.Contains(string(body), `"max_output_tokens":4096`) {
+		t.Fatalf("expected max_output_tokens cap in request params, got %s", string(body))
 	}
-	if !strings.Contains(string(body), `"stream_options"`) || !strings.Contains(string(body), `"include_usage":true`) {
-		t.Fatalf("expected streaming usage options in request params, got %s", string(body))
+	if strings.Contains(string(body), `"stream_options"`) {
+		t.Fatalf("Responses request must not carry Chat Completions stream options: %s", string(body))
+	}
+	var reasoning struct {
+		Effort string `json:"effort"`
+	}
+	reasoningBody, err := json.Marshal(params.Reasoning)
+	if err != nil {
+		t.Fatalf("marshal Responses reasoning: %v", err)
+	}
+	if err := json.Unmarshal(reasoningBody, &reasoning); err != nil || reasoning.Effort != modelselection.ReasoningEffortMedium {
+		t.Fatalf("expected medium Responses reasoning effort, body=%s err=%v", body, err)
 	}
 }

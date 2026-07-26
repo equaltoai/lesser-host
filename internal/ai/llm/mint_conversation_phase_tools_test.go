@@ -10,6 +10,7 @@ import (
 
 	"github.com/equaltoai/lesser-host/internal/ai/modelselection"
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
+	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
 func TestMintConversationPhaseProviderLoopsRepairCurrentSectionAndReachText(t *testing.T) {
@@ -81,8 +82,9 @@ func assertHostedGenesisAliasProviderRequest(t *testing.T, test hostedGenesisAli
 func assertHostedGenesisAliasEffort(t *testing.T, provider string, body map[string]any) {
 	t.Helper()
 	if provider == modelselection.ProviderOpenAI {
-		if body["reasoning_effort"] != modelselection.ReasoningEffortMedium {
-			t.Fatalf("OpenAI reasoning_effort = %#v", body["reasoning_effort"])
+		reasoning, ok := body["reasoning"].(map[string]any)
+		if !ok || reasoning["effort"] != modelselection.ReasoningEffortMedium {
+			t.Fatalf("OpenAI reasoning = %#v", body["reasoning"])
 		}
 		return
 	}
@@ -136,20 +138,16 @@ func TestSoulPhaseCapabilitySchemaMatchesHostValidationContract(t *testing.T) {
 
 func TestOpenAIMintConversationSoulPhaseRejectsLengthAsInvalidProviderOutput(t *testing.T) {
 	response := mustJSONBytes(t, map[string]any{
-		"id": "chatcmpl-soul-length", "object": "chat.completion", "created": 1, "model": "gpt-test",
-		"choices": []any{map[string]any{
-			"index": 0, "finish_reason": "length",
-			"message": map[string]any{
-				"role": "assistant", "content": "",
-				"tool_calls": []any{map[string]any{
-					"id": "call-soul-length", "type": "function",
-					"function": map[string]any{"name": hostedgenesis.DeclarationToolSoulPut, "arguments": `{"candidateRevision":4`},
-				}},
-			},
+		"id": "resp-soul-length", "object": "response", "created_at": 1, "model": "gpt-test",
+		"status": "incomplete", "incomplete_details": map[string]any{"reason": "max_output_tokens"},
+		"output": []any{map[string]any{
+			"type": "function_call", "id": "fc-soul-length", "call_id": "call-soul-length",
+			"name": hostedgenesis.DeclarationToolSoulPut, "arguments": `{"candidateRevision":4`, "status": "incomplete",
 		}},
 		"usage": map[string]any{
-			"prompt_tokens": 100, "completion_tokens": 4096, "total_tokens": 4196,
-			"completion_tokens_details": map[string]any{"reasoning_tokens": 1024},
+			"input_tokens": 100, "output_tokens": 4096, "total_tokens": 4196,
+			"input_tokens_details":  map[string]any{"cached_tokens": 0},
+			"output_tokens_details": map[string]any{"reasoning_tokens": 1024},
 		},
 	})
 	requestCount, requests := installMintConversationPhaseProvider(t, "openai", [][]byte{response})
@@ -178,13 +176,13 @@ func TestOpenAIMintConversationSoulPhaseRejectsLengthAsInvalidProviderOutput(t *
 		t.Fatalf("incomplete output telemetry was not content-free and classified: %#v", events)
 	}
 	var request struct {
-		MaxCompletionTokens int64 `json:"max_completion_tokens"`
+		MaxOutputTokens int64 `json:"max_output_tokens"`
 	}
 	if err := json.Unmarshal((*requests)[0], &request); err != nil {
 		t.Fatal(err)
 	}
-	if request.MaxCompletionTokens != mintConversationOpenAISoulMaxCompletionTokens {
-		t.Fatalf("soul output budget drifted: got=%d want=%d", request.MaxCompletionTokens, mintConversationOpenAISoulMaxCompletionTokens)
+	if request.MaxOutputTokens != mintConversationOpenAISoulMaxCompletionTokens {
+		t.Fatalf("soul output budget drifted: got=%d want=%d", request.MaxOutputTokens, mintConversationOpenAISoulMaxCompletionTokens)
 	}
 }
 
@@ -197,28 +195,62 @@ func assertMintConversationPhaseProviderRepair(t *testing.T, modelSet string, pr
 		Messages: []MintConversationMessage{{Role: "user", Content: "I am tenant bound."}},
 		Section:  hostedgenesis.DeclarationSectionIdentity, CandidateRevision: 0,
 		CandidateHash: "sha256:" + strings.Repeat("a", 64), SourceTurnID: "turn-1",
-	}, func(_ context.Context, call MintConversationPhaseToolCall) (hostedgenesis.DeclarationToolResult, error) {
-		handlerCalls++
-		if call.Name != hostedgenesis.DeclarationToolIdentityPut || call.CallID == "" || len(call.Arguments) == 0 {
-			t.Fatalf("provider emitted an unbound tool call: %#v", call)
-		}
-		if handlerCalls == 1 {
+	}, mintConversationPhaseRepairHandler(t, &handlerCalls), nil)
+	assertMintConversationPhaseRepairOutput(t, provider, out, err, handlerCalls, *requestCount)
+	assertMintConversationPhaseContinuationRequest(t, provider, *requests)
+}
+
+func mintConversationPhaseRepairHandler(t *testing.T, handlerCalls *int) func(context.Context, MintConversationPhaseToolCall) (hostedgenesis.DeclarationToolResult, error) {
+	t.Helper()
+	return func(_ context.Context, call MintConversationPhaseToolCall) (hostedgenesis.DeclarationToolResult, error) {
+		*handlerCalls++
+		assertMintConversationPhaseToolCall(t, call)
+		if *handlerCalls == 1 {
 			return hostedgenesis.DeclarationToolResult{Section: hostedgenesis.DeclarationSectionIdentity, Errors: []hostedgenesis.DeclarationValidationIssue{{
 				Section: hostedgenesis.DeclarationSectionIdentity, Path: "fiveBodies.identity.summary", Code: hostedgenesis.DeclarationCodeFiveBodyIdentity,
 			}}}, nil
 		}
 		return hostedgenesis.DeclarationToolResult{Accepted: true, Section: hostedgenesis.DeclarationSectionIdentity, Revision: 1, CandidateHash: "sha256:" + strings.Repeat("b", 64)}, nil
-	}, nil)
-	if err != nil || out.AssistantContent != "Identity accepted; continue to philosophy." {
+	}
+}
+
+func assertMintConversationPhaseToolCall(t *testing.T, call MintConversationPhaseToolCall) {
+	t.Helper()
+	if call.Name != hostedgenesis.DeclarationToolIdentityPut {
+		t.Fatalf("provider emitted an unexpected tool: %#v", call)
+	}
+	if call.CallID == "" || len(call.Arguments) == 0 {
+		t.Fatalf("provider emitted an unbound tool call: %#v", call)
+	}
+}
+
+func assertMintConversationPhaseRepairOutput(t *testing.T, provider string, out MintConversationPhaseOutput, err error, handlerCalls int, requestCount int) {
+	t.Helper()
+	if err != nil {
 		t.Fatalf("phase loop did not repair and continue: out=%#v err=%v", out, err)
 	}
-	if handlerCalls != 2 || *requestCount != 3 {
-		t.Fatalf("phase loop counts diverged: handler=%d requests=%d", handlerCalls, *requestCount)
+	if out.AssistantContent != "Identity accepted; continue to philosophy." {
+		t.Fatalf("phase loop did not reach continuation text: out=%#v", out)
+	}
+	if handlerCalls != 2 || requestCount != 3 {
+		t.Fatalf("phase loop counts diverged: handler=%d requests=%d", handlerCalls, requestCount)
 	}
 	if out.Usage.Provider != provider || out.Usage.TotalTokens == 0 {
 		t.Fatalf("phase usage missing provider identity: %#v", out.Usage)
 	}
-	assertMintConversationPhaseContinuationRequest(t, provider, *requests)
+	if provider == testProviderOpenAI {
+		assertOpenAIMintConversationUsage(t, out.Usage)
+	}
+}
+
+func assertOpenAIMintConversationUsage(t *testing.T, usage models.AIUsage) {
+	t.Helper()
+	if usage.InputTokens != 9 {
+		t.Fatalf("Responses input usage mapping drifted: %#v", usage)
+	}
+	if usage.OutputTokens != 6 || usage.TotalTokens != 15 || usage.ToolCalls != 3 {
+		t.Fatalf("Responses usage mapping drifted: %#v", usage)
+	}
 }
 
 func installMintConversationPhaseProvider(t *testing.T, provider string, responses [][]byte) (*int, *[][]byte) {
@@ -259,35 +291,91 @@ func assertMintConversationPhaseContinuationRequest(t *testing.T, provider strin
 		t.Fatalf("expected three %s requests, got %d", provider, len(requests))
 	}
 	for index, body := range requests {
-		var request struct {
-			Tools      []json.RawMessage `json:"tools"`
-			ToolChoice json.RawMessage   `json:"tool_choice"`
-		}
-		if err := json.Unmarshal(body, &request); err != nil {
-			t.Fatalf("decode %s request %d: %v", provider, index+1, err)
-		}
+		request := decodeMintConversationPhaseRequest(t, provider, index, body)
 		if len(request.Tools) != 1 {
 			t.Fatalf("%s request %d lost its section-local tool declaration", provider, index+1)
 		}
-		if index != len(requests)-1 {
-			continue
+		if provider == testProviderOpenAI {
+			assertOpenAIMintConversationPhaseRequest(t, index, body, request)
 		}
-		switch provider {
-		case "openai":
-			var choice string
-			if err := json.Unmarshal(request.ToolChoice, &choice); err != nil || choice != "none" {
-				t.Fatalf("openai continuation did not disable the declared tool: choice=%s err=%v", request.ToolChoice, err)
-			}
-		case "anthropic":
-			var choice struct {
-				Type string `json:"type"`
-			}
-			if err := json.Unmarshal(request.ToolChoice, &choice); err != nil || choice.Type != "none" {
-				t.Fatalf("anthropic continuation did not disable the declared tool: choice=%s err=%v", request.ToolChoice, err)
-			}
-		default:
-			t.Fatalf("unsupported test provider %q", provider)
+		if index == len(requests)-1 {
+			assertMintConversationPhaseFinalToolChoice(t, provider, request.ToolChoice)
 		}
+	}
+}
+
+type mintConversationPhaseRequest struct {
+	Input      []json.RawMessage `json:"input"`
+	Tools      []json.RawMessage `json:"tools"`
+	ToolChoice json.RawMessage   `json:"tool_choice"`
+}
+
+func decodeMintConversationPhaseRequest(t *testing.T, provider string, index int, body []byte) mintConversationPhaseRequest {
+	t.Helper()
+	var request mintConversationPhaseRequest
+	if err := json.Unmarshal(body, &request); err != nil {
+		t.Fatalf("decode %s request %d: %v", provider, index+1, err)
+	}
+	return request
+}
+
+func assertOpenAIMintConversationPhaseRequest(t *testing.T, index int, body []byte, request mintConversationPhaseRequest) {
+	t.Helper()
+	wantInputItems := []int{2, 5, 8}[index]
+	if len(request.Input) != wantInputItems {
+		t.Fatalf("openai request %d changed the Responses conversation input: got=%d want=%d body=%s", index+1, len(request.Input), wantInputItems, body)
+	}
+	inputTypes, inputRoles := decodeOpenAIMintConversationInput(t, index, request.Input)
+	if index == 0 {
+		if inputRoles[0] != "system" || inputRoles[1] != mintConversationUserRole {
+			t.Fatalf("openai request 1 lost system/conversation messages: roles=%#v types=%#v", inputRoles, inputTypes)
+		}
+	} else if !containsSchemaField(inputTypes, "reasoning") || !containsSchemaField(inputTypes, openAIResponseFunctionCallType) || !containsSchemaField(inputTypes, "function_call_output") {
+		t.Fatalf("openai request %d lost Responses tool-loop items: %#v", index+1, inputTypes)
+	}
+	if index < 2 {
+		var choice string
+		if err := json.Unmarshal(request.ToolChoice, &choice); err != nil || choice != "auto" {
+			t.Fatalf("openai request %d did not retain automatic tool choice: choice=%s err=%v", index+1, request.ToolChoice, err)
+		}
+	}
+}
+
+func decodeOpenAIMintConversationInput(t *testing.T, index int, input []json.RawMessage) ([]string, []string) {
+	t.Helper()
+	inputTypes := make([]string, 0, len(input))
+	inputRoles := make([]string, 0, len(input))
+	for _, raw := range input {
+		var item struct {
+			Type string `json:"type"`
+			Role string `json:"role"`
+		}
+		if err := json.Unmarshal(raw, &item); err != nil {
+			t.Fatalf("decode openai request %d input item: %v", index+1, err)
+		}
+		inputTypes = append(inputTypes, item.Type)
+		inputRoles = append(inputRoles, item.Role)
+	}
+	return inputTypes, inputRoles
+}
+
+func assertMintConversationPhaseFinalToolChoice(t *testing.T, provider string, raw json.RawMessage) {
+	t.Helper()
+	switch provider {
+	case testProviderOpenAI:
+		var choice string
+		if err := json.Unmarshal(raw, &choice); err != nil || choice != "none" {
+			t.Fatalf("openai continuation did not disable the declared tool: choice=%s err=%v", raw, err)
+		}
+	case "anthropic":
+		var choice struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal(raw, &choice); err != nil || choice.Type != "none" {
+			t.Fatalf("anthropic continuation did not disable the declared tool: choice=%s err=%v", raw, err)
+		}
+	default:
+		t.Fatalf("unsupported test provider %q", provider)
 	}
 }
 
@@ -297,9 +385,14 @@ func openAIMintConversationPhaseResponses(t *testing.T) [][]byte {
 		mustJSONBytes(t, openAIMintConversationPhaseToolResponse("openai-call-reject", 2, 1)),
 		mustJSONBytes(t, openAIMintConversationPhaseToolResponse("openai-call-accept", 3, 2)),
 		mustJSONBytes(t, map[string]any{
-			"id": "chatcmpl-text", "object": "chat.completion", "created": 1, "model": "gpt-test",
-			"choices": []any{map[string]any{"index": 0, "finish_reason": "stop", "message": map[string]any{"role": "assistant", "content": "Identity accepted; continue to philosophy."}}},
-			"usage":   map[string]any{"prompt_tokens": 4, "completion_tokens": 3, "total_tokens": 7},
+			"id": "resp-text", "object": "response", "created_at": 1, "model": "gpt-test", "status": "completed",
+			"output": []any{map[string]any{
+				"type": "message", "id": "msg-text", "role": "assistant", "status": "completed",
+				"content": []any{map[string]any{"type": "output_text", "text": "Identity accepted; continue to philosophy.", "annotations": []any{}, "logprobs": []any{}}},
+			}},
+			"usage": map[string]any{"input_tokens": 4, "output_tokens": 3, "total_tokens": 7,
+				"input_tokens_details":  map[string]any{"cached_tokens": 0},
+				"output_tokens_details": map[string]any{"reasoning_tokens": 0}},
 		}),
 	}
 }
@@ -307,11 +400,14 @@ func openAIMintConversationPhaseResponses(t *testing.T) [][]byte {
 func openAIMintConversationPhaseToolResponse(callID string, inputTokens int, outputTokens int) map[string]any {
 	arguments := `{"candidateRevision":0,"candidateHash":"sha256:` + strings.Repeat("a", 64) + `","section":{"summary":"I am tenant bound.","notes":[]}}`
 	return map[string]any{
-		"id": "chatcmpl-" + callID, "object": "chat.completion", "created": 1, "model": "gpt-test",
-		"choices": []any{map[string]any{"index": 0, "finish_reason": "tool_calls", "message": map[string]any{
-			"role": "assistant", "content": "", "tool_calls": []any{map[string]any{"id": callID, "type": "function", "function": map[string]any{"name": hostedgenesis.DeclarationToolIdentityPut, "arguments": arguments}}},
-		}}},
-		"usage": map[string]any{"prompt_tokens": inputTokens, "completion_tokens": outputTokens, "total_tokens": inputTokens + outputTokens},
+		"id": "resp-" + callID, "object": "response", "created_at": 1, "model": "gpt-test", "status": "completed",
+		"output": []any{
+			map[string]any{"type": "reasoning", "id": "reasoning-" + callID, "summary": []any{}},
+			map[string]any{"type": "function_call", "id": "fc-" + callID, "call_id": callID, "name": hostedgenesis.DeclarationToolIdentityPut, "arguments": arguments, "status": "completed"},
+		},
+		"usage": map[string]any{"input_tokens": inputTokens, "output_tokens": outputTokens, "total_tokens": inputTokens + outputTokens,
+			"input_tokens_details":  map[string]any{"cached_tokens": 0},
+			"output_tokens_details": map[string]any{"reasoning_tokens": 0}},
 	}
 }
 
@@ -413,10 +509,14 @@ func assertMintConversationPhaseToolParity(t *testing.T, section hostedgenesis.D
 	}
 	openAITool := openAIMintConversationPhaseTool(section)
 	anthropicTool := anthropicMintConversationPhaseTool(section)
-	if openAITool.Function.Name != wantName || anthropicTool.GetName() == nil || *anthropicTool.GetName() != wantName {
-		t.Fatalf("provider tool names diverged: openai=%q anthropic=%v want=%q", openAITool.Function.Name, anthropicTool.GetName(), wantName)
+	if openAITool.OfFunction == nil || openAITool.OfFunction.Name != wantName || anthropicTool.GetName() == nil || *anthropicTool.GetName() != wantName {
+		var openAIName string
+		if openAITool.OfFunction != nil {
+			openAIName = openAITool.OfFunction.Name
+		}
+		t.Fatalf("provider tool names diverged: openai=%q anthropic=%v want=%q", openAIName, anthropicTool.GetName(), wantName)
 	}
-	openAISchema := mustJSONBytes(t, openAITool.Function.Parameters)
+	openAISchema := mustJSONBytes(t, openAITool.OfFunction.Parameters)
 	anthropicSchema := mustJSONBytes(t, map[string]any{
 		"type": "object", "properties": anthropicTool.GetInputSchema().Properties, "required": anthropicTool.GetInputSchema().Required,
 		"additionalProperties": false,
