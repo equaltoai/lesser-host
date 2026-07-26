@@ -625,7 +625,7 @@ func (s *Server) debitSoulMintConversationCredits(
 
 	allowOverage := strings.EqualFold(strings.TrimSpace(inst.OveragePolicy), "allow")
 	if mintConversationCreditsInsufficient(budget, creditsRequested, allowOverage) {
-		return 0, newAppTheoryError("app.conflict", "insufficient credits")
+		return 0, newAppTheoryError(appTheoryCodeBudgetExhausted, soulInstanceBootstrapMessageBudgetExhausted)
 	}
 
 	includedDebited, overageDebited := billing.PartsForDebit(budget.IncludedCredits, budget.UsedCredits, creditsRequested)
@@ -652,7 +652,7 @@ func (s *Server) debitSoulMintConversationCredits(
 	_ = entry.UpdateKeys()
 	err := s.applyMintConversationCreditDebit(ctx, budget, entry, creditsRequested, allowOverage, now, extraWrites)
 	if theoryErrors.IsConditionFailed(err) {
-		return 0, newAppTheoryError("app.conflict", "insufficient credits")
+		return 0, newAppTheoryError(appTheoryCodeBudgetExhausted, soulInstanceBootstrapMessageBudgetExhausted)
 	}
 	if err != nil {
 		return 0, newAppTheoryError("app.internal", "failed to debit credits")

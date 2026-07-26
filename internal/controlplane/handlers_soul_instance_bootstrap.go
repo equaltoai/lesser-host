@@ -22,12 +22,14 @@ const (
 	soulInstanceBootstrapCodeInvalidRequest      = "soul_instance.invalid_request"
 	soulInstanceBootstrapCodeBoundaryViolation   = "soul_instance.boundary_violation"
 	soulInstanceBootstrapCodeConflict            = "soul_instance.conflict"
+	soulInstanceBootstrapCodeBudgetExhausted     = "soul_instance.budget_exhausted"
 	soulInstanceBootstrapCodeNotFound            = "soul_instance.not_found"
 	soulInstanceBootstrapCodeInternal            = "soul_instance.internal"
 	soulInstanceBootstrapCodeMicroVMUnavailable  = "soul_instance.microvm_unavailable"
 	soulInstanceBootstrapCodeAssistantTurnFailed = "soul_instance.assistant_turn_failed"
 	soulInstanceBootstrapMessageUnauthorized     = "unauthorized"
 	soulInstanceBootstrapMessageBoundary         = "resource is outside the authenticated instance boundary"
+	soulInstanceBootstrapMessageBudgetExhausted  = "monthly credit budget exhausted"
 	soulInstanceBootstrapBoundaryInstanceDomain  = "instance_domain"
 )
 
@@ -775,6 +777,8 @@ func soulInstanceBootstrapConversationErrorFromAppError(appErr *apptheory.AppThe
 		return soulInstanceBootstrapError(soulInstanceBootstrapCodeInvalidRequest, appErr.Message, http.StatusBadRequest, nil)
 	case appErrCodeForbidden:
 		return soulInstanceBootstrapError(soulInstanceBootstrapCodeBoundaryViolation, appErr.Message, http.StatusForbidden, nil)
+	case appTheoryCodeBudgetExhausted:
+		return soulInstanceBootstrapError(soulInstanceBootstrapCodeBudgetExhausted, appErr.Message, http.StatusConflict, nil)
 	case soulMintAppErrCodeConflict:
 		return soulInstanceBootstrapError(soulInstanceBootstrapCodeConflict, appErr.Message, http.StatusConflict, nil)
 	case soulMintAppErrCodeNotFound:

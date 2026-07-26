@@ -723,6 +723,52 @@ func TestSoulInstanceMintConversation_StartReturnsJSONWithoutQueueAuthority(t *t
 	tdb.qLifecycle.AssertCalled(t, "Create")
 }
 
+func TestSoulInstanceMintConversation_BudgetExhaustionReturnsTypedError(t *testing.T) {
+	tdb := newMintConversationTestDB()
+	s := newMintConversationServer(tdb)
+	reg := mintConversationHandleReg()
+	dispatcher := stubHostedGenesisMicroVMDispatcher(t, s)
+
+	expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, soulInstanceBootstrapTestInstanceSlug)
+	stubMintConversationRegistration(t, tdb, reg)
+	stubSoulInstanceBootstrapDomainAndInstance(t, tdb, reg.DomainNormalized, soulInstanceBootstrapTestInstanceSlug)
+	stubMintConversationIdentity(t, tdb, nil, theoryErrors.ErrItemNotFound)
+	tdb.qMintIdem.On("First", mock.AnythingOfType("*models.SoulMintConversationIdempotency")).Return(theoryErrors.ErrItemNotFound).Once()
+	tdb.qBudget.On("First", mock.AnythingOfType("*models.InstanceBudgetMonth")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.InstanceBudgetMonth](t, args, 0)
+		*dest = models.InstanceBudgetMonth{
+			InstanceSlug:    soulInstanceBootstrapTestInstanceSlug,
+			Month:           time.Now().UTC().Format("2006-01"),
+			IncludedCredits: 1_000,
+			UsedCredits:     1_000,
+		}
+	}).Once()
+
+	resp, err := s.handleSoulInstanceMintConversation(newSoulInstanceBootstrapContext(
+		map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
+		mustMarshalJSON(t, soulMintConversationRequest{
+			Model:          "claude-sonnet-5",
+			Message:        soulInstanceBootstrapTestConversationMessage,
+			IdempotencyKey: soulInstanceBootstrapTestIdempotencyKey,
+			CorrelationID:  "corr-budget-exhausted",
+		}),
+		map[string]string{"id": reg.ID},
+	))
+	if resp != nil {
+		t.Fatalf("budget exhaustion must fail closed before accepting a turn, got response %#v", resp)
+	}
+	appErr := requireAppTheoryError(t, err)
+	if appErr.Code != soulInstanceBootstrapCodeBudgetExhausted ||
+		appErr.StatusCode != http.StatusConflict ||
+		appErr.Message != soulInstanceBootstrapMessageBudgetExhausted {
+		t.Fatalf("expected typed budget-exhausted 409, got %#v", appErr)
+	}
+	if dispatcher.calls != 0 || dispatcher.queueCalls != 0 {
+		t.Fatalf("budget exhaustion must stop before MicroVM dispatch, dispatch=%d queue=%d", dispatcher.calls, dispatcher.queueCalls)
+	}
+	tdb.db.AssertNumberOfCalls(t, "TransactWrite", 0)
+}
+
 func TestSoulInstanceMintConversation_AssistantFailurePersistsTypedFailure(t *testing.T) {
 	tdb := newMintConversationTestDB()
 	s := newMintConversationServer(tdb)
