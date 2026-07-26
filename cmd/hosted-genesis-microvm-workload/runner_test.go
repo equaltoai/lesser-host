@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/equaltoai/lesser-host/internal/ai/llm"
+	"github.com/equaltoai/lesser-host/internal/ai/modelselection"
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis/completion"
 	"github.com/equaltoai/lesser-host/internal/soul"
@@ -184,6 +185,39 @@ func baseTurnInput() (*fakeTurnStore, *fakeCompletionStore, completion.Completio
 	comp := &fakeCompletionStore{session: cloneSessionForRunner(session), conversation: conv}
 	store := &fakeTurnStore{session: session, conv: conv, reg: reg, completion: comp}
 	return store, comp, turn
+}
+
+func TestRunTurnFirstAliasTurnStorePreflightAcceptsCanonicalCandidate(t *testing.T) {
+	setFiveBodyContractEnv(t)
+	t.Setenv("ANTHROPIC_API_KEY", "test-key")
+	store, comp, turn := baseTurnInput()
+	now := fixedClock()
+	candidate, err := hostedgenesis.NewDeclarationCandidate(hostedgenesis.DeclarationCandidateBinding{
+		InstanceSlug: "acme", RegistrationID: "reg-1", AgentID: "agent-1", ConversationID: "conv-1", SourceTurnID: "turn-1",
+		Model: "anthropic:claude-sonnet-5",
+	}, now)
+	if err != nil {
+		t.Fatalf("build alias-backed candidate: %v", err)
+	}
+	store.session.Model = modelselection.AliasAnthropic
+	store.session.DeclarationCandidate = candidate
+	store.session.CandidateRevision = candidate.Revision
+	store.session.CandidateHash = candidate.CandidateHash
+	store.session.CandidatePhase = string(candidate.Phase)
+	store.conv.Model = modelselection.AliasAnthropic
+	comp.session = cloneSessionForRunner(store.session)
+	comp.conversation = store.conv
+
+	runner := &turnRunner{
+		store: store, writer: completion.NewCompletionWriter(comp, fixedClock), nowFunc: fixedClock,
+		phaseRunner: successfulIdentityPhaseRunner(t, "I will ask about philosophy next."),
+	}
+	if err := runner.runTurnAndPersist(context.Background(), turn); err != nil {
+		t.Fatalf("first alias-backed turn failed: %v", err)
+	}
+	if got := hostedgenesis.NormalizeStatus(comp.session.Status); got != hostedgenesis.StatusAssistantTurnReady {
+		t.Fatalf("first alias-backed turn did not reach assistant_turn_ready: %q (%#v)", got, comp.session)
+	}
 }
 
 func TestRunTurnMalformedSectionReturnsErrorsThenSameSectionSucceeds(t *testing.T) {
