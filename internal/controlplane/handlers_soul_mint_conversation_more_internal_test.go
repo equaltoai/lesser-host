@@ -445,7 +445,7 @@ func testMintConversationDecl() soulMintConversationProducedDeclarations {
 		SelfDescription: soul.SelfDescriptionV2{
 			Purpose:      "Help users plan travel with explicit limitations.",
 			AuthoredBy:   "agent",
-			MintingModel: "openai:gpt-5.4",
+			MintingModel: "gpt-5.6-luna",
 		},
 		Capabilities: []soul.CapabilityV2{
 			{Capability: "travel_planning", Scope: "Draft itineraries.", ClaimLevel: "self-declared"},
@@ -610,7 +610,7 @@ func testMintConversationPromptAndAPIKeys(t *testing.T) {
 
 	s := &Server{}
 	t.Setenv("OPENAI_API_KEY", "openai-env")
-	if got, appErr := s.apiKeyForMintConversationModel(t.Context(), "openai:gpt-5.4"); appErr != nil || got != "openai-env" {
+	if got, appErr := s.apiKeyForMintConversationModel(t.Context(), "gpt-5.6-luna"); appErr != nil || got != "openai-env" {
 		t.Fatalf("unexpected openai api key: %q %#v", got, appErr)
 	}
 	t.Setenv("OPENAI_API_KEY", "")
@@ -908,11 +908,11 @@ func testMintConversationHandleRejectsModelChangeForExistingConversation(t *test
 		*dest = models.SoulAgentMintConversation{
 			AgentID:        reg.AgentID,
 			ConversationID: mintConversationTestConversationID,
-			Model:          "anthropic:claude-sonnet-4-6",
+			Model:          "claude-sonnet-5",
 			Status:         models.SoulMintConversationStatusInProgress,
 		}
 	}).Once()
-	body := mustMarshalJSON(t, soulMintConversationRequest{ConversationID: mintConversationTestConversationID, Model: "openai:gpt-5.4", Message: "hello"})
+	body := mustMarshalJSON(t, soulMintConversationRequest{ConversationID: mintConversationTestConversationID, Model: "gpt-5.6-luna", Message: "hello"})
 	ctx := adminCtx()
 	ctx.Params = map[string]string{"id": reg.ID}
 	ctx.Request.Body = body
@@ -1312,8 +1312,8 @@ func testDebitSoulMintConversationBudgetConflicts(t *testing.T) {
 		dest := testutil.RequireMockArg[*models.InstanceBudgetMonth](t, args, 0)
 		*dest = models.InstanceBudgetMonth{InstanceSlug: "inst1", Month: "2026-03", IncludedCredits: 4, UsedCredits: 3}
 	}).Once()
-	if _, appErr := s.debitSoulMintConversationCredits(t.Context(), inst, "module", "target", "req", 5, now, nil); appErr == nil || appErr.Code != appErrCodeConflict {
-		t.Fatalf("expected insufficient credits conflict, got %#v", appErr)
+	if _, appErr := s.debitSoulMintConversationCredits(t.Context(), inst, "module", "target", "req", 5, now, nil); appErr == nil || appErr.Code != appTheoryCodeBudgetExhausted || appErr.StatusCode != http.StatusConflict {
+		t.Fatalf("expected typed budget exhaustion, got %#v", appErr)
 	}
 }
 
@@ -1382,7 +1382,7 @@ func testDebitSoulMintConversationOverageAndFailures(t *testing.T) {
 		}
 	})
 
-	t.Run("transaction condition failure becomes conflict", func(t *testing.T) {
+	t.Run("transaction condition failure becomes typed budget exhaustion", func(t *testing.T) {
 		s, db, qBudget, tb := newMintConversationDebitServer()
 		inst := &models.Instance{Slug: "inst1"}
 
@@ -1395,8 +1395,8 @@ func testDebitSoulMintConversationOverageAndFailures(t *testing.T) {
 		tb.On("UpdateWithBuilder", mock.AnythingOfType("*models.InstanceBudgetMonth"), mock.Anything, mock.Anything).Return(tb).Once()
 		tb.On("Execute").Return(theoryErrors.ErrConditionFailed).Once()
 
-		if _, appErr := s.debitSoulMintConversationCredits(t.Context(), inst, "module", "target", "req-1", 5, now, nil); appErr == nil || appErr.Code != appErrCodeConflict {
-			t.Fatalf("expected condition-failed conflict, got %#v", appErr)
+		if _, appErr := s.debitSoulMintConversationCredits(t.Context(), inst, "module", "target", "req-1", 5, now, nil); appErr == nil || appErr.Code != appTheoryCodeBudgetExhausted || appErr.StatusCode != http.StatusConflict {
+			t.Fatalf("expected condition-failed budget exhaustion, got %#v", appErr)
 		}
 	})
 

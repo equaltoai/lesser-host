@@ -3,6 +3,7 @@ package ai
 import (
 	"strings"
 
+	"github.com/equaltoai/lesser-host/internal/ai/modelselection"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
@@ -25,7 +26,7 @@ type InstanceConfig struct {
 func DefaultInstanceConfig() InstanceConfig {
 	return InstanceConfig{
 		Enabled:              false,
-		ModelSet:             "openai:gpt-5-mini-2025-08-07",
+		ModelSet:             modelselection.DefaultAlias,
 		BatchingMode:         "none",
 		BatchMaxItems:        8,
 		BatchMaxTotalBytes:   64 * 1024,
@@ -47,6 +48,7 @@ func EffectiveInstanceConfig(inst *models.Instance) InstanceConfig {
 	if strings.TrimSpace(inst.AIModelSet) != "" {
 		cfg.ModelSet = strings.TrimSpace(inst.AIModelSet)
 	}
+	cfg.ModelSet = modelselection.CanonicalModelSet(cfg.ModelSet)
 
 	mode := strings.ToLower(strings.TrimSpace(inst.AIBatchingMode))
 	switch mode {

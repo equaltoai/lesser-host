@@ -62,11 +62,18 @@ func TestProviderStreamTelemetryOpenAIAndAnthropicIsPerEventAndRedacted(t *testi
 	_ = os.Setenv("ANTHROPIC_BASE_URL", "https://anthropic.example.test")
 
 	openAISSE := "data: " + mustProviderTelemetryJSON(map[string]any{
-		"id": "chunk_1", "object": "chat.completion.chunk", "created": 1, "model": "gpt-test",
-		"choices": []any{map[string]any{"index": 0, "delta": map[string]any{"content": privateOutput}, "finish_reason": "stop"}},
+		"type": "response.output_text.delta", "item_id": "msg_1", "output_index": 0, "content_index": 0,
+		"delta": privateOutput, "sequence_number": 1,
 	}) + "\n\ndata: " + mustProviderTelemetryJSON(map[string]any{
-		"id": "chunk_1", "object": "chat.completion.chunk", "created": 1, "model": "gpt-test",
-		"choices": []any{}, "usage": map[string]any{"prompt_tokens": 2, "completion_tokens": 3, "total_tokens": 5},
+		"type": "response.completed", "sequence_number": 2, "response": map[string]any{
+			"id": "resp_1", "object": "response", "created_at": 1, "model": "gpt-test", "status": "completed",
+			"output": []any{map[string]any{"type": "message", "id": "msg_1", "role": "assistant", "status": "completed", "content": []any{map[string]any{
+				"type": "output_text", "text": privateOutput, "annotations": []any{}, "logprobs": []any{},
+			}}}},
+			"usage": map[string]any{"input_tokens": 2, "output_tokens": 3, "total_tokens": 5,
+				"input_tokens_details":  map[string]any{"cached_tokens": 0},
+				"output_tokens_details": map[string]any{"reasoning_tokens": 0}},
+		},
 	}) + "\n\ndata: [DONE]\n\n"
 	openAIHTTPClient = &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
 		_, _ = io.Copy(io.Discard, r.Body)
@@ -80,8 +87,8 @@ func TestProviderStreamTelemetryOpenAIAndAnthropicIsPerEventAndRedacted(t *testi
 		t.Fatalf("OpenAI stream: out=%q err=%v", out, err)
 	}
 	assertProviderTelemetryEventsRedacted(t, openAIEvents, privatePrompt, privateOutput, privateKey)
-	if !hasProviderTelemetryEvent(openAIEvents, "chat.completion.chunk") {
-		t.Fatalf("expected every OpenAI SDK chunk to be observed: %#v", openAIEvents)
+	if !hasProviderTelemetryEvent(openAIEvents, "response.output_text.delta") || !hasProviderTelemetryEvent(openAIEvents, "response.completed") {
+		t.Fatalf("expected every OpenAI Responses event to be observed: %#v", openAIEvents)
 	}
 
 	anthropicSSE := strings.Join([]string{

@@ -2316,7 +2316,7 @@ export interface components {
         "soul-instance-bootstrap.error.schema": {
             error: {
                 /** @enum {string} */
-                code: "soul_instance.unauthorized" | "soul_instance.invalid_request" | "soul_instance.boundary_violation" | "soul_instance.conflict" | "soul_instance.not_found" | "soul_instance.internal";
+                code: "soul_instance.unauthorized" | "soul_instance.invalid_request" | "soul_instance.boundary_violation" | "soul_instance.conflict" | "soul_instance.budget_exhausted" | "soul_instance.not_found" | "soul_instance.internal";
                 message: string;
                 status_code?: number;
                 /** @description Client-safe metadata for validation or tenant-boundary failures. Raw instance keys and host session tokens never appear here. */

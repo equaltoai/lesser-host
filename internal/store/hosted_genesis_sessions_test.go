@@ -120,6 +120,8 @@ func TestStore_UpdateHostedGenesisSessionUsesExpectedVersion(t *testing.T) {
 	require.Equal(t, int64(1), ub.adds["Version"])
 	require.Equal(t, string(hostedgenesis.StatusAssistantTurnReady), ub.sets["Status"])
 	require.Len(t, ub.sets["TurnLedger"], 1)
+	require.True(t, ub.removes["Failure"])
+	require.NotContains(t, ub.sets, "Failure")
 	require.NotContains(t, ub.sets, "Version")
 
 	db.AssertExpectations(t)
@@ -752,8 +754,9 @@ func hasFailedHostedGenesisIdempotencyConditions(conditions []core.TransactCondi
 }
 
 type captureHostedGenesisUpdateBuilder struct {
-	sets map[string]any
-	adds map[string]any
+	sets    map[string]any
+	adds    map[string]any
+	removes map[string]bool
 }
 
 func (b *captureHostedGenesisUpdateBuilder) ensure() {
@@ -762,6 +765,9 @@ func (b *captureHostedGenesisUpdateBuilder) ensure() {
 	}
 	if b.adds == nil {
 		b.adds = map[string]any{}
+	}
+	if b.removes == nil {
+		b.removes = map[string]bool{}
 	}
 }
 
@@ -784,7 +790,11 @@ func (b *captureHostedGenesisUpdateBuilder) Increment(field string) core.UpdateB
 func (b *captureHostedGenesisUpdateBuilder) Decrement(field string) core.UpdateBuilder {
 	return b.Add(field, int64(-1))
 }
-func (b *captureHostedGenesisUpdateBuilder) Remove(_ string) core.UpdateBuilder        { return b }
+func (b *captureHostedGenesisUpdateBuilder) Remove(field string) core.UpdateBuilder {
+	b.ensure()
+	b.removes[field] = true
+	return b
+}
 func (b *captureHostedGenesisUpdateBuilder) Delete(_ string, _ any) core.UpdateBuilder { return b }
 func (b *captureHostedGenesisUpdateBuilder) AppendToList(_ string, _ any) core.UpdateBuilder {
 	return b

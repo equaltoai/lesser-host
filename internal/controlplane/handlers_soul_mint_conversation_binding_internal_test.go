@@ -16,7 +16,7 @@ func TestHostedGenesisRouteBindingHydratesLegacyBlankSessionFields(t *testing.T)
 	session := &models.HostedGenesisSession{
 		ConversationID: mintConversationTestConversationID,
 		Status:         string(hostedgenesis.StatusAssistantTurnReady),
-		Model:          "anthropic:claude-sonnet-4-6",
+		Model:          "claude-sonnet-5",
 		CreatedAt:      time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC),
 		UpdatedAt:      time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC),
 	}

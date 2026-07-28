@@ -87,7 +87,9 @@ Instance responses include `managed: true` when the instance has lesser.host-man
 Config includes (subject to roadmap evolution):
 - previews/safety/renders toggles and policies
 - moderation provider flags
-- AI model set + batching mode + pricing multiplier
+- AI model alias (`gpt-5.6-luna` or `claude-sonnet-5` for Hosted Genesis),
+  batching mode, and pricing multiplier; provider:model remains an advanced
+  internal compatibility form
 
 ### Provisioning (managed hosting)
 
@@ -131,6 +133,16 @@ release or receipt problem and submit a fresh `POST /api/v1/portal/instances/{sl
 - `GET /api/v1/portal/instances/{slug}/budgets` (list)
 - `GET /api/v1/portal/instances/{slug}/budgets/{month}` (YYYY-MM)
 - `PUT /api/v1/portal/instances/{slug}/budgets/{month}`
+
+The operator instance-support view at `/operator/instances/{slug}` reads the current UTC month through the same portal
+GET projection, including server-computed `remaining_credits`. Sessions with role `admin` can review and explicitly
+confirm an `included_credits` change through the existing
+`PUT /api/v1/instances/{slug}/budgets/{month}` control-plane endpoint. Role `operator` remains read-only, and the
+server-side admin authorization check remains authoritative; the browser does not mint or exchange a second token.
+
+Hosted Genesis credit debits remain fail-closed. When the current monthly budget cannot fund the next turn, the
+instance-key conversation surface returns HTTP 409 with `soul_instance.budget_exhausted` rather than the generic
+`soul_instance.conflict`; no turn transaction or MicroVM dispatch occurs.
 
 ### Usage + cache hit rates + discounts
 

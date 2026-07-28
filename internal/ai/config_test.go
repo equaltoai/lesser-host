@@ -3,6 +3,7 @@ package ai
 import (
 	"testing"
 
+	"github.com/equaltoai/lesser-host/internal/ai/modelselection"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 	"github.com/stretchr/testify/require"
 )
@@ -12,7 +13,7 @@ func TestDefaultAndEffectiveInstanceConfig(t *testing.T) {
 
 	def := DefaultInstanceConfig()
 	require.False(t, def.Enabled)
-	require.NotEmpty(t, def.ModelSet)
+	require.Equal(t, modelselection.DefaultAlias, def.ModelSet)
 	require.Greater(t, def.BatchMaxItems, int64(0))
 	require.Greater(t, def.BatchMaxTotalBytes, int64(0))
 	require.Greater(t, def.PricingMultiplierBps, int64(0))
@@ -43,6 +44,14 @@ func TestDefaultAndEffectiveInstanceConfig(t *testing.T) {
 		require.Equal(t, int64(123), got.BatchMaxTotalBytes)
 		require.Equal(t, int64(12000), got.PricingMultiplierBps)
 		require.Equal(t, int64(42), got.MaxInflightJobs)
+	})
+
+	t.Run("CanonicalizesSupportedAliasForGenericAIAdapters", func(t *testing.T) {
+		t.Parallel()
+
+		inst := &models.Instance{AIModelSet: modelselection.AliasAnthropic}
+		got := EffectiveInstanceConfig(inst)
+		require.Equal(t, "anthropic:claude-sonnet-5", got.ModelSet)
 	})
 
 	t.Run("IgnoresInvalidFields", func(t *testing.T) {

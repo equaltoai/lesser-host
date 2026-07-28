@@ -8,7 +8,10 @@ import (
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/openai/openai-go"
+	"github.com/openai/openai-go/responses"
+	"github.com/openai/openai-go/shared"
 
+	"github.com/equaltoai/lesser-host/internal/ai/modelselection"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
@@ -21,8 +24,9 @@ type MintConversationMessage struct {
 
 const mintConversationOpenAIMaxCompletionTokens int64 = 4096
 
-// StreamMintConversationOpenAI streams a chat completion from OpenAI, calling onDelta
-// for each incremental content delta. Returns the full assistant response.
+// StreamMintConversationOpenAI streams a Responses API response from OpenAI,
+// calling onDelta for each incremental content delta. Returns the full assistant
+// response.
 func StreamMintConversationOpenAI(
 	ctx context.Context,
 	apiKey string,
@@ -45,38 +49,22 @@ func StreamMintConversationOpenAIWithTelemetry(
 	onDelta func(string),
 	telemetry ProviderTelemetrySink,
 ) (string, models.AIUsage, error) {
-	model, err := openAIModelFromSet(modelSet)
+	definition, err := modelselection.ResolveModelSetForProvider(modelSet, modelselection.ProviderOpenAI)
 	if err != nil {
 		return "", models.AIUsage{}, err
 	}
+	model := definition.ConcreteModel
 	recorder := newProviderTelemetryRecorder("openai", model, "assistant_stream", telemetry)
 	recorder.emit(ProviderTelemetryEvent{EventType: "request_start"})
 
 	client := openAIClientForKey(apiKey)
 	start := time.Now()
-	stream := client.Chat.Completions.NewStreaming(ctx, newOpenAIMintConversationStreamParams(model, systemPrompt, messages))
+	stream := client.Responses.NewStreaming(ctx, newOpenAIMintConversationStreamParamsWithEffort(model, definition.ReasoningEffort, systemPrompt, messages))
+	defer stream.Close()
 
-	acc := openai.ChatCompletionAccumulator{}
+	state := openAIStreamTelemetryState{}
 	for stream.Next() {
-		chunk := stream.Current()
-		_ = acc.AddChunk(chunk)
-		event := ProviderTelemetryEvent{
-			EventType:    "chat.completion.chunk",
-			InputTokens:  chunk.Usage.PromptTokens,
-			OutputTokens: chunk.Usage.CompletionTokens,
-			TotalTokens:  chunk.Usage.TotalTokens,
-		}
-		var delta string
-		if len(chunk.Choices) > 0 {
-			delta = chunk.Choices[0].Delta.Content
-			event.StopReason = strings.TrimSpace(chunk.Choices[0].FinishReason)
-			event.ToolCalls = int64(len(chunk.Choices[0].Delta.ToolCalls))
-		}
-		event.DeltaBytes, event.DeltaRunes, _ = providerOutputMetadata(delta)
-		if len(acc.Choices) > 0 {
-			event.OutputBytes, event.OutputRunes, event.OutputSHA256 = providerOutputMetadata(acc.Choices[0].Message.Content)
-			event.OutputCount = int64(len(acc.Choices))
-		}
+		event, delta := state.observeSDKEvent(stream.Current())
 		recorder.emitSDK(event)
 		if delta != "" && onDelta != nil {
 			onDelta(delta)
@@ -84,32 +72,31 @@ func StreamMintConversationOpenAIWithTelemetry(
 	}
 	if err := stream.Err(); err != nil {
 		failure := ProviderTelemetryEvent{EventType: "provider_call_failed", LastEvent: true, FailureClass: ProviderFailureClass(err)}
-		if len(acc.Choices) > 0 {
-			failure.OutputBytes, failure.OutputRunes, failure.OutputSHA256 = providerOutputMetadata(acc.Choices[0].Message.Content)
-			failure.OutputCount = int64(len(acc.Choices))
+		if state.full.Len() > 0 {
+			failure.OutputBytes, failure.OutputRunes, failure.OutputSHA256 = providerOutputMetadata(state.full.String())
+			failure.OutputCount = 1
 		}
 		recorder.emit(failure)
 		return "", models.AIUsage{}, err
 	}
 
-	if len(acc.Choices) == 0 {
-		err := fmt.Errorf("openai: empty choices")
+	if state.full.Len() == 0 {
+		err := fmt.Errorf("openai: empty response")
 		recorder.emit(ProviderTelemetryEvent{EventType: "provider_call_failed", LastEvent: true, FailureClass: ProviderFailureClass(err)})
 		return "", models.AIUsage{}, err
 	}
-	full := strings.TrimSpace(acc.Choices[0].Message.Content)
-	if full == "" {
+	content := strings.TrimSpace(state.full.String())
+	if content == "" {
 		err := fmt.Errorf("openai: empty response")
 		recorder.emit(ProviderTelemetryEvent{EventType: "provider_call_failed", LastEvent: true, FailureClass: ProviderFailureClass(err)})
 		return "", models.AIUsage{}, err
 	}
 
-	usage := openAIUsageFromChat(&acc.ChatCompletion, start)
-	bytes, runes, digest := providerOutputMetadata(full)
-	stopReason := ""
-	if len(acc.Choices) > 0 {
-		stopReason = strings.TrimSpace(acc.Choices[0].FinishReason)
+	usage := models.AIUsage{Provider: modelselection.ProviderOpenAI, Model: model, DurationMs: time.Since(start).Milliseconds(), ToolCalls: maxInt64(1, state.toolCalls)}
+	if state.completedResponse != nil {
+		usage = openAIUsageFromResponse(state.completedResponse, start)
 	}
+	bytes, runes, digest := providerOutputMetadata(content)
 	recorder.emit(ProviderTelemetryEvent{
 		EventType:    "provider_call_completed",
 		LastEvent:    true,
@@ -121,22 +108,72 @@ func StreamMintConversationOpenAIWithTelemetry(
 		OutputTokens: usage.OutputTokens,
 		TotalTokens:  usage.TotalTokens,
 		ToolCalls:    usage.ToolCalls,
-		StopReason:   stopReason,
+		StopReason:   state.stopReason,
 	})
-	return full, usage, nil
+	return content, usage, nil
 }
 
-func newOpenAIMintConversationStreamParams(model string, systemPrompt string, messages []MintConversationMessage) openai.ChatCompletionNewParams {
-	return openai.ChatCompletionNewParams{
-		Model: openai.ChatModel(model),
-		Messages: buildOpenAIConversationMessages(
-			systemPrompt,
-			messages,
-		),
-		MaxCompletionTokens: openai.Int(mintConversationOpenAIMaxCompletionTokens),
-		StreamOptions: openai.ChatCompletionStreamOptionsParam{
-			IncludeUsage: openai.Bool(true),
-		},
+func newOpenAIMintConversationStreamParamsWithEffort(model string, reasoningEffort string, systemPrompt string, messages []MintConversationMessage) responses.ResponseNewParams {
+	params := responses.ResponseNewParams{
+		Model:           shared.ResponsesModel(model),
+		Input:           responses.ResponseNewParamsInputUnion{OfInputItemList: buildOpenAIResponseInput(systemPrompt, messages)},
+		MaxOutputTokens: openai.Int(mintConversationOpenAIMaxCompletionTokens),
+	}
+	if reasoningEffort == modelselection.ReasoningEffortMedium {
+		params.Reasoning = shared.ReasoningParam{Effort: shared.ReasoningEffortMedium}
+	}
+	return params
+}
+
+type openAIStreamTelemetryState struct {
+	full              strings.Builder
+	completedResponse *responses.Response
+	toolCalls         int64
+	stopReason        string
+}
+
+func (s *openAIStreamTelemetryState) observeSDKEvent(event responses.ResponseStreamEventUnion) (ProviderTelemetryEvent, string) {
+	observation := ProviderTelemetryEvent{EventType: strings.TrimSpace(event.Type)}
+	delta := ""
+	switch value := event.AsAny().(type) {
+	case responses.ResponseTextDeltaEvent:
+		delta = value.Delta
+	case responses.ResponseTextDoneEvent:
+		if s.full.Len() == 0 {
+			delta = value.Text
+		}
+	case responses.ResponseOutputItemDoneEvent:
+		if value.Item.Type == openAIResponseFunctionCallType {
+			s.toolCalls++
+		}
+	case responses.ResponseCompletedEvent:
+		s.observeTerminalResponse(value.Response, &delta)
+	case responses.ResponseIncompleteEvent:
+		s.observeTerminalResponse(value.Response, &delta)
+	}
+	if delta != "" {
+		s.full.WriteString(delta)
+	}
+	observation.StopReason = s.stopReason
+	observation.ToolCalls = s.toolCalls
+	observation.DeltaBytes, observation.DeltaRunes, _ = providerOutputMetadata(delta)
+	observation.OutputBytes, observation.OutputRunes, observation.OutputSHA256 = providerOutputMetadata(s.full.String())
+	if observation.OutputBytes > 0 {
+		observation.OutputCount = 1
+	}
+	if s.completedResponse != nil {
+		observation.InputTokens = s.completedResponse.Usage.InputTokens
+		observation.OutputTokens = s.completedResponse.Usage.OutputTokens
+		observation.TotalTokens = s.completedResponse.Usage.TotalTokens
+	}
+	return observation, delta
+}
+
+func (s *openAIStreamTelemetryState) observeTerminalResponse(response responses.Response, delta *string) {
+	s.completedResponse = &response
+	s.stopReason = openAIResponseStopReason(&response)
+	if s.full.Len() == 0 {
+		*delta = response.OutputText()
 	}
 }
 
@@ -164,21 +201,26 @@ func StreamMintConversationAnthropicWithTelemetry(
 	onDelta func(string),
 	telemetry ProviderTelemetrySink,
 ) (string, models.AIUsage, error) {
-	model, err := anthropicModelFromSet(modelSet)
+	definition, err := modelselection.ResolveModelSetForProvider(modelSet, modelselection.ProviderAnthropic)
 	if err != nil {
 		return "", models.AIUsage{}, err
 	}
+	model := anthropic.Model(definition.ConcreteModel)
 	recorder := newProviderTelemetryRecorder("anthropic", string(model), "assistant_stream", telemetry)
 	recorder.emit(ProviderTelemetryEvent{EventType: "request_start"})
 
 	client := anthropicClientForKey(apiKey)
 	start := time.Now()
-	stream := client.Messages.NewStreaming(ctx, anthropic.MessageNewParams{
+	params := anthropic.MessageNewParams{
 		Model:     model,
 		MaxTokens: 4096,
 		System:    []anthropic.TextBlockParam{{Text: systemPrompt}},
 		Messages:  buildAnthropicConversationMessages(messages),
-	})
+	}
+	if definition.ReasoningEffort == modelselection.ReasoningEffortMedium {
+		params.OutputConfig = anthropic.OutputConfigParam{Effort: anthropic.OutputConfigEffortMedium}
+	}
+	stream := client.Messages.NewStreaming(ctx, params)
 	defer stream.Close()
 
 	state := anthropicStreamTelemetryState{}
@@ -287,31 +329,6 @@ func maxInt64(a, b int64) int64 {
 	return b
 }
 
-func buildOpenAIConversationMessages(systemPrompt string, messages []MintConversationMessage) []openai.ChatCompletionMessageParamUnion {
-	out := make([]openai.ChatCompletionMessageParamUnion, 0, len(messages)+1)
-
-	systemPrompt = strings.TrimSpace(systemPrompt)
-	if systemPrompt != "" {
-		out = append(out, openai.SystemMessage(systemPrompt))
-	}
-
-	for _, m := range messages {
-		role := strings.ToLower(strings.TrimSpace(m.Role))
-		content := strings.TrimSpace(m.Content)
-		if content == "" {
-			continue
-		}
-		switch role {
-		case "user":
-			out = append(out, openai.UserMessage(content))
-		case "assistant":
-			out = append(out, openai.AssistantMessage(content))
-		}
-	}
-
-	return out
-}
-
 func buildAnthropicConversationMessages(messages []MintConversationMessage) []anthropic.MessageParam {
 	out := make([]anthropic.MessageParam, 0, len(messages))
 	for _, m := range messages {
@@ -321,7 +338,7 @@ func buildAnthropicConversationMessages(messages []MintConversationMessage) []an
 			continue
 		}
 		switch role {
-		case "user":
+		case mintConversationUserRole:
 			out = append(out, anthropic.NewUserMessage(anthropic.NewTextBlock(content)))
 		case "assistant":
 			out = append(out, anthropic.NewAssistantMessage(anthropic.NewTextBlock(content)))

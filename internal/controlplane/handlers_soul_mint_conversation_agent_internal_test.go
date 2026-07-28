@@ -98,7 +98,7 @@ func TestHandleSoulAgentGetMintConversation_AllowsPendingAgent(t *testing.T) {
 		AgentID:        identity.AgentID,
 		ConversationID: mintConversationTestConversationID,
 		Status:         models.SoulMintConversationStatusInProgress,
-		Model:          "anthropic:claude-sonnet-4-6",
+		Model:          "claude-sonnet-5",
 		CreatedAt:      time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC),
 	})
 
@@ -136,7 +136,7 @@ func TestHandleSoulInstanceListMintConversations_UsesInstanceKeyAndCompactDTO(t 
 			{
 				AgentID:              identity.AgentID,
 				ConversationID:       "conv-old",
-				Model:                "anthropic:claude-sonnet-4-6",
+				Model:                "claude-sonnet-5",
 				Messages:             `secret-message-body`,
 				ProducedDeclarations: `{"secret":true}`,
 				Status:               models.SoulMintConversationStatusInProgress,
@@ -147,7 +147,7 @@ func TestHandleSoulInstanceListMintConversations_UsesInstanceKeyAndCompactDTO(t 
 			{
 				AgentID:              identity.AgentID,
 				ConversationID:       "conv-new",
-				Model:                "anthropic:claude-sonnet-4-6",
+				Model:                "claude-sonnet-5",
 				Messages:             `new-secret-message-body`,
 				ProducedDeclarations: `{"newSecret":true}`,
 				Status:               models.SoulMintConversationStatusCompleted,
@@ -196,7 +196,7 @@ func TestHandleSoulInstanceGetMintConversation_ReturnsHostedGenesisMessages(t *t
 	stubMintConversationConversation(t, tdb, models.SoulAgentMintConversation{
 		AgentID:              identity.AgentID,
 		ConversationID:       mintConversationTestConversationID,
-		Model:                "anthropic:claude-sonnet-4-6",
+		Model:                "claude-sonnet-5",
 		Messages:             encodeMintConversationBlob(`[{"role":"user","content":"describe yourself"},{"role":"assistant","content":"I am ready."}]`),
 		ProducedDeclarations: encodeMintConversationBlob(`{"private":true}`),
 		Status:               models.SoulMintConversationStatusAssistantTurnReady,
@@ -251,7 +251,7 @@ func TestHandleSoulInstanceMintConversationReads_HostedOffchainDoesNotRequireReg
 				{
 					AgentID:              identity.AgentID,
 					ConversationID:       "conv-contractless",
-					Model:                "anthropic:claude-sonnet-4-6",
+					Model:                "claude-sonnet-5",
 					Messages:             `private transcript`,
 					ProducedDeclarations: `{"private":true}`,
 					Status:               models.SoulMintConversationStatusInProgress,
@@ -292,7 +292,7 @@ func TestHandleSoulInstanceMintConversationReads_HostedOffchainDoesNotRequireReg
 		stubMintConversationConversation(t, tdb, models.SoulAgentMintConversation{
 			AgentID:        identity.AgentID,
 			ConversationID: mintConversationTestConversationID,
-			Model:          "anthropic:claude-sonnet-4-6",
+			Model:          "claude-sonnet-5",
 			Messages:       encodeMintConversationBlob(`[{"role":"user","content":"hello"},{"role":"assistant","content":"ready"}]`),
 			Status:         models.SoulMintConversationStatusAssistantTurnReady,
 			LatestTurnID:   "turn-contractless",
@@ -426,7 +426,7 @@ func TestHandleSoulInstanceGetMintConversation_RejectsOversizeSingle(t *testing.
 	stubMintConversationConversation(t, tdb, models.SoulAgentMintConversation{
 		AgentID:        identity.AgentID,
 		ConversationID: mintConversationTestConversationID,
-		Model:          "anthropic:claude-sonnet-4-6",
+		Model:          "claude-sonnet-5",
 		Messages:       strings.Repeat("x", soulMintInstanceReadSingleMaxBytes+1),
 		Status:         models.SoulMintConversationStatusCompleted,
 		CreatedAt:      time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC),

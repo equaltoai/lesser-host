@@ -88,10 +88,10 @@
 
 	type MintMessage = { role: 'user' | 'assistant'; content: string };
 
-	let mintModel = $state('anthropic:claude-sonnet-4-6');
+	let mintModel = $state('gpt-5.6-luna');
 	const mintModelOptions = [
-		{ value: 'anthropic:claude-sonnet-4-6', label: 'Anthropic — Claude Sonnet 4.6' },
-		{ value: 'openai:gpt-5.4', label: 'OpenAI — GPT-5.4' },
+		{ value: 'gpt-5.6-luna', label: 'OpenAI — GPT-5.6 Luna (medium reasoning)' },
+		{ value: 'claude-sonnet-5', label: 'Claude — Sonnet 5 (medium reasoning)' },
 	];
 
 	let mintConversationId = $state('');

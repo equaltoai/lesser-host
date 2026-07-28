@@ -15,6 +15,7 @@ const (
 	appTheoryCodeNotFound            = "app.not_found"
 	appTheoryCodeMethodNotAllowed    = "app.method_not_allowed"
 	appTheoryCodeConflict            = "app.conflict"
+	appTheoryCodeBudgetExhausted     = "app.budget_exhausted"
 	appTheoryCodeTooLarge            = "app.too_large"
 	appTheoryCodeResponseTooLarge    = "app.response_too_large"
 	appTheoryCodeTimeout             = "app.timeout"
@@ -45,7 +46,7 @@ func appTheoryStatusForCode(code string) int {
 		return http.StatusNotFound
 	case appTheoryCodeMethodNotAllowed:
 		return http.StatusMethodNotAllowed
-	case appTheoryCodeConflict:
+	case appTheoryCodeConflict, appTheoryCodeBudgetExhausted:
 		return http.StatusConflict
 	case appTheoryCodeTooLarge, appTheoryCodeResponseTooLarge:
 		return http.StatusRequestEntityTooLarge

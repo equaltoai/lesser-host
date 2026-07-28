@@ -61,9 +61,12 @@ func TestV3ContractFixturesValidate(t *testing.T) {
 			fixtures: []string{filepath.Join(fixturesDir, "soul-agent-channels.response.example.json")},
 		},
 		{
-			name:     "soul_instance_bootstrap_error",
-			schema:   filepath.Join(schemasDir, "soul-instance-bootstrap.error.schema.json"),
-			fixtures: []string{filepath.Join(fixturesDir, "soul-instance-bootstrap.error.boundary-violation.example.json")},
+			name:   "soul_instance_bootstrap_error",
+			schema: filepath.Join(schemasDir, "soul-instance-bootstrap.error.schema.json"),
+			fixtures: []string{
+				filepath.Join(fixturesDir, "soul-instance-bootstrap.error.boundary-violation.example.json"),
+				filepath.Join(fixturesDir, "soul-instance-bootstrap.error.budget-exhausted.example.json"),
+			},
 		},
 		{
 			name:   "hosted_genesis_conversation_response",
