@@ -52,8 +52,8 @@ func TestMintConversationStatusProjection_CollapsesCreatedForLesserPath(t *testi
 }
 
 func TestHostedGenesisRequestHashIncludesConversationID(t *testing.T) {
-	withoutConversation := hostedGenesisRequestHash("reg-1", "", "anthropic:claude-sonnet-4-6", "same turn")
-	withConversation := hostedGenesisRequestHash("reg-1", "conv-2", "anthropic:claude-sonnet-4-6", "same turn")
+	withoutConversation := hostedGenesisRequestHash("reg-1", "", "claude-sonnet-5", "same turn")
+	withConversation := hostedGenesisRequestHash("reg-1", "conv-2", "claude-sonnet-5", "same turn")
 	if withoutConversation == withConversation {
 		t.Fatalf("idempotency request hash must distinguish existing conversation turns")
 	}

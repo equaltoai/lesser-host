@@ -14,6 +14,7 @@ import (
 	"github.com/anthropics/anthropic-sdk-go/option"
 	anthropicconstant "github.com/anthropics/anthropic-sdk-go/shared/constant"
 
+	"github.com/equaltoai/lesser-host/internal/ai/modelselection"
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
@@ -38,17 +39,11 @@ type anthropicJSONTextBatchConfig struct {
 var anthropicHTTPClient option.HTTPClient
 
 func anthropicModelFromSet(modelSet string) (anthropic.Model, error) {
-	modelSet = strings.TrimSpace(modelSet)
-	if !strings.HasPrefix(strings.ToLower(modelSet), "anthropic:") {
-		return "", fmt.Errorf("unsupported anthropic model set %q", modelSet)
+	definition, err := modelselection.ResolveModelSetForProvider(modelSet, modelselection.ProviderAnthropic)
+	if err != nil {
+		return "", fmt.Errorf("unsupported anthropic model set %q: %w", strings.TrimSpace(modelSet), err)
 	}
-
-	model := strings.TrimSpace(strings.TrimPrefix(modelSet, "anthropic:"))
-	if model == "" {
-		return "", fmt.Errorf("anthropic model is required")
-	}
-
-	return anthropic.Model(model), nil
+	return anthropic.Model(definition.ConcreteModel), nil
 }
 
 func anthropicClientForKey(apiKey string) anthropic.Client {

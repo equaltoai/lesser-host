@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/equaltoai/lesser-host/internal/ai/llm"
+	"github.com/equaltoai/lesser-host/internal/ai/modelselection"
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis/completion"
 	"github.com/equaltoai/lesser-host/internal/soul"
@@ -186,6 +187,39 @@ func baseTurnInput() (*fakeTurnStore, *fakeCompletionStore, completion.Completio
 	return store, comp, turn
 }
 
+func TestRunTurnFirstAliasTurnStorePreflightAcceptsCanonicalCandidate(t *testing.T) {
+	setFiveBodyContractEnv(t)
+	t.Setenv("ANTHROPIC_API_KEY", "test-key")
+	store, comp, turn := baseTurnInput()
+	now := fixedClock()
+	candidate, err := hostedgenesis.NewDeclarationCandidate(hostedgenesis.DeclarationCandidateBinding{
+		InstanceSlug: "acme", RegistrationID: "reg-1", AgentID: "agent-1", ConversationID: "conv-1", SourceTurnID: "turn-1",
+		Model: "anthropic:claude-sonnet-5",
+	}, now)
+	if err != nil {
+		t.Fatalf("build alias-backed candidate: %v", err)
+	}
+	store.session.Model = modelselection.AliasAnthropic
+	store.session.DeclarationCandidate = candidate
+	store.session.CandidateRevision = candidate.Revision
+	store.session.CandidateHash = candidate.CandidateHash
+	store.session.CandidatePhase = string(candidate.Phase)
+	store.conv.Model = modelselection.AliasAnthropic
+	comp.session = cloneSessionForRunner(store.session)
+	comp.conversation = store.conv
+
+	runner := &turnRunner{
+		store: store, writer: completion.NewCompletionWriter(comp, fixedClock), nowFunc: fixedClock,
+		phaseRunner: successfulIdentityPhaseRunner(t, "I will ask about philosophy next."),
+	}
+	if err := runner.runTurnAndPersist(context.Background(), turn); err != nil {
+		t.Fatalf("first alias-backed turn failed: %v", err)
+	}
+	if got := hostedgenesis.NormalizeStatus(comp.session.Status); got != hostedgenesis.StatusAssistantTurnReady {
+		t.Fatalf("first alias-backed turn did not reach assistant_turn_ready: %q (%#v)", got, comp.session)
+	}
+}
+
 func TestRunTurnMalformedSectionReturnsErrorsThenSameSectionSucceeds(t *testing.T) {
 	setFiveBodyContractEnv(t)
 	t.Setenv("OPENAI_API_KEY", "test-key")
@@ -357,20 +391,16 @@ func TestSoulPhaseTruncatedSixRefusalOutputClassifiesEvidencePersistenceFailure(
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("x-request-id", "req_soul_length")
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"id": "chatcmpl-soul-length", "object": "chat.completion", "created": 1, "model": "gpt-test",
-			"choices": []any{map[string]any{
-				"index": 0, "finish_reason": "length",
-				"message": map[string]any{
-					"role": "assistant", "content": "",
-					"tool_calls": []any{map[string]any{
-						"id": "call-soul-length", "type": "function",
-						"function": map[string]any{"name": hostedgenesis.DeclarationToolSoulPut, "arguments": string(truncatedArguments)},
-					}},
-				},
+			"id": "resp-soul-length", "object": "response", "created_at": 1, "model": "gpt-test",
+			"status": "incomplete", "incomplete_details": map[string]any{"reason": "max_output_tokens"},
+			"output": []any{map[string]any{
+				"type": "function_call", "id": "fc-soul-length", "call_id": "call-soul-length",
+				"name": hostedgenesis.DeclarationToolSoulPut, "arguments": string(truncatedArguments), "status": "incomplete",
 			}},
 			"usage": map[string]any{
-				"prompt_tokens": 100, "completion_tokens": 4096, "total_tokens": 4196,
-				"completion_tokens_details": map[string]any{"reasoning_tokens": 1024},
+				"input_tokens": 100, "output_tokens": 4096, "total_tokens": 4196,
+				"input_tokens_details":  map[string]any{"cached_tokens": 0},
+				"output_tokens_details": map[string]any{"reasoning_tokens": 1024},
 			},
 		})
 	}))
@@ -422,28 +452,23 @@ func TestSoulPhaseLongSixRefusalOutputCompletesWithSizedBudget(t *testing.T) {
 			return
 		}
 		requests <- body
-		maxTokens, _ := body["max_completion_tokens"].(float64)
-		arguments, finishReason, completionTokens := fullArguments, "tool_calls", 6500
+		maxTokens, _ := body["max_output_tokens"].(float64)
+		arguments, status, outputTokens := fullArguments, "completed", 6500
 		if maxTokens < 8192 {
-			arguments, finishReason, completionTokens = fullArguments[:4096], "length", 4096
+			arguments, status, outputTokens = fullArguments[:4096], "incomplete", 4096
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("x-request-id", "req_soul_sized")
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"id": "chatcmpl-soul-sized", "object": "chat.completion", "created": 1, "model": "gpt-test",
-			"choices": []any{map[string]any{
-				"index": 0, "finish_reason": finishReason,
-				"message": map[string]any{
-					"role": "assistant", "content": "",
-					"tool_calls": []any{map[string]any{
-						"id": "call-soul-sized", "type": "function",
-						"function": map[string]any{"name": hostedgenesis.DeclarationToolSoulPut, "arguments": string(arguments)},
-					}},
-				},
+			"id": "resp-soul-sized", "object": "response", "created_at": 1, "model": "gpt-test", "status": status,
+			"output": []any{map[string]any{
+				"type": "function_call", "id": "fc-soul-sized", "call_id": "call-soul-sized",
+				"name": hostedgenesis.DeclarationToolSoulPut, "arguments": string(arguments), "status": status,
 			}},
 			"usage": map[string]any{
-				"prompt_tokens": 100, "completion_tokens": completionTokens, "total_tokens": 100 + completionTokens,
-				"completion_tokens_details": map[string]any{"reasoning_tokens": 1024},
+				"input_tokens": 100, "output_tokens": outputTokens, "total_tokens": 100 + outputTokens,
+				"input_tokens_details":  map[string]any{"cached_tokens": 0},
+				"output_tokens_details": map[string]any{"reasoning_tokens": 1024},
 			},
 		})
 	}))
@@ -647,19 +672,18 @@ func TestDeclarationProviderAttemptOrdinalBaseUsesExactTupleMaximum(t *testing.T
 
 func assertStrictSoulPhaseRequest(t *testing.T, request map[string]any) {
 	t.Helper()
-	if got, ok := request["max_completion_tokens"].(float64); !ok || got != 8192 {
-		t.Fatalf("OpenAI soul phase completion cap changed: %#v", request["max_completion_tokens"])
+	if got, ok := request["max_output_tokens"].(float64); !ok || got != 8192 {
+		t.Fatalf("OpenAI soul phase output cap changed: %#v", request["max_output_tokens"])
 	}
 	tools, ok := request["tools"].([]any)
 	if !ok || len(tools) != 1 {
 		t.Fatalf("soul phase must expose exactly one tool: %#v", request["tools"])
 	}
 	tool, _ := tools[0].(map[string]any)
-	function, _ := tool["function"].(map[string]any)
-	if function["name"] != hostedgenesis.DeclarationToolSoulPut || function["strict"] != true {
-		t.Fatalf("soul phase tool is not strict: %#v", function)
+	if tool["name"] != hostedgenesis.DeclarationToolSoulPut || tool["strict"] != true {
+		t.Fatalf("soul phase tool is not strict: %#v", tool)
 	}
-	parameters, _ := function["parameters"].(map[string]any)
+	parameters, _ := tool["parameters"].(map[string]any)
 	properties, _ := parameters["properties"].(map[string]any)
 	section, _ := properties["section"].(map[string]any)
 	sectionProperties, _ := section["properties"].(map[string]any)

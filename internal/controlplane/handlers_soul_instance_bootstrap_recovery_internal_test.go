@@ -16,6 +16,7 @@ import (
 	runtimemicrovm "github.com/theory-cloud/apptheory/v2/runtime/microvm"
 	ttmocks "github.com/theory-cloud/tabletheory/v2/pkg/mocks"
 
+	"github.com/equaltoai/lesser-host/internal/ai/modelselection"
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 	"github.com/equaltoai/lesser-host/internal/testutil"
@@ -39,7 +40,7 @@ func TestSoulInstanceRecoverMintConversation_RetriggersStuckTurn(t *testing.T) {
 	stubSoulInstanceRecoveryConversation(t, tdb, models.SoulAgentMintConversation{
 		AgentID:        reg.AgentID,
 		ConversationID: mintConversationTestConversationID,
-		Model:          "anthropic:claude-sonnet-4-6",
+		Model:          "claude-sonnet-5",
 		Messages:       encodeMintConversationBlob(`[{"role":"user","content":"stuck user turn"}]`),
 		Status:         models.SoulMintConversationStatusInProgress,
 		LatestTurnID:   "turn-stuck",
@@ -92,7 +93,7 @@ func TestSoulInstanceRecoverMintConversation_NonStuckIsNoop(t *testing.T) {
 	stubSoulInstanceRecoveryConversation(t, tdb, models.SoulAgentMintConversation{
 		AgentID:        reg.AgentID,
 		ConversationID: mintConversationTestConversationID,
-		Model:          "anthropic:claude-sonnet-4-6",
+		Model:          "claude-sonnet-5",
 		Messages:       encodeMintConversationBlob(`[{"role":"user","content":"already done"},{"role":"assistant","content":"ready"}]`),
 		Status:         models.SoulMintConversationStatusAssistantTurnReady,
 		LatestTurnID:   "turn-ready",
@@ -194,7 +195,7 @@ func TestSoulInstanceRecoverMintConversation_RetriesFailedAssistantTurn(t *testi
 	stubSoulInstanceRecoveryConversation(t, tdb, models.SoulAgentMintConversation{
 		AgentID:        reg.AgentID,
 		ConversationID: mintConversationTestConversationID,
-		Model:          "anthropic:claude-sonnet-4-6",
+		Model:          "claude-sonnet-5",
 		Messages:       encodeMintConversationBlob(`[{"role":"user","content":"describe the agent"}]`),
 		Status:         models.SoulMintConversationStatusFailed,
 		StatusReason:   hostedGenesisFailureAssistantTurnFailed,
@@ -264,7 +265,7 @@ func completeBoundariesRecoverySession(t *testing.T, reg models.SoulAgentRegistr
 	session.Version = 41
 	reviewed := controlplaneCompleteReviewCandidate(t, hostedgenesis.DeclarationCandidateBinding{
 		InstanceSlug: session.InstanceSlug, RegistrationID: session.RegistrationID, AgentID: session.AgentID,
-		ConversationID: session.ConversationID, SourceTurnID: session.LatestTurnID, Model: session.Model,
+		ConversationID: session.ConversationID, SourceTurnID: session.LatestTurnID, Model: modelselection.CanonicalModelSet(session.Model),
 	}, now.Add(-time.Minute))
 	edited, err := hostedgenesis.ApplyDeclarationCandidateAction(reviewed, hostedgenesis.DeclarationCandidateAction{
 		Action: "edit", Section: hostedgenesis.DeclarationSectionBoundaries,
@@ -430,7 +431,7 @@ func (d *delayedProviderAttemptRecoveryDispatcher) checkpointProviderAttempt(pre
 	}
 	candidate := preflight.DeclarationCandidate
 	next, err := hostedgenesis.ApplyDeclarationProviderAttempt(candidate, hostedgenesis.DeclarationProviderAttemptUpdate{
-		Provider: "anthropic", Model: "claude-sonnet-4-6", Phase: "declaration_phase",
+		Provider: "anthropic", Model: "claude-sonnet-5", Phase: "declaration_phase",
 		Section: candidate.CurrentSection, SourceTurnID: preflight.LatestTurnID,
 		CandidateRevision: candidate.Revision, CandidateHash: candidate.CandidateHash,
 		SDKAttemptOrdinal: 1, SDKRetryBudget: 2, HTTPStatus: http.StatusOK,
@@ -511,7 +512,7 @@ func TestSoulInstanceRecoverMintConversation_AssistantProviderTimeoutUsesFreshRu
 	stubSoulInstanceBootstrapDomainAndInstance(t, tdb, reg.DomainNormalized, soulInstanceBootstrapTestInstanceSlug)
 	stubSoulInstanceRecoveryConversation(t, tdb, models.SoulAgentMintConversation{
 		AgentID: reg.AgentID, ConversationID: mintConversationTestConversationID,
-		Model: "anthropic:claude-sonnet-4-6", Messages: encodeMintConversationBlob(`[{"role":"user","content":"describe the agent"}]`),
+		Model: "claude-sonnet-5", Messages: encodeMintConversationBlob(`[{"role":"user","content":"describe the agent"}]`),
 		Status: models.SoulMintConversationStatusFailed, StatusReason: hostedGenesisFailureAssistantTurnFailed,
 		LatestTurnID: "turn-assistant", ChargedCredits: soulMintConversationStreamBaseCredits,
 		RequestID: "req-failed", CreatedAt: now.Add(-5 * time.Minute), UpdatedAt: now, CompletedAt: now,
@@ -567,7 +568,7 @@ func TestSoulInstanceRecoverMintConversation_AssistantRetryPersistsPendingBefore
 	stubSoulInstanceRecoveryConversation(t, tdb, models.SoulAgentMintConversation{
 		AgentID:        reg.AgentID,
 		ConversationID: mintConversationTestConversationID,
-		Model:          "anthropic:claude-sonnet-4-6",
+		Model:          "claude-sonnet-5",
 		Messages:       encodeMintConversationBlob(`[{"role":"user","content":"describe the agent"}]`),
 		Status:         models.SoulMintConversationStatusFailed,
 		StatusReason:   hostedGenesisFailureAssistantTurnFailed,
@@ -665,7 +666,7 @@ func TestSoulInstanceRecoverMintConversation_FailedAssistantRetryDispatchErrorPe
 	stubSoulInstanceRecoveryConversation(t, tdb, models.SoulAgentMintConversation{
 		AgentID:        reg.AgentID,
 		ConversationID: mintConversationTestConversationID,
-		Model:          "anthropic:claude-sonnet-4-6",
+		Model:          "claude-sonnet-5",
 		Messages:       encodeMintConversationBlob(`[{"role":"user","content":"describe the agent"}]`),
 		Status:         models.SoulMintConversationStatusFailed,
 		StatusReason:   hostedGenesisFailureAssistantTurnFailed,
@@ -708,7 +709,7 @@ func TestSoulInstanceRecoverMintConversation_SalvagesPendingAssistantRetryWithLi
 	stubSoulInstanceRecoveryConversation(t, tdb, models.SoulAgentMintConversation{
 		AgentID:        reg.AgentID,
 		ConversationID: mintConversationTestConversationID,
-		Model:          "anthropic:claude-sonnet-4-6",
+		Model:          "claude-sonnet-5",
 		Messages:       encodeMintConversationBlob(`[{"role":"user","content":"describe the agent"}]`),
 		Status:         models.SoulMintConversationStatusInProgress,
 		LatestTurnID:   "turn-stuck",
@@ -768,7 +769,7 @@ func TestSoulInstanceRecoverMintConversation_RelaunchesMicroVMUnavailableFromChe
 	stubSoulInstanceRecoveryConversation(t, tdb, models.SoulAgentMintConversation{
 		AgentID:        reg.AgentID,
 		ConversationID: mintConversationTestConversationID,
-		Model:          "anthropic:claude-sonnet-4-6",
+		Model:          "claude-sonnet-5",
 		Messages:       encodeMintConversationBlob(`[{"role":"user","content":"describe the agent"}]`),
 		Status:         models.SoulMintConversationStatusFailed,
 		StatusReason:   hostedGenesisFailureMicroVMUnavailable,
@@ -815,7 +816,7 @@ func TestSoulInstanceRecoverMintConversation_RelaunchesMicroVMUnavailableFromChe
 	tdb.db.AssertNumberOfCalls(t, "TransactWrite", 2)
 }
 
-func TestSoulInstanceRecoverMintConversation_RejectsMicroVMRelaunchWithoutCheckpoint(t *testing.T) {
+func TestSoulInstanceRecoverMintConversation_RetriesMicroVMPreflightFailureWithoutCheckpoint(t *testing.T) {
 	tdb := newMintConversationTestDB()
 	s := newMintConversationServer(tdb)
 	reg := mintConversationHandleReg()
@@ -829,7 +830,7 @@ func TestSoulInstanceRecoverMintConversation_RejectsMicroVMRelaunchWithoutCheckp
 	stubSoulInstanceRecoveryConversation(t, tdb, models.SoulAgentMintConversation{
 		AgentID:        reg.AgentID,
 		ConversationID: mintConversationTestConversationID,
-		Model:          "anthropic:claude-sonnet-4-6",
+		Model:          "claude-sonnet-5",
 		Messages:       encodeMintConversationBlob(`[{"role":"user","content":"describe the agent"}]`),
 		Status:         models.SoulMintConversationStatusFailed,
 		StatusReason:   hostedGenesisFailureMicroVMUnavailable,
@@ -841,22 +842,48 @@ func TestSoulInstanceRecoverMintConversation_RejectsMicroVMRelaunchWithoutCheckp
 		CompletedAt:    now,
 	})
 	session := failedMicroVMUnavailableRecoverySessionFixture(t, reg, now)
+	// A store_preflight failure happens before the workload can produce an
+	// actor VM checkpoint. Recovery must retry the accepted turn from its
+	// durable session binding rather than treating the missing checkpoint as a
+	// request to restart the entire soul bootstrap.
 	session.VMCheckpoint = nil
 	stubSoulInstanceRecoverySession(t, tdb, session)
+	expectHostedGenesisRetryDispatchWriteWithCapture(
+		t, tdb, hostedGenesisMicroVMRecoveryTurnID, "microvm-preflight",
+		assertHostedGenesisMicroVMPreflightRetryPendingSession,
+		assertHostedGenesisMicroVMPreflightRetryLifecycleSession,
+		nil,
+	)
 
-	_, err := s.handleSoulInstanceRecoverMintConversation(newSoulInstanceBootstrapContext(
+	resp, err := s.handleSoulInstanceRecoverMintConversation(newSoulInstanceBootstrapContext(
 		map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
 		nil,
 		map[string]string{"id": reg.ID, "conversationId": mintConversationTestConversationID},
 	))
-	appErr := requireAppTheoryError(t, err)
-	if appErr.Code != soulInstanceBootstrapCodeConflict || appErr.StatusCode != http.StatusConflict {
-		t.Fatalf("expected missing checkpoint conflict, got %#v", appErr)
+	if err != nil {
+		t.Fatalf("unexpected store-preflight recovery err: %v", err)
 	}
-	if dispatcher.calls != 0 || dispatcher.reconcileCalls != 0 {
-		t.Fatalf("checkpoint-less retry must not dispatch, got run=%d reconcile=%d", dispatcher.calls, dispatcher.reconcileCalls)
+	if resp.Status != http.StatusAccepted {
+		t.Fatalf("expected 202 store-preflight retry response, got %#v", resp)
 	}
-	tdb.db.AssertNotCalled(t, "TransactWrite", mock.Anything, mock.Anything)
+	if dispatcher.calls != 0 || dispatcher.startCalls != 1 || dispatcher.waitAndInvokeCalls != 1 || dispatcher.reconcileCalls != 0 {
+		t.Fatalf("expected one split store-preflight retry dispatch and no reconcile, got legacy_run=%d start=%d wait_invoke=%d reconcile=%d", dispatcher.calls, dispatcher.startCalls, dispatcher.waitAndInvokeCalls, dispatcher.reconcileCalls)
+	}
+	if dispatcher.lastBinding.ConversationID != mintConversationTestConversationID || dispatcher.lastBinding.TurnID != hostedGenesisMicroVMRecoveryTurnID {
+		t.Fatalf("expected retry dispatch bound to failed turn, got %#v", dispatcher.lastBinding)
+	}
+	var out hostedGenesisConversationResponse
+	if err := json.Unmarshal(resp.Body, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.Conversation.Status != models.SoulMintConversationStatusInProgress ||
+		out.Conversation.LatestTurnID != hostedGenesisMicroVMRecoveryTurnID ||
+		out.Conversation.Failure != nil ||
+		out.Conversation.PollAfterSeconds <= 0 {
+		t.Fatalf("expected actionable store-preflight retry projection, got %#v", out.Conversation)
+	}
+	assertHostedGenesisResponseNoForbiddenValues(t, resp.Body, hostedGenesisStatusForbiddenValues())
+	tdb.db.AssertNumberOfCalls(t, "TransactWrite", 2)
 }
 
 func TestHostedGenesisMicroVMRecoveryCheckpointValidationGuardsDurableInvariants(t *testing.T) {
@@ -974,7 +1001,7 @@ func hostedGenesisRecoverySessionFixture(t *testing.T, reg models.SoulAgentRegis
 		AgentID:                reg.AgentID,
 		ConversationID:         mintConversationTestConversationID,
 		Status:                 string(status),
-		Model:                  "anthropic:claude-sonnet-4-6",
+		Model:                  "claude-sonnet-5",
 		LatestTurnID:           "turn-stuck",
 		MessageCount:           1,
 		AssistantCheckpointRef: strings.TrimSpace(assistantCheckpointRef),
@@ -1005,7 +1032,7 @@ func stubFailedRecoveryLegacyMintConversation(t *testing.T, tdb *mintConversatio
 	stubMintConversationConversation(t, tdb, models.SoulAgentMintConversation{
 		AgentID:        reg.AgentID,
 		ConversationID: mintConversationTestConversationID,
-		Model:          "anthropic:claude-sonnet-4-6",
+		Model:          "claude-sonnet-5",
 		Messages:       encodeMintConversationBlob(`[{"role":"user","content":"` + hostedGenesisBenignCredentialSafetyProse + `"},{"role":"assistant","content":"Authorization: Bearer abcdefghijklmnopqrstuvwxyz012345"}]`),
 		Status:         models.SoulMintConversationStatusFailed,
 		LatestTurnID:   "turn-secret",
@@ -1034,7 +1061,7 @@ func failedRecoveryHostedGenesisSessionFixture(t *testing.T, reg models.SoulAgen
 		AgentID:        reg.AgentID,
 		ConversationID: mintConversationTestConversationID,
 		Status:         string(hostedgenesis.StatusFailed),
-		Model:          "anthropic:claude-sonnet-4-6",
+		Model:          "claude-sonnet-5",
 		LatestTurnID:   "turn-secret",
 		MessageCount:   2,
 		TurnLedger:     failedRecoveryTurnLedger(now),
@@ -1088,7 +1115,7 @@ func failedAssistantTurnRecoveryHostedGenesisSessionFixture(t *testing.T, reg mo
 		AgentID:        reg.AgentID,
 		ConversationID: mintConversationTestConversationID,
 		Status:         string(hostedgenesis.StatusFailed),
-		Model:          "anthropic:claude-sonnet-4-6",
+		Model:          "claude-sonnet-5",
 		LatestTurnID:   "turn-assistant",
 		MessageCount:   1,
 		TurnLedger: []hostedgenesis.TurnLedgerEntry{{
@@ -1346,6 +1373,40 @@ func assertHostedGenesisMicroVMRetryLifecycleSession(t *testing.T, session *mode
 	}
 	if session.MicroVMExecutionID == "" || session.ExecutionStateRef == "" || session.MicroVMLifecycleRef == nil {
 		t.Fatalf("expected microvm retry dispatch to refresh MicroVM refs, got %#v", session)
+	}
+}
+
+func assertHostedGenesisMicroVMPreflightRetryPendingSession(t *testing.T, session *models.HostedGenesisSession, wantTurnID string) {
+	t.Helper()
+	if hostedgenesis.NormalizeStatus(session.Status) != hostedgenesis.StatusInProgress ||
+		session.LatestTurnID != wantTurnID ||
+		session.Failure == nil ||
+		session.Failure.Code != hostedgenesis.FailureCodeMicroVMUnavailable ||
+		session.Failure.Recovery.MaxAttempts != 1 {
+		t.Fatalf("expected microvm preflight retry session to persist latest turn with carried budget, got %#v", session)
+	}
+	if session.VMCheckpoint != nil {
+		t.Fatalf("store-preflight retry must not invent an actor VM checkpoint: %#v", session)
+	}
+	if session.MicroVMExecutionID != "" || session.ExecutionStateRef != "" || session.MicroVMLifecycleRef != nil {
+		t.Fatalf("retry-pending state must be durable before MicroVM dispatch refs are known, got %#v", session)
+	}
+}
+
+func assertHostedGenesisMicroVMPreflightRetryLifecycleSession(t *testing.T, session *models.HostedGenesisSession, wantTurnID string) {
+	t.Helper()
+	if hostedgenesis.NormalizeStatus(session.Status) != hostedgenesis.StatusInProgress ||
+		session.LatestTurnID != wantTurnID ||
+		session.Failure == nil ||
+		session.Failure.Code != hostedgenesis.FailureCodeMicroVMUnavailable ||
+		session.Failure.Recovery.MaxAttempts != 1 {
+		t.Fatalf("expected microvm preflight retry lifecycle write to preserve carried budget, got %#v", session)
+	}
+	if session.VMCheckpoint != nil {
+		t.Fatalf("store-preflight retry lifecycle write must not invent an actor VM checkpoint: %#v", session)
+	}
+	if session.MicroVMExecutionID == "" || session.ExecutionStateRef == "" || session.MicroVMLifecycleRef == nil {
+		t.Fatalf("expected microvm preflight retry dispatch to refresh MicroVM refs, got %#v", session)
 	}
 }
 

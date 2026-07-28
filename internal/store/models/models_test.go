@@ -5,6 +5,8 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/equaltoai/lesser-host/internal/ai/modelselection"
 )
 
 func TestModels_UpdateKeysAndDefaults(t *testing.T) {
@@ -56,6 +58,7 @@ func TestModels_UpdateKeysAndDefaults(t *testing.T) {
 		require.NotNil(t, inst.RendersEnabled)
 		require.NotNil(t, inst.ModerationEnabled)
 		require.NotNil(t, inst.AIEnabled)
+		require.Equal(t, modelselection.DefaultAlias, inst.AIModelSet)
 		require.NotNil(t, inst.AIPricingMultiplierBps)
 		require.NotNil(t, inst.AIMaxInflightJobs)
 	})

@@ -20,6 +20,7 @@ import (
 	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/ai/llm"
+	"github.com/equaltoai/lesser-host/internal/ai/modelselection"
 	"github.com/equaltoai/lesser-host/internal/billing"
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis/mintprompt"
@@ -33,7 +34,7 @@ const (
 	soulMintConversationStreamBaseCredits = int64(10)
 
 	soulMintConversationStreamModule           = "soul.mint_conversation.stream"
-	defaultSoulMintConversationModel           = "anthropic:claude-sonnet-4-6"
+	defaultSoulMintConversationModel           = modelselection.DefaultAlias
 	mintConversationUnsupportedModelSetMessage = "unsupported model set"
 
 	soulMintConversationAlreadyPublishedMessage = "registration is already published"
@@ -53,12 +54,31 @@ const (
 
 type soulMintConversationRequest struct {
 	ConversationID  string                                    `json:"conversation_id,omitempty"` // Empty = start new conversation.
-	Model           string                                    `json:"model,omitempty"`           // e.g. "anthropic:claude-sonnet-4-6"
+	Model           string                                    `json:"model,omitempty"`           // Hosted Genesis alias; omission selects the OpenAI default.
 	Message         string                                    `json:"message"`                   // User's message for this turn.
 	IdempotencyKey  string                                    `json:"idempotency_key,omitempty"`
 	CorrelationID   string                                    `json:"correlation_id,omitempty"`
 	LesserRequestID string                                    `json:"lesser_request_id,omitempty"`
 	CandidateAction *hostedgenesis.DeclarationCandidateAction `json:"candidate_action,omitempty"`
+	modelProvided   bool
+}
+
+// UnmarshalJSON keeps the optional model field distinguishable from an
+// explicitly empty model. Omission selects the configured Hosted Genesis
+// default; an explicit empty value is rejected at conversation start.
+func (r *soulMintConversationRequest) UnmarshalJSON(data []byte) error {
+	type requestAlias soulMintConversationRequest
+	var decoded requestAlias
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	*r = soulMintConversationRequest(decoded)
+	_, r.modelProvided = fields["model"]
+	return nil
 }
 
 type soulMintConversationMessage struct {
@@ -605,7 +625,7 @@ func (s *Server) debitSoulMintConversationCredits(
 
 	allowOverage := strings.EqualFold(strings.TrimSpace(inst.OveragePolicy), "allow")
 	if mintConversationCreditsInsufficient(budget, creditsRequested, allowOverage) {
-		return 0, newAppTheoryError("app.conflict", "insufficient credits")
+		return 0, newAppTheoryError(appTheoryCodeBudgetExhausted, soulInstanceBootstrapMessageBudgetExhausted)
 	}
 
 	includedDebited, overageDebited := billing.PartsForDebit(budget.IncludedCredits, budget.UsedCredits, creditsRequested)
@@ -632,7 +652,7 @@ func (s *Server) debitSoulMintConversationCredits(
 	_ = entry.UpdateKeys()
 	err := s.applyMintConversationCreditDebit(ctx, budget, entry, creditsRequested, allowOverage, now, extraWrites)
 	if theoryErrors.IsConditionFailed(err) {
-		return 0, newAppTheoryError("app.conflict", "insufficient credits")
+		return 0, newAppTheoryError(appTheoryCodeBudgetExhausted, soulInstanceBootstrapMessageBudgetExhausted)
 	}
 	if err != nil {
 		return 0, newAppTheoryError("app.internal", "failed to debit credits")
@@ -1056,10 +1076,11 @@ func (s *Server) streamMintConversation(ctx context.Context, eventCh chan<- appt
 		})
 	}
 
+	definition, resolveErr := modelselection.ResolveModelSet(strings.TrimSpace(p.modelSet))
 	switch {
-	case strings.HasPrefix(strings.ToLower(strings.TrimSpace(p.modelSet)), "openai:"):
+	case resolveErr == nil && definition.Provider == modelselection.ProviderOpenAI:
 		fullResponse, llmUsage, err = llm.StreamMintConversationOpenAI(runCtx, p.apiKey, p.modelSet, p.systemPrompt, llmMessages, onDelta)
-	case strings.HasPrefix(strings.ToLower(strings.TrimSpace(p.modelSet)), "anthropic:"):
+	case resolveErr == nil && definition.Provider == modelselection.ProviderAnthropic:
 		fullResponse, llmUsage, err = llm.StreamMintConversationAnthropic(runCtx, p.apiKey, p.modelSet, p.systemPrompt, llmMessages, onDelta)
 	default:
 		err = fmt.Errorf("unsupported model set %q", p.modelSet)
@@ -2096,9 +2117,9 @@ func buildMintConversationSystemPrompt(reg *models.SoulAgentRegistration) (strin
 }
 
 func (s *Server) apiKeyForMintConversationModel(ctx context.Context, modelSet string) (string, *apptheory.AppTheoryError) {
-	modelSetNorm := strings.ToLower(strings.TrimSpace(modelSet))
+	definition, resolveErr := modelselection.ResolveModelSet(strings.TrimSpace(modelSet))
 	switch {
-	case strings.HasPrefix(modelSetNorm, "openai:"):
+	case resolveErr == nil && definition.Provider == modelselection.ProviderOpenAI:
 		if k := strings.TrimSpace(os.Getenv("OPENAI_API_KEY")); k != "" {
 			return k, nil
 		}
@@ -2107,7 +2128,7 @@ func (s *Server) apiKeyForMintConversationModel(ctx context.Context, modelSet st
 			return "", newAppTheoryError("app.internal", "LLM provider not configured")
 		}
 		return k, nil
-	case strings.HasPrefix(modelSetNorm, "anthropic:"):
+	case resolveErr == nil && definition.Provider == modelselection.ProviderAnthropic:
 		if k := strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY")); k != "" {
 			return k, nil
 		}

@@ -299,7 +299,7 @@ if [[ -z "$registration_id" || -z "$instance_slug" || -z "$agent_id_hex" ]]; the
   echo "FAIL: system fixture file ${fixtures_file} missing registrationId, instanceSlug, or agentIdHex." >&2
   exit 1
 fi
-e2e_model="${fixt_model:-anthropic:claude-sonnet-4-6}"
+e2e_model="${fixt_model:-gpt-5.6-luna}"
 e2e_message="${fixt_message:-Please draft my soul declaration. Take your time; this is a long reflection.}"
 e2e_kill_message="${fixt_kill_message:-A second long reflection for the kill-VM recovery arc.}"
 e2e_retry_message="${fixt_retry_message:-Retry after kill-VM recovery.}"

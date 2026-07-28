@@ -1,10 +1,12 @@
 package controlplane
 
+import "github.com/equaltoai/lesser-host/internal/ai/modelselection"
+
 const (
 	defaultControlPlaneStage = "lab"
 
 	defaultManagedParentDomain = "greater.website"
-	defaultAIModelSet          = "openai:gpt-5-mini-2025-08-07"
+	defaultAIModelSet          = modelselection.DefaultAlias
 
 	lesserHostDomain = "lesser.host"
 

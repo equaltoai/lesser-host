@@ -155,9 +155,11 @@ func assertProviderTimesOutAtConfiguredDeadline(t *testing.T, baseURLEnv string,
 // only swaps the transport client: a fast, well-formed streaming response still
 // parses to the same assistant content as without the configured client.
 func TestConfigureProviderHTTPClient_DoesNotChangeStreamingParsing(t *testing.T) {
-	// Minimal OpenAI streaming response: one chunk with the full delta then a
-	// [DONE] sentinel. The accumulator must surface "hello from openai".
-	chunk := `data: {"id":"chatcmpl_test","object":"chat.completion.chunk","created":1,"model":"gpt-test","choices":[{"index":0,"delta":{"role":"assistant","content":"hello from openai"},"finish_reason":null}]}
+	// Minimal Responses streaming response: one output-text delta, a completed
+	// response carrying usage, and the [DONE] sentinel.
+	chunk := `data: {"type":"response.output_text.delta","item_id":"msg_test","output_index":0,"content_index":0,"delta":"hello from openai","sequence_number":1}
+
+data: {"type":"response.completed","sequence_number":2,"response":{"id":"resp_test","object":"response","created_at":1,"model":"gpt-test","status":"completed","output":[{"type":"message","id":"msg_test","role":"assistant","status":"completed","content":[{"type":"output_text","text":"hello from openai","annotations":[],"logprobs":[]}]}],"usage":{"input_tokens":2,"output_tokens":3,"total_tokens":5,"input_tokens_details":{"cached_tokens":0},"output_tokens_details":{"reasoning_tokens":0}}}}
 
 data: [DONE]
 
@@ -180,7 +182,7 @@ data: [DONE]
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	got, _, err := StreamMintConversationOpenAI(ctx, "sk-test", "openai:gpt-test", "system", []MintConversationMessage{
+	got, usage, err := StreamMintConversationOpenAI(ctx, "sk-test", "openai:gpt-test", "system", []MintConversationMessage{
 		{Role: "user", Content: "hi"},
 	}, func(string) {})
 	if err != nil {
@@ -188,6 +190,9 @@ data: [DONE]
 	}
 	if got != "hello from openai" {
 		t.Fatalf("expected parsed assistant content %q, got %q", "hello from openai", got)
+	}
+	if usage.Provider != testProviderOpenAI || usage.Model != "gpt-test" || usage.InputTokens != 2 || usage.OutputTokens != 3 || usage.TotalTokens != 5 {
+		t.Fatalf("expected Responses usage mapping, got %#v", usage)
 	}
 }
 

@@ -86,7 +86,7 @@ func TestHostedGenesisInProgressNudgeReturnsWaitOnlyProjection(t *testing.T) {
 	stubMintConversationConversation(t, tdb, models.SoulAgentMintConversation{
 		AgentID:        reg.AgentID,
 		ConversationID: mintConversationTestConversationID,
-		Model:          "anthropic:claude-sonnet-4-6",
+		Model:          "claude-sonnet-5",
 		Messages:       encodeMintConversationBlob(`[{"role":"user","content":"first accepted turn"}]`),
 		Status:         models.SoulMintConversationStatusInProgress,
 		LatestTurnID:   activeTurnID,
@@ -142,7 +142,7 @@ func TestHostedGenesisStructuralAffirmationQueuesProviderFreeFinalizationTurn(t 
 	now := time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC)
 	candidate := controlplaneCompleteReviewCandidate(t, hostedgenesis.DeclarationCandidateBinding{
 		InstanceSlug: soulInstanceBootstrapTestInstanceSlug, RegistrationID: reg.ID, AgentID: reg.AgentID,
-		ConversationID: mintConversationTestConversationID, SourceTurnID: "turn-ready", Model: "anthropic:claude-sonnet-4-6",
+		ConversationID: mintConversationTestConversationID, SourceTurnID: "turn-ready", Model: "claude-sonnet-5",
 	}, now)
 	assertControlplaneReviewCandidateCanAffirm(t, candidate, "turn-next", now.Add(time.Minute))
 
@@ -151,7 +151,7 @@ func TestHostedGenesisStructuralAffirmationQueuesProviderFreeFinalizationTurn(t 
 	stubSoulInstanceBootstrapDomainAndInstance(t, tdb, reg.DomainNormalized, soulInstanceBootstrapTestInstanceSlug)
 	stubMintConversationIdentity(t, tdb, nil, theoryErrors.ErrItemNotFound)
 	conv := models.SoulAgentMintConversation{
-		AgentID: reg.AgentID, ConversationID: mintConversationTestConversationID, Model: "anthropic:claude-sonnet-4-6",
+		AgentID: reg.AgentID, ConversationID: mintConversationTestConversationID, Model: "claude-sonnet-5",
 		Messages: encodeMintConversationBlob(`[{"role":"user","content":"define yourself"},{"role":"assistant","content":` + jsonString(candidate.Review.ReviewText) + `}]`),
 		Status:   models.SoulMintConversationStatusAssistantTurnReady, LatestTurnID: "turn-ready", CreatedAt: now,
 	}
@@ -183,7 +183,7 @@ func TestHostedGenesisExactAdvertisedBoundariesEditQueuesOnlySelectedSection(t *
 	now := time.Date(2026, 7, 23, 11, 30, 30, 0, time.UTC)
 	candidate := controlplaneCompleteReviewCandidate(t, hostedgenesis.DeclarationCandidateBinding{
 		InstanceSlug: soulInstanceBootstrapTestInstanceSlug, RegistrationID: reg.ID, AgentID: reg.AgentID,
-		ConversationID: mintConversationTestConversationID, SourceTurnID: "turn-live-review", Model: "anthropic:claude-sonnet-4-6",
+		ConversationID: mintConversationTestConversationID, SourceTurnID: "turn-live-review", Model: "claude-sonnet-5",
 	}, now)
 	candidate = liveShapedMissingCapabilitiesReviewCandidate(t, candidate)
 
@@ -192,7 +192,7 @@ func TestHostedGenesisExactAdvertisedBoundariesEditQueuesOnlySelectedSection(t *
 	stubSoulInstanceBootstrapDomainAndInstance(t, tdb, reg.DomainNormalized, soulInstanceBootstrapTestInstanceSlug)
 	stubMintConversationIdentity(t, tdb, nil, theoryErrors.ErrItemNotFound)
 	conv := models.SoulAgentMintConversation{
-		AgentID: reg.AgentID, ConversationID: mintConversationTestConversationID, Model: "anthropic:claude-sonnet-4-6",
+		AgentID: reg.AgentID, ConversationID: mintConversationTestConversationID, Model: "claude-sonnet-5",
 		Messages: encodeMintConversationBlob(`[{"role":"user","content":"define yourself"},{"role":"assistant","content":` + jsonString(candidate.Review.ReviewText) + `}]`),
 		Status:   models.SoulMintConversationStatusAssistantTurnReady, LatestTurnID: "turn-live-review", CreatedAt: now,
 	}
@@ -307,7 +307,7 @@ func controlplaneCompleteReviewCandidate(t *testing.T, binding hostedgenesis.Dec
 		{hostedgenesis.DeclarationToolPhilosophyPut, `{"section":{"summary":"I prefer auditable durable truth over implicit authority.","notes":[]}}`},
 		{hostedgenesis.DeclarationToolDisciplinePut, `{"section":{"summary":"I ground, act, record, and re-ground at each checkpoint.","notes":[]}}`},
 		{hostedgenesis.DeclarationToolBoundariesPut, `{"section":{"summary":"I remain within the managed instance and require owner authority.","notes":[]}}`},
-		{hostedgenesis.DeclarationToolSoulPut, `{"section":{"summary":"Exact reviewed truth is load-bearing.","notes":[],"refusals":[{"bypass":"skip the candidate hash check","invariant":"exact reviewed bytes remain authoritative","closestSafePath":"submit a matching structural affirmation"},{"bypass":"reuse another tenant session","invariant":"tenant and session guards must match","closestSafePath":"restart in the correct managed instance"},{"bypass":"call a provider after affirmation","invariant":"finalization remains deterministic","closestSafePath":"publish the exact affirmed candidate bytes"}]},"selfDescription":{"purpose":"Construct a typed Hosted Genesis declaration.","constraints":"Remain tenant bound.","commitments":"Preserve exact durable truth.","limitations":"No provider after affirmation.","authoredBy":"agent","mintingModel":"anthropic:claude-sonnet-4-6"},"capabilities":[],"transparency":{"modelProviderUncertainty":"Provider content is self-declared.","operationalNotes":"Host validates every section.","selfDeclaredNotice":"Self-declared until publication."}}`},
+		{hostedgenesis.DeclarationToolSoulPut, `{"section":{"summary":"Exact reviewed truth is load-bearing.","notes":[],"refusals":[{"bypass":"skip the candidate hash check","invariant":"exact reviewed bytes remain authoritative","closestSafePath":"submit a matching structural affirmation"},{"bypass":"reuse another tenant session","invariant":"tenant and session guards must match","closestSafePath":"restart in the correct managed instance"},{"bypass":"call a provider after affirmation","invariant":"finalization remains deterministic","closestSafePath":"publish the exact affirmed candidate bytes"}]},"selfDescription":{"purpose":"Construct a typed Hosted Genesis declaration.","constraints":"Remain tenant bound.","commitments":"Preserve exact durable truth.","limitations":"No provider after affirmation.","authoredBy":"agent","mintingModel":"claude-sonnet-5"},"capabilities":[],"transparency":{"modelProviderUncertainty":"Provider content is self-declared.","operationalNotes":"Host validates every section.","selfDeclaredNotice":"Self-declared until publication."}}`},
 	}
 	for i, call := range calls {
 		var payload map[string]any
@@ -394,7 +394,7 @@ func h1d2AcceptPathRequest(t *testing.T, reg models.SoulAgentRegistration) *appt
 	t.Helper()
 	return newSoulInstanceBootstrapContext(
 		map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
-		mustMarshalJSON(t, soulMintConversationRequest{Model: "anthropic:claude-sonnet-4-6", Message: soulInstanceBootstrapTestConversationMessage, IdempotencyKey: soulInstanceBootstrapTestIdempotencyKey, CorrelationID: "corr-1"}),
+		mustMarshalJSON(t, soulMintConversationRequest{Model: "claude-sonnet-5", Message: soulInstanceBootstrapTestConversationMessage, IdempotencyKey: soulInstanceBootstrapTestIdempotencyKey, CorrelationID: "corr-1"}),
 		map[string]string{"id": reg.ID},
 	)
 }
@@ -489,7 +489,7 @@ func jsonString(s string) string {
 
 func TestHostedGenesisProviderName(t *testing.T) {
 	cases := map[string]string{
-		"openai:gpt-5.4":                 "openai",
+		"gpt-5.6-luna":                   "openai",
 		"  Anthropic:claude-sonnet-4-6 ": "anthropic",
 		"unknown:foo":                    hostedGenesisProviderUnknown,
 		"":                               hostedGenesisProviderUnknown,
