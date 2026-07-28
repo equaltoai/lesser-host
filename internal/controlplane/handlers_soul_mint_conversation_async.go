@@ -511,10 +511,7 @@ func newHostedGenesisTurnSession(session hostedGenesisTurnSession, regCtx mintCo
 func (s *Server) loadExistingHostedGenesisTurnSession(ctx context.Context, session hostedGenesisTurnSession, regCtx mintConversationRegistrationContext, instanceSlug string, req soulMintConversationRequest, message string, requestID string, now time.Time) (hostedGenesisTurnSession, *apptheory.AppTheoryError) {
 	hostSession, err := s.store.GetHostedGenesisSession(ctx, instanceSlug, session.conversationID)
 	if err != nil {
-		if theoryErrors.IsNotFound(err) {
-			return hostedGenesisTurnSession{}, newAppTheoryError("app.not_found", "conversation not found")
-		}
-		return hostedGenesisTurnSession{}, newAppTheoryError("app.internal", "failed to load conversation")
+		return hostedGenesisTurnSession{}, s.hostedGenesisSessionLoadError(ctx, regCtx, instanceSlug, session.conversationID, err)
 	}
 	session.session = hostSession
 	session.expectedStatus = hostedgenesis.NormalizeStatus(hostSession.Status)
@@ -551,6 +548,34 @@ func (s *Server) loadExistingHostedGenesisTurnSession(ctx context.Context, sessi
 		return hostedGenesisTurnSession{}, newAppTheoryError("app.conflict", "conversation cannot accept a new turn")
 	}
 	return finished, nil
+}
+
+func (s *Server) hostedGenesisSessionLoadError(ctx context.Context, regCtx mintConversationRegistrationContext, instanceSlug string, conversationID string, loadErr error) *apptheory.AppTheoryError {
+	if theoryErrors.IsNotFound(loadErr) {
+		return newAppTheoryError("app.not_found", "conversation not found")
+	}
+	recoveryAction, repairErr := s.store.RepairHostedGenesisMalformedFailure(ctx, instanceSlug, conversationID)
+	if repairErr != nil || recoveryAction == "" {
+		return newAppTheoryError("app.internal", "failed to load conversation")
+	}
+	log.Printf("controlplane: repaired malformed hosted genesis failure agent_hash=%s conversation_hash=%s recovery_action=%s", soulMintInstanceReadAuditHash(regCtx.agentIDHex), soulMintInstanceReadAuditHash(conversationID), recoveryAction)
+	return hostedGenesisMalformedFailureRecoveryError(recoveryAction)
+}
+
+func hostedGenesisMalformedFailureRecoveryError(action hostedgenesis.RecoveryAction) *apptheory.AppTheoryError {
+	retryable := action == hostedgenesis.RecoveryActionRetrySameStep
+	details := map[string]any{
+		"reason":          "malformed_failure_repaired",
+		"retryable":       retryable,
+		"recovery_action": string(action),
+	}
+	message := "conversation state was repaired; retry the same step"
+	if action == hostedgenesis.RecoveryActionRestartSoulBootstrap {
+		message = "conversation state cannot be repaired safely; restart soul bootstrap"
+		details["reason"] = "malformed_failure_requires_restart"
+		details["restart_path"] = "/api/v1/soul/instance/agents/register/begin"
+	}
+	return soulInstanceBootstrapError(soulInstanceBootstrapCodeConflict, message, http.StatusConflict, details)
 }
 
 func requireHostedGenesisSessionAcceptsTurn(session *models.HostedGenesisSession) *apptheory.AppTheoryError {
@@ -1005,7 +1030,7 @@ func addHostedGenesisSessionWrite(tx core.TransactionBuilder, session *models.Ho
 		ub.Set("CandidateRevision", session.CandidateRevision)
 		ub.Set("CandidateHash", session.CandidateHash)
 		ub.Set("CandidatePhase", session.CandidatePhase)
-		ub.Set("Failure", session.Failure)
+		setOrRemoveHostedGenesisSessionFailure(ub, session.Failure)
 		ub.Set("TraceIDs", session.TraceIDs)
 		ub.Set("VMCheckpoint", session.VMCheckpoint)
 		ub.Set("RequestID", session.RequestID)
@@ -1015,4 +1040,12 @@ func addHostedGenesisSessionWrite(tx core.TransactionBuilder, session *models.Ho
 		return nil
 	}, tabletheory.IfExists(), tabletheory.AtVersion(expectedVersion), tabletheory.Condition("Status", "=", string(expectedStatus)))
 	return nil
+}
+
+func setOrRemoveHostedGenesisSessionFailure(ub core.UpdateBuilder, failure *hostedgenesis.Failure) {
+	if failure == nil {
+		ub.Remove("Failure")
+		return
+	}
+	ub.Set("Failure", failure)
 }
