@@ -30,6 +30,15 @@ type hostedGenesisFailureShapeProbe struct {
 
 func (hostedGenesisFailureShapeProbe) TableName() string { return models.MainTableName() }
 
+type hostedGenesisMalformedFailureBinding struct {
+	instanceSlug   string
+	registrationID string
+	agentID        string
+	conversationID string
+	pk             string
+	sk             string
+}
+
 // hostedGenesisSessionFieldsWithoutFailure is the complete durable projection
 // except for Failure. It is used only after the compatibility probe proves the
 // exact impossible BOOL shape that prevented the normal model read.
@@ -70,7 +79,7 @@ var hostedGenesisSessionFieldsWithoutFailure = []string{
 }
 
 // RepairHostedGenesisMalformedFailure removes only the impossible legacy shape
-// failure=BOOL(true) from one exact tenant/session row.
+// failure=BOOL(true) from one exact tenant/registration/agent/session row.
 //
 // A non-failed session cannot legitimately carry that shape. The repair first
 // reloads every other durable field, validates the session binding, then removes
@@ -82,16 +91,13 @@ var hostedGenesisSessionFieldsWithoutFailure = []string{
 // A failed session needs a structured Failure envelope to define recovery. If
 // that envelope is itself a BOOL, Host cannot reconstruct it safely; no write is
 // attempted and restart_soul_bootstrap is returned instead.
-func (s *Store) RepairHostedGenesisMalformedFailure(ctx context.Context, instanceSlug string, conversationID string) (hostedgenesis.RecoveryAction, error) {
-	instanceSlug = strings.TrimSpace(instanceSlug)
-	conversationID = strings.TrimSpace(conversationID)
-	if s == nil || s.DB == nil || instanceSlug == "" || conversationID == "" {
+func (s *Store) RepairHostedGenesisMalformedFailure(ctx context.Context, instanceSlug string, registrationID string, agentID string, conversationID string) (hostedgenesis.RecoveryAction, error) {
+	binding, bindingOK := newHostedGenesisMalformedFailureBinding(instanceSlug, registrationID, agentID, conversationID)
+	if s == nil || s.DB == nil || !bindingOK {
 		return "", theoryErrors.ErrItemNotFound
 	}
 
-	pk := models.HostedGenesisSessionPK(instanceSlug)
-	sk := models.HostedGenesisSessionSK(conversationID)
-	probe, err := s.getHostedGenesisFailureShapeProbe(ctx, pk, sk)
+	probe, err := s.getHostedGenesisFailureShapeProbe(ctx, binding.pk, binding.sk)
 	if err != nil {
 		return "", err
 	}
@@ -99,30 +105,50 @@ func (s *Store) RepairHostedGenesisMalformedFailure(ctx context.Context, instanc
 	if planErr != nil || action != hostedgenesis.RecoveryActionRetrySameStep {
 		return action, planErr
 	}
+	return s.repairHostedGenesisMalformedFailureSession(ctx, binding, probe, status)
+}
 
-	session, err := s.getHostedGenesisSessionWithoutFailure(ctx, pk, sk)
+func (s *Store) repairHostedGenesisMalformedFailureSession(ctx context.Context, binding hostedGenesisMalformedFailureBinding, probe *hostedGenesisFailureShapeProbe, status hostedgenesis.Status) (hostedgenesis.RecoveryAction, error) {
+	session, err := s.getHostedGenesisSessionWithoutFailure(ctx, binding.pk, binding.sk)
 	if err != nil {
 		return "", err
 	}
-	if !hostedGenesisMalformedFailureBindingMatches(session, probe, pk, sk, status) {
+	if !hostedGenesisMalformedFailureBindingMatches(session, probe, binding, status) {
 		return "", theoryErrors.ErrConditionFailed
 	}
-	updateKeysErr := session.UpdateKeys()
-	if updateKeysErr != nil {
+	// Validate every projected durable field before removing the malformed
+	// attribute. This rechecks candidate, MicroVM, status, and ledger invariants;
+	// an otherwise-invalid row is not guessed or rewritten.
+	if validationErr := session.BeforeUpdate(); validationErr != nil {
 		return hostedgenesis.RecoveryActionRestartSoulBootstrap, nil
 	}
-	if session.GetPK() != pk || session.GetSK() != sk {
+	if session.GetPK() != binding.pk || session.GetSK() != binding.sk {
 		return "", theoryErrors.ErrConditionFailed
 	}
 
-	err = s.removeHostedGenesisMalformedFailure(ctx, session, probe.Version, status)
+	err = s.removeHostedGenesisMalformedFailure(ctx, session, probe.Version, binding, status)
 	if err == nil {
 		return hostedgenesis.RecoveryActionRetrySameStep, nil
 	}
 	if !theoryErrors.IsConditionFailed(err) {
 		return "", err
 	}
-	return s.hostedGenesisMalformedFailureConflictAction(ctx, instanceSlug, conversationID, err)
+	return s.hostedGenesisMalformedFailureConflictAction(ctx, binding, err)
+}
+
+func newHostedGenesisMalformedFailureBinding(instanceSlug string, registrationID string, agentID string, conversationID string) (hostedGenesisMalformedFailureBinding, bool) {
+	binding := hostedGenesisMalformedFailureBinding{
+		instanceSlug:   strings.ToLower(strings.TrimSpace(instanceSlug)),
+		registrationID: strings.TrimSpace(registrationID),
+		agentID:        strings.ToLower(strings.TrimSpace(agentID)),
+		conversationID: strings.TrimSpace(conversationID),
+	}
+	if binding.instanceSlug == "" || binding.registrationID == "" || binding.agentID == "" || binding.conversationID == "" {
+		return hostedGenesisMalformedFailureBinding{}, false
+	}
+	binding.pk = models.HostedGenesisSessionPK(binding.instanceSlug)
+	binding.sk = models.HostedGenesisSessionSK(binding.conversationID)
+	return binding, true
 }
 
 func hostedGenesisMalformedFailureRepairPlan(probe *hostedGenesisFailureShapeProbe) (hostedgenesis.Status, hostedgenesis.RecoveryAction, error) {
@@ -143,16 +169,22 @@ func hostedGenesisMalformedFailureRepairPlan(probe *hostedGenesisFailureShapePro
 	return status, hostedgenesis.RecoveryActionRetrySameStep, nil
 }
 
-func hostedGenesisMalformedFailureBindingMatches(session *models.HostedGenesisSession, probe *hostedGenesisFailureShapeProbe, pk string, sk string, status hostedgenesis.Status) bool {
+func hostedGenesisMalformedFailureBindingMatches(session *models.HostedGenesisSession, probe *hostedGenesisFailureShapeProbe, binding hostedGenesisMalformedFailureBinding, status hostedgenesis.Status) bool {
 	return session != nil &&
 		probe != nil &&
+		probe.PK == binding.pk &&
+		probe.SK == binding.sk &&
 		session.Version == probe.Version &&
 		hostedgenesis.NormalizeStatus(session.Status) == status &&
-		session.GetPK() == pk &&
-		session.GetSK() == sk
+		session.GetPK() == binding.pk &&
+		session.GetSK() == binding.sk &&
+		strings.ToLower(strings.TrimSpace(session.InstanceSlug)) == binding.instanceSlug &&
+		strings.TrimSpace(session.RegistrationID) == binding.registrationID &&
+		strings.ToLower(strings.TrimSpace(session.AgentID)) == binding.agentID &&
+		strings.TrimSpace(session.ConversationID) == binding.conversationID
 }
 
-func (s *Store) removeHostedGenesisMalformedFailure(ctx context.Context, session *models.HostedGenesisSession, expectedVersion int64, expectedStatus hostedgenesis.Status) error {
+func (s *Store) removeHostedGenesisMalformedFailure(ctx context.Context, session *models.HostedGenesisSession, expectedVersion int64, binding hostedGenesisMalformedFailureBinding, expectedStatus hostedgenesis.Status) error {
 	return s.DB.TransactWrite(ctx, func(tx core.TransactionBuilder) error {
 		tx.UpdateWithBuilder(session, func(ub core.UpdateBuilder) error {
 			ub.Remove("Failure")
@@ -161,6 +193,10 @@ func (s *Store) removeHostedGenesisMalformedFailure(ctx context.Context, session
 		},
 			tabletheory.IfExists(),
 			tabletheory.AtVersion(expectedVersion),
+			tabletheory.Condition("InstanceSlug", "=", binding.instanceSlug),
+			tabletheory.Condition("RegistrationID", "=", binding.registrationID),
+			tabletheory.Condition("AgentID", "=", binding.agentID),
+			tabletheory.Condition("ConversationID", "=", binding.conversationID),
 			tabletheory.Condition("Status", "=", string(expectedStatus)),
 			tabletheory.Condition("Failure", "=", true),
 		)
@@ -168,11 +204,17 @@ func (s *Store) removeHostedGenesisMalformedFailure(ctx context.Context, session
 	})
 }
 
-func (s *Store) hostedGenesisMalformedFailureConflictAction(ctx context.Context, instanceSlug string, conversationID string, conditionErr error) (hostedgenesis.RecoveryAction, error) {
+func (s *Store) hostedGenesisMalformedFailureConflictAction(ctx context.Context, binding hostedGenesisMalformedFailureBinding, conditionErr error) (hostedgenesis.RecoveryAction, error) {
 	// A concurrent request may have completed the exact same idempotent repair.
 	// Accept that outcome only after the ordinary strict model read succeeds.
-	current, reloadErr := s.GetHostedGenesisSession(ctx, instanceSlug, conversationID)
+	current, reloadErr := s.GetHostedGenesisSession(ctx, binding.instanceSlug, binding.conversationID)
 	if reloadErr != nil {
+		return "", conditionErr
+	}
+	if strings.ToLower(strings.TrimSpace(current.InstanceSlug)) != binding.instanceSlug ||
+		strings.TrimSpace(current.RegistrationID) != binding.registrationID ||
+		strings.ToLower(strings.TrimSpace(current.AgentID)) != binding.agentID ||
+		strings.TrimSpace(current.ConversationID) != binding.conversationID {
 		return "", conditionErr
 	}
 	if hostedgenesis.NormalizeStatus(current.Status) == hostedgenesis.StatusFailed {

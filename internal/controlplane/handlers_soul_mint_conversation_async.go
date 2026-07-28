@@ -554,7 +554,7 @@ func (s *Server) hostedGenesisSessionLoadError(ctx context.Context, regCtx mintC
 	if theoryErrors.IsNotFound(loadErr) {
 		return newAppTheoryError("app.not_found", "conversation not found")
 	}
-	recoveryAction, repairErr := s.store.RepairHostedGenesisMalformedFailure(ctx, instanceSlug, conversationID)
+	recoveryAction, repairErr := s.store.RepairHostedGenesisMalformedFailure(ctx, instanceSlug, regCtx.reg.ID, regCtx.agentIDHex, conversationID)
 	if repairErr != nil || recoveryAction == "" {
 		return newAppTheoryError("app.internal", "failed to load conversation")
 	}

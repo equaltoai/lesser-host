@@ -7,6 +7,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/stretchr/testify/require"
 	"github.com/theory-cloud/tabletheory/v2"
+	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
 	"github.com/theory-cloud/tabletheory/v2/pkg/session"
 	"github.com/theory-cloud/tabletheory/v2/pkg/testing/fakedb"
 
@@ -25,7 +26,7 @@ func TestStore_RepairHostedGenesisMalformedFailureIsGuardedAndIdempotent(t *test
 	_, err := st.GetHostedGenesisSession(ctx, item.InstanceSlug, item.ConversationID)
 	require.ErrorContains(t, err, "cannot convert bool to hostedgenesis.Failure")
 
-	action, err := st.RepairHostedGenesisMalformedFailure(ctx, item.InstanceSlug, item.ConversationID)
+	action, err := st.RepairHostedGenesisMalformedFailure(ctx, item.InstanceSlug, item.RegistrationID, item.AgentID, item.ConversationID)
 	require.NoError(t, err)
 	require.Equal(t, hostedgenesis.RecoveryActionRetrySameStep, action)
 
@@ -40,7 +41,7 @@ func TestStore_RepairHostedGenesisMalformedFailureIsGuardedAndIdempotent(t *test
 	require.Len(t, rows, 1)
 	require.NotContains(t, rows[0], "failure")
 
-	action, err = st.RepairHostedGenesisMalformedFailure(ctx, item.InstanceSlug, item.ConversationID)
+	action, err = st.RepairHostedGenesisMalformedFailure(ctx, item.InstanceSlug, item.RegistrationID, item.AgentID, item.ConversationID)
 	require.NoError(t, err)
 	require.Empty(t, action)
 }
@@ -64,7 +65,7 @@ func TestStore_RepairHostedGenesisMalformedFailedStateRequiresRestart(t *testing
 	require.NoError(t, db.Model(item).Create())
 	seedHostedGenesisMalformedFailure(t, fake)
 
-	action, err := st.RepairHostedGenesisMalformedFailure(ctx, item.InstanceSlug, item.ConversationID)
+	action, err := st.RepairHostedGenesisMalformedFailure(ctx, item.InstanceSlug, item.RegistrationID, item.AgentID, item.ConversationID)
 	require.NoError(t, err)
 	require.Equal(t, hostedgenesis.RecoveryActionRestartSoulBootstrap, action)
 
@@ -76,6 +77,47 @@ func TestStore_RepairHostedGenesisMalformedFailedStateRequiresRestart(t *testing
 	version, ok := rows[0]["version"].(*types.AttributeValueMemberN)
 	require.True(t, ok)
 	require.Equal(t, "0", version.Value)
+}
+
+func TestStore_RepairHostedGenesisMalformedFailureRejectsRouteBindingMismatch(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		registrationID string
+		agentID        string
+	}{
+		{name: "registration", registrationID: "another-registration"},
+		{name: "agent", agentID: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			st, fake, db := newMalformedFailureFakeStore(t)
+			item := validStoreHostedGenesisSession()
+			item.Status = string(hostedgenesis.StatusAssistantTurnReady)
+			require.NoError(t, db.Model(item).Create())
+			seedHostedGenesisMalformedFailure(t, fake)
+
+			registrationID := tc.registrationID
+			agentID := tc.agentID
+			if registrationID == "" {
+				registrationID = item.RegistrationID
+			}
+			if agentID == "" {
+				agentID = item.AgentID
+			}
+			action, err := st.RepairHostedGenesisMalformedFailure(ctx, item.InstanceSlug, registrationID, agentID, item.ConversationID)
+			require.ErrorIs(t, err, theoryErrors.ErrConditionFailed)
+			require.Empty(t, action)
+
+			rows := fake.Items(models.MainTableName())
+			require.Len(t, rows, 1)
+			failure, ok := rows[0]["failure"].(*types.AttributeValueMemberBOOL)
+			require.True(t, ok)
+			require.True(t, failure.Value)
+			version, ok := rows[0]["version"].(*types.AttributeValueMemberN)
+			require.True(t, ok)
+			require.Equal(t, "0", version.Value)
+		})
+	}
 }
 
 func newMalformedFailureFakeStore(t *testing.T) (*Store, *fakedb.Fake, DB) {
