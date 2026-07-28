@@ -776,7 +776,11 @@ func soulInstanceBootstrapConversationErrorFromAppError(appErr *apptheory.AppThe
 	case appErrCodeForbidden:
 		return soulInstanceBootstrapError(soulInstanceBootstrapCodeBoundaryViolation, appErr.Message, http.StatusForbidden, nil)
 	case soulMintAppErrCodeConflict:
-		return soulInstanceBootstrapError(soulInstanceBootstrapCodeConflict, appErr.Message, http.StatusConflict, nil)
+		// A conflict is the one mapped code that carries a caller-actionable
+		// recovery envelope (recovery_action / restart_path). Dropping the
+		// details here would leave the instance with a typed status and no way
+		// to act on it.
+		return soulInstanceBootstrapError(soulInstanceBootstrapCodeConflict, appErr.Message, http.StatusConflict, appErr.Details)
 	case soulMintAppErrCodeNotFound:
 		return soulInstanceBootstrapError(soulInstanceBootstrapCodeNotFound, appErr.Message, http.StatusNotFound, nil)
 	case appErrCodeMicroVMUnavailable:

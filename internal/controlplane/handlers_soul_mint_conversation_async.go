@@ -863,12 +863,21 @@ func (s *Server) getHostedGenesisIdempotency(ctx context.Context, instanceSlug s
 }
 
 func (s *Server) persistHostedGenesisAcceptedTurn(ctx context.Context, regCtx mintConversationRegistrationContext, session hostedGenesisTurnSession, updatedMessages []soulMintConversationMessage, messagesJSON string, idem *models.SoulMintConversationIdempotency, ledgerRequestID string, hostRequestID string, now time.Time) *apptheory.AppTheoryError {
+	// A durable session row that fails its own model invariants (or an illegal
+	// status move) aborts the transaction builder before anything is written.
+	// That rejection is captured here so it is reported as the typed, recoverable
+	// hosted genesis conflict it is, instead of being laundered by the credit
+	// debit into an untyped app.internal "failed to debit credits" (#1003).
+	var sessionWriteRejection error
 	extraWrites := func(tx core.TransactionBuilder, creditsRequested int64) error {
 		sessionForWrite := cloneHostedGenesisSession(session.session)
 		if len(sessionForWrite.TurnLedger) > 0 {
 			sessionForWrite.TurnLedger[len(sessionForWrite.TurnLedger)-1].ChargedCredits = creditsRequested
 		}
 		if err := addHostedGenesisSessionWrite(tx, sessionForWrite, session.sessionIsNew, session.expectedVersion, session.expectedStatus); err != nil {
+			if hostedGenesisSessionWriteRejectionFrom(err) != nil {
+				sessionWriteRejection = err
+			}
 			return err
 		}
 		if idem != nil {
@@ -928,6 +937,10 @@ func (s *Server) persistHostedGenesisAcceptedTurn(ctx context.Context, regCtx mi
 		now,
 		extraWrites,
 	); appErr != nil {
+		if rejection := hostedGenesisSessionWriteRejectionFrom(sessionWriteRejection); rejection != nil {
+			log.Printf("controlplane: hosted genesis session write rejected agent_hash=%s conversation_hash=%s reason=%s recovery_action=%s err=%v", soulMintInstanceReadAuditHash(regCtx.agentIDHex), soulMintInstanceReadAuditHash(session.conversationID), rejection.reason, rejection.recoveryAction, rejection)
+			return rejection.appTheoryError()
+		}
 		return appErr
 	}
 	_ = updatedMessages
@@ -970,16 +983,16 @@ func addHostedGenesisSessionWrite(tx core.TransactionBuilder, session *models.Ho
 	}
 	if create {
 		if err := session.BeforeCreate(); err != nil {
-			return err
+			return newHostedGenesisSessionStateRejection(err)
 		}
 		tx.Create(session)
 		return nil
 	}
 	if err := session.BeforeUpdate(); err != nil {
-		return err
+		return newHostedGenesisSessionStateRejection(err)
 	}
 	if err := hostedgenesis.ValidateTransition(expectedStatus, hostedgenesis.Status(session.Status)); err != nil {
-		return err
+		return newHostedGenesisSessionTransitionRejection(err)
 	}
 	tx.UpdateWithBuilder(session, func(ub core.UpdateBuilder) error {
 		ub.Set("InstanceSlug", session.InstanceSlug)
