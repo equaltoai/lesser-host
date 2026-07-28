@@ -64,7 +64,7 @@ func TestSoulInstanceHostedOffchainMintConversation_DoesNotRequireRegistryContra
 	expectSoulInstanceMintConversationDebit(t, tdb, reg.AgentID, true)
 	resp, err := s.handleSoulInstanceMintConversation(newSoulInstanceBootstrapContext(
 		map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
-		mustMarshalJSON(t, soulMintConversationRequest{Model: "anthropic:claude-sonnet-4-6", Message: soulInstanceBootstrapTestConversationMessage, IdempotencyKey: soulInstanceBootstrapTestIdempotencyKey, CorrelationID: "corr-1"}),
+		mustMarshalJSON(t, soulMintConversationRequest{Model: "claude-sonnet-5", Message: soulInstanceBootstrapTestConversationMessage, IdempotencyKey: soulInstanceBootstrapTestIdempotencyKey, CorrelationID: "corr-1"}),
 		map[string]string{"id": reg.ID},
 	))
 	if err != nil {
@@ -92,7 +92,7 @@ func TestSoulInstanceHostedOffchainRead_DoesNotRequireRegistryContract(t *testin
 	stubMintConversationConversation(t, tdb, models.SoulAgentMintConversation{
 		AgentID:        reg.AgentID,
 		ConversationID: mintConversationTestConversationID,
-		Model:          "anthropic:claude-sonnet-4-6",
+		Model:          "claude-sonnet-5",
 		Status:         models.SoulMintConversationStatusInProgress,
 		CreatedAt:      time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC),
 	})

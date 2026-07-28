@@ -14,6 +14,7 @@ import (
 	"github.com/theory-cloud/tabletheory/v2"
 	"github.com/theory-cloud/tabletheory/v2/pkg/core"
 
+	"github.com/equaltoai/lesser-host/internal/ai/modelselection"
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
@@ -138,7 +139,7 @@ func (s *Server) handleSoulInstanceRetryableMintConversationRecovery(ctx *appthe
 		if !convCtx.session.Failure.Retryable || convCtx.session.Failure.Recovery.MaxAttempts <= 0 {
 			return nil, false, nil
 		}
-		if err := validateHostedGenesisMicroVMRecoveryCheckpoint(convCtx.session); err != nil {
+		if err := validateHostedGenesisMicroVMRecoveryCheckpointForRetry(convCtx.session); err != nil {
 			return nil, true, soulInstanceBootstrapConversationErrorFromAppError(newAppTheoryError(appErrCodeConflict, "conversation recovery checkpoint is unavailable"))
 		}
 		resp, err := s.handleSoulInstanceMicroVMUnavailableRetry(ctx, convCtx, started)
@@ -244,6 +245,20 @@ func validateHostedGenesisMicroVMRecoveryCheckpoint(session *models.HostedGenesi
 	return validateHostedGenesisMicroVMRecoveryActorCheckpoint(session, checkpoint)
 }
 
+// Store/preflight failures can happen before the workload has produced an
+// actor checkpoint. They still have a durable session binding that can be
+// retried from a fresh MicroVM. If a checkpoint is present, keep validating it
+// strictly so recovery never replays from an invalid or unrelated checkpoint.
+func validateHostedGenesisMicroVMRecoveryCheckpointForRetry(session *models.HostedGenesisSession) error {
+	if session == nil {
+		return fmt.Errorf("missing session")
+	}
+	if session.VMCheckpoint == nil {
+		return nil
+	}
+	return validateHostedGenesisMicroVMRecoveryCheckpoint(session)
+}
+
 func validateHostedGenesisMicroVMRecoveryTurns(session *models.HostedGenesisSession, checkpoint hostedgenesis.VMCheckpointMetadata) error {
 	currentTurnID := strings.TrimSpace(session.LatestTurnID)
 	if currentTurnID == "" {
@@ -329,7 +344,7 @@ func hostedGenesisSessionHasBoundTypedCandidate(session *models.HostedGenesisSes
 		strings.EqualFold(candidate.AgentID, session.AgentID) &&
 		candidate.ConversationID == strings.TrimSpace(session.ConversationID) &&
 		candidate.SourceTurnID == strings.TrimSpace(session.LatestTurnID) &&
-		candidate.Model == strings.TrimSpace(session.Model) &&
+		strings.EqualFold(modelselection.CanonicalModelSet(candidate.Model), modelselection.CanonicalModelSet(session.Model)) &&
 		candidate.Revision == session.CandidateRevision &&
 		candidate.CandidateHash == strings.TrimSpace(session.CandidateHash) &&
 		string(candidate.Phase) == strings.TrimSpace(session.CandidatePhase)
@@ -422,7 +437,7 @@ func (s *Server) retryHostedGenesisMicroVMUnavailable(ctx *apptheory.Context, co
 		convCtx.session.Failure.Recovery.MaxAttempts <= 0 {
 		return nil, nil, newAppTheoryError(appErrCodeConflict, "conversation recovery requires a fresh soul bootstrap")
 	}
-	if err := validateHostedGenesisMicroVMRecoveryCheckpoint(convCtx.session); err != nil {
+	if err := validateHostedGenesisMicroVMRecoveryCheckpointForRetry(convCtx.session); err != nil {
 		return nil, nil, newAppTheoryError(appErrCodeConflict, "conversation recovery checkpoint is unavailable")
 	}
 	if s.hostedGenesisMicroVMDispatcher == nil {

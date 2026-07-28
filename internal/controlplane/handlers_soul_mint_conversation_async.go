@@ -15,6 +15,7 @@ import (
 	"github.com/theory-cloud/tabletheory/v2/pkg/core"
 	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
 
+	"github.com/equaltoai/lesser-host/internal/ai/modelselection"
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
@@ -48,15 +49,18 @@ type hostedGenesisTurnSession struct {
 }
 
 func (s *Server) handleSoulMintConversationForRegistrationAsync(ctx *apptheory.Context, regCtx mintConversationRegistrationContext, instanceSlug string) (*apptheory.Response, error) {
-	if publishGuardErr := s.ensureMintConversationAgentNotPublished(ctx.Context(), regCtx.agentIDHex); publishGuardErr != nil {
-		return nil, publishGuardErr
-	}
 	req, message, err := requireMintConversationMessage(ctx)
 	if err != nil {
 		return nil, err
 	}
 	if validationErr := validateHostedGenesisRequestIDs(&req); validationErr != nil {
 		return nil, validationErr
+	}
+	if modelErr := validateHostedGenesisModelRequest(req); modelErr != nil {
+		return nil, modelErr
+	}
+	if publishGuardErr := s.ensureMintConversationAgentNotPublished(ctx.Context(), regCtx.agentIDHex); publishGuardErr != nil {
+		return nil, publishGuardErr
 	}
 
 	now := time.Now().UTC()
@@ -110,6 +114,19 @@ func (s *Server) handleSoulMintConversationForRegistrationAsync(ctx *apptheory.C
 		IdempotencyKey:  req.IdempotencyKey,
 		LesserRequestID: req.LesserRequestID,
 	})
+}
+
+func validateHostedGenesisModelRequest(req soulMintConversationRequest) *apptheory.AppTheoryError {
+	if strings.TrimSpace(req.Model) == "" {
+		if req.modelProvided {
+			return newAppTheoryError("app.bad_request", (&modelselection.AliasError{}).Error())
+		}
+		return nil
+	}
+	if _, err := modelselection.ResolveAlias(req.Model); err != nil {
+		return newAppTheoryError("app.bad_request", err.Error())
+	}
+	return nil
 }
 
 func (s *Server) handleHostedGenesisWaitOnlyOrReplayedTurn(ctx *apptheory.Context, regCtx mintConversationRegistrationContext, session hostedGenesisTurnSession, req soulMintConversationRequest) (*apptheory.Response, error) {
@@ -343,15 +360,11 @@ func hostedGenesisSessionFailureFromReason(reason string) *hostedgenesis.Failure
 }
 
 func hostedGenesisProviderName(modelSet string) string {
-	modelSet = strings.ToLower(strings.TrimSpace(modelSet))
-	switch {
-	case strings.HasPrefix(modelSet, "openai:"):
-		return "openai"
-	case strings.HasPrefix(modelSet, "anthropic:"):
-		return "anthropic"
-	default:
+	definition, err := modelselection.ResolveModelSet(modelSet)
+	if err != nil {
 		return hostedGenesisProviderUnknown
 	}
+	return definition.Provider
 }
 
 func cloneSoulAgentMintConversation(conv *models.SoulAgentMintConversation) *models.SoulAgentMintConversation {
@@ -511,10 +524,7 @@ func newHostedGenesisTurnSession(session hostedGenesisTurnSession, regCtx mintCo
 func (s *Server) loadExistingHostedGenesisTurnSession(ctx context.Context, session hostedGenesisTurnSession, regCtx mintConversationRegistrationContext, instanceSlug string, req soulMintConversationRequest, message string, requestID string, now time.Time) (hostedGenesisTurnSession, *apptheory.AppTheoryError) {
 	hostSession, err := s.store.GetHostedGenesisSession(ctx, instanceSlug, session.conversationID)
 	if err != nil {
-		if theoryErrors.IsNotFound(err) {
-			return hostedGenesisTurnSession{}, newAppTheoryError("app.not_found", "conversation not found")
-		}
-		return hostedGenesisTurnSession{}, newAppTheoryError("app.internal", "failed to load conversation")
+		return hostedGenesisTurnSession{}, s.hostedGenesisSessionLoadError(ctx, regCtx, instanceSlug, session.conversationID, err)
 	}
 	session.session = hostSession
 	session.expectedStatus = hostedgenesis.NormalizeStatus(hostSession.Status)
@@ -551,6 +561,34 @@ func (s *Server) loadExistingHostedGenesisTurnSession(ctx context.Context, sessi
 		return hostedGenesisTurnSession{}, newAppTheoryError("app.conflict", "conversation cannot accept a new turn")
 	}
 	return finished, nil
+}
+
+func (s *Server) hostedGenesisSessionLoadError(ctx context.Context, regCtx mintConversationRegistrationContext, instanceSlug string, conversationID string, loadErr error) *apptheory.AppTheoryError {
+	if theoryErrors.IsNotFound(loadErr) {
+		return newAppTheoryError("app.not_found", "conversation not found")
+	}
+	recoveryAction, repairErr := s.store.RepairHostedGenesisMalformedFailure(ctx, instanceSlug, regCtx.reg.ID, regCtx.agentIDHex, conversationID)
+	if repairErr != nil || recoveryAction == "" {
+		return newAppTheoryError("app.internal", "failed to load conversation")
+	}
+	log.Printf("controlplane: repaired malformed hosted genesis failure agent_hash=%s conversation_hash=%s recovery_action=%s", soulMintInstanceReadAuditHash(regCtx.agentIDHex), soulMintInstanceReadAuditHash(conversationID), recoveryAction)
+	return hostedGenesisMalformedFailureRecoveryError(recoveryAction)
+}
+
+func hostedGenesisMalformedFailureRecoveryError(action hostedgenesis.RecoveryAction) *apptheory.AppTheoryError {
+	retryable := action == hostedgenesis.RecoveryActionRetrySameStep
+	details := map[string]any{
+		"reason":          "malformed_failure_repaired",
+		"retryable":       retryable,
+		"recovery_action": string(action),
+	}
+	message := "conversation state was repaired; retry the same step"
+	if action == hostedgenesis.RecoveryActionRestartSoulBootstrap {
+		message = "conversation state cannot be repaired safely; restart soul bootstrap"
+		details["reason"] = "malformed_failure_requires_restart"
+		details["restart_path"] = "/api/v1/soul/instance/agents/register/begin"
+	}
+	return soulInstanceBootstrapError(soulInstanceBootstrapCodeConflict, message, http.StatusConflict, details)
 }
 
 func requireHostedGenesisSessionAcceptsTurn(session *models.HostedGenesisSession) *apptheory.AppTheoryError {
@@ -824,7 +862,9 @@ func newHostedGenesisCandidateForAcceptedTurn(session hostedGenesisTurnSession, 
 	return hostedgenesis.NewDeclarationCandidate(hostedgenesis.DeclarationCandidateBinding{
 		InstanceSlug: session.session.InstanceSlug, RegistrationID: session.session.RegistrationID,
 		AgentID: session.session.AgentID, ConversationID: session.session.ConversationID,
-		SourceTurnID: turnID, Model: session.modelSet,
+		// The Hosted Genesis request/session stores the operator-facing alias;
+		// the existing declaration candidate contract remains provider:model.
+		SourceTurnID: turnID, Model: modelselection.CanonicalModelSet(session.modelSet),
 	}, now)
 }
 
@@ -1005,7 +1045,7 @@ func addHostedGenesisSessionWrite(tx core.TransactionBuilder, session *models.Ho
 		ub.Set("CandidateRevision", session.CandidateRevision)
 		ub.Set("CandidateHash", session.CandidateHash)
 		ub.Set("CandidatePhase", session.CandidatePhase)
-		ub.Set("Failure", session.Failure)
+		setOrRemoveHostedGenesisSessionFailure(ub, session.Failure)
 		ub.Set("TraceIDs", session.TraceIDs)
 		ub.Set("VMCheckpoint", session.VMCheckpoint)
 		ub.Set("RequestID", session.RequestID)
@@ -1015,4 +1055,12 @@ func addHostedGenesisSessionWrite(tx core.TransactionBuilder, session *models.Ho
 		return nil
 	}, tabletheory.IfExists(), tabletheory.AtVersion(expectedVersion), tabletheory.Condition("Status", "=", string(expectedStatus)))
 	return nil
+}
+
+func setOrRemoveHostedGenesisSessionFailure(ub core.UpdateBuilder, failure *hostedgenesis.Failure) {
+	if failure == nil {
+		ub.Remove("Failure")
+		return
+	}
+	ub.Set("Failure", failure)
 }

@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/equaltoai/lesser-host/internal/ai/modelselection"
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
 )
 
@@ -163,7 +164,8 @@ func (s *HostedGenesisSession) bindDeclarationCandidate() error {
 func (s *HostedGenesisSession) declarationCandidateBindingMatches(candidate *hostedgenesis.DeclarationCandidate) bool {
 	return candidate.InstanceSlug == s.InstanceSlug && candidate.RegistrationID == s.RegistrationID &&
 		strings.EqualFold(candidate.AgentID, s.AgentID) && candidate.ConversationID == s.ConversationID &&
-		candidate.Model == s.Model && candidate.SourceTurnID == s.LatestTurnID
+		strings.EqualFold(modelselection.CanonicalModelSet(candidate.Model), modelselection.CanonicalModelSet(s.Model)) &&
+		candidate.SourceTurnID == s.LatestTurnID
 }
 
 func (s *HostedGenesisSession) validateAndUpdateKeys() error {

@@ -123,7 +123,7 @@ function makeInstance(overrides: Partial<InstanceResponse> = {}): InstanceRespon
 		moderation_trigger: 'on_reports',
 		moderation_virality_min: 0,
 		ai_enabled: false,
-		ai_model_set: 'openai:gpt-5-mini-2025-08-07',
+		ai_model_set: 'gpt-5.6-luna',
 		ai_batching_mode: 'none',
 		ai_batch_max_items: 8,
 		ai_batch_max_total_bytes: 65_536,

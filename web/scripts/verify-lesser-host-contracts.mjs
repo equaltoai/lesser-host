@@ -108,6 +108,7 @@ const requiredSpecV3Files = [
   path.join(specV3SchemasDir, 'soul-instance-bootstrap.error.schema.json'),
   path.join(specV3SchemasDir, 'soul-instance-bootstrap.finalize.response.schema.json'),
   path.join(specV3FixturesDir, 'soul-instance-bootstrap.error.boundary-violation.example.json'),
+  path.join(specV3FixturesDir, 'soul-instance-bootstrap.error.budget-exhausted.example.json'),
   path.join(specV3FixturesDir, 'soul-instance-bootstrap.finalize.response.hosted-offchain.example.json')
 ];
 
@@ -116,6 +117,7 @@ const requiredInstanceBootstrapErrorCodes = [
   'soul_instance.invalid_request',
   'soul_instance.boundary_violation',
   'soul_instance.conflict',
+  'soul_instance.budget_exhausted',
   'soul_instance.not_found',
   'soul_instance.internal'
 ];

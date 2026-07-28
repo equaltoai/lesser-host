@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/equaltoai/lesser-host/internal/ai/modelselection"
 )
 
 // InstanceStatus* constants define whether an instance is active.
@@ -174,7 +176,7 @@ func (i *Instance) ensureAIDefaults() {
 		i.AIEnabled = &v
 	}
 	if strings.TrimSpace(i.AIModelSet) == "" {
-		i.AIModelSet = "openai:gpt-5-mini-2025-08-07"
+		i.AIModelSet = modelselection.DefaultAlias
 	}
 	if strings.TrimSpace(i.AIBatchingMode) == "" {
 		i.AIBatchingMode = "none"

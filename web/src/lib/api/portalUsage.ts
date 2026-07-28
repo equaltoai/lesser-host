@@ -99,6 +99,33 @@ export function portalSetBudgetMonth(
 	});
 }
 
+/**
+ * Admin-only budget mutation used by the operator support surface.
+ *
+ * Reads intentionally use the portal endpoint so operators and customers see
+ * the same budget projection. Mutations use the existing control-plane
+ * endpoint, whose server-side requireAdmin guard remains authoritative.
+ */
+export function operatorSetBudgetMonth(
+	token: string,
+	slug: string,
+	month: string,
+	includedCredits: number,
+): Promise<BudgetMonthResponse> {
+	const req = jsonRequest({ included_credits: includedCredits });
+	return fetchJson<BudgetMonthResponse>(
+		`/api/v1/instances/${encodeURIComponent(slug)}/budgets/${encodeURIComponent(month)}`,
+		{
+			method: 'PUT',
+			headers: {
+				authorization: `Bearer ${token}`,
+				...req.headers,
+			},
+			body: req.body,
+		},
+	);
+}
+
 export function portalListUsage(token: string, slug: string, month: string): Promise<ListUsageResponse> {
 	return fetchJson<ListUsageResponse>(`/api/v1/portal/instances/${encodeURIComponent(slug)}/usage/${month}`, {
 		headers: {

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/equaltoai/lesser-host/internal/ai/llm"
+	"github.com/equaltoai/lesser-host/internal/ai/modelselection"
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis/completion"
 )
 
@@ -93,7 +94,10 @@ func (t *turnLifecycleTelemetry) emit(phase, eventType, actorAction, failureClas
 
 func newProviderCallTelemetry(turn completion.CompletionTurn, in turnInput, phase string) *providerCallTelemetry {
 	now := time.Now()
-	provider := strings.ToLower(strings.TrimSpace(strings.SplitN(in.modelSet, ":", 2)[0]))
+	provider := modelselection.ProviderUnknown
+	if definition, err := modelselection.ResolveModelSet(in.modelSet); err == nil {
+		provider = definition.Provider
+	}
 	return &providerCallTelemetry{
 		turn:      turn,
 		in:        in,
@@ -211,12 +215,11 @@ func (t *providerCallTelemetry) log(message string, event llm.ProviderTelemetryE
 }
 
 func providerAndModel(modelSet string) (string, string) {
-	parts := strings.SplitN(strings.TrimSpace(modelSet), ":", 2)
-	provider := strings.ToLower(strings.TrimSpace(parts[0]))
-	if len(parts) == 1 {
-		return provider, ""
+	definition, err := modelselection.ResolveModelSet(modelSet)
+	if err == nil {
+		return definition.Provider, definition.ConcreteModel
 	}
-	return provider, strings.TrimSpace(parts[1])
+	return "unknown", strings.TrimSpace(modelSet)
 }
 
 func providerCorrelationID(in turnInput) string {

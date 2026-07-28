@@ -10,8 +10,10 @@ import (
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/openai/openai-go"
+	"github.com/openai/openai-go/responses"
 	"github.com/openai/openai-go/shared"
 
+	"github.com/equaltoai/lesser-host/internal/ai/modelselection"
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
@@ -68,10 +70,14 @@ func RunMintConversationPhase(ctx context.Context, apiKey string, in MintConvers
 	if err := validateMintConversationPhaseInput(in); err != nil {
 		return MintConversationPhaseOutput{}, err
 	}
-	switch {
-	case strings.HasPrefix(strings.ToLower(strings.TrimSpace(in.ModelSet)), "openai:"):
+	definition, err := modelselection.ResolveModelSet(strings.TrimSpace(in.ModelSet))
+	if err != nil {
+		return MintConversationPhaseOutput{}, err
+	}
+	switch definition.Provider {
+	case modelselection.ProviderOpenAI:
 		return runMintConversationPhaseOpenAI(ctx, apiKey, in, handler, telemetry)
-	case strings.HasPrefix(strings.ToLower(strings.TrimSpace(in.ModelSet)), "anthropic:"):
+	case modelselection.ProviderAnthropic:
 		return runMintConversationPhaseAnthropic(ctx, apiKey, in, handler, telemetry)
 	default:
 		return MintConversationPhaseOutput{}, fmt.Errorf("unsupported model set %q", in.ModelSet)
@@ -87,12 +93,13 @@ func validateMintConversationPhaseInput(in MintConversationPhaseInput) error {
 }
 
 func runMintConversationPhaseOpenAI(ctx context.Context, apiKey string, in MintConversationPhaseInput, handler MintConversationPhaseToolHandler, telemetry ProviderTelemetrySink) (MintConversationPhaseOutput, error) {
-	model, err := openAIModelFromSet(in.ModelSet)
+	definition, err := modelselection.ResolveModelSetForProvider(in.ModelSet, modelselection.ProviderOpenAI)
 	if err != nil {
 		return MintConversationPhaseOutput{}, err
 	}
+	model := definition.ConcreteModel
 	tool := openAIMintConversationPhaseTool(in.Section)
-	messages := buildOpenAIConversationMessages(mintConversationPhaseSystemPrompt(in), in.Messages)
+	input := buildOpenAIResponseInput(mintConversationPhaseSystemPrompt(in), in.Messages)
 	usage := models.AIUsage{Provider: "openai", Model: model}
 	toolEnabled := true
 	recorder := newProviderTelemetryRecorder("openai", model, "declaration_phase", telemetry)
@@ -101,26 +108,30 @@ func runMintConversationPhaseOpenAI(ctx context.Context, apiKey string, in MintC
 	for round := 0; round < maxMintConversationPhaseToolRounds; round++ {
 		requestStarted := time.Now()
 		recorder.emit(ProviderTelemetryEvent{EventType: "request_start"})
-		params := openai.ChatCompletionNewParams{
-			Model: openai.ChatModel(model), Messages: messages,
-			MaxCompletionTokens: openai.Int(mintConversationPhaseOpenAIMaxCompletionTokens(in.Section)),
-			ParallelToolCalls:   openai.Bool(false),
-			Tools:               []openai.ChatCompletionToolParam{tool},
+		params := responses.ResponseNewParams{
+			Model:             shared.ResponsesModel(model),
+			Input:             responses.ResponseNewParamsInputUnion{OfInputItemList: input},
+			MaxOutputTokens:   openai.Int(mintConversationPhaseOpenAIMaxCompletionTokens(in.Section)),
+			ParallelToolCalls: openai.Bool(false),
+			Tools:             []responses.ToolUnionParam{tool},
+		}
+		if definition.ReasoningEffort == modelselection.ReasoningEffortMedium {
+			params.Reasoning = shared.ReasoningParam{Effort: shared.ReasoningEffortMedium}
 		}
 		if toolEnabled {
-			params.ToolChoice = openai.ChatCompletionToolChoiceOptionUnionParam{OfAuto: openai.String("auto")}
+			params.ToolChoice = responses.ResponseNewParamsToolChoiceUnion{OfToolChoiceMode: openai.Opt(responses.ToolChoiceOptionsAuto)}
 		} else {
 			// Keep the prior assistant tool call and result valid in the
 			// continuation request while forbidding another section mutation.
-			params.ToolChoice = openai.ChatCompletionToolChoiceOptionUnionParam{OfAuto: openai.String("none")}
+			params.ToolChoice = responses.ResponseNewParamsToolChoiceUnion{OfToolChoiceMode: openai.Opt(responses.ToolChoiceOptionsNone)}
 		}
-		chat, callErr := client.Chat.Completions.New(ctx, params)
+		response, callErr := client.Responses.New(ctx, params)
 		if callErr != nil {
 			recorder.emit(ProviderTelemetryEvent{EventType: "provider_call_failed", LastEvent: true, FailureClass: ProviderFailureClass(callErr)})
 			return MintConversationPhaseOutput{}, callErr
 		}
-		mergeAIUsage(&usage, openAIUsageFromChat(chat, requestStarted))
-		outcome, handleErr := handleOpenAIMintConversationPhaseResponse(ctx, chat, in.Section, toolEnabled, handler, recorder, usage, &messages)
+		mergeAIUsage(&usage, openAIUsageFromResponse(response, requestStarted))
+		outcome, handleErr := handleOpenAIMintConversationPhaseResponse(ctx, response, in.Section, toolEnabled, handler, recorder, usage, &input)
 		if handleErr != nil {
 			return MintConversationPhaseOutput{}, handleErr
 		}
@@ -140,12 +151,12 @@ type mintConversationPhaseRoundOutcome struct {
 	accepted bool
 }
 
-func handleOpenAIMintConversationPhaseResponse(ctx context.Context, chat *openai.ChatCompletion, section hostedgenesis.DeclarationSection, toolEnabled bool, handler MintConversationPhaseToolHandler, recorder *providerTelemetryRecorder, usage models.AIUsage, messages *[]openai.ChatCompletionMessageParamUnion) (mintConversationPhaseRoundOutcome, error) {
-	if len(chat.Choices) != 1 {
-		return mintConversationPhaseRoundOutcome{}, errors.New("openai declaration phase returned invalid choices")
+func handleOpenAIMintConversationPhaseResponse(ctx context.Context, response *responses.Response, section hostedgenesis.DeclarationSection, toolEnabled bool, handler MintConversationPhaseToolHandler, recorder *providerTelemetryRecorder, usage models.AIUsage, input *responses.ResponseInputParam) (mintConversationPhaseRoundOutcome, error) {
+	if response == nil || len(response.Output) == 0 {
+		return mintConversationPhaseRoundOutcome{}, errors.New("openai declaration phase returned invalid output")
 	}
-	stopReason := strings.TrimSpace(chat.Choices[0].FinishReason)
-	if stopReason == "length" {
+	stopReason := openAIResponseStopReason(response)
+	if response.Status == responses.ResponseStatusIncomplete && strings.EqualFold(strings.TrimSpace(response.IncompleteDetails.Reason), "max_output_tokens") {
 		err := withProviderFailureClass(errors.New("openai declaration phase returned incomplete output"), string(hostedgenesis.FailureClassInvalidProviderOutput))
 		recorder.emit(ProviderTelemetryEvent{
 			EventType: "provider_call_failed", LastEvent: true,
@@ -154,25 +165,34 @@ func handleOpenAIMintConversationPhaseResponse(ctx context.Context, chat *openai
 		})
 		return mintConversationPhaseRoundOutcome{}, err
 	}
-	message := chat.Choices[0].Message
-	*messages = append(*messages, message.ToParam())
-	if len(message.ToolCalls) == 0 {
-		return finishOpenAIMintConversationPhaseText(chat, recorder, usage)
-	}
-	if !toolEnabled || len(message.ToolCalls) != 1 {
-		return mintConversationPhaseRoundOutcome{}, errors.New("openai declaration phase returned unexpected tool calls")
-	}
-	call := message.ToolCalls[0]
-	result, err := handler(ctx, MintConversationPhaseToolCall{Name: call.Function.Name, CallID: call.ID, Arguments: json.RawMessage(call.Function.Arguments)})
+	outputInput, err := openAIResponseOutputInput(response.Output)
 	if err != nil {
 		return mintConversationPhaseRoundOutcome{}, err
 	}
-	emitMintConversationToolValidation(recorder, call.Function.Name, call.ID, result)
+	*input = append(*input, outputInput...)
+	toolCalls := make([]responses.ResponseFunctionToolCall, 0, 1)
+	for _, item := range response.Output {
+		if item.Type == openAIResponseFunctionCallType {
+			toolCalls = append(toolCalls, item.AsFunctionCall())
+		}
+	}
+	if len(toolCalls) == 0 {
+		return finishOpenAIMintConversationPhaseText(response, recorder, usage)
+	}
+	if !toolEnabled || len(toolCalls) != 1 {
+		return mintConversationPhaseRoundOutcome{}, errors.New("openai declaration phase returned unexpected tool calls")
+	}
+	call := toolCalls[0]
+	result, err := handler(ctx, MintConversationPhaseToolCall{Name: call.Name, CallID: call.CallID, Arguments: json.RawMessage(call.Arguments)})
+	if err != nil {
+		return mintConversationPhaseRoundOutcome{}, err
+	}
+	emitMintConversationToolValidation(recorder, call.Name, call.CallID, result)
 	body, err := json.Marshal(result)
 	if err != nil {
 		return mintConversationPhaseRoundOutcome{}, err
 	}
-	*messages = append(*messages, openai.ToolMessage(string(body), call.ID))
+	*input = append(*input, responses.ResponseInputItemParamOfFunctionCallOutput(call.CallID, string(body)))
 	return acceptedMintConversationPhaseOutcome(section, result.Accepted, recorder, usage), nil
 }
 
@@ -183,12 +203,12 @@ func mintConversationPhaseOpenAIMaxCompletionTokens(section hostedgenesis.Declar
 	return mintConversationOpenAIMaxCompletionTokens
 }
 
-func finishOpenAIMintConversationPhaseText(chat *openai.ChatCompletion, recorder *providerTelemetryRecorder, usage models.AIUsage) (mintConversationPhaseRoundOutcome, error) {
-	content := strings.TrimSpace(chat.Choices[0].Message.Content)
+func finishOpenAIMintConversationPhaseText(response *responses.Response, recorder *providerTelemetryRecorder, usage models.AIUsage) (mintConversationPhaseRoundOutcome, error) {
+	content := strings.TrimSpace(response.OutputText())
 	if content == "" {
 		return mintConversationPhaseRoundOutcome{}, errors.New("openai declaration phase returned no content or tool")
 	}
-	emitMintConversationPhaseCompletion(recorder, content, usage, strings.TrimSpace(chat.Choices[0].FinishReason))
+	emitMintConversationPhaseCompletion(recorder, content, usage, openAIResponseStopReason(response))
 	return mintConversationPhaseRoundOutcome{output: MintConversationPhaseOutput{AssistantContent: content, Usage: usage}, done: true}, nil
 }
 
@@ -201,10 +221,11 @@ func acceptedMintConversationPhaseOutcome(section hostedgenesis.DeclarationSecti
 }
 
 func runMintConversationPhaseAnthropic(ctx context.Context, apiKey string, in MintConversationPhaseInput, handler MintConversationPhaseToolHandler, telemetry ProviderTelemetrySink) (MintConversationPhaseOutput, error) {
-	model, err := anthropicModelFromSet(in.ModelSet)
+	definition, err := modelselection.ResolveModelSetForProvider(in.ModelSet, modelselection.ProviderAnthropic)
 	if err != nil {
 		return MintConversationPhaseOutput{}, err
 	}
+	model := anthropic.Model(definition.ConcreteModel)
 	messages := buildAnthropicConversationMessages(in.Messages)
 	usage := models.AIUsage{Provider: "anthropic", Model: string(model)}
 	toolEnabled := true
@@ -219,6 +240,9 @@ func runMintConversationPhaseAnthropic(ctx context.Context, apiKey string, in Mi
 			System:   []anthropic.TextBlockParam{{Text: mintConversationPhaseSystemPrompt(in)}},
 			Messages: messages,
 			Tools:    []anthropic.ToolUnionParam{anthropicMintConversationPhaseTool(in.Section)},
+		}
+		if definition.ReasoningEffort == modelselection.ReasoningEffortMedium {
+			params.OutputConfig = anthropic.OutputConfigParam{Effort: anthropic.OutputConfigEffortMedium}
 		}
 		if toolEnabled {
 			params.ToolChoice = anthropic.ToolChoiceUnionParam{OfAuto: &anthropic.ToolChoiceAutoParam{DisableParallelToolUse: anthropic.Bool(true)}}
@@ -326,11 +350,11 @@ Typed declaration construction protocol:
 - Do not reconstruct accepted sections from the transcript and do not claim finalization.`, in.Section, in.CandidateRevision, in.CandidateHash, toolName, limits)
 }
 
-func openAIMintConversationPhaseTool(section hostedgenesis.DeclarationSection) openai.ChatCompletionToolParam {
+func openAIMintConversationPhaseTool(section hostedgenesis.DeclarationSection) responses.ToolUnionParam {
 	name, _ := hostedgenesis.DeclarationToolForSection(section)
-	return openai.ChatCompletionToolParam{Function: shared.FunctionDefinitionParam{
+	return responses.ToolUnionParam{OfFunction: &responses.FunctionToolParam{
 		Name: name, Description: openai.String("Submit the normalized current Hosted Genesis declaration section for immediate Host validation and checkpointing."),
-		Parameters: shared.FunctionParameters(mintConversationPhaseToolSchema(section)), Strict: openai.Bool(true),
+		Parameters: mintConversationPhaseToolSchema(section), Strict: openai.Bool(true),
 	}}
 }
 
@@ -474,6 +498,57 @@ func mergeAIUsage(total *models.AIUsage, delta models.AIUsage) {
 	total.TotalTokens += delta.TotalTokens
 	total.DurationMs += delta.DurationMs
 	total.ToolCalls += delta.ToolCalls
+}
+
+func openAIUsageFromResponse(response *responses.Response, start time.Time) models.AIUsage {
+	if response == nil {
+		return models.AIUsage{}
+	}
+	return models.AIUsage{
+		Provider:     "openai",
+		Model:        strings.TrimSpace(string(response.Model)),
+		InputTokens:  response.Usage.InputTokens,
+		OutputTokens: response.Usage.OutputTokens,
+		TotalTokens:  response.Usage.TotalTokens,
+		DurationMs:   time.Since(start).Milliseconds(),
+		ToolCalls:    1,
+	}
+}
+
+func openAIResponseStopReason(response *responses.Response) string {
+	if response == nil {
+		return ""
+	}
+	if response.Status == responses.ResponseStatusCompleted {
+		return "stop"
+	}
+	if response.Status == responses.ResponseStatusIncomplete && strings.EqualFold(strings.TrimSpace(response.IncompleteDetails.Reason), "max_output_tokens") {
+		return "length"
+	}
+	if reason := strings.TrimSpace(response.IncompleteDetails.Reason); reason != "" {
+		return reason
+	}
+	return strings.TrimSpace(string(response.Status))
+}
+
+func openAIResponseOutputInput(output []responses.ResponseOutputItemUnion) ([]responses.ResponseInputItemUnionParam, error) {
+	input := make([]responses.ResponseInputItemUnionParam, 0, len(output))
+	for _, item := range output {
+		switch item.Type {
+		case "message":
+			message := item.AsMessage().ToParam()
+			input = append(input, responses.ResponseInputItemUnionParam{OfOutputMessage: &message})
+		case "reasoning":
+			reasoning := item.AsReasoning().ToParam()
+			input = append(input, responses.ResponseInputItemUnionParam{OfReasoning: &reasoning})
+		case openAIResponseFunctionCallType:
+			call := item.AsFunctionCall().ToParam()
+			input = append(input, responses.ResponseInputItemUnionParam{OfFunctionCall: &call})
+		default:
+			return nil, fmt.Errorf("openai declaration phase returned unsupported output item type %q", item.Type)
+		}
+	}
+	return input, nil
 }
 
 func emitMintConversationPhaseCompletion(recorder *providerTelemetryRecorder, content string, usage models.AIUsage, stopReason string) {
