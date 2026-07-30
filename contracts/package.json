@@ -38,9 +38,10 @@
   "overrides": {
     "minimatch": "10.2.4",
     "undici": "6.27.0",
-    "fast-uri": "3.1.2",
-    "brace-expansion": "5.0.6",
-    "js-yaml": "4.2.0",
-    "ws": "8.21.0"
+    "fast-uri": "3.1.4",
+    "brace-expansion": "5.0.8",
+    "js-yaml": "4.3.0",
+    "ws": "8.21.0",
+    "adm-zip": "0.6.0"
   }
 }
