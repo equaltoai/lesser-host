@@ -4,10 +4,12 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/theory-cloud/tabletheory/v3/pkg/marshal"
 	theorymodel "github.com/theory-cloud/tabletheory/v3/pkg/model"
+	theorytypes "github.com/theory-cloud/tabletheory/v3/pkg/types"
 
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
 	"github.com/equaltoai/lesser-host/internal/soul"
@@ -258,6 +260,48 @@ func assertNestedZeroShape[T any](t *testing.T, fields []nestedFieldSpec) {
 	for _, attr := range omittedAttrs {
 		if value, ok := nested[attr]; ok {
 			t.Fatalf("zero %s.%s must retain the v2 omission, got %#v", typ.Name(), attr, value)
+		}
+	}
+
+	populated := &nestedPersistenceProbe[T]{PK: "PROBE", SK: typ.Name() + "#populated"}
+	populatedValue := reflect.ValueOf(&populated.Nested).Elem()
+	for _, expected := range fields {
+		populateNestedProbeValue(populatedValue.FieldByName(expected.name))
+	}
+	populatedItem := marshalTableTheoryV3Model(t, populated)
+	var decoded T
+	if err := theorytypes.NewConverter().FromAttributeValue(populatedItem["nested"], &decoded); err != nil {
+		t.Fatalf("populated %s must round-trip with its persisted attribute convention: %v", typ.Name(), err)
+	}
+}
+
+func populateNestedProbeValue(value reflect.Value) {
+	if !value.IsValid() || !value.CanSet() {
+		return
+	}
+	if value.Type() == reflect.TypeOf(time.Time{}) {
+		value.Set(reflect.ValueOf(time.Unix(1, 0).UTC()))
+		return
+	}
+	switch value.Kind() {
+	case reflect.String:
+		value.SetString("probe")
+	case reflect.Bool:
+		value.SetBool(true)
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		value.SetInt(1)
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		value.SetUint(1)
+	case reflect.Float32, reflect.Float64:
+		value.SetFloat(1)
+	case reflect.Slice:
+		value.Set(reflect.MakeSlice(value.Type(), 1, 1))
+		populateNestedProbeValue(value.Index(0))
+	case reflect.Map:
+		value.Set(reflect.MakeMap(value.Type()))
+	case reflect.Struct:
+		for i := 0; i < value.NumField(); i++ {
+			populateNestedProbeValue(value.Field(i))
 		}
 	}
 }

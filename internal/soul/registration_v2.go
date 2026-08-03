@@ -95,6 +95,8 @@ type PrincipalDeclarationBindingV2 struct {
 }
 
 type SelfDescriptionV2 struct {
+	_ struct{} `theorydb:"naming:camelCase"`
+
 	Purpose      string `theorydb:"attr:purpose,omitempty" json:"purpose"`
 	Constraints  string `json:"constraints,omitempty"`
 	Commitments  string `json:"commitments,omitempty"`
@@ -104,6 +106,8 @@ type SelfDescriptionV2 struct {
 }
 
 type CapabilityV2 struct {
+	_ struct{} `theorydb:"naming:camelCase"`
+
 	Capability    string         `theorydb:"attr:capability,omitempty" json:"capability"`
 	Scope         string         `theorydb:"attr:scope,omitempty" json:"scope"`
 	Constraints   map[string]any `json:"constraints,omitempty"`

@@ -193,6 +193,8 @@ func (r *MicroVMControllerRuntime) Command(ctx context.Context, command runtimem
 // tokens, raw lifecycle payloads, raw transcripts, provider credentials, and AWS
 // credentials. It is reconstructible execution state, not business truth.
 type MicroVMLifecycleRef struct {
+	_ struct{} `theorydb:"naming:snake_case"`
+
 	SourceOfTruth          string                        `theorydb:"attr:source_of_truth,omitempty" json:"source_of_truth"`
 	TenantID               string                        `theorydb:"attr:tenant_id,omitempty" json:"tenant_id"`
 	Namespace              string                        `theorydb:"attr:namespace,omitempty" json:"namespace"`

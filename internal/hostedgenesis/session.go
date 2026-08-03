@@ -106,6 +106,8 @@ func ValidateTransition(from Status, to Status) error {
 // only tenant-bound identifiers, a digest, version, and timestamps; publication
 // payloads and signing material never enter HostedGenesisSession.
 type PublicationCheckpoint struct {
+	_ struct{} `theorydb:"naming:snake_case"`
+
 	RegistrationID       string    `theorydb:"attr:registration_id,omitempty" json:"registration_id"`
 	ConversationID       string    `theorydb:"attr:conversation_id,omitempty" json:"conversation_id"`
 	AgentID              string    `theorydb:"attr:agent_id,omitempty" json:"agent_id"`
@@ -175,6 +177,8 @@ type TraceIDs struct {
 // HostedGenesisSession. It carries ids, hashes, and checkpoint references only;
 // raw transcripts and provider credentials are outside the Host truth record.
 type DeclarationCheckpoint struct {
+	_ struct{} `theorydb:"naming:snake_case"`
+
 	DeclarationID   string    `theorydb:"attr:declaration_id,omitempty" json:"declaration_id"`
 	DeclarationHash string    `theorydb:"attr:declaration_hash,omitempty" json:"declaration_hash"`
 	CheckpointRef   string    `theorydb:"attr:checkpoint_ref,omitempty" json:"checkpoint_ref"`
@@ -282,6 +286,8 @@ const (
 
 // Recovery is the typed recovery envelope exposed on failed compact projections.
 type Recovery struct {
+	_ struct{} `theorydb:"naming:snake_case"`
+
 	Action            RecoveryAction `theorydb:"attr:action,omitempty" json:"action"`
 	MaxAttempts       int            `json:"max_attempts,omitempty"`
 	RetryAfterSeconds int            `json:"retry_after_seconds,omitempty"`
@@ -290,6 +296,8 @@ type Recovery struct {
 
 // Failure is the durable failed-state evidence for HostedGenesisSession.
 type Failure struct {
+	_ struct{} `theorydb:"naming:snake_case"`
+
 	Code      FailureCode  `theorydb:"attr:code,omitempty" json:"code"`
 	Class     FailureClass `json:"class,omitempty"`
 	Message   string       `theorydb:"attr:message,omitempty" json:"message"`

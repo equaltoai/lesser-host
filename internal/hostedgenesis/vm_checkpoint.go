@@ -15,6 +15,8 @@ import (
 // Instance API keys, wallet signatures, SSM values, AWS credentials, or MicroVM
 // endpoint auth material.
 type VMCheckpointMetadata struct {
+	_ struct{} `theorydb:"naming:snake_case"`
+
 	Sequence          int64  `theorydb:"attr:sequence,omitempty" json:"sequence"`
 	Ref               string `theorydb:"attr:ref,omitempty" json:"ref"`
 	Hash              string `theorydb:"attr:hash,omitempty" json:"hash"`

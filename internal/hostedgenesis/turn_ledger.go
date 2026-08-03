@@ -20,6 +20,8 @@ var (
 // signatures, signing material, SSM values, AWS credentials, provider secrets,
 // MicroVM endpoint tokens, and browser Host credentials do not belong here.
 type TurnLedgerEntry struct {
+	_ struct{} `theorydb:"naming:snake_case"`
+
 	TurnID                 string    `theorydb:"attr:turn_id,omitempty" json:"turn_id"`
 	IdempotencyKey         string    `json:"idempotency_key,omitempty"`
 	RequestHash            string    `json:"request_hash,omitempty"`

@@ -129,6 +129,8 @@ type FiveBodySection struct {
 
 // FiveBodySoulBody contains the soul-body summary and concrete refusals.
 type FiveBodySoulBody struct {
+	_ struct{} `theorydb:"naming:camelCase"`
+
 	Summary  string                `theorydb:"attr:summary,omitempty" json:"summary"`
 	Notes    []string              `json:"notes,omitempty"`
 	Refusals []FiveBodyRefusalRule `theorydb:"attr:refusals,omitempty" json:"refusals"`
@@ -137,6 +139,8 @@ type FiveBodySoulBody struct {
 // FiveBodyRefusalRule is the concrete refusal-floor unit. Each refusal names the
 // bypass attempt, the invariant that blocks it, and the closest safe path.
 type FiveBodyRefusalRule struct {
+	_ struct{} `theorydb:"naming:camelCase"`
+
 	Bypass          string `theorydb:"attr:bypass,omitempty" json:"bypass"`
 	Invariant       string `theorydb:"attr:invariant,omitempty" json:"invariant"`
 	ClosestSafePath string `theorydb:"attr:closestSafePath,omitempty" json:"closestSafePath"`

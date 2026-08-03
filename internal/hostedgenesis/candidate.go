@@ -76,6 +76,8 @@ const (
 // DeclarationTransparency is the bounded satellite shape accepted by the soul
 // phase. A typed shape prevents arbitrary provider objects from entering state.
 type DeclarationTransparency struct {
+	_ struct{} `theorydb:"naming:camelCase"`
+
 	ModelProviderUncertainty string `theorydb:"attr:modelProviderUncertainty,omitempty" json:"modelProviderUncertainty"`
 	OperationalNotes         string `theorydb:"attr:operationalNotes,omitempty" json:"operationalNotes"`
 	SelfDeclaredNotice       string `theorydb:"attr:selfDeclaredNotice,omitempty" json:"selfDeclaredNotice"`
@@ -84,6 +86,8 @@ type DeclarationTransparency struct {
 // DeclarationToolRecord makes provider tool calls idempotent without retaining
 // provider content or the provider's raw call identifier.
 type DeclarationToolRecord struct {
+	_ struct{} `theorydb:"naming:snake_case"`
+
 	ToolCallHash  string             `theorydb:"attr:tool_call_hash,omitempty" json:"tool_call_hash"`
 	InputHash     string             `theorydb:"attr:input_hash,omitempty" json:"input_hash"`
 	ToolName      string             `theorydb:"attr:tool_name,omitempty" json:"tool_name"`
@@ -98,6 +102,8 @@ type DeclarationToolRecord struct {
 // one provider SDK HTTP attempt. It is deliberately outside CanonicalJSON, so
 // recovery telemetry cannot change owner-reviewed semantic bytes.
 type DeclarationProviderAttempt struct {
+	_ struct{} `theorydb:"naming:snake_case"`
+
 	Sequence          int64                       `theorydb:"attr:sequence,omitempty" json:"sequence"`
 	Provider          string                      `theorydb:"attr:provider,omitempty" json:"provider"`
 	Model             string                      `theorydb:"attr:model,omitempty" json:"model"`
@@ -156,6 +162,8 @@ type DeclarationProviderAttemptUpdate struct {
 }
 
 type DeclarationReviewCheckpoint struct {
+	_ struct{} `theorydb:"naming:snake_case"`
+
 	RendererVersion   string    `theorydb:"attr:renderer_version,omitempty" json:"renderer_version"`
 	SchemaVersion     string    `theorydb:"attr:schema_version,omitempty" json:"schema_version"`
 	GuidanceVersion   string    `theorydb:"attr:guidance_version,omitempty" json:"guidance_version"`
@@ -168,6 +176,8 @@ type DeclarationReviewCheckpoint struct {
 }
 
 type DeclarationAffirmationCheckpoint struct {
+	_ struct{} `theorydb:"naming:snake_case"`
+
 	CandidateRevision int64     `theorydb:"attr:candidate_revision,omitempty" json:"candidate_revision"`
 	CandidateHash     string    `theorydb:"attr:candidate_hash,omitempty" json:"candidate_hash"`
 	ReviewHash        string    `theorydb:"attr:review_hash,omitempty" json:"review_hash"`
@@ -179,6 +189,8 @@ type DeclarationAffirmationCheckpoint struct {
 // construction. CanonicalJSON is the exact byte string finalization publishes;
 // CandidateHash always authenticates those bytes.
 type DeclarationCandidate struct {
+	_ struct{} `theorydb:"naming:snake_case"`
+
 	Version           string                            `theorydb:"attr:version,omitempty" json:"version"`
 	InstanceSlug      string                            `theorydb:"attr:instance_slug,omitempty" json:"instance_slug"`
 	RegistrationID    string                            `theorydb:"attr:registration_id,omitempty" json:"registration_id"`
