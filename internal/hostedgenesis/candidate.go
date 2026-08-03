@@ -76,38 +76,38 @@ const (
 // DeclarationTransparency is the bounded satellite shape accepted by the soul
 // phase. A typed shape prevents arbitrary provider objects from entering state.
 type DeclarationTransparency struct {
-	ModelProviderUncertainty string `json:"modelProviderUncertainty"`
-	OperationalNotes         string `json:"operationalNotes"`
-	SelfDeclaredNotice       string `json:"selfDeclaredNotice"`
+	ModelProviderUncertainty string `theorydb:"attr:modelProviderUncertainty,omitempty" json:"modelProviderUncertainty"`
+	OperationalNotes         string `theorydb:"attr:operationalNotes,omitempty" json:"operationalNotes"`
+	SelfDeclaredNotice       string `theorydb:"attr:selfDeclaredNotice,omitempty" json:"selfDeclaredNotice"`
 }
 
 // DeclarationToolRecord makes provider tool calls idempotent without retaining
 // provider content or the provider's raw call identifier.
 type DeclarationToolRecord struct {
-	ToolCallHash  string             `json:"tool_call_hash"`
-	InputHash     string             `json:"input_hash"`
-	ToolName      string             `json:"tool_name"`
-	Section       DeclarationSection `json:"section"`
-	SourceTurnID  string             `json:"source_turn_id"`
-	Revision      int64              `json:"revision"`
-	SectionHash   string             `json:"section_hash"`
-	CandidateHash string             `json:"candidate_hash"`
+	ToolCallHash  string             `theorydb:"attr:tool_call_hash,omitempty" json:"tool_call_hash"`
+	InputHash     string             `theorydb:"attr:input_hash,omitempty" json:"input_hash"`
+	ToolName      string             `theorydb:"attr:tool_name,omitempty" json:"tool_name"`
+	Section       DeclarationSection `theorydb:"attr:section,omitempty" json:"section"`
+	SourceTurnID  string             `theorydb:"attr:source_turn_id,omitempty" json:"source_turn_id"`
+	Revision      int64              `theorydb:"attr:revision,omitempty" json:"revision"`
+	SectionHash   string             `theorydb:"attr:section_hash,omitempty" json:"section_hash"`
+	CandidateHash string             `theorydb:"attr:candidate_hash,omitempty" json:"candidate_hash"`
 }
 
 // DeclarationProviderAttempt is bounded, content-free durable evidence for
 // one provider SDK HTTP attempt. It is deliberately outside CanonicalJSON, so
 // recovery telemetry cannot change owner-reviewed semantic bytes.
 type DeclarationProviderAttempt struct {
-	Sequence          int64                       `json:"sequence"`
-	Provider          string                      `json:"provider"`
-	Model             string                      `json:"model"`
-	Phase             string                      `json:"phase"`
-	Section           DeclarationSection          `json:"section"`
-	SourceTurnID      string                      `json:"source_turn_id"`
-	CandidateRevision int64                       `json:"candidate_revision"`
-	CandidateHash     string                      `json:"candidate_hash"`
-	SDKAttemptOrdinal int64                       `json:"sdk_attempt_ordinal"`
-	SDKRetryBudget    int                         `json:"sdk_retry_budget"`
+	Sequence          int64                       `theorydb:"attr:sequence,omitempty" json:"sequence"`
+	Provider          string                      `theorydb:"attr:provider,omitempty" json:"provider"`
+	Model             string                      `theorydb:"attr:model,omitempty" json:"model"`
+	Phase             string                      `theorydb:"attr:phase,omitempty" json:"phase"`
+	Section           DeclarationSection          `theorydb:"attr:section,omitempty" json:"section"`
+	SourceTurnID      string                      `theorydb:"attr:source_turn_id,omitempty" json:"source_turn_id"`
+	CandidateRevision int64                       `theorydb:"attr:candidate_revision,omitempty" json:"candidate_revision"`
+	CandidateHash     string                      `theorydb:"attr:candidate_hash,omitempty" json:"candidate_hash"`
+	SDKAttemptOrdinal int64                       `theorydb:"attr:sdk_attempt_ordinal,omitempty" json:"sdk_attempt_ordinal"`
+	SDKRetryBudget    int                         `theorydb:"attr:sdk_retry_budget,omitempty" json:"sdk_retry_budget"`
 	HTTPStatus        int                         `json:"http_status,omitempty"`
 	ProviderRequestID string                      `json:"provider_request_id,omitempty"`
 	ToolName          string                      `json:"tool_name,omitempty"`
@@ -124,7 +124,7 @@ type DeclarationProviderAttempt struct {
 	StopReason        string                      `json:"stop_reason,omitempty"`
 	FailureClass      FailureClass                `json:"failure_class,omitempty"`
 	DurationMS        int64                       `json:"duration_ms,omitempty"`
-	ObservedAt        time.Time                   `json:"observed_at"`
+	ObservedAt        time.Time                   `theorydb:"attr:observed_at,omitempty" json:"observed_at"`
 }
 
 type DeclarationProviderAttemptUpdate struct {
@@ -156,55 +156,55 @@ type DeclarationProviderAttemptUpdate struct {
 }
 
 type DeclarationReviewCheckpoint struct {
-	RendererVersion   string    `json:"renderer_version"`
-	SchemaVersion     string    `json:"schema_version"`
-	GuidanceVersion   string    `json:"guidance_version"`
-	SourceTurnID      string    `json:"source_turn_id"`
-	CandidateHash     string    `json:"candidate_hash"`
-	ReviewHash        string    `json:"review_hash"`
-	CandidateRevision int64     `json:"candidate_revision"`
-	ReviewText        string    `json:"review_text"`
-	ReviewedAt        time.Time `json:"reviewed_at"`
+	RendererVersion   string    `theorydb:"attr:renderer_version,omitempty" json:"renderer_version"`
+	SchemaVersion     string    `theorydb:"attr:schema_version,omitempty" json:"schema_version"`
+	GuidanceVersion   string    `theorydb:"attr:guidance_version,omitempty" json:"guidance_version"`
+	SourceTurnID      string    `theorydb:"attr:source_turn_id,omitempty" json:"source_turn_id"`
+	CandidateHash     string    `theorydb:"attr:candidate_hash,omitempty" json:"candidate_hash"`
+	ReviewHash        string    `theorydb:"attr:review_hash,omitempty" json:"review_hash"`
+	CandidateRevision int64     `theorydb:"attr:candidate_revision,omitempty" json:"candidate_revision"`
+	ReviewText        string    `theorydb:"attr:review_text,omitempty" json:"review_text"`
+	ReviewedAt        time.Time `theorydb:"attr:reviewed_at,omitempty" json:"reviewed_at"`
 }
 
 type DeclarationAffirmationCheckpoint struct {
-	CandidateRevision int64     `json:"candidate_revision"`
-	CandidateHash     string    `json:"candidate_hash"`
-	ReviewHash        string    `json:"review_hash"`
-	SourceTurnID      string    `json:"source_turn_id"`
-	AffirmedAt        time.Time `json:"affirmed_at"`
+	CandidateRevision int64     `theorydb:"attr:candidate_revision,omitempty" json:"candidate_revision"`
+	CandidateHash     string    `theorydb:"attr:candidate_hash,omitempty" json:"candidate_hash"`
+	ReviewHash        string    `theorydb:"attr:review_hash,omitempty" json:"review_hash"`
+	SourceTurnID      string    `theorydb:"attr:source_turn_id,omitempty" json:"source_turn_id"`
+	AffirmedAt        time.Time `theorydb:"attr:affirmed_at,omitempty" json:"affirmed_at"`
 }
 
 // DeclarationCandidate is the authoritative typed declaration under
 // construction. CanonicalJSON is the exact byte string finalization publishes;
 // CandidateHash always authenticates those bytes.
 type DeclarationCandidate struct {
-	Version           string                            `json:"version"`
-	InstanceSlug      string                            `json:"instance_slug"`
-	RegistrationID    string                            `json:"registration_id"`
-	AgentID           string                            `json:"agent_id"`
-	ConversationID    string                            `json:"conversation_id"`
-	SourceTurnID      string                            `json:"source_turn_id"`
-	SchemaVersion     string                            `json:"schema_version"`
-	GuidanceVersion   string                            `json:"guidance_version"`
-	Model             string                            `json:"model"`
-	Phase             DeclarationCandidatePhase         `json:"phase"`
+	Version           string                            `theorydb:"attr:version,omitempty" json:"version"`
+	InstanceSlug      string                            `theorydb:"attr:instance_slug,omitempty" json:"instance_slug"`
+	RegistrationID    string                            `theorydb:"attr:registration_id,omitempty" json:"registration_id"`
+	AgentID           string                            `theorydb:"attr:agent_id,omitempty" json:"agent_id"`
+	ConversationID    string                            `theorydb:"attr:conversation_id,omitempty" json:"conversation_id"`
+	SourceTurnID      string                            `theorydb:"attr:source_turn_id,omitempty" json:"source_turn_id"`
+	SchemaVersion     string                            `theorydb:"attr:schema_version,omitempty" json:"schema_version"`
+	GuidanceVersion   string                            `theorydb:"attr:guidance_version,omitempty" json:"guidance_version"`
+	Model             string                            `theorydb:"attr:model,omitempty" json:"model"`
+	Phase             DeclarationCandidatePhase         `theorydb:"attr:phase,omitempty" json:"phase"`
 	CurrentSection    DeclarationSection                `json:"current_section,omitempty"`
 	CompletedSections []DeclarationSection              `json:"completed_sections,omitempty"`
-	FiveBodies        FiveBodyDeclaration               `json:"five_bodies"`
-	SelfDescription   soul.SelfDescriptionV2            `json:"self_description"`
-	Capabilities      []soul.CapabilityV2               `json:"capabilities"`
-	Transparency      DeclarationTransparency           `json:"transparency"`
-	Revision          int64                             `json:"revision"`
+	FiveBodies        FiveBodyDeclaration               `theorydb:"attr:five_bodies,omitempty" json:"five_bodies"`
+	SelfDescription   soul.SelfDescriptionV2            `theorydb:"attr:self_description,omitempty" json:"self_description"`
+	Capabilities      []soul.CapabilityV2               `theorydb:"attr:capabilities,omitempty" json:"capabilities"`
+	Transparency      DeclarationTransparency           `theorydb:"attr:transparency,omitempty" json:"transparency"`
+	Revision          int64                             `theorydb:"attr:revision,omitempty" json:"revision"`
 	SectionHashes     map[string]string                 `json:"section_hashes,omitempty"`
-	CandidateHash     string                            `json:"candidate_hash"`
-	CanonicalJSON     string                            `json:"canonical_json"`
+	CandidateHash     string                            `theorydb:"attr:candidate_hash,omitempty" json:"candidate_hash"`
+	CanonicalJSON     string                            `theorydb:"attr:canonical_json,omitempty" json:"canonical_json"`
 	ToolRecords       []DeclarationToolRecord           `json:"tool_records,omitempty"`
 	ProviderAttempts  []DeclarationProviderAttempt      `json:"provider_attempts,omitempty"`
 	Review            *DeclarationReviewCheckpoint      `json:"review,omitempty"`
 	Affirmation       *DeclarationAffirmationCheckpoint `json:"affirmation,omitempty"`
-	EstablishedAt     time.Time                         `json:"established_at"`
-	UpdatedAt         time.Time                         `json:"updated_at"`
+	EstablishedAt     time.Time                         `theorydb:"attr:established_at,omitempty" json:"established_at"`
+	UpdatedAt         time.Time                         `theorydb:"attr:updated_at,omitempty" json:"updated_at"`
 }
 
 type DeclarationCandidateBinding struct {

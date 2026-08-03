@@ -25,12 +25,12 @@ type LinkSafetyBasicSummary struct {
 type LinkSafetyBasicLinkResult struct {
 	_ struct{} `theorydb:"naming:camelCase"`
 
-	URL           string   `theorydb:"attr:url" json:"url"`
+	URL           string   `theorydb:"attr:url,omitempty" json:"url"`
 	NormalizedURL string   `theorydb:"attr:normalizedUrl,omitempty" json:"normalized_url,omitempty"`
 	Host          string   `theorydb:"attr:host,omitempty" json:"host,omitempty"`
 	Flags         []string `theorydb:"attr:flags,omitempty" json:"flags,omitempty"`
 
-	Risk string `theorydb:"attr:risk" json:"risk"`
+	Risk string `theorydb:"attr:risk,omitempty" json:"risk"`
 
 	ErrorCode    string `theorydb:"attr:errorCode,omitempty" json:"error_code,omitempty"`
 	ErrorMessage string `theorydb:"attr:errorMessage,omitempty" json:"error_message,omitempty"`

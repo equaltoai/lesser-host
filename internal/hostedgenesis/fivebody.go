@@ -113,25 +113,25 @@ func ValidateDeclarationContractVersions(schemaVersion string, guidanceVersion s
 // FiveBodyDeclaration captures the five first-class bodies constructed by the v2
 // hosted genesis contract. Capabilities and transparency remain satellites.
 type FiveBodyDeclaration struct {
-	Identity   FiveBodySection  `json:"identity"`
-	Philosophy FiveBodySection  `json:"philosophy"`
-	Discipline FiveBodySection  `json:"discipline"`
-	Boundaries FiveBodySection  `json:"boundaries"`
-	Soul       FiveBodySoulBody `json:"soul"`
+	Identity   FiveBodySection  `theorydb:"attr:identity,omitempty" json:"identity"`
+	Philosophy FiveBodySection  `theorydb:"attr:philosophy,omitempty" json:"philosophy"`
+	Discipline FiveBodySection  `theorydb:"attr:discipline,omitempty" json:"discipline"`
+	Boundaries FiveBodySection  `theorydb:"attr:boundaries,omitempty" json:"boundaries"`
+	Soul       FiveBodySoulBody `theorydb:"attr:soul,omitempty" json:"soul"`
 }
 
 // FiveBodySection is a capped body summary with optional supporting notes. The
 // notes are still self-declared transcript evidence, not Host proof.
 type FiveBodySection struct {
-	Summary string   `json:"summary"`
+	Summary string   `theorydb:"attr:summary,omitempty" json:"summary"`
 	Notes   []string `json:"notes,omitempty"`
 }
 
 // FiveBodySoulBody contains the soul-body summary and concrete refusals.
 type FiveBodySoulBody struct {
-	Summary  string                `json:"summary"`
+	Summary  string                `theorydb:"attr:summary,omitempty" json:"summary"`
 	Notes    []string              `json:"notes,omitempty"`
-	Refusals []FiveBodyRefusalRule `json:"refusals"`
+	Refusals []FiveBodyRefusalRule `theorydb:"attr:refusals,omitempty" json:"refusals"`
 }
 
 // FiveBodyRefusalRule is the concrete refusal-floor unit. Each refusal names the

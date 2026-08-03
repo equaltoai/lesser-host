@@ -106,12 +106,12 @@ func ValidateTransition(from Status, to Status) error {
 // only tenant-bound identifiers, a digest, version, and timestamps; publication
 // payloads and signing material never enter HostedGenesisSession.
 type PublicationCheckpoint struct {
-	RegistrationID       string    `json:"registration_id"`
-	ConversationID       string    `json:"conversation_id"`
-	AgentID              string    `json:"agent_id"`
-	Version              int       `json:"version"`
-	RegistrationSHA256   string    `json:"registration_sha256"`
-	RegistrationIssuedAt time.Time `json:"registration_issued_at"`
+	RegistrationID       string    `theorydb:"attr:registration_id,omitempty" json:"registration_id"`
+	ConversationID       string    `theorydb:"attr:conversation_id,omitempty" json:"conversation_id"`
+	AgentID              string    `theorydb:"attr:agent_id,omitempty" json:"agent_id"`
+	Version              int       `theorydb:"attr:version,omitempty" json:"version"`
+	RegistrationSHA256   string    `theorydb:"attr:registration_sha256,omitempty" json:"registration_sha256"`
+	RegistrationIssuedAt time.Time `theorydb:"attr:registration_issued_at,omitempty" json:"registration_issued_at"`
 	PublishedAt          time.Time `json:"published_at,omitempty"`
 }
 
@@ -175,18 +175,18 @@ type TraceIDs struct {
 // HostedGenesisSession. It carries ids, hashes, and checkpoint references only;
 // raw transcripts and provider credentials are outside the Host truth record.
 type DeclarationCheckpoint struct {
-	DeclarationID   string    `json:"declaration_id"`
-	DeclarationHash string    `json:"declaration_hash"`
-	CheckpointRef   string    `json:"checkpoint_ref"`
-	ProducedAt      time.Time `json:"produced_at"`
-	RegistrationID  string    `json:"registration_id"`
-	ConversationID  string    `json:"conversation_id"`
-	AgentID         string    `json:"agent_id"`
-	MessageCount    int       `json:"message_count"`
+	DeclarationID   string    `theorydb:"attr:declaration_id,omitempty" json:"declaration_id"`
+	DeclarationHash string    `theorydb:"attr:declaration_hash,omitempty" json:"declaration_hash"`
+	CheckpointRef   string    `theorydb:"attr:checkpoint_ref,omitempty" json:"checkpoint_ref"`
+	ProducedAt      time.Time `theorydb:"attr:produced_at,omitempty" json:"produced_at"`
+	RegistrationID  string    `theorydb:"attr:registration_id,omitempty" json:"registration_id"`
+	ConversationID  string    `theorydb:"attr:conversation_id,omitempty" json:"conversation_id"`
+	AgentID         string    `theorydb:"attr:agent_id,omitempty" json:"agent_id"`
+	MessageCount    int       `theorydb:"attr:message_count,omitempty" json:"message_count"`
 	Model           string    `json:"model,omitempty"`
 	SchemaVersion   string    `json:"schema_version,omitempty"`
 	GuidanceVersion string    `json:"guidance_version,omitempty"`
-	RequestID       string    `json:"request_id"`
+	RequestID       string    `theorydb:"attr:request_id,omitempty" json:"request_id"`
 }
 
 // Validate fails closed unless the checkpoint can authorize declaration_ready
@@ -282,7 +282,7 @@ const (
 
 // Recovery is the typed recovery envelope exposed on failed compact projections.
 type Recovery struct {
-	Action            RecoveryAction `json:"action"`
+	Action            RecoveryAction `theorydb:"attr:action,omitempty" json:"action"`
 	MaxAttempts       int            `json:"max_attempts,omitempty"`
 	RetryAfterSeconds int            `json:"retry_after_seconds,omitempty"`
 	Reason            string         `json:"reason,omitempty"`
@@ -290,11 +290,11 @@ type Recovery struct {
 
 // Failure is the durable failed-state evidence for HostedGenesisSession.
 type Failure struct {
-	Code      FailureCode  `json:"code"`
+	Code      FailureCode  `theorydb:"attr:code,omitempty" json:"code"`
 	Class     FailureClass `json:"class,omitempty"`
-	Message   string       `json:"message"`
-	Retryable bool         `json:"retryable"`
-	Recovery  Recovery     `json:"recovery"`
+	Message   string       `theorydb:"attr:message,omitempty" json:"message"`
+	Retryable bool         `theorydb:"attr:retryable,omitempty" json:"retryable"`
+	Recovery  Recovery     `theorydb:"attr:recovery,omitempty" json:"recovery"`
 }
 
 // FailureMessage returns the fixed public message for a failure code. Provider

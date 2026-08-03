@@ -20,15 +20,15 @@ var (
 // signatures, signing material, SSM values, AWS credentials, provider secrets,
 // MicroVM endpoint tokens, and browser Host credentials do not belong here.
 type TurnLedgerEntry struct {
-	TurnID                 string    `json:"turn_id"`
+	TurnID                 string    `theorydb:"attr:turn_id,omitempty" json:"turn_id"`
 	IdempotencyKey         string    `json:"idempotency_key,omitempty"`
 	RequestHash            string    `json:"request_hash,omitempty"`
 	InputCheckpointRef     string    `json:"input_checkpoint_ref,omitempty"`
 	AssistantCheckpointRef string    `json:"assistant_checkpoint_ref,omitempty"`
 	BillingLedgerRef       string    `json:"billing_ledger_ref,omitempty"`
 	ChargedCredits         int64     `json:"charged_credits,omitempty"`
-	MessageCount           int       `json:"message_count"`
-	AcceptedAt             time.Time `json:"accepted_at"`
+	MessageCount           int       `theorydb:"attr:message_count,omitempty" json:"message_count"`
+	AcceptedAt             time.Time `theorydb:"attr:accepted_at,omitempty" json:"accepted_at"`
 }
 
 // Normalize trims client-safe ids and hashes before persistence or comparison.

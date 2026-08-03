@@ -193,11 +193,11 @@ func (r *MicroVMControllerRuntime) Command(ctx context.Context, command runtimem
 // tokens, raw lifecycle payloads, raw transcripts, provider credentials, and AWS
 // credentials. It is reconstructible execution state, not business truth.
 type MicroVMLifecycleRef struct {
-	SourceOfTruth          string                        `json:"source_of_truth"`
-	TenantID               string                        `json:"tenant_id"`
-	Namespace              string                        `json:"namespace"`
-	SessionID              string                        `json:"session_id"`
-	LifecycleState         runtimemicrovm.LifecycleState `json:"lifecycle_state"`
+	SourceOfTruth          string                        `theorydb:"attr:source_of_truth,omitempty" json:"source_of_truth"`
+	TenantID               string                        `theorydb:"attr:tenant_id,omitempty" json:"tenant_id"`
+	Namespace              string                        `theorydb:"attr:namespace,omitempty" json:"namespace"`
+	SessionID              string                        `theorydb:"attr:session_id,omitempty" json:"session_id"`
+	LifecycleState         runtimemicrovm.LifecycleState `theorydb:"attr:lifecycle_state,omitempty" json:"lifecycle_state"`
 	DesiredState           runtimemicrovm.LifecycleState `json:"desired_state,omitempty"`
 	MicroVMID              string                        `json:"microvm_id,omitempty"`
 	ImageRef               string                        `json:"image_ref,omitempty"`
@@ -206,10 +206,10 @@ type MicroVMLifecycleRef struct {
 	MaximumDurationSeconds int32                         `json:"maximum_duration_seconds,omitempty"`
 	RuntimeLogGroup        string                        `json:"runtime_log_group,omitempty"`
 	NetworkConnectorRef    string                        `json:"network_connector_ref,omitempty"`
-	LastAction             runtimemicrovm.Command        `json:"last_action"`
+	LastAction             runtimemicrovm.Command        `theorydb:"attr:last_action,omitempty" json:"last_action"`
 	LastTransition         time.Time                     `json:"last_transition,omitempty"`
 	RegistryVersion        int64                         `json:"registry_version,omitempty"`
-	UpdatedAt              time.Time                     `json:"updated_at"`
+	UpdatedAt              time.Time                     `theorydb:"attr:updated_at,omitempty" json:"updated_at"`
 }
 
 // Validate proves the ref still maps to the Host session binding and AppTheory
