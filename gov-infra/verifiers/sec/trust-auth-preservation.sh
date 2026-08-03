@@ -81,11 +81,12 @@ payload_equals() {
   [[ "${actual}" == "${expected}" ]]
 }
 
-# AppTheory v2.0.0 migration allowance:
+# AppTheory v3.0.1 / TableTheory v3.0.2 migration allowance:
 # the instance-auth mechanism remains locked (sha256 bearer matching, raw-key
 # handling, revocation, and audit behavior must not change), but the framework
-# major-version migration necessarily updates the AppTheory runtime import path.
-# Keep this exception exact: any additional locked-file hunk still fails SEC-9.
+# major-version migration necessarily updates the AppTheory and TableTheory
+# import paths. Keep this exception exact: any additional locked-file hunk still
+# fails SEC-9.
 is_allowed_framework_migration_diff() {
   local file="$1"
   local diff_output="$2"
@@ -93,15 +94,26 @@ is_allowed_framework_migration_diff() {
   payload="$(printf '%s\n' "${diff_output}" | diff_payload_lines)"
 
   case "${file}" in
+    "internal/trust/attestations_issue.go")
+      payload_equals "${payload}" \
+        '-	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"' \
+        '+	theoryErrors "github.com/theory-cloud/tabletheory/v3/pkg/errors"'
+      ;;
     "internal/trust/auth_instance_test.go")
       payload_equals "${payload}" \
-        '-	apptheory "github.com/theory-cloud/apptheory/runtime"' \
-        '+	apptheory "github.com/theory-cloud/apptheory/v2/runtime"'
+        '-	apptheory "github.com/theory-cloud/apptheory/v2/runtime"' \
+        '-	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"' \
+        '-	ttmocks "github.com/theory-cloud/tabletheory/v2/pkg/mocks"' \
+        '+	apptheory "github.com/theory-cloud/apptheory/v3/runtime"' \
+        '+	theoryErrors "github.com/theory-cloud/tabletheory/v3/pkg/errors"' \
+        '+	ttmocks "github.com/theory-cloud/tabletheory/v3/pkg/mocks"'
       ;;
     "internal/trust/auth_instance.go")
       payload_equals "${payload}" \
-        '-	apptheory "github.com/theory-cloud/apptheory/runtime"' \
-        '+	apptheory "github.com/theory-cloud/apptheory/v2/runtime"'
+        '-	apptheory "github.com/theory-cloud/apptheory/v2/runtime"' \
+        '-	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"' \
+        '+	apptheory "github.com/theory-cloud/apptheory/v3/runtime"' \
+        '+	theoryErrors "github.com/theory-cloud/tabletheory/v3/pkg/errors"'
       ;;
     *)
       return 1
@@ -128,7 +140,7 @@ for f in "${LOCKED_FILES[@]}"; do
   elif [[ -z "${diff_output}" ]]; then
     echo "  ${f}: whitespace-only diff (acceptable)"
   elif is_allowed_framework_migration_diff "${f}" "${diff_output}"; then
-    echo "  ${f}: framework-major compatibility diff only (AppTheory v2 runtime import; instance-auth semantics preserved)"
+    echo "  ${f}: framework-major compatibility diff only (AppTheory/TableTheory v3 imports; trust semantics preserved)"
   else
     lines=""
     lines="$(printf '%s\n' "${diff_output}" | wc -l | tr -d ' ')"

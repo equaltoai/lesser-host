@@ -12,8 +12,8 @@ import (
 	"time"
 
 	"github.com/aws/aws-lambda-go/events"
-	runtimemicrovm "github.com/theory-cloud/apptheory/v2/runtime/microvm"
-	microvmtestkit "github.com/theory-cloud/apptheory/v2/testkit/microvm"
+	runtimemicrovm "github.com/theory-cloud/apptheory/v3/runtime/microvm"
+	microvmtestkit "github.com/theory-cloud/apptheory/v3/testkit/microvm"
 
 	"github.com/equaltoai/lesser-host/internal/config"
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
@@ -95,7 +95,7 @@ func TestRuntimeControllerUsesHostOwnedMicroVMRegistry(t *testing.T) {
 		strings.Contains(src, "runtimemicrovm.NewMemorySessionRegistry()") {
 		t.Fatalf("hosted-genesis controller must use Host's cache adapter, not the generic AppTheory TableTheory or in-memory registry")
 	}
-	if strings.Contains(src, "github.com/theory-cloud/tabletheory/v2") {
+	if strings.Contains(src, "github.com/theory-cloud/tabletheory/v3") {
 		t.Fatalf("hosted-genesis controller must not import TableTheory directly; store owns the TableTheory boundary")
 	}
 	if !strings.Contains(src, "store.NewHostedGenesisMicroVMRegistry") {

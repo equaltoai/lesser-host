@@ -45,9 +45,9 @@ type SoulAgentContactPreferences struct {
 type SoulContactAvailabilityWindow struct {
 	_ struct{} `theorydb:"naming:camelCase"`
 
-	Days      []string `theorydb:"attr:days" json:"days"`
-	StartTime string   `theorydb:"attr:startTime" json:"start_time"`
-	EndTime   string   `theorydb:"attr:endTime" json:"end_time"`
+	Days      []string `theorydb:"attr:days,omitempty" json:"days"`
+	StartTime string   `theorydb:"attr:startTime,omitempty" json:"start_time"`
+	EndTime   string   `theorydb:"attr:endTime,omitempty" json:"end_time"`
 }
 
 // TableName returns the database table name for SoulAgentContactPreferences.

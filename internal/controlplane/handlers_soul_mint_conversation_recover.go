@@ -10,9 +10,9 @@ import (
 	"strings"
 	"time"
 
-	apptheory "github.com/theory-cloud/apptheory/v2/runtime"
-	"github.com/theory-cloud/tabletheory/v2"
-	"github.com/theory-cloud/tabletheory/v2/pkg/core"
+	apptheory "github.com/theory-cloud/apptheory/v3/runtime"
+	"github.com/theory-cloud/tabletheory/v3"
+	"github.com/theory-cloud/tabletheory/v3/pkg/core"
 
 	"github.com/equaltoai/lesser-host/internal/ai/modelselection"
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis"

@@ -113,33 +113,37 @@ func ValidateDeclarationContractVersions(schemaVersion string, guidanceVersion s
 // FiveBodyDeclaration captures the five first-class bodies constructed by the v2
 // hosted genesis contract. Capabilities and transparency remain satellites.
 type FiveBodyDeclaration struct {
-	Identity   FiveBodySection  `json:"identity"`
-	Philosophy FiveBodySection  `json:"philosophy"`
-	Discipline FiveBodySection  `json:"discipline"`
-	Boundaries FiveBodySection  `json:"boundaries"`
-	Soul       FiveBodySoulBody `json:"soul"`
+	Identity   FiveBodySection  `theorydb:"attr:identity,omitempty" json:"identity"`
+	Philosophy FiveBodySection  `theorydb:"attr:philosophy,omitempty" json:"philosophy"`
+	Discipline FiveBodySection  `theorydb:"attr:discipline,omitempty" json:"discipline"`
+	Boundaries FiveBodySection  `theorydb:"attr:boundaries,omitempty" json:"boundaries"`
+	Soul       FiveBodySoulBody `theorydb:"attr:soul,omitempty" json:"soul"`
 }
 
 // FiveBodySection is a capped body summary with optional supporting notes. The
 // notes are still self-declared transcript evidence, not Host proof.
 type FiveBodySection struct {
-	Summary string   `json:"summary"`
+	Summary string   `theorydb:"attr:summary,omitempty" json:"summary"`
 	Notes   []string `json:"notes,omitempty"`
 }
 
 // FiveBodySoulBody contains the soul-body summary and concrete refusals.
 type FiveBodySoulBody struct {
-	Summary  string                `json:"summary"`
+	_ struct{} `theorydb:"naming:camelCase"`
+
+	Summary  string                `theorydb:"attr:summary,omitempty" json:"summary"`
 	Notes    []string              `json:"notes,omitempty"`
-	Refusals []FiveBodyRefusalRule `json:"refusals"`
+	Refusals []FiveBodyRefusalRule `theorydb:"attr:refusals,omitempty" json:"refusals"`
 }
 
 // FiveBodyRefusalRule is the concrete refusal-floor unit. Each refusal names the
 // bypass attempt, the invariant that blocks it, and the closest safe path.
 type FiveBodyRefusalRule struct {
-	Bypass          string `json:"bypass"`
-	Invariant       string `json:"invariant"`
-	ClosestSafePath string `json:"closestSafePath"`
+	_ struct{} `theorydb:"naming:camelCase"`
+
+	Bypass          string `theorydb:"attr:bypass,omitempty" json:"bypass"`
+	Invariant       string `theorydb:"attr:invariant,omitempty" json:"invariant"`
+	ClosestSafePath string `theorydb:"attr:closestSafePath,omitempty" json:"closestSafePath"`
 }
 
 // AdversarialReview records the independent fail-closed review shape. In unit

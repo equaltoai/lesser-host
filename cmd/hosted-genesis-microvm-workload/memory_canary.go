@@ -12,7 +12,7 @@ import (
 	"strings"
 	"sync"
 
-	runtimemicrovm "github.com/theory-cloud/apptheory/v2/runtime/microvm"
+	runtimemicrovm "github.com/theory-cloud/apptheory/v3/runtime/microvm"
 
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
 )

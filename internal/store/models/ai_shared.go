@@ -4,7 +4,7 @@ package models
 type AIEvidenceRef struct {
 	_ struct{} `theorydb:"naming:camelCase"`
 
-	Kind        string `theorydb:"attr:kind" json:"kind"`
+	Kind        string `theorydb:"attr:kind,omitempty" json:"kind"`
 	Ref         string `theorydb:"attr:ref,omitempty" json:"ref,omitempty"`
 	Hash        string `theorydb:"attr:hash,omitempty" json:"hash,omitempty"`
 	Bytes       int64  `theorydb:"attr:bytes" json:"bytes,omitempty"`
@@ -30,7 +30,7 @@ type AIUsage struct {
 type AIError struct {
 	_ struct{} `theorydb:"naming:camelCase"`
 
-	Code      string `theorydb:"attr:code" json:"code"`
-	Message   string `theorydb:"attr:message" json:"message"`
+	Code      string `theorydb:"attr:code,omitempty" json:"code"`
+	Message   string `theorydb:"attr:message,omitempty" json:"message"`
 	Retryable bool   `theorydb:"attr:retryable" json:"retryable,omitempty"`
 }
