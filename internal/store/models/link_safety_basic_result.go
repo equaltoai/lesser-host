@@ -10,15 +10,15 @@ import (
 type LinkSafetyBasicSummary struct {
 	_ struct{} `theorydb:"naming:camelCase"`
 
-	TotalLinks int `theorydb:"attr:totalLinks" json:"total_links"`
+	TotalLinks int `theorydb:"attr:totalLinks,omitempty" json:"total_links"`
 
-	LowCount     int `theorydb:"attr:lowCount" json:"low_count"`
-	MediumCount  int `theorydb:"attr:mediumCount" json:"medium_count"`
-	HighCount    int `theorydb:"attr:highCount" json:"high_count"`
-	BlockedCount int `theorydb:"attr:blockedCount" json:"blocked_count"`
-	InvalidCount int `theorydb:"attr:invalidCount" json:"invalid_count"`
+	LowCount     int `theorydb:"attr:lowCount,omitempty" json:"low_count"`
+	MediumCount  int `theorydb:"attr:mediumCount,omitempty" json:"medium_count"`
+	HighCount    int `theorydb:"attr:highCount,omitempty" json:"high_count"`
+	BlockedCount int `theorydb:"attr:blockedCount,omitempty" json:"blocked_count"`
+	InvalidCount int `theorydb:"attr:invalidCount,omitempty" json:"invalid_count"`
 
-	OverallRisk string `theorydb:"attr:overallRisk" json:"overall_risk"`
+	OverallRisk string `theorydb:"attr:overallRisk,omitempty" json:"overall_risk"`
 }
 
 // LinkSafetyBasicLinkResult contains the risk analysis for a single link.

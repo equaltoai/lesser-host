@@ -3,7 +3,7 @@ package controlplane
 import (
 	"testing"
 
-	apptheory "github.com/theory-cloud/apptheory/v2/runtime"
+	apptheory "github.com/theory-cloud/apptheory/v3/runtime"
 
 	"github.com/equaltoai/lesser-host/internal/config"
 )

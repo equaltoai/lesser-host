@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	apptheory "github.com/theory-cloud/apptheory/v2/runtime"
-	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
+	apptheory "github.com/theory-cloud/apptheory/v3/runtime"
+	theoryErrors "github.com/theory-cloud/tabletheory/v3/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/domains"
 	"github.com/equaltoai/lesser-host/internal/httpx"

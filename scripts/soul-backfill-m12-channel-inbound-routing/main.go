@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
+	theoryErrors "github.com/theory-cloud/tabletheory/v3/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/secrets"
 	"github.com/equaltoai/lesser-host/internal/soulemail"

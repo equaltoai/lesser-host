@@ -137,9 +137,9 @@ type FiveBodySoulBody struct {
 // FiveBodyRefusalRule is the concrete refusal-floor unit. Each refusal names the
 // bypass attempt, the invariant that blocks it, and the closest safe path.
 type FiveBodyRefusalRule struct {
-	Bypass          string `json:"bypass"`
-	Invariant       string `json:"invariant"`
-	ClosestSafePath string `json:"closestSafePath"`
+	Bypass          string `theorydb:"attr:bypass,omitempty" json:"bypass"`
+	Invariant       string `theorydb:"attr:invariant,omitempty" json:"invariant"`
+	ClosestSafePath string `theorydb:"attr:closestSafePath,omitempty" json:"closestSafePath"`
 }
 
 // AdversarialReview records the independent fail-closed review shape. In unit

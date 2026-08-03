@@ -8,7 +8,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
-	"github.com/theory-cloud/tabletheory/v2"
+	"github.com/theory-cloud/tabletheory/v3"
 
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )

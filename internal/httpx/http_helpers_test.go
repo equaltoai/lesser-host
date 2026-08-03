@@ -3,7 +3,7 @@ package httpx
 import (
 	"testing"
 
-	apptheory "github.com/theory-cloud/apptheory/v2/runtime"
+	apptheory "github.com/theory-cloud/apptheory/v3/runtime"
 )
 
 const testQueryValueOne = "one"

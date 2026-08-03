@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
-	"github.com/theory-cloud/tabletheory/v2/pkg/validation"
+	"github.com/theory-cloud/tabletheory/v3/pkg/validation"
 
 	"github.com/equaltoai/lesser-host/internal/ai/modelselection"
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
