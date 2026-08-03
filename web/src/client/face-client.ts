@@ -107,7 +107,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 	// then external sidecar fetch via the canonical loader. Posture overrides:
 	//   - `allowedOrigin` pinned to `document.location.origin`: the SSR Lambda
 	//     only ever emits same-origin sidecar URLs; any cross-origin URL would
-	//     indicate marker-tampering. FaceTheory v3.4.0 enforces this both
+	//     indicate marker-tampering. FaceTheory v4.0.5 enforces this both
 	//     pre-fetch (URL resolution) and post-fetch (final-URL recheck after
 	//     redirects). Explicit here for audit clarity.
 	//   - `requestInit.redirect: 'error'`: framework default is `follow` + a
