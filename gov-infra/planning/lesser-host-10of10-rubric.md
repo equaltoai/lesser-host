@@ -4,11 +4,12 @@ This rubric defines what “10/10” means and how category grades are computed.
 “green by dilution” by making scoring **versioned, measurable, and repeatable**.
 
 ## Versioning (no moving goalposts)
-- **Rubric version:** `v0.1.15` (2026-07-25)
+- **Rubric version:** `v0.1.16` (2026-08-03)
 - **Comparability rule:** grades are comparable only within the same version.
 - **Change rule:** bump the version + changelog entry for any rubric change (what changed + why).
 
 ### Changelog
+- `v0.1.16`: Record the issue `#1015` SEC-9 governance event: the AppTheory v3.0.1 / TableTheory v3.0.2 migration may change only the exact `/v2` to `/v3` import lines in `internal/trust/auth_instance.go`, `internal/trust/auth_instance_test.go`, and `internal/trust/attestations_issue.go`; any additional locked-file payload still fails. The sha256 bearer match, raw-key handling, revocation, audit behavior, and attestation integrity remain locked. Additive tightening; no behavioral exception, skip, or partial credit.
 - `v0.1.15`: Record the Factory-reviewed SEC-9 governance event for PR `#988`: the AppTheory v2.0.0 migration may change only the `apptheory` runtime import pair from `github.com/theory-cloud/apptheory/runtime` to `github.com/theory-cloud/apptheory/v2/runtime` in `internal/trust/auth_instance.go` and `internal/trust/auth_instance_test.go`; any additional locked-file payload still fails. Additive tightening; no loosening; no exception beyond the exact import pair; no skip.
 - `v0.1.14`: Tighten SEC-16 for the Project 48 M11 exact-candidate owner-review contract (`#977` / PR `#978`): deterministic review must contain a bounded, byte-counted, reversibly exact copy of canonical JSON so every value authenticated by `CandidateHash` is owner-visible; `ReviewHash` remains separate; any previously hidden semantic edit changes both review and candidate identities and rejects stale affirmation. Additive tightening; no framework change, exception, coverage reduction, provider renderer, or fallback.
 - `v0.1.13`: Tighten SEC-15/SEC-16 for Project 48 M11 typed declaration construction (`#977`): the AppTheory MicroVM is the only Hosted Genesis declaration producer; aiworker remains transport-only; five section tools carry exact candidate revision/hash bindings and reject unknown fields; accepted candidates and provider evidence checkpoint through guarded TableTheory transactions; deterministic review recovery and structurally bound affirmation lead to exact provider-free finalization; production transcript extraction, extraction target states, phrase-only affirmation, and fallback lanes stay deleted. Additive tightening; no legacy lane, raw SDK, content logging, exception, or skip.
