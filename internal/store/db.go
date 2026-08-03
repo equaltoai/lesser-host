@@ -37,6 +37,7 @@ func registeredModels() []any {
 		&models.TipHostState{},
 		&models.TipRegistryOperation{},
 		&models.UsageLedgerEntry{},
+		&models.UsageMeteringDedup{},
 		&models.User{},
 		&models.OperatorSession{},
 		&models.InstanceBudgetMonth{},
