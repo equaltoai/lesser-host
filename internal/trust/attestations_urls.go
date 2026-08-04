@@ -3,7 +3,7 @@ package trust
 import (
 	"strings"
 
-	apptheory "github.com/theory-cloud/apptheory/v2/runtime"
+	apptheory "github.com/theory-cloud/apptheory/v3/runtime"
 )
 
 func attestationURL(ctx *apptheory.Context, id string, publicBaseURL string) string {

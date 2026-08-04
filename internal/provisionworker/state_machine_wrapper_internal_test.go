@@ -10,8 +10,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/organizations"
 	orgtypes "github.com/aws/aws-sdk-go-v2/service/organizations/types"
-	apptheory "github.com/theory-cloud/apptheory/v2/runtime"
-	ttmocks "github.com/theory-cloud/tabletheory/v2/pkg/mocks"
+	apptheory "github.com/theory-cloud/apptheory/v3/runtime"
+	ttmocks "github.com/theory-cloud/tabletheory/v3/pkg/mocks"
 
 	"github.com/equaltoai/lesser-host/internal/config"
 	"github.com/equaltoai/lesser-host/internal/store"

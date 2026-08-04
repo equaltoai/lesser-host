@@ -95,19 +95,23 @@ type PrincipalDeclarationBindingV2 struct {
 }
 
 type SelfDescriptionV2 struct {
-	Purpose      string `json:"purpose"`
+	_ struct{} `theorydb:"naming:camelCase"`
+
+	Purpose      string `theorydb:"attr:purpose,omitempty" json:"purpose"`
 	Constraints  string `json:"constraints,omitempty"`
 	Commitments  string `json:"commitments,omitempty"`
 	Limitations  string `json:"limitations,omitempty"`
-	AuthoredBy   string `json:"authoredBy"`
+	AuthoredBy   string `theorydb:"attr:authoredBy,omitempty" json:"authoredBy"`
 	MintingModel string `json:"mintingModel,omitempty"`
 }
 
 type CapabilityV2 struct {
-	Capability    string         `json:"capability"`
-	Scope         string         `json:"scope"`
+	_ struct{} `theorydb:"naming:camelCase"`
+
+	Capability    string         `theorydb:"attr:capability,omitempty" json:"capability"`
+	Scope         string         `theorydb:"attr:scope,omitempty" json:"scope"`
 	Constraints   map[string]any `json:"constraints,omitempty"`
-	ClaimLevel    string         `json:"claimLevel"`
+	ClaimLevel    string         `theorydb:"attr:claimLevel,omitempty" json:"claimLevel"`
 	LastValidated string         `json:"lastValidated,omitempty"`
 	ValidationRef string         `json:"validationRef,omitempty"`
 	DegradesTo    string         `json:"degradesTo,omitempty"`

@@ -12,9 +12,9 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/codebuild"
 	cbtypes "github.com/aws/aws-sdk-go-v2/service/codebuild/types"
-	apptheory "github.com/theory-cloud/apptheory/v2/runtime"
-	"github.com/theory-cloud/apptheory/v2/testkit"
-	ttmocks "github.com/theory-cloud/tabletheory/v2/pkg/mocks"
+	apptheory "github.com/theory-cloud/apptheory/v3/runtime"
+	"github.com/theory-cloud/apptheory/v3/testkit"
+	ttmocks "github.com/theory-cloud/tabletheory/v3/pkg/mocks"
 
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"

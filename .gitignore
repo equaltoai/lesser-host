@@ -3,6 +3,8 @@
 .claude/
 .codex/
 .agents/
+.kimi-code/
+.theorymcp/
 opencode.json
 contracts/venv/
 .DS_Store

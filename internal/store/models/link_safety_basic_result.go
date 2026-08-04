@@ -10,27 +10,27 @@ import (
 type LinkSafetyBasicSummary struct {
 	_ struct{} `theorydb:"naming:camelCase"`
 
-	TotalLinks int `theorydb:"attr:totalLinks" json:"total_links"`
+	TotalLinks int `theorydb:"attr:totalLinks,omitempty" json:"total_links"`
 
-	LowCount     int `theorydb:"attr:lowCount" json:"low_count"`
-	MediumCount  int `theorydb:"attr:mediumCount" json:"medium_count"`
-	HighCount    int `theorydb:"attr:highCount" json:"high_count"`
-	BlockedCount int `theorydb:"attr:blockedCount" json:"blocked_count"`
-	InvalidCount int `theorydb:"attr:invalidCount" json:"invalid_count"`
+	LowCount     int `theorydb:"attr:lowCount,omitempty" json:"low_count"`
+	MediumCount  int `theorydb:"attr:mediumCount,omitempty" json:"medium_count"`
+	HighCount    int `theorydb:"attr:highCount,omitempty" json:"high_count"`
+	BlockedCount int `theorydb:"attr:blockedCount,omitempty" json:"blocked_count"`
+	InvalidCount int `theorydb:"attr:invalidCount,omitempty" json:"invalid_count"`
 
-	OverallRisk string `theorydb:"attr:overallRisk" json:"overall_risk"`
+	OverallRisk string `theorydb:"attr:overallRisk,omitempty" json:"overall_risk"`
 }
 
 // LinkSafetyBasicLinkResult contains the risk analysis for a single link.
 type LinkSafetyBasicLinkResult struct {
 	_ struct{} `theorydb:"naming:camelCase"`
 
-	URL           string   `theorydb:"attr:url" json:"url"`
+	URL           string   `theorydb:"attr:url,omitempty" json:"url"`
 	NormalizedURL string   `theorydb:"attr:normalizedUrl,omitempty" json:"normalized_url,omitempty"`
 	Host          string   `theorydb:"attr:host,omitempty" json:"host,omitempty"`
 	Flags         []string `theorydb:"attr:flags,omitempty" json:"flags,omitempty"`
 
-	Risk string `theorydb:"attr:risk" json:"risk"`
+	Risk string `theorydb:"attr:risk,omitempty" json:"risk"`
 
 	ErrorCode    string `theorydb:"attr:errorCode,omitempty" json:"error_code,omitempty"`
 	ErrorMessage string `theorydb:"attr:errorMessage,omitempty" json:"error_message,omitempty"`

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	apptheory "github.com/theory-cloud/apptheory/v2/runtime"
+	apptheory "github.com/theory-cloud/apptheory/v3/runtime"
 )
 
 // portalInstanceActivityResponse is the public DTO returned by

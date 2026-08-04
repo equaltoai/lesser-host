@@ -13,7 +13,7 @@ import (
 	"github.com/equaltoai/lesser-host/internal/store"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 	"github.com/stretchr/testify/mock"
-	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
+	theoryErrors "github.com/theory-cloud/tabletheory/v3/pkg/errors"
 )
 
 const hostedGenesisBenignCredentialSafetyProse = "Never expose a private key or bearer token."

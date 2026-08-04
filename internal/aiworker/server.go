@@ -20,8 +20,8 @@ import (
 	comprehendtypes "github.com/aws/aws-sdk-go-v2/service/comprehend/types"
 	"github.com/aws/aws-sdk-go-v2/service/rekognition"
 	rekognitiontypes "github.com/aws/aws-sdk-go-v2/service/rekognition/types"
-	apptheory "github.com/theory-cloud/apptheory/v2/runtime"
-	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
+	apptheory "github.com/theory-cloud/apptheory/v3/runtime"
+	theoryErrors "github.com/theory-cloud/tabletheory/v3/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/ai"
 	"github.com/equaltoai/lesser-host/internal/ai/llm"

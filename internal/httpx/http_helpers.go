@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 
-	apptheory "github.com/theory-cloud/apptheory/v2/runtime"
+	apptheory "github.com/theory-cloud/apptheory/v3/runtime"
 )
 
 // maxRequestBodySize is the maximum allowed JSON request body size (1 MB).

@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/mock"
-	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
+	theoryErrors "github.com/theory-cloud/tabletheory/v3/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )

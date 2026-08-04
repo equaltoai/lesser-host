@@ -15,7 +15,7 @@ import (
 	"time"
 
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
-	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
+	theoryErrors "github.com/theory-cloud/tabletheory/v3/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/artifacts"
 	"github.com/equaltoai/lesser-host/internal/store"

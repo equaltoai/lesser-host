@@ -3,9 +3,9 @@ package store
 import (
 	"context"
 
-	"github.com/theory-cloud/tabletheory/v2"
-	"github.com/theory-cloud/tabletheory/v2/pkg/core"
-	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
+	"github.com/theory-cloud/tabletheory/v3"
+	"github.com/theory-cloud/tabletheory/v3/pkg/core"
+	theoryErrors "github.com/theory-cloud/tabletheory/v3/pkg/errors"
 )
 
 // DB is the storage interface used by Store.

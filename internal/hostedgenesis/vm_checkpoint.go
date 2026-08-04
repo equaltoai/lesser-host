@@ -15,19 +15,21 @@ import (
 // Instance API keys, wallet signatures, SSM values, AWS credentials, or MicroVM
 // endpoint auth material.
 type VMCheckpointMetadata struct {
-	Sequence          int64  `json:"sequence"`
-	Ref               string `json:"ref"`
-	Hash              string `json:"hash"`
-	Step              string `json:"step"`
-	Action            string `json:"action"`
-	StatusFrom        string `json:"status_from"`
-	StatusTo          string `json:"status_to"`
-	Runtime           string `json:"runtime"`
+	_ struct{} `theorydb:"naming:snake_case"`
+
+	Sequence          int64  `theorydb:"attr:sequence,omitempty" json:"sequence"`
+	Ref               string `theorydb:"attr:ref,omitempty" json:"ref"`
+	Hash              string `theorydb:"attr:hash,omitempty" json:"hash"`
+	Step              string `theorydb:"attr:step,omitempty" json:"step"`
+	Action            string `theorydb:"attr:action,omitempty" json:"action"`
+	StatusFrom        string `theorydb:"attr:status_from,omitempty" json:"status_from"`
+	StatusTo          string `theorydb:"attr:status_to,omitempty" json:"status_to"`
+	Runtime           string `theorydb:"attr:runtime,omitempty" json:"runtime"`
 	ProviderFamily    string `json:"provider_family,omitempty"`
 	ModelID           string `json:"model_id,omitempty"`
 	ProviderSessionID string `json:"provider_session_id,omitempty"`
 	TraceID           string `json:"trace_id,omitempty"`
-	LatestTurnID      string `json:"latest_turn_id"`
+	LatestTurnID      string `theorydb:"attr:latest_turn_id,omitempty" json:"latest_turn_id"`
 	RequestID         string `json:"request_id,omitempty"`
 }
 

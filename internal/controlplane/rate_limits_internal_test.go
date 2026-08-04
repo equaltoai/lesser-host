@@ -11,10 +11,10 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/mock"
-	"github.com/theory-cloud/apptheory/v2/pkg/limited"
-	apptheory "github.com/theory-cloud/apptheory/v2/runtime"
-	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
-	ttmocks "github.com/theory-cloud/tabletheory/v2/pkg/mocks"
+	"github.com/theory-cloud/apptheory/v3/pkg/limited"
+	apptheory "github.com/theory-cloud/apptheory/v3/runtime"
+	theoryErrors "github.com/theory-cloud/tabletheory/v3/pkg/errors"
+	ttmocks "github.com/theory-cloud/tabletheory/v3/pkg/mocks"
 
 	"github.com/equaltoai/lesser-host/internal/config"
 	"github.com/equaltoai/lesser-host/internal/store"

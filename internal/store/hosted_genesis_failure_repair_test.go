@@ -6,10 +6,10 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/stretchr/testify/require"
-	"github.com/theory-cloud/tabletheory/v2"
-	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"
-	"github.com/theory-cloud/tabletheory/v2/pkg/session"
-	"github.com/theory-cloud/tabletheory/v2/pkg/testing/fakedb"
+	"github.com/theory-cloud/tabletheory/v3"
+	theoryErrors "github.com/theory-cloud/tabletheory/v3/pkg/errors"
+	"github.com/theory-cloud/tabletheory/v3/pkg/session"
+	"github.com/theory-cloud/tabletheory/v3/pkg/testing/fakedb"
 
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
 	"github.com/equaltoai/lesser-host/internal/store/models"

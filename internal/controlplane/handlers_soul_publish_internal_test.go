@@ -10,8 +10,8 @@ import (
 
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/ethereum/go-ethereum/common"
-	apptheory "github.com/theory-cloud/apptheory/v2/runtime"
-	ttmocks "github.com/theory-cloud/tabletheory/v2/pkg/mocks"
+	apptheory "github.com/theory-cloud/apptheory/v3/runtime"
+	ttmocks "github.com/theory-cloud/tabletheory/v3/pkg/mocks"
 
 	"github.com/stretchr/testify/mock"
 
