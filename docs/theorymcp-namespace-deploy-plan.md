@@ -1,14 +1,14 @@
-# TheoryMCP authentication: bypass approach and deployment plan
+# TheoryMCP authentication and namespace-assisted deployment plan
 
-Status: planning. Branch: `satish/theorymcp-namespace-standup-for-lesser-host`.
+Status: offline implementation complete; cloud execution deferred until AWS credentials and a vended namespace are
+available. Branch: `satish/theorymcp-namespace-standup-for-lesser-host`.
 
 ## Problem
 
-lesser-host deployment and stewardship flows surface the Theory Cloud MCP server (`theory-cloud/theory-mcp-server`,
-internal) whenever an agent, CLI, or deploy-guidance pack needs routed MCP access. The hosted surface (`theorymcp.ai`)
-requires Autheory-issued OAuth access tokens (JWT, validated via JWKS) for every routed namespace/agent MCP endpoint.
-Without hosted Autheory credentials for the operator's account, the MCP authentication step blocks the lesser-host
-startup/deploy flow.
+lesser-host deployment and stewardship flows may surface the hosted TheoryMCP service when an agent, CLI, or
+deploy-guidance pack needs routed MCP access. The hosted surface requires route-scoped authentication. That prompt is
+separate from lesser-host's AWS deployment credentials and must not be addressed by weakening auth or deploying an
+unmanaged copy of theory-mcp-server.
 
 ## How the hosted authentication works
 
@@ -24,54 +24,46 @@ From `theory-cloud/theory-mcp-server` (`internal/auth/validator.go`, `issuer.go`
      `client_namespace`.
 3. The runtime fails closed at startup if `AUTHEORY_ISSUER_URL` or `THEORY_MCP_PUBLIC_BASE_URL` is missing.
 
-## Bypass strategy: self-owned instance + self-owned namespace
+## Correct boundary: pre-vended namespace + preserved authentication
 
-Instead of authenticating against the hosted `theorymcp.ai` + Autheory, deploy a **self-owned `theory-mcp-server`**
-instance and route lesser-host's MCP consumers at a **self-owned namespace** on it. Two levers exist in the code:
+Review of the TheoryMCP namespace-vending contract establishes that independent namespace bootstrap is not a
+lesser-host responsibility:
 
-1. **Own the namespace** — the internal namespace-vending API (`POST /v1/internal/namespace-vending` in
-   `cmd/api/namespace_vending.go`) seeds tenant → namespace → agent accounts → soul/instructions → skill bank →
-   install layouts → lifecycle packs for a routed `client_namespace`. This is the same mechanism the hosted service
-   uses, exposed on the self-owned deployment.
-2. **Own the auth** — the **harness namespace-key** path (`internal/auth/harness_keys.go`) validates static
-   namespace keys (SHA-256 of the raw key, stored in a Secrets Manager registry) instead of JWKS/OAuth. It is
-   **lab-only by design**: the runtime rejects harness keys for `live` stages
-   (`internal/runtimeconfig/harness_keys.go`). This removes the Autheory dependency for lab/development.
+1. The internal namespace-vending API is an `AWS_IAM` handoff owned by TheoryMCP and TheoryCloud.ai.
+2. TheoryMCP creates an exact stage-scoped caller role in its account and trusts the TheoryCloud.ai account to assume
+   it. A lesser-host operator does not independently assume that role or seed the first namespace.
+3. The public MCP route becomes usable only after the owner vends the namespace and optional agent endpoint.
+4. Normal consumers complete route-scoped Autheory OAuth. A harness key is a lab-only, operator-issued validation
+   credential for an already-vended namespace; it is not a general OAuth bypass or bootstrap path.
 
-Why harness keys: no JWKS discovery, no Autheory account, no token endpoint — a raw bearer token scoped to the
-namespace, mirroring lesser-host's own instance-key auth pattern (`sha256(raw_key)` matching). Aligns with the
-existing trust posture.
+Therefore this change does not modify lesser-host auth or deploy theory-mcp-server. It implements a safe offline plan
+for consuming a pre-vended namespace and separately previewing lesser-host's AppTheory deploy contract.
 
 ## Deployment plan
 
-1. **Deploy self-owned theory-mcp-server (lab)**
-   - Repo: `theory-cloud/theory-mcp-server` (internal), branch `premain` (lab source).
-   - Command: `./scripts/theorycloud-install --stage lab --profile Mcp`
-   - Override deploy contract parameters (`app-theory/app.json`): own `hostedZoneId`/`hostedZoneName`; own
-     `namespaceVendingCallerPrincipalArn` (`arn:aws:iam::<ACCOUNT>:role/theorycloud-ai-namespace-vending-lab`).
-     Genome id/version/checksum are server-pinned and must not change.
-   - Create the `theorycloud-ai-namespace-vending-lab` role in the deploy account and allow the `Mcp` profile to
-     assume it (the CDK construct validates role name + account).
-2. **Configure harness namespace-key registry**
-   - Secrets Manager secret `theory-mcp-server/lab/mcp-harness-namespace-keys` (JSON registry with
-     `client_namespace`, `key_id`, `token_sha256`, `expires_at`, `status`, `scopes`).
-   - Mint raw keys; store only SHA-256.
-3. **Seed the namespace**
-   - Call `POST /v1/internal/namespace-vending` (SigV4, caller-restricted) to seed tenant/namespace/agents/layouts.
-   - Namespace routes resolve: `/{your-namespace}/mcp`, `/{your-namespace}/agents/{agent}/mcp`.
-4. **Point lesser-host MCP consumers at the self-owned routes**
-   - MCP client configs (Codex/Claude Code/opencode) use `https://<your-domain>/<your-namespace>/mcp` with the
-     harness namespace key as bearer token.
-   - lesser-host deploy guidance then runs against the self-owned instance (no hosted Autheory needed).
-5. **Proceed with lesser-host**
-   - `AWS_PROFILE=<profile> theory app up --stage lab --execute` (AppTheory contract; never direct CDK).
-   - Then provision a managed instance via the portal (provisions lesser + lesser-body).
+1. **Owner vends the namespace (external prerequisite)**
+   - Obtain `client_namespace`, optional `agent_id`, stage, and approved auth path from the owner.
+2. **Render the zero-cloud implementation plan**
+   - Run `bash scripts/plan-theorymcp-assisted-deploy.sh --client-namespace <slug> --agent-id <slug> --profile default`.
+   - The script validates route segments, prints the MCP routes, and invokes only the symbolic `theory app up`
+     preview. It hard-refuses live and execution flags.
+3. **Prepare the provenance-valid deployment checkout**
+   - Initialize `factory/products/lesser-host`; actual deploys from a standalone clone fail closed in
+     `scripts/validate-deploy-provenance.sh`.
+4. **Authenticate to TheoryMCP**
+   - Complete route-scoped OAuth, or use an operator-issued lab harness key without putting it in git or command
+     history.
+5. **Add AWS credentials and deploy later**
+   - Once profile `default` is valid and the exact lab invocation is authorized, run
+     `theory app up --stage lab --execute` from the Factory submodule.
+   - Then provision the managed instance through lesser-host (which deploys lesser and lesser-body).
 
 ## Security and governance notes
 
-- **Lab-only**: harness keys fail closed on live. Do not enable this posture on `live`.
-- **No secrets in git**: registry payloads and raw keys stay in Secrets Manager / operator vaults.
-- **Do not weaken the hosted service**: this bypass applies to the operator's self-owned deployment only.
+- **No auth bypass**: lesser-host does not disable or substitute TheoryMCP authorization.
+- **Lab-only harness posture**: harness keys fail closed on live and are issued by the TheoryMCP operator.
+- **No secrets in git**: OAuth tokens, harness keys, AWS credentials, and receipts stay in approved secret stores.
+- **Hosted-service boundary**: theory-mcp-server is consumed, not vendored or redistributed.
 - **Gov-infra**: any verifier change in `theory-mcp-server` must pass
   `bash gov-infra/verifiers/gov-verify-rubric.sh`; do not weaken gates.
 - **lesser-host discipline** still applies: gov-infra rubric, multi-tenant isolation, consumer release verification,
@@ -79,5 +71,6 @@ existing trust posture.
 
 ## Files
 
-- Runbook: `docs/runbooks/theorymcp-namespace-standup.md`
+- Offline planner: `scripts/plan-theorymcp-assisted-deploy.sh`
+- Runbook: `docs/runbooks/theorymcp-namespace-assisted-deploy.md`
 - This plan: `docs/theorymcp-namespace-deploy-plan.md`
