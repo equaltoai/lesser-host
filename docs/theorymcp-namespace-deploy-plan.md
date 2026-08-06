@@ -41,10 +41,12 @@ for consuming a pre-vended namespace and separately previewing lesser-host's App
 
 ## Deployment plan
 
-1. **Owner vends the namespace (external prerequisite)**
-   - Obtain `client_namespace`, optional `agent_id`, stage, and approved auth path from the owner.
+1. **Use the existing Theory Cloud namespace**
+   - The canonical lab deploy-guidance route is `https://lab.theorymcp.ai/theorycloud/mcp`.
+   - Read-only validation confirmed route-scoped OAuth metadata with `offline_access`, `mcp:tools`, and
+     `ai.kb.query`. No new Theory Cloud namespace or agent is requested.
 2. **Render the zero-cloud implementation plan**
-   - Run `bash scripts/plan-theorymcp-assisted-deploy.sh --client-namespace <slug> --agent-id <slug> --profile default`.
+   - Run `bash scripts/plan-theorymcp-assisted-deploy.sh --profile default`; `theorycloud` is the namespace default.
    - The script validates route segments, prints the MCP routes, and invokes only the symbolic `theory app up`
      preview. It hard-refuses live and execution flags.
 3. **Prepare the provenance-valid deployment checkout**
@@ -57,6 +59,8 @@ for consuming a pre-vended namespace and separately previewing lesser-host's App
    - Once profile `default` is valid and the exact lab invocation is authorized, run
      `theory app up --stage lab --execute` from the Factory submodule.
    - Then provision the managed instance through lesser-host (which deploys lesser and lesser-body).
+   - Build the job-finder capability in the provisioned lesser/lesser-body plane; do not invent a TheoryMCP
+     `job-finder` route as part of host deployment.
 
 ## Security and governance notes
 

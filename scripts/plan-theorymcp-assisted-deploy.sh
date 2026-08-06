@@ -4,7 +4,7 @@ set -euo pipefail
 usage() {
   cat <<'USAGE'
 usage: bash scripts/plan-theorymcp-assisted-deploy.sh \
-  --client-namespace <namespace> [--agent-id <agent>] \
+  [--client-namespace <namespace>] [--agent-id <agent>] \
   [--base-url <https-url>] [--auth-mode <oauth|harness>] \
   [--profile <aws-profile>] [--stage lab]
 
@@ -12,6 +12,7 @@ Prints an offline TheoryMCP connection plan and the symbolic lesser-host
 AppTheory deploy preview. It never accepts --execute and never calls AWS.
 
 Defaults:
+  --client-namespace theorycloud
   --base-url https://lab.theorymcp.ai
   --auth-mode oauth
   --profile default
@@ -28,7 +29,7 @@ stage="lab"
 profile="default"
 base_url="https://lab.theorymcp.ai"
 auth_mode="oauth"
-client_namespace=""
+client_namespace="theorycloud"
 agent_id=""
 
 while [ "$#" -gt 0 ]; do
@@ -102,7 +103,6 @@ validate_namespace() {
   [[ "$value" != *--* ]] || fail "client namespace must not contain consecutive hyphens"
 }
 
-[ -n "$client_namespace" ] || fail "--client-namespace is required"
 validate_namespace "$client_namespace"
 
 if [ -n "$agent_id" ]; then

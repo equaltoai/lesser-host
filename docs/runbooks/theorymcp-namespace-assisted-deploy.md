@@ -21,24 +21,28 @@ boundaries:
 
 ## Prerequisites
 
-- A TheoryMCP namespace and optional agent route vended by TheoryCloud.ai.
+- The existing `theorycloud` TheoryMCP namespace.
 - Route-scoped Autheory OAuth access, or a lab harness key issued by the TheoryMCP operator.
 - The `theory` CLI.
 - A local clone of `factory` with the `products/lesser-host` submodule initialized for eventual deployment.
 - Valid AWS credentials are not needed for the offline planning step.
 
-## Step 1 — Obtain the routed namespace from the owner
+## Step 1 — Use the existing routed namespace
 
 TheoryMCP's account-owned namespace vending API is an internal `AWS_IAM` contract between TheoryMCP and
 TheoryCloud.ai. Its caller role is created in the TheoryMCP account and trusted to the TheoryCloud.ai account. A
 lesser-host operator does not call that API directly or replace it with a client-generated key.
 
-Request these non-secret values from the owner:
+Use the canonical existing namespace route:
 
-- `client_namespace` (for example, a namespace dedicated to the job-finder project);
-- optional `agent_id`;
-- stage (`lab` for this runbook);
-- the approved authentication path: route-scoped OAuth, or an operator-issued lab harness key.
+```text
+https://lab.theorymcp.ai/theorycloud/mcp
+```
+
+Read-only validation on 2026-08-06 confirmed its RFC 9728 metadata and route-scoped OAuth facade. The namespace route
+advertises `offline_access`, `mcp:tools`, and `ai.kb.query`, with authorization-code + PKCE and refresh-token grants.
+No new namespace or Theory Cloud agent is required for lesser-host deploy guidance. The job-finder agent remains a
+later lesser/lesser-body concern after the host provisions the instance.
 
 ## Step 2 — Render the offline plan
 
@@ -46,8 +50,6 @@ From this repository, run:
 
 ```bash
 bash scripts/plan-theorymcp-assisted-deploy.sh \
-  --client-namespace <your-namespace> \
-  --agent-id <your-agent-id> \
   --profile default
 ```
 
@@ -58,8 +60,10 @@ The planner:
 - invokes `theory app up` without `--execute`, producing only the symbolic AppTheory preview;
 - never calls AWS and refuses `live`, `--execute`, and `--confirm-live`.
 
-If the TheoryMCP operator specifically issued a lab harness key, add `--auth-mode harness`. Do not put the key on
-the command line or in git; configure it in the MCP client's secret store.
+The planner defaults to `theorycloud`. `--agent-id` is optional and must only name an agent that already exists; do
+not use it to invent a `job-finder` route. If the TheoryMCP operator specifically issued a lab harness key, add
+`--auth-mode harness`. Do not put the key on the command line or in git; configure it in the MCP client's secret
+store.
 
 ## Step 3 — Prepare the Factory deployment checkout
 
