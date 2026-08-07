@@ -7,18 +7,16 @@
  */
 
 import { Observable, type FetchResult, type OperationVariables } from '@apollo/client';
-import type { ApolloClient as ApolloClientNamespace } from '@apollo/client';
-
-type QueryOptionsFor<
-	TData,
-	TVariables extends OperationVariables,
-> = ApolloClientNamespace.QueryOptions<TData, TVariables>;
-type MutationOptionsFor<
-	TData,
-	TVariables extends OperationVariables,
-> = ApolloClientNamespace.MutateOptions<TData, TVariables>;
 import type { TypedDocumentNode } from '@graphql-typed-document-node/core';
 import { print } from 'graphql';
+
+type QueryArguments<TVariables extends OperationVariables> = {} extends TVariables
+	? [variables?: TVariables, fetchPolicy?: 'cache-first' | 'network-only']
+	: [variables: TVariables, fetchPolicy?: 'cache-first' | 'network-only'];
+
+type MutationArguments<TVariables extends OperationVariables> = {} extends TVariables
+	? [variables?: TVariables]
+	: [variables: TVariables];
 
 import {
 	createGraphQLClient,
@@ -589,22 +587,21 @@ export class LesserGraphQLAdapter {
 		TVariables extends OperationVariables = OperationVariables,
 	>(
 		document: TypedDocumentNode<TData, TVariables>,
-		variables?: TVariables,
-		fetchPolicy: 'cache-first' | 'network-only' = 'network-only'
+		...args: QueryArguments<TVariables>
 	): Promise<TData> {
-		const options = {
-			query: document,
-			variables,
-			fetchPolicy,
-		} as unknown as QueryOptionsFor<TData, TVariables>;
-
+		const [variables, fetchPolicy = 'network-only'] = args;
+		const operationVariables = variables ?? ({} as TVariables);
 		let result: {
 			data?: TData | null;
 			errors?: Array<{ message?: string }>;
 			error?: unknown;
 		};
 		try {
-			result = (await this.client.client.query<TData, TVariables>(options)) as typeof result;
+			result = (await this.client.client.query({
+				query: document,
+				variables: operationVariables,
+				fetchPolicy,
+			})) as typeof result;
 		} catch (error) {
 			throw createUserSafeAdapterError(USER_SAFE_GRAPHQL_ERROR_MESSAGE, error);
 		}
@@ -637,18 +634,22 @@ export class LesserGraphQLAdapter {
 	public async mutate<
 		TData extends Record<string, unknown>,
 		TVariables extends OperationVariables = OperationVariables,
-	>(document: TypedDocumentNode<TData, TVariables>, variables?: TVariables): Promise<TData> {
-		const options = {
-			mutation: document,
-			variables,
-		} as unknown as MutationOptionsFor<TData, TVariables>;
+	>(
+		document: TypedDocumentNode<TData, TVariables>,
+		...args: MutationArguments<TVariables>
+	): Promise<TData> {
+		const [variables] = args;
+		const operationVariables = variables ?? ({} as TVariables);
 		let result: {
 			data?: TData | null;
 			errors?: Array<{ message?: string }>;
 			error?: unknown;
 		};
 		try {
-			result = (await this.client.client.mutate<TData, TVariables>(options)) as typeof result;
+			result = (await this.client.client.mutate({
+				mutation: document,
+				variables: operationVariables,
+			})) as typeof result;
 		} catch (error) {
 			throw createUserSafeAdapterError(USER_SAFE_GRAPHQL_ERROR_MESSAGE, error);
 		}

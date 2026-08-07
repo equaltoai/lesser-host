@@ -16,7 +16,6 @@ import {
 	HttpLink,
 	split,
 	from,
-	type DefaultOptions,
 } from '@apollo/client';
 import { GraphQLWsLink } from '@apollo/client/link/subscriptions/index.js';
 import { getMainDefinition } from '@apollo/client/utilities/index.js';
@@ -322,7 +321,7 @@ export function createGraphQLClient(config: GraphQLClientConfig): GraphQLClientI
 	const link = from([errorLink, retryLink, splitLink]);
 
 	// Default options for all operations
-	const defaultOptions: DefaultOptions = {
+	const defaultOptions: ApolloClient.DefaultOptions.Input = {
 		watchQuery: {
 			fetchPolicy: 'cache-and-network',
 			errorPolicy: 'all',
