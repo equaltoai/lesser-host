@@ -1,6 +1,5 @@
 import "dotenv/config";
 import HardhatEthers from "@nomicfoundation/hardhat-ethers";
-import HardhatVerify from "@nomicfoundation/hardhat-verify";
 
 /** @type import('hardhat/config').HardhatUserConfig */
 const sepoliaUrl = process.env.SEPOLIA_RPC_URL;
@@ -44,7 +43,7 @@ if (mainnetUrl) {
 }
 
 const config = {
-  plugins: [HardhatEthers, HardhatVerify],
+  plugins: [HardhatEthers],
   solidity: {
     version: "0.8.24",
     settings: {
@@ -53,11 +52,6 @@ const config = {
         enabled: true,
         runs: 200,
       },
-    },
-  },
-  verify: {
-    etherscan: {
-      apiKey: process.env.ETHERSCAN_API_KEY ?? "",
     },
   },
   paths: {

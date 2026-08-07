@@ -820,7 +820,7 @@ interface HostedGenesisMicrovmAuthTokenProvisioning {
 // hostedGenesisMicrovmAuthTokenSSMParamName).
 //
 // The custom resource is a Lambda-backed Provider (customresources.Provider +
-// an inline Node 20 handler). The handler is inline (no external asset) so the
+// an inline Node 24 handler). The handler is inline (no external asset) so the
 // raw-token lifecycle stays entirely in this file's review surface and never
 // touches a separately-built artifact. The provider's role is granted
 // ssm:PutParameter + ssm:GetParameter + ssm:DeleteParameter + kms:Decrypt on
@@ -848,7 +848,7 @@ function provisionHostedGenesisMicrovmAuthToken(
     functionName: `${props.stage}-hosted-genesis-microvm-auth-token-provisioner`,
     description:
       "CDK-owned hosted-genesis MicroVM controller authorizer bearer token generator (P52 #873)",
-    runtime: lambda.Runtime.NODEJS_20_X,
+    runtime: lambda.Runtime.NODEJS_24_X,
     handler: "index.handler",
     code: lambda.Code.fromInline(hostedGenesisMicrovmAuthTokenHandler),
     memorySize: 256,

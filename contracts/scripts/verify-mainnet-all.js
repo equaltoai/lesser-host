@@ -3,11 +3,10 @@
 // deploy-mainnet-all.js and BEFORE executing the Safe post-deploy batch.
 //
 // Usage: ETHERSCAN_API_KEY=... npm run verify:mainnet:all
-import hre from "hardhat";
-import { verifyContract } from "@nomicfoundation/hardhat-verify/verify";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { loadVerificationInput, verifyOnEtherscan } from "./lib/etherscan-verify.js";
 
 const DEFAULT_DEPLOYMENT_RECORD = "../docs/deployments/mainnet/latest.json";
 
@@ -52,9 +51,13 @@ async function main() {
     const address = addr(name);
     console.log(`Verifying ${name} at ${address} ...`);
     try {
-      const ok = await verifyContract({ address, constructorArgs, provider: "etherscan" }, hre);
-      console.log(`  ${name}: ${ok ? "verified (or already verified)" : "verification returned false"}`);
-      if (!ok) failures.push(name);
+      const input = loadVerificationInput({ contractsDir, contractName: name, constructorArgs });
+      await verifyOnEtherscan({
+        ...input,
+        address,
+        apiKey: optionalEnv("ETHERSCAN_API_KEY"),
+      });
+      console.log(`  ${name}: verified (or already verified)`);
     } catch (err) {
       console.error(`  ${name}: verification failed: ${err.message ?? err}`);
       failures.push(name);

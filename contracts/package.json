@@ -23,25 +23,24 @@
     "create:mainnet-mint-signer-env": "node scripts/create-mainnet-mint-signer-env.js",
     "deploy:mainnet:all": "hardhat run --network mainnet scripts/deploy-mainnet-all.js",
     "deploy:mainnet:rehearsal": "REHEARSAL=1 MAINNET_DEPLOY_CHECKPOINT_PATH=/tmp/lesser-mainnet-rehearsal/deploy-checkpoint.json MAINNET_DEPLOYMENT_RECORD_PATH=/tmp/lesser-mainnet-rehearsal/latest.json MAINNET_SAFE_TX_BUILDER_PATH=/tmp/lesser-mainnet-rehearsal/safe-tx-builder-soul-tip-post-deploy.json hardhat run --network mainnetFork scripts/deploy-mainnet-all.js",
-    "verify:mainnet:all": "hardhat run --network mainnet scripts/verify-mainnet-all.js"
+    "verify:mainnet:all": "hardhat compile && node scripts/verify-mainnet-all.js"
   },
   "devDependencies": {
-    "@nomicfoundation/hardhat-ethers": "^4.0.6",
-    "@nomicfoundation/hardhat-network-helpers": "^3.0.4",
-    "@nomicfoundation/hardhat-verify": "^3.0.20",
+    "@nomicfoundation/hardhat-ethers": "^4.0.15",
+    "@nomicfoundation/hardhat-network-helpers": "^3.0.11",
     "@openzeppelin/contracts": "5.6.1",
-    "dotenv": "^17.3.1",
-    "ethers": "^6.16.0",
-    "hardhat": "^3.1.12",
-    "solhint": "^6.0.3"
+    "dotenv": "^17.4.2",
+    "ethers": "^6.17.0",
+    "hardhat": "^3.12.0",
+    "solhint": "^6.2.3"
   },
   "overrides": {
-    "minimatch": "10.2.4",
-    "undici": "6.27.0",
-    "fast-uri": "3.1.4",
-    "brace-expansion": "5.0.8",
-    "js-yaml": "4.3.0",
-    "ws": "8.21.0",
+    "minimatch": "10.2.6",
+    "undici": "6.28.0",
+    "fast-uri": "3.1.5",
+    "brace-expansion": "5.0.9",
+    "js-yaml": "4.3.1",
+    "ws": "8.21.2",
     "adm-zip": "0.6.0"
   }
 }
