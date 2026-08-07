@@ -1108,7 +1108,7 @@ test("P52 #873: CDK-owned auth-token custom resource generates the bearer token 
     "expected the CDK-owned auth-token custom resource to synthesize with the deterministic param name",
   );
 
-  // The provisioner Lambda (inline Node 20 handler) synthesizes with the
+  // The provisioner Lambda (inline Node 24 handler) synthesizes with the
   // param name in its env and the deterministic function name.
   const provisionerFn = findResourceEntries(
     template,
@@ -1121,6 +1121,11 @@ test("P52 #873: CDK-owned auth-token custom resource generates the bearer token 
   assert.ok(
     provisionerFn,
     "expected the auth-token provisioner Lambda to synthesize",
+  );
+  assert.equal(
+    provisionerFn[1].Properties?.Runtime,
+    "nodejs24.x",
+    "expected the auth-token provisioner to use the supported Node 24 Lambda runtime",
   );
   const provisionerEnv = lambdaEnvironment(provisionerFn[1].Properties ?? {});
   assert.equal(
