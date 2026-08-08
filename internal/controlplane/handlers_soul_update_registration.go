@@ -465,9 +465,9 @@ func (s *Server) syncSoulV3StateFromRegistration(ctx context.Context, agentIDHex
 
 func (s *Server) syncSoulV3ContactPreferences(ctx context.Context, agentIDHex string, prefs *soul.ContactPreferencesV3, now time.Time) *apptheory.AppTheoryError {
 	if prefs == nil {
-		pref := &models.SoulAgentContactPreferences{AgentID: agentIDHex}
-		_ = pref.UpdateKeys()
-		_ = s.store.DB.WithContext(ctx).Model(pref).Delete()
+		// Registration v3 makes contactPreferences optional. Omission is not an
+		// explicit deletion request and must not erase previously materialized
+		// preferences during a partial registration re-publication.
 		return nil
 	}
 
@@ -622,6 +622,13 @@ func (s *Server) syncSoulV3Channel(
 	if err != nil {
 		return err
 	}
+	if preserveHostManagedSoulEmailOmission(existing, desired) {
+		// Registration v3 makes channels optional. A Migadu provider marker can
+		// only originate from Host provisioning because the email registration
+		// schema has no provider field. Preserve that external-resource binding
+		// even if older persistence omitted other trust metadata.
+		return nil
+	}
 	legacyEmailAlias, appErr := s.buildLegacyEmailAliasForManagedMigration(ctx, identity, existing, desired, channelType)
 	if appErr != nil {
 		return appErr
@@ -639,10 +646,8 @@ func (s *Server) syncSoulV3Channel(
 			return appErr
 		}
 	}
-	if channelType == models.SoulChannelTypeENS && desiredENS != nil {
-		if appErr := s.preflightSoulENSResolutionAssignable(ctx, desiredENS); appErr != nil {
-			return appErr
-		}
+	if appErr := s.preflightSoulV3ENSResolution(ctx, channelType, desiredENS); appErr != nil {
+		return appErr
 	}
 	if appErr := s.cleanupSoulV3ChannelIndexes(ctx, agentIDHex, channelType, identity, existing, desired); appErr != nil {
 		return appErr
@@ -654,6 +659,26 @@ func (s *Server) syncSoulV3Channel(
 		return appErr
 	}
 	return nil
+}
+
+func (s *Server) preflightSoulV3ENSResolution(ctx context.Context, channelType string, desiredENS *models.SoulAgentENSResolution) *apptheory.AppTheoryError {
+	if channelType != models.SoulChannelTypeENS || desiredENS == nil {
+		return nil
+	}
+	return s.preflightSoulENSResolutionAssignable(ctx, desiredENS)
+}
+
+func preserveHostManagedSoulEmailOmission(existing, desired *models.SoulAgentChannel) bool {
+	return desired == nil && hostManagedSoulEmailChannel(existing)
+}
+
+func hostManagedSoulEmailChannel(ch *models.SoulAgentChannel) bool {
+	if ch == nil {
+		return false
+	}
+	chCopy := *ch
+	_ = chCopy.UpdateKeys()
+	return chCopy.ChannelType == models.SoulChannelTypeEmail && chCopy.Provider == commDeliveryProviderMigadu
 }
 
 func (s *Server) buildLegacyEmailAliasForManagedMigration(
