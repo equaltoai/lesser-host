@@ -193,6 +193,9 @@ func newMintConversationServer(tdb *mintConversationTestDB) *Server {
 		},
 		store:     store.New(tdb.db),
 		soulPacks: &fakeSoulPackStoreForPublish{},
+		hostedGenesisEmailProvisioner: func(_ *apptheory.Context, _ *models.SoulAgentIdentity, _ *models.Instance) *apptheory.AppTheoryError {
+			return nil
+		},
 	}
 }
 
