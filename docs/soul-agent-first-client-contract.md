@@ -350,6 +350,14 @@ candidate bytes. Lesser polls the canonical GET status until `declaration_ready`
 calls the explicit instance-key `/finalize` route (`PublishHostedSoul`) to publish the instance-trust hosted/off-chain
 registration. The status read is read-only with respect to publication and must not be used as a substitute for publish.
 
+Hosted instance-trust finalization also establishes the agent's required canonical managed email channel
+(`<agent-local-id>.<instance-slug>@lessersoul.ai`) before the registration can become published. Host reserves the
+channel, stores the provider password only in the agent-scoped SSM SecureString, creates or safely resumes the Migadu
+mailbox, ensures inbound forwarding, and materializes the channel ownership indexes. A provider, SSM, forwarding, or
+state-write failure fails finalization closed: the client does not receive `published`, and an exact retry resumes the
+durable provisional claim without returning or logging the credential. Wallet-principal agents retain the explicit,
+signed email-provisioning flow.
+
 For portal/native Host UI routes:
 
 - registration-scoped:

@@ -43,10 +43,12 @@ type Server struct {
 	fetchInstanceKeyPlaintextFunc     func(ctx context.Context, inst *models.Instance) (string, error)
 	resolveInstanceMetricsBaseURLFunc func(inst *models.Instance) (string, error)
 	mintConversationStreamer          func(ctx context.Context, eventCh chan<- apptheory.SSEEvent, p streamMintConversationParams)
+	hostedGenesisEmailProvisioner     func(ctx *apptheory.Context, identity *models.SoulAgentIdentity, inst *models.Instance) *apptheory.AppTheoryError
 
 	ssmGetParameter     func(ctx context.Context, name string) (string, error)
 	ssmPutSecureValue   func(ctx context.Context, name string, value string, overwrite bool) error
 	migaduCreateEmail   func(ctx context.Context, localPart string, name string, password string) error
+	migaduUpdateEmail   func(ctx context.Context, localPart string, password string) error
 	migaduForwarding    func(ctx context.Context, localPart string, address string) error
 	migaduDeleteEmail   func(ctx context.Context, localPart string) error
 	migaduSendSMTP      func(ctx context.Context, username string, password string, from string, recipients []string, data []byte) error
@@ -91,6 +93,7 @@ func NewServer(cfg config.Config, st *store.Store) *Server {
 		ssmGetParameter:     defaultSSMGetParameter,
 		ssmPutSecureValue:   defaultSSMPutSecureString,
 		migaduCreateEmail:   defaultMigaduCreateMailbox,
+		migaduUpdateEmail:   defaultMigaduUpdateMailboxPassword,
 		migaduForwarding:    defaultMigaduCreateForwarding,
 		migaduDeleteEmail:   defaultMigaduDeleteMailbox,
 		migaduSendSMTP:      defaultMigaduSendSMTP,
