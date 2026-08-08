@@ -1500,7 +1500,7 @@ func TestEnsureSoulENSResolution_RejectsInvalidAndForeignOwner(t *testing.T) {
 	}
 }
 
-func TestSyncSoulV3StateFromRegistration_DeletesContactPreferencesWhenOmitted(t *testing.T) {
+func TestSyncSoulV3StateFromRegistration_PreservesContactPreferencesWhenOmitted(t *testing.T) {
 	t.Parallel()
 
 	tdb := newSoulLifecycleTestDB()
@@ -1517,18 +1517,74 @@ func TestSyncSoulV3StateFromRegistration_DeletesContactPreferencesWhenOmitted(t 
 		t.Fatalf("unexpected appErr: %v", appErr)
 	}
 
-	foundPrefsDeleteModel := false
+	foundPrefsMutation := false
 	for _, call := range tdb.db.Calls {
 		if call.Method != "Model" || len(call.Arguments) == 0 {
 			continue
 		}
 		prefs, ok := call.Arguments.Get(0).(*models.SoulAgentContactPreferences)
 		if ok && prefs.AgentID == identity.AgentID {
-			foundPrefsDeleteModel = true
+			foundPrefsMutation = true
 		}
 	}
-	if !foundPrefsDeleteModel {
-		t.Fatalf("expected contact preference delete model call when preferences are omitted")
+	if foundPrefsMutation {
+		t.Fatalf("contact preferences must remain unchanged when omitted")
+	}
+}
+
+func TestSyncSoulV3Channel_PreservesManagedEmailWhenOmitted(t *testing.T) {
+	t.Parallel()
+
+	tdb := newSoulLifecycleTestDB()
+	s := &Server{store: store.New(tdb.db)}
+	identity := &models.SoulAgentIdentity{
+		AgentID: soulLifecycleTestAgentIDHex,
+		Domain:  "example.com",
+		LocalID: "agent-alice",
+	}
+
+	tdb.qChannel.On("First", mock.AnythingOfType("*models.SoulAgentChannel")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulAgentChannel](t, args, 0)
+		*dest = models.SoulAgentChannel{
+			AgentID:     identity.AgentID,
+			ChannelType: models.SoulChannelTypeEmail,
+			Identifier:  "agent-alice@example.com",
+			Provider:    commDeliveryProviderMigadu,
+			SecretRef:   "/lesser-host/soul/live/agents/0xabc/channels/email/migadu_password",
+			Status:      models.SoulChannelStatusActive,
+		}
+	}).Once()
+
+	if appErr := s.syncSoulV3Channel(context.Background(), identity.AgentID, identity, models.SoulChannelTypeEmail, nil, nil, nil, nil); appErr != nil {
+		t.Fatalf("managed email omission must be a no-op, got %v", appErr)
+	}
+
+	for _, call := range tdb.db.Calls {
+		if call.Method == "Delete" {
+			t.Fatalf("managed email omission must not delete state: %#v", call)
+		}
+	}
+}
+
+func TestHostManagedSoulEmailChannel(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		ch   *models.SoulAgentChannel
+		want bool
+	}{
+		{name: "nil"},
+		{name: "unmanaged email", ch: &models.SoulAgentChannel{ChannelType: models.SoulChannelTypeEmail, Provider: "external"}},
+		{name: "migadu phone", ch: &models.SoulAgentChannel{ChannelType: models.SoulChannelTypePhone, Provider: commDeliveryProviderMigadu}},
+		{name: "managed email with partial metadata", ch: &models.SoulAgentChannel{ChannelType: models.SoulChannelTypeEmail, Provider: " Migadu "}, want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := hostManagedSoulEmailChannel(tt.ch); got != tt.want {
+				t.Fatalf("hostManagedSoulEmailChannel()=%v want %v", got, tt.want)
+			}
+		})
 	}
 }
 
