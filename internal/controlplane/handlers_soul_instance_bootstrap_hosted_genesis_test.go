@@ -6,10 +6,43 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/mock"
+	apptheory "github.com/theory-cloud/apptheory/v3/runtime"
 
 	"github.com/equaltoai/lesser-host/internal/soul"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
+
+func TestSoulInstanceHostedInstanceTrustFinalize_EmailFailureBlocksPublication(t *testing.T) {
+	t.Parallel()
+
+	reg, identity, completedConv := soulInstanceHostedFinalizeFixture(t)
+	tdb := newMintConversationTestDB()
+	s := newMintConversationServer(tdb)
+	s.hostedGenesisEmailProvisioner = func(_ *apptheory.Context, _ *models.SoulAgentIdentity, _ *models.Instance) *apptheory.AppTheoryError {
+		return newAppTheoryError("app.internal", "failed to provision required email")
+	}
+	stubSoulInstanceFinalizeReadContext(t, tdb, reg, identity, completedConv)
+
+	_, err := s.handleSoulInstanceFinalizeMintConversation(newSoulInstanceBootstrapContext(
+		map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
+		mustMarshalJSON(t, map[string]any{}),
+		map[string]string{"id": reg.ID, "conversationId": mintConversationTestConversationID},
+	))
+	if err == nil {
+		t.Fatal("expected required-email failure to block hosted publication")
+	}
+	appErr, ok := err.(*apptheory.AppTheoryError)
+	if !ok || appErr.Code != "soul_instance.internal" {
+		t.Fatalf("unexpected finalize error: %v", err)
+	}
+	packs, ok := s.soulPacks.(*fakeSoulPackStoreForPublish)
+	if !ok {
+		t.Fatalf("unexpected soul pack store: %T", s.soulPacks)
+	}
+	if len(packs.puts) != 0 {
+		t.Fatalf("registration published despite required-email failure: %#v", packs.puts)
+	}
+}
 
 func TestSoulInstanceHostedInstanceTrustFinalizePublishesEmptyCapabilities(t *testing.T) {
 	t.Parallel()

@@ -1833,6 +1833,9 @@ func (s *Server) finalizeMintConversationPublish(
 	if appErr := s.reserveHostedGenesisPublication(ctx.Context(), &finalizeCtx, *expectedVersion+1, regSHA256, issuedAt); appErr != nil {
 		return nil, appErr
 	}
+	if appErr := s.ensureHostedGenesisRequiredEmail(ctx, finalizeCtx); appErr != nil {
+		return nil, appErr
+	}
 	publishedVersion, pubErr := s.publishSoulAgentRegistrationV2(ctx.Context(), finalizeCtx.agentIDHex, finalizeCtx.identity, regV2, regBytes, regSHA256, selfSig, changeSummary, capsNorm, claimLevels, expectedVersion, now)
 	if pubErr != nil {
 		return nil, pubErr
