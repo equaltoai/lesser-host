@@ -320,3 +320,34 @@ func TestScanAgentRegistrationIntegrity_NoIssuesAndMissingCurrent(t *testing.T) 
 		}
 	})
 }
+
+func TestScanAgentRegistrationIntegrity_PublishedIdentityWithoutHistory(t *testing.T) {
+	ctx := context.Background()
+	bucket := "packs"
+	tdb := newIntegrityTestDB()
+	tdb.qVer.On("All", mock.AnythingOfType("*[]*models.SoulAgentVersion")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.SoulAgentVersion](t, args, 0)
+		*dest = []*models.SoulAgentVersion{}
+	}).Once()
+
+	packs, cleanup := newIntegrityArtifactStore(t, bucket, map[string][]byte{})
+	defer cleanup()
+
+	issues, err := scanAgentRegistrationIntegrity(ctx, store.New(tdb.db), packs, bucket, &models.SoulAgentIdentity{
+		AgentID:                integrityTestAgentID,
+		SelfDescriptionVersion: 1,
+	}, 1024)
+	if err != nil {
+		t.Fatalf("scanAgentRegistrationIntegrity: %v", err)
+	}
+	joined := strings.Join(issues, "\n")
+	for _, want := range []string{
+		"identity self_description_version=1 has no version history",
+		"s3 missing current registration.json",
+		"missing version record for identity self_description_version=1",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("expected issue %q in %#v", want, issues)
+		}
+	}
+}
