@@ -194,6 +194,9 @@ func indexVersionRecords(versions []*models.SoulAgentVersion) (int, map[string]s
 }
 
 func appendIdentityVersionIssue(issues []string, identity *models.SoulAgentIdentity, maxVersion int) []string {
+	if identity.SelfDescriptionVersion > 0 && maxVersion == 0 {
+		return append(issues, fmt.Sprintf("identity self_description_version=%d has no version history", identity.SelfDescriptionVersion))
+	}
 	if maxVersion > 0 && identity.SelfDescriptionVersion != maxVersion {
 		return append(issues, fmt.Sprintf("identity self_description_version=%d does not match latest version=%d", identity.SelfDescriptionVersion, maxVersion))
 	}
@@ -267,8 +270,11 @@ func appendCurrentRegistrationIssues(ctx context.Context, packs *artifacts.Store
 	if curErr != nil {
 		var nsk *s3types.NoSuchKey
 		if errors.As(curErr, &nsk) {
-			if maxVersion > 0 {
+			if maxVersion > 0 || identity.SelfDescriptionVersion > 0 {
 				issues = append(issues, "s3 missing current registration.json")
+			}
+			if identity.SelfDescriptionVersion > 0 && byVersion[identity.SelfDescriptionVersion] == nil {
+				issues = append(issues, fmt.Sprintf("missing version record for identity self_description_version=%d", identity.SelfDescriptionVersion))
 			}
 			return issues, nil
 		}
