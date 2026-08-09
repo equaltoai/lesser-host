@@ -72,8 +72,8 @@ Yes. Host owns hosted identity, Soul registry state, HostedGenesisSession truth,
 ## Consumer impact
 
 - Managed operators: gain an auditable recovery path without state mutation.
-- Body: gains an honest source contract for operator-gated adoption.
-- Lesser: may need only a narrow proxy if Body lacks the managed InstanceKey at runtime.
+- Body: gains an honest source contract for operator-gated adoption and calls it directly through its existing managed `LESSER_HOST_INSTANCE_KEY_ARN` credential path.
+- Lesser: has no recovery-read dependency. Existing Lesser-mediated private self-scope authorization remains separate and is not widened into InstanceKey authority.
 - Sim: gains integration cases for migration and tenant isolation.
 - Public Soul registry readers: no contract change; Silas remains `404` until a separately authorized forward publication.
 
@@ -91,5 +91,6 @@ No dependency or licensing change. All source, schemas, tests, and runbooks rema
 
 ## Open questions
 
-1. Does the deployed Body runtime already hold the managed instance's raw Host InstanceKey, or must Lesser proxy the recovery calls? The Body steward has been asked.
-2. Does the principal want a later forward publication/re-attestation for Silas after adoption, knowing it must create a new honest version rather than recreate version 1?
+1. Does the principal want a later forward publication/re-attestation for Silas after adoption, knowing it must create a new honest version rather than recreate version 1?
+
+Resolved coordination question: Body confirmed on 2026-08-09 that its deployed runtime already resolves the Host InstanceKey through `LESSER_HOST_INSTANCE_KEY_ARN`; the secret is not stored inline. Recovery is therefore direct Body-to-Host and requires no Lesser proxy.

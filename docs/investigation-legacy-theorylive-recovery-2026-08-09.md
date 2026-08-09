@@ -50,8 +50,8 @@ Actual: Della, Iris, and Mags satisfy registration integrity but lack a purpose-
 ## Fix-locus verdict
 
 - **Host:** provide a tenant-bounded, InstanceKey-authenticated, read-only recovery inventory/detail contract; expose exact legacy declarations without messages; label provenance and integrity state explicitly; keep replay/finalize/publication out of the recovery path; keep the strengthened integrity scan.
-- **Body:** implement additive, operator-gated adoption into Body registry/content projections using the Host recovery contract. Body must not write Host or Lesser state.
-- **Lesser:** only if Body cannot call Host with the existing managed InstanceKey, proxy the recovery read through an existing self-scope server path. Lesser binding state remains authoritative in Lesser and is not written by Host or Body.
+- **Body:** call Host directly through its existing managed `LESSER_HOST_INSTANCE_KEY_ARN` credential path, then implement additive, operator-gated adoption into Body registry/content projections. Body must not write Host or Lesser state.
+- **Lesser:** no recovery-read dependency. Lesser binding state remains authoritative in Lesser and is not written by Host or Body; existing Lesser-mediated private self-scope authorization remains separate from InstanceKey authority.
 - **On-chain:** no change.
 
 ## Hypotheses (ranked)

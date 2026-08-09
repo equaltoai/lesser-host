@@ -4,6 +4,8 @@
 
 Add Control plane Soul registry recovery reads under the existing InstanceKey authentication pattern. This is not a Trust API or Attestation endpoint, but it handles instance authentication and private declaration evidence and therefore receives the same key-hash and audit rigor.
 
+Body confirmed that its deployed runtime already resolves the raw Host InstanceKey through the managed `LESSER_HOST_INSTANCE_KEY_ARN` secret reference. The recovery call is therefore direct Body-to-Host. Host continues to store and compare only `sha256(raw_key)`; the secret is never accepted as stored metadata, logged, or returned. This authority does not replace Lesser-mediated private self-scope authorization.
+
 ## Surfaces affected
 
 - Control plane endpoints: proposed `GET /api/v1/soul/instance/recovery/agents` and `GET /api/v1/soul/instance/recovery/agents/{agentId}`

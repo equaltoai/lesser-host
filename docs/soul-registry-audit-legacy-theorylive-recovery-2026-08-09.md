@@ -39,8 +39,8 @@ No JSON-LD namespace URL or semantics change. Soul steward coordination is not r
 
 ## Consumer impact
 
-- Lesser instances: may consume or proxy the new instance-authenticated read; existing contracts remain unchanged.
-- Body: receives exact declarations and honest migration provenance for operator-gated adoption.
+- Lesser instances: no recovery-read dependency; existing binding and private self-scope contracts remain unchanged.
+- Body: calls Host directly with its existing managed InstanceKey and receives exact declarations plus honest migration provenance for operator-gated adoption.
 - Sim: should validate tenant isolation, checksum mismatch failure, declaration-only recovery, and no-write behavior.
 - External on-chain callers: none.
 

@@ -17,8 +17,8 @@ Soul-registry, tenant-isolation, instance-auth, operational-reliability, bug-fix
 
 ## Sibling-repo coordination
 
-- lesser: conditional; proxy the recovery read only if Body does not hold the managed InstanceKey. Lesser remains sole owner of binding state.
-- body: required; implement later additive operator-gated adoption and retain Host identifiers/digests with their explicit provenance labels.
+- lesser: no recovery-read dependency. Lesser remains sole owner of binding state, and its private self-scope authorization is not collapsed into InstanceKey authority.
+- body: required; call Host directly through the existing managed `LESSER_HOST_INSTANCE_KEY_ARN` credential path, implement later additive operator-gated adoption, and retain Host identifiers/digests with their explicit provenance labels.
 - soul: not required; no namespace change.
 - greater: not required; no web surface.
 - sim: recommended; validate cross-tenant denial, no-write reads, and legacy classifications.
@@ -66,12 +66,11 @@ None. No Stripe, SES, AI provider, eth_rpc, or Safe signer dependency.
 ### Phase 3: Lab/live proof and sibling handoff
 
 - Items: 6
-- Dependencies: merged/released Host change; Body answer on InstanceKey ownership
+- Dependencies: merged/released Host change; separately reviewed Body consumer change
 - Risks:
-  - Body lacks a safe credential path;
   - live read unexpectedly mutates legacy state;
   - Body mistakes `legacy_declarations_only` for a valid historical publication.
-- Mitigations: pre/post consistent reads, lab cross-tenant tests, schema labels, Lesser proxy only if required, operator-gated Body adoption.
+- Mitigations: reuse Body's existing managed InstanceKey secret reference, pre/post consistent reads, lab cross-tenant tests, schema labels, keep private self-scope authorization separate, operator-gated Body adoption.
 
 ## Stage rollout plan
 
@@ -133,6 +132,7 @@ Not applicable. Request came from the principal's interactive session and a sibl
 
 ## Open questions
 
-1. Body runtime InstanceKey availability versus a required Lesser self-scope proxy.
-2. Whether the principal later authorizes an honest forward publication/re-attestation for Silas as a new version.
-3. Project creation: this roadmap warrants a small cross-repo GitHub Project after principal approval because Host, Body, and possibly Lesser/Sim work must remain sequenced and separately owned.
+1. Whether the principal later authorizes an honest forward publication/re-attestation for Silas as a new version.
+2. Project creation: this roadmap warrants a small cross-repo GitHub Project after principal approval because Host, Body, and Sim work must remain sequenced and separately owned.
+
+Resolved coordination question: Body confirmed on 2026-08-09 that its deployed runtime already resolves the Host InstanceKey through `LESSER_HOST_INSTANCE_KEY_ARN`, without storing the raw key inline. The recovery surface is direct Body-to-Host; Lesser does not proxy it.
