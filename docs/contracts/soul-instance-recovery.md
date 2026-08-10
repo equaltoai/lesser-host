@@ -18,6 +18,10 @@ evidence returns `409` and fails closed.
 Returns a bounded, paginated inventory for the authenticated Managed instance. `limit` defaults to 20 and is capped at
 50; `cursor` is the opaque value from `next_cursor`. The inventory contains identity and integrity metadata only. It
 never contains `declarations`, conversation messages, provider output, raw keys, signing material, or tenant content.
+Only active identities are recovery-inventory members. A correctly tenant/domain/local-ID-bound index entry for an
+inactive identity is omitted while the bounded scan continues, so it cannot strand later active records. This is an
+eligibility decision, not an integrity downgrade: an explicit detail read for the inactive identity remains `409`, and
+any index-binding or recovery-evidence conflict for an active candidate still fails the inventory closed.
 
 ### `GET /api/v1/soul/instance/recovery/agents/{agentId}`
 

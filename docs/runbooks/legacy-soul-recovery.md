@@ -17,7 +17,8 @@ deployed through the normal `lab` then `live` sequence. The steward does not mer
 1. Call `GET /api/v1/soul/instance/recovery/agents?limit=20` with the InstanceKey bearer token.
 2. Follow `next_cursor` only when `has_more` is true. Treat cursors as opaque.
 3. Confirm the inventory includes only the authenticated Slug's verified domains and contains no `declarations` or
-   `messages` fields.
+   `messages` fields. Inactive identities are not inventory members; Host continues the bounded scan past correctly
+   bound inactive index entries rather than returning them or stranding later active records.
 4. For each approved agent, call `GET /api/v1/soul/instance/recovery/agents/{agentId}`.
 5. Validate the JSON Schema, recompute SHA256 over the exact returned `declarations` JSON bytes, and compare it to
    `migration_read_sha256`.

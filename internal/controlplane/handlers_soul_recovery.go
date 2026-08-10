@@ -224,6 +224,10 @@ func (s *Server) loadSoulRecoveryAgent(ctx context.Context, instanceSlug string,
 	if appErr != nil {
 		return nil, appErr
 	}
+	return s.loadSoulRecoveryAgentFromIdentity(ctx, instanceSlug, agentID, identity, effectiveStatus)
+}
+
+func (s *Server) loadSoulRecoveryAgentFromIdentity(ctx context.Context, instanceSlug string, agentID string, identity *models.SoulAgentIdentity, effectiveStatus string) (*soulRecoveryAgentDetail, *apptheory.AppTheoryError) {
 	promotion, appErr := s.loadSoulRecoveryPromotion(ctx, agentID)
 	if appErr != nil {
 		return nil, appErr
@@ -247,6 +251,17 @@ func (s *Server) loadSoulRecoveryAgent(ctx context.Context, instanceSlug string,
 }
 
 func (s *Server) loadSoulRecoveryIdentity(ctx context.Context, instanceSlug string, agentID string) (*models.SoulAgentIdentity, string, *apptheory.AppTheoryError) {
+	identity, effectiveStatus, appErr := s.loadSoulRecoveryIdentityRecord(ctx, instanceSlug, agentID)
+	if appErr != nil {
+		return nil, "", appErr
+	}
+	if effectiveStatus != models.SoulAgentStatusActive {
+		return nil, "", soulRecoveryError(soulRecoveryCodeIntegrityConflict, "agent is not active recovery state", http.StatusConflict, nil)
+	}
+	return identity, effectiveStatus, nil
+}
+
+func (s *Server) loadSoulRecoveryIdentityRecord(ctx context.Context, instanceSlug string, agentID string) (*models.SoulAgentIdentity, string, *apptheory.AppTheoryError) {
 	identity, err := s.getSoulAgentIdentity(ctx, agentID)
 	if theoryErrors.IsNotFound(err) {
 		return nil, "", soulRecoveryError(soulRecoveryCodeNotFound, "agent not found", http.StatusNotFound, nil)
@@ -263,9 +278,6 @@ func (s *Server) loadSoulRecoveryIdentity(ctx context.Context, instanceSlug stri
 	effectiveStatus := strings.ToLower(strings.TrimSpace(identity.LifecycleStatus))
 	if effectiveStatus == "" {
 		effectiveStatus = strings.ToLower(strings.TrimSpace(identity.Status))
-	}
-	if effectiveStatus != models.SoulAgentStatusActive {
-		return nil, "", soulRecoveryError(soulRecoveryCodeIntegrityConflict, "agent is not active recovery state", http.StatusConflict, nil)
 	}
 	return identity, effectiveStatus, nil
 }
@@ -638,20 +650,39 @@ func (s *Server) appendSoulRecoveryInventoryItems(ctx *apptheory.Context, instan
 		if agentID == "" {
 			return soulRecoveryError(soulRecoveryCodeIntegrityConflict, "domain index agent binding is invalid", http.StatusConflict, nil)
 		}
-		if _, ok := scan.seen[agentID]; ok {
-			continue
-		}
-		detail, appErr := s.loadSoulRecoveryAgent(ctx.Context(), instanceSlug, agentID)
+		identity, effectiveStatus, appErr := s.loadSoulRecoveryIdentityRecord(ctx.Context(), instanceSlug, agentID)
 		if appErr != nil {
 			if appErr.Code == soulRecoveryCodeNotFound {
 				continue
 			}
 			return appErr
 		}
+		if !soulRecoveryInventoryIndexMatchesIdentity(item, identity) {
+			return soulRecoveryError(soulRecoveryCodeIntegrityConflict, "domain index identity binding is invalid", http.StatusConflict, nil)
+		}
+		if _, ok := scan.seen[agentID]; ok {
+			continue
+		}
+		if effectiveStatus != models.SoulAgentStatusActive {
+			continue
+		}
+		detail, appErr := s.loadSoulRecoveryAgentFromIdentity(ctx.Context(), instanceSlug, agentID, identity, effectiveStatus)
+		if appErr != nil {
+			return appErr
+		}
 		scan.seen[agentID] = struct{}{}
 		scan.out = append(scan.out, soulRecoverySummaryFromDetail(detail))
 	}
 	return nil
+}
+
+func soulRecoveryInventoryIndexMatchesIdentity(item *models.SoulDomainAgentIndex, identity *models.SoulAgentIdentity) bool {
+	if item == nil || identity == nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(item.AgentID), strings.TrimSpace(identity.AgentID)) &&
+		strings.EqualFold(strings.TrimSpace(item.Domain), strings.TrimSpace(identity.Domain)) &&
+		strings.EqualFold(strings.TrimSpace(item.LocalID), strings.TrimSpace(identity.LocalID))
 }
 
 func (s *Server) querySoulRecoveryDomainAgents(ctx context.Context, domain string, cursor string, limit int) ([]*models.SoulDomainAgentIndex, bool, string, *apptheory.AppTheoryError) {
