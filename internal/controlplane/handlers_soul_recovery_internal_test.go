@@ -331,6 +331,126 @@ func TestHandleSoulInstanceRecoveryAgentsIsContentFree(t *testing.T) {
 	require.Equal(t, soulRecoveryClassificationLegacy, out.Agents[0].Classification)
 }
 
+func TestHandleSoulInstanceRecoveryAgentsSkipsInactiveEntryAndContinues(t *testing.T) {
+	t.Parallel()
+	server, queries, active, promotion, session, declarationBytes := newRecoveryTestServer(t, 1)
+	pending := *active
+	pending.AgentID = "0x" + strings.Repeat("1", 64)
+	pending.LocalID = "juniper-sol"
+	pending.Status = models.SoulAgentStatusPending
+	pending.LifecycleStatus = models.SoulAgentStatusPending
+	pending.SelfDescriptionVersion = 0
+
+	stubRecoveryActiveKey(t, queries.key)
+	queries.instance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
+		*dest = models.Instance{Slug: recoveryTestSlug, Status: models.InstanceStatusActive, HostedBaseDomain: recoveryTestDomain}
+	}).Once()
+	queries.domain.On("All", mock.AnythingOfType("*[]*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.Domain](t, args, 0)
+		*dest = []*models.Domain{{Domain: recoveryTestDomain, InstanceSlug: recoveryTestSlug, Status: models.DomainStatusVerified}}
+	}).Once()
+
+	queries.domainAgent.On("AllPaginated", mock.AnythingOfType("*[]*models.SoulDomainAgentIndex")).Return(&core.PaginatedResult{HasMore: true, NextCursor: "after-pending"}, nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.SoulDomainAgentIndex](t, args, 0)
+		*dest = []*models.SoulDomainAgentIndex{{Domain: recoveryTestDomain, LocalID: pending.LocalID, AgentID: pending.AgentID}}
+	}).Once()
+	queries.domainAgent.On("AllPaginated", mock.AnythingOfType("*[]*models.SoulDomainAgentIndex")).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.SoulDomainAgentIndex](t, args, 0)
+		*dest = []*models.SoulDomainAgentIndex{{Domain: recoveryTestDomain, LocalID: active.LocalID, AgentID: active.AgentID}}
+	}).Once()
+
+	identityRead := 0
+	queries.identity.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(nil).Run(func(args mock.Arguments) {
+		identityRead++
+		dest := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
+		if identityRead == 1 {
+			*dest = pending
+			return
+		}
+		*dest = *active
+	}).Twice()
+	queries.domain.On("First", mock.AnythingOfType("*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.Domain](t, args, 0)
+		*dest = models.Domain{Domain: recoveryTestDomain, InstanceSlug: recoveryTestSlug, Status: models.DomainStatusVerified}
+	}).Twice()
+	queries.promotion.On("First", mock.AnythingOfType("*models.SoulAgentPromotion")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulAgentPromotion](t, args, 0)
+		*dest = *promotion
+	}).Once()
+	queries.hosted.On("All", mock.AnythingOfType("*[]*models.HostedGenesisSession")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.HostedGenesisSession](t, args, 0)
+		*dest = []*models.HostedGenesisSession{session}
+	}).Once()
+	queries.conversation.On("First", mock.AnythingOfType("*models.SoulAgentMintConversation")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulAgentMintConversation](t, args, 0)
+		*dest = models.SoulAgentMintConversation{
+			AgentID: active.AgentID, ConversationID: recoveryTestConversation, Status: models.SoulMintConversationStatusCompleted,
+			ProducedDeclarations: models.EncodeSoulMintConversationBlob(string(declarationBytes)), CompletedAt: time.Date(2026, 7, 2, 0, 0, 0, 0, time.UTC),
+		}
+	}).Once()
+	queries.version.On("First", mock.AnythingOfType("*models.SoulAgentVersion")).Return(theoryErrors.ErrItemNotFound).Once()
+
+	cursor := encodeSoulRecoveryInventoryCursor(soulRecoveryInventoryCursor{DomainIndex: 0, Inner: "after-iris"})
+	ctx := newMintConversationInstanceReadContext("", "", map[string][]string{"limit": {"1"}, "cursor": {cursor}})
+	resp, err := server.handleSoulInstanceRecoveryAgents(ctx)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.Status)
+
+	var out soulRecoveryAgentListResponse
+	require.NoError(t, json.Unmarshal(resp.Body, &out))
+	require.Len(t, out.Agents, 1)
+	require.Equal(t, active.AgentID, out.Agents[0].AgentID)
+	require.False(t, out.HasMore)
+	require.Empty(t, out.NextCursor)
+}
+
+func TestSoulRecoveryInventoryPreservesActiveIntegrityConflict(t *testing.T) {
+	t.Parallel()
+	server, queries, identity, _, _, _ := newRecoveryTestServer(t, 1)
+	queries.identity.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
+		*dest = *identity
+	}).Once()
+	queries.domain.On("First", mock.AnythingOfType("*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.Domain](t, args, 0)
+		*dest = models.Domain{Domain: recoveryTestDomain, InstanceSlug: recoveryTestSlug, Status: models.DomainStatusVerified}
+	}).Once()
+	queries.promotion.On("First", mock.AnythingOfType("*models.SoulAgentPromotion")).Return(theoryErrors.ErrItemNotFound).Once()
+
+	scan := &soulRecoveryInventoryScan{out: []soulRecoveryAgentSummary{}, seen: map[string]struct{}{}}
+	appErr := server.appendSoulRecoveryInventoryItems(
+		newMintConversationInstanceReadContext("", "", nil),
+		recoveryTestSlug,
+		recoveryTestDomain,
+		[]*models.SoulDomainAgentIndex{{Domain: recoveryTestDomain, LocalID: identity.LocalID, AgentID: identity.AgentID}},
+		scan,
+	)
+	require.NotNil(t, appErr)
+	require.Equal(t, soulRecoveryCodeIntegrityConflict, appErr.Code)
+}
+
+func TestSoulRecoveryInventoryIndexBindingMatchesIdentity(t *testing.T) {
+	t.Parallel()
+	identity, _, _ := recoveryIdentityPromotionSession(1)
+	item := &models.SoulDomainAgentIndex{Domain: identity.Domain, LocalID: identity.LocalID, AgentID: identity.AgentID}
+	require.True(t, soulRecoveryInventoryIndexMatchesIdentity(item, identity))
+
+	wrongLocalID := *item
+	wrongLocalID.LocalID = "other-agent"
+	require.False(t, soulRecoveryInventoryIndexMatchesIdentity(&wrongLocalID, identity))
+
+	wrongDomain := *item
+	wrongDomain.Domain = "other.example"
+	require.False(t, soulRecoveryInventoryIndexMatchesIdentity(&wrongDomain, identity))
+
+	wrongAgent := *item
+	wrongAgent.AgentID = "0x" + strings.Repeat("2", 64)
+	require.False(t, soulRecoveryInventoryIndexMatchesIdentity(&wrongAgent, identity))
+	require.False(t, soulRecoveryInventoryIndexMatchesIdentity(nil, identity))
+	require.False(t, soulRecoveryInventoryIndexMatchesIdentity(item, nil))
+}
+
 func TestSoulRecoveryCursorAndRateLimitClassification(t *testing.T) {
 	t.Parallel()
 	cursor := soulRecoveryInventoryCursor{DomainIndex: 2, Inner: "opaque"}
@@ -464,6 +584,26 @@ func TestSoulRecoveryHandlersRejectInvalidReadShapes(t *testing.T) {
 
 func TestLoadSoulRecoveryIdentityFailsClosed(t *testing.T) {
 	t.Parallel()
+
+	t.Run("inactive", func(t *testing.T) {
+		t.Parallel()
+		server, queries, identity, _, _, _ := newRecoveryTestServer(t, 1)
+		queries.identity.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(nil).Run(func(args mock.Arguments) {
+			dest := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
+			*dest = *identity
+			dest.Status = models.SoulAgentStatusPending
+			dest.LifecycleStatus = models.SoulAgentStatusPending
+		}).Once()
+		queries.domain.On("First", mock.AnythingOfType("*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
+			dest := testutil.RequireMockArg[*models.Domain](t, args, 0)
+			*dest = models.Domain{Domain: recoveryTestDomain, InstanceSlug: recoveryTestSlug, Status: models.DomainStatusVerified}
+		}).Once()
+
+		got, _, appErr := server.loadSoulRecoveryIdentity(context.Background(), recoveryTestSlug, identity.AgentID)
+		require.Nil(t, got)
+		require.Equal(t, soulRecoveryCodeIntegrityConflict, appErr.Code)
+		require.Equal(t, "agent is not active recovery state", appErr.Message)
+	})
 
 	t.Run("not found", func(t *testing.T) {
 		t.Parallel()

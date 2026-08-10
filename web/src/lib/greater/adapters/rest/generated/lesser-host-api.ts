@@ -378,7 +378,9 @@ export interface paths {
          * @description Direct Body-to-Host, InstanceKey-authenticated recovery inventory. The authenticated key supplies the Slug;
          *     Host returns only active agents bound to that Managed instance's verified domains and exact Hosted Genesis
          *     publication evidence. The inventory is bounded and content-free: it never returns declarations, messages,
-         *     provider output, raw keys, or tenant content. Integrity ambiguity fails closed instead of being omitted.
+         *     provider output, raw keys, or tenant content. A correctly bound inactive domain-index entry is ineligible and
+         *     is omitted while pagination continues; an explicit detail read for that identity still returns an integrity
+         *     conflict. Binding or recovery-evidence ambiguity for an active candidate fails closed instead of being omitted.
          */
         get: operations["soulInstanceListRecoveryAgents"];
         put?: never;
