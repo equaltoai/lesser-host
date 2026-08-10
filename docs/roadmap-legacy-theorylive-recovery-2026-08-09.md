@@ -40,7 +40,7 @@ None. No Stripe, SES, AI provider, eth_rpc, or Safe signer dependency.
 - Items: 1
 - Dependencies: none
 - Risks: scanner false-green if a published identity has zero history
-- State: implemented locally as `3fe4426`; full green gate and PR still required
+- State: implemented by PR #1029 and deployed by the operator
 
 ### Phase 1: Recovery domain and API contract
 
@@ -51,6 +51,7 @@ None. No Stripe, SES, AI provider, eth_rpc, or Safe signer dependency.
   - mislabeling a migration-read digest as a historical publication digest;
   - conflating current public registration with original declarations.
 - Mitigations: exact Slug/registration/agent/conversation guards, deterministic selection, explicit provenance vocabulary, fixture-first tests.
+- State: implemented in the recovery-API follow-up PR
 
 ### Phase 2: Authenticated inventory and detail reads
 
@@ -61,7 +62,9 @@ None. No Stripe, SES, AI provider, eth_rpc, or Safe signer dependency.
   - leaking messages or provider evidence;
   - read-triggered publication convergence;
   - oversized declarations.
-- Mitigations: derive Slug only from InstanceKey, domain-bound queries, no message decode, no convergence helper, no-write tests, bounded pagination/response bytes, structured redacted audit.
+- Mitigations: derive Slug only from InstanceKey, domain-bound queries, no message decode, no convergence helper,
+  no-business-state-write tests, bounded pagination/response bytes, structured redacted audit.
+- State: implemented in the recovery-API follow-up PR; Soul registry business state and S3 remain read-only while normal InstanceKey last-used/audit telemetry remains active
 
 ### Phase 3: Lab/live proof and sibling handoff
 
