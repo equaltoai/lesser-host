@@ -32,6 +32,8 @@ const requiredPaths = [
   '/api/v1/soul/agents/{agentId}/mint-conversation/{conversationId}',
   '/api/v1/soul/instance/agents/{agentId}/mint-conversations',
   '/api/v1/soul/instance/agents/{agentId}/mint-conversations/{conversationId}',
+  '/api/v1/soul/instance/recovery/agents',
+  '/api/v1/soul/instance/recovery/agents/{agentId}',
   '/api/v1/soul/agents/{agentId}/mint-conversation/{conversationId}/complete',
   '/api/v1/soul/agents/{agentId}/mint-conversation/{conversationId}/finalize/preflight',
   '/api/v1/soul/agents/{agentId}/mint-conversation/{conversationId}/finalize/begin',
@@ -79,6 +81,9 @@ const requiredSchemas = [
   'SoulInstanceMintConversationsResponse',
   'SoulInstanceMintConversationResponse',
   'SoulMintConversationInstanceReadErrorEnvelope',
+  'SoulInstanceRecoveryAgentsResponse',
+  'SoulInstanceRecoveryAgentResponse',
+  'SoulInstanceRecoveryErrorEnvelope',
   'SoulAgentRegistrationPrincipalDeclarationPreflightRequest',
   'SoulAgentRegistrationPrincipalDeclarationPreflightResponse',
   'SoulMintConversationFinalizeBeginRequest',
@@ -109,7 +114,13 @@ const requiredSpecV3Files = [
   path.join(specV3SchemasDir, 'soul-instance-bootstrap.finalize.response.schema.json'),
   path.join(specV3FixturesDir, 'soul-instance-bootstrap.error.boundary-violation.example.json'),
   path.join(specV3FixturesDir, 'soul-instance-bootstrap.error.budget-exhausted.example.json'),
-  path.join(specV3FixturesDir, 'soul-instance-bootstrap.finalize.response.hosted-offchain.example.json')
+  path.join(specV3FixturesDir, 'soul-instance-bootstrap.finalize.response.hosted-offchain.example.json'),
+  path.join(specV3SchemasDir, 'soul-instance-recovery-agents.response.schema.json'),
+  path.join(specV3SchemasDir, 'soul-instance-recovery-agent.response.schema.json'),
+  path.join(specV3SchemasDir, 'soul-instance-recovery.error.schema.json'),
+  path.join(specV3FixturesDir, 'soul-instance-recovery-agents.example.json'),
+  path.join(specV3FixturesDir, 'soul-instance-recovery-agent.legacy.example.json'),
+  path.join(specV3FixturesDir, 'soul-instance-recovery-agent.published.example.json')
 ];
 
 const requiredInstanceBootstrapErrorCodes = [
@@ -427,6 +438,82 @@ function verifySpecV3BootstrapSurface() {
   assert(finalizeFixture?.promotion?.authority_model === 'instance_trust', 'hosted/off-chain promotion evidence must use instance_trust authority');
 }
 
+function verifySoulRecoverySurface() {
+  const openapi = parseYaml(readFileSync(openapiPath, 'utf8'));
+  const inventory = openapi.paths['/api/v1/soul/instance/recovery/agents']?.get;
+  const detail = openapi.paths['/api/v1/soul/instance/recovery/agents/{agentId}']?.get;
+  for (const [name, operation] of [['inventory', inventory], ['detail', detail]]) {
+    assert(operation, `missing Soul recovery ${name} operation`);
+    assert(
+      JSON.stringify(operation.security ?? []) === JSON.stringify([{ instanceKeyAuth: [] }]),
+      `Soul recovery ${name} must use only instanceKeyAuth`
+    );
+    for (const status of ['400', '401', '403', '409', '413', '429', '500']) {
+      assert(
+        jsonSchemaRef(operation, status, 'application/json') === '#/components/schemas/SoulInstanceRecoveryErrorEnvelope',
+        `Soul recovery ${name} must publish the recovery error envelope for ${status}`
+      );
+    }
+  }
+  assert(
+    jsonSchemaRef(inventory, '200', 'application/json') === '#/components/schemas/SoulInstanceRecoveryAgentsResponse',
+    'Soul recovery inventory must return SoulInstanceRecoveryAgentsResponse'
+  );
+  assert(
+    jsonSchemaRef(detail, '200', 'application/json') === '#/components/schemas/SoulInstanceRecoveryAgentResponse',
+    'Soul recovery detail must return SoulInstanceRecoveryAgentResponse'
+  );
+
+  const detailSchema = JSON.parse(
+    readFileSync(path.join(specV3SchemasDir, 'soul-instance-recovery-agent.response.schema.json'), 'utf8')
+  );
+  const classifications = detailSchema?.properties?.classification?.enum ?? [];
+  assert(classifications.includes('published_artifact_verified'), 'recovery schema missing verified publication classification');
+  assert(classifications.includes('legacy_declarations_only'), 'recovery schema missing legacy declaration-only classification');
+  assert(
+    detailSchema?.properties?.provenance?.properties?.historical_publication_sha?.const === false,
+    'recovery provenance must deny historical-publication semantics for migration_read_sha256'
+  );
+  assert(
+    detailSchema?.properties?.provenance?.properties?.digest_semantics?.const === 'migration_read_sha256',
+    'recovery provenance must lock migration_read_sha256 semantics'
+  );
+
+  const inventoryFixture = JSON.parse(
+    readFileSync(path.join(specV3FixturesDir, 'soul-instance-recovery-agents.example.json'), 'utf8')
+  );
+  assert(
+    !inventoryFixture.agents.some((agent) => Object.hasOwn(agent, 'declarations')),
+    'recovery inventory fixture must be declaration-free'
+  );
+  assert(
+    !inventoryFixture.agents.some((agent) => Object.hasOwn(agent, 'messages')),
+    'recovery inventory fixture must be message-free'
+  );
+
+  const legacyFixture = JSON.parse(
+    readFileSync(path.join(specV3FixturesDir, 'soul-instance-recovery-agent.legacy.example.json'), 'utf8')
+  );
+  assert(legacyFixture.classification === 'legacy_declarations_only', 'legacy recovery fixture classification drifted');
+  assert(Array.isArray(legacyFixture.versions) && legacyFixture.versions.length === 0, 'legacy recovery fixture must not fabricate versions');
+  assert(!('published_registration' in legacyFixture), 'legacy recovery fixture must not fabricate a published registration');
+  assert(legacyFixture.provenance?.historical_publication_sha === false, 'legacy migration digest must not claim historical publication provenance');
+
+  const publishedFixture = JSON.parse(
+    readFileSync(path.join(specV3FixturesDir, 'soul-instance-recovery-agent.published.example.json'), 'utf8')
+  );
+  assert(publishedFixture.classification === 'published_artifact_verified', 'published recovery fixture classification drifted');
+  assert(publishedFixture.versions?.length === 2, 'published recovery fixture must preserve the full v1-to-v2 chain');
+  assert(
+    publishedFixture.versions[1].previous_registration_sha256 === publishedFixture.versions[0].registration_sha256,
+    'published recovery fixture previous hash must bind the version chain'
+  );
+  assert(
+    publishedFixture.published_registration?.current_registration_sha256 === publishedFixture.versions[1].registration_sha256,
+    'published recovery fixture current object must bind the latest immutable version'
+  );
+}
+
 function verifyGeneratedAdapter() {
   const tmpDir = mkdtempSync(path.join(os.tmpdir(), 'lesser-host-openapi-'));
   const tmpOutput = path.join(tmpDir, 'lesser-host-api.ts');
@@ -459,6 +546,7 @@ verifyOpenApiSurface();
 verifySseCompanionSurface();
 verifyHostedGenesisConversationSurface();
 verifySpecV3BootstrapSurface();
+verifySoulRecoverySurface();
 verifyGeneratedAdapter();
 
 process.stdout.write('PASS: lesser-host REST contracts are complete and in sync\n');

@@ -98,7 +98,7 @@ func TestMintConversationInstanceReadRateLimitMiddleware_GuardsAndPathMatch(t *t
 	}
 
 	retry := 1500 * time.Millisecond
-	resp := soulMintConversationInstanceReadRateLimitResponse(&apptheory.Context{RequestID: "req-rate"}, &limited.LimitDecision{RetryAfter: &retry})
+	resp := soulMintConversationInstanceReadRateLimitResponse(&apptheory.Context{RequestID: "req-rate"}, &limited.LimitDecision{RetryAfter: &retry}, "/api/v1/soul/instance/agents/0xabc/mint-conversations")
 	if resp.Status != 429 || resp.Headers["retry-after"][0] != "2" {
 		t.Fatalf("expected 429 with rounded Retry-After=2, got status=%d headers=%#v", resp.Status, resp.Headers)
 	}
@@ -108,6 +108,14 @@ func TestMintConversationInstanceReadRateLimitMiddleware_GuardsAndPathMatch(t *t
 	}
 	if body["error"]["code"] != soulMintInstanceReadCodeRateLimited || body["error"]["request_id"] != "req-rate" {
 		t.Fatalf("unexpected rate-limit body: %#v", body)
+	}
+
+	recoveryResp := soulMintConversationInstanceReadRateLimitResponse(&apptheory.Context{}, &limited.LimitDecision{}, "/api/v1/soul/instance/recovery/agents")
+	if err := json.Unmarshal(recoveryResp.Body, &body); err != nil {
+		t.Fatalf("unmarshal recovery rate-limit body: %v", err)
+	}
+	if body["error"]["code"] != soulRecoveryCodeRateLimited {
+		t.Fatalf("unexpected recovery rate-limit body: %#v", body)
 	}
 }
 

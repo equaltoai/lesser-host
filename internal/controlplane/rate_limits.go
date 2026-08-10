@@ -160,8 +160,10 @@ func (s *Server) mintConversationInstanceReadRateLimitMiddleware() apptheory.Mid
 }
 
 func isSoulMintConversationInstanceReadPath(path string) bool {
-	return strings.HasPrefix(strings.TrimSpace(path), "/api/v1/soul/instance/agents/") &&
-		strings.Contains(strings.TrimSpace(path), "/mint-conversations")
+	path = strings.TrimSpace(path)
+	return (strings.HasPrefix(path, "/api/v1/soul/instance/agents/") && strings.Contains(path, "/mint-conversations")) ||
+		path == soulRecoveryInventoryPath ||
+		strings.HasPrefix(path, soulRecoveryInventoryPath+"/")
 }
 
 func mintConversationRateLimitIdentifier(ctx *apptheory.Context) string {
@@ -219,6 +221,9 @@ func (s *Server) soulMintConversationInstanceReadCheckRateLimit(ctx *apptheory.C
 	}
 	identifier, appErr := s.soulMintConversationInstanceReadRateLimitIdentifier(ctx)
 	if appErr != nil {
+		if isSoulRecoveryPath(path) {
+			return nil, soulRecoveryError(soulRecoveryCodeInternal, "internal error", http.StatusInternalServerError, nil)
+		}
 		return nil, appErr
 	}
 	decision, err := limiter.CheckAndIncrement(ctx.Context(), limited.RateLimitKey{
@@ -228,11 +233,14 @@ func (s *Server) soulMintConversationInstanceReadCheckRateLimit(ctx *apptheory.C
 		Metadata:   soulMintConversationInstanceReadRateLimitMetadata(ctx, method, path),
 	})
 	if err != nil {
+		if isSoulRecoveryPath(path) {
+			return nil, soulRecoveryError(soulRecoveryCodeInternal, "internal error", http.StatusInternalServerError, nil)
+		}
 		return nil, soulMintInstanceReadError(soulMintInstanceReadCodeInternal, "internal error", http.StatusInternalServerError, nil)
 	}
 	ctx.Set(apptheory.RateLimitDecisionKey, decision)
 	if decision != nil && !decision.Allowed {
-		return soulMintConversationInstanceReadRateLimitResponse(ctx, decision), nil
+		return soulMintConversationInstanceReadRateLimitResponse(ctx, decision, path), nil
 	}
 	return nil, nil
 }
@@ -260,13 +268,25 @@ func soulMintConversationInstanceReadKeyActiveForHash(key *models.InstanceKey, h
 }
 
 func soulMintConversationInstanceReadRateLimitRouteClass(path string) string {
-	if strings.Contains(strings.TrimSpace(path), "/mint-conversations/") {
+	path = strings.TrimSpace(path)
+	if path == soulRecoveryInventoryPath {
+		return soulRecoveryRouteInventory
+	}
+	if strings.HasPrefix(path, soulRecoveryInventoryPath+"/") {
+		return soulRecoveryRouteDetail
+	}
+	if strings.Contains(path, "/mint-conversations/") {
 		return soulMintInstanceReadRouteSingle
 	}
 	return soulMintInstanceReadRouteList
 }
 
-func soulMintConversationInstanceReadRateLimitResponse(ctx *apptheory.Context, decision *limited.LimitDecision) *apptheory.Response {
+func isSoulRecoveryPath(path string) bool {
+	path = strings.TrimSpace(path)
+	return path == soulRecoveryInventoryPath || strings.HasPrefix(path, soulRecoveryInventoryPath+"/")
+}
+
+func soulMintConversationInstanceReadRateLimitResponse(ctx *apptheory.Context, decision *limited.LimitDecision, path string) *apptheory.Response {
 	headers := map[string][]string{
 		soulMintInstanceReadHeaderContentType: {soulMintInstanceReadJSONContentType},
 	}
@@ -279,8 +299,12 @@ func soulMintConversationInstanceReadRateLimitResponse(ctx *apptheory.Context, d
 		headers["retry-after"] = []string{strconv.Itoa(retrySeconds)}
 		details["retry_after_seconds"] = retrySeconds
 	}
+	code := soulMintInstanceReadCodeRateLimited
+	if isSoulRecoveryPath(path) {
+		code = soulRecoveryCodeRateLimited
+	}
 	errBody := map[string]any{
-		"code":                              soulMintInstanceReadCodeRateLimited,
+		"code":                              code,
 		soulMintInstanceReadEnvelopeMessage: soulMintInstanceReadMessageRateLimited,
 		"status_code":                       http.StatusTooManyRequests,
 	}
@@ -296,7 +320,7 @@ func soulMintConversationInstanceReadRateLimitResponse(ctx *apptheory.Context, d
 	}
 	body, err := json.Marshal(map[string]any{soulMintInstanceReadEnvelopeError: errBody})
 	if err != nil {
-		body = []byte(`{"error":{"code":"` + soulMintInstanceReadCodeRateLimited + `","message":"` + soulMintInstanceReadMessageRateLimited + `","status_code":429}}`)
+		body = []byte(`{"error":{"code":"` + code + `","message":"` + soulMintInstanceReadMessageRateLimited + `","status_code":429}}`)
 	}
 	return &apptheory.Response{
 		Status:  http.StatusTooManyRequests,
