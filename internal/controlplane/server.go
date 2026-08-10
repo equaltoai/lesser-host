@@ -304,6 +304,8 @@ func (s *Server) RegisterRoutes(app *apptheory.App) {
 	app.Post("/api/v1/soul/comm/mailbox/{agentId}/messages/{messageRef}/archive", s.handleSoulCommMailboxArchive)
 	app.Post("/api/v1/soul/comm/mailbox/{agentId}/messages/{messageRef}/unarchive", s.handleSoulCommMailboxUnarchive)
 	app.Post("/api/v1/soul/comm/mailbox/{agentId}/messages/{messageRef}/delete", s.handleSoulCommMailboxDelete)
+	app.Get(soulRecoveryInventoryPath, s.handleSoulInstanceRecoveryAgents)
+	app.Get(soulRecoveryInventoryPath+"/{agentId}", s.handleSoulInstanceRecoveryAgent)
 	app.Get("/api/v1/soul/instance/agents/{agentId}/mint-conversations", s.handleSoulInstanceListMintConversationSummaries)
 	app.Get("/api/v1/soul/instance/agents/{agentId}/mint-conversations/{conversationId}", s.handleSoulInstanceGetMintConversation)
 	app.Post("/api/v1/soul/instance/agents/register/begin", s.handleSoulInstanceAgentRegistrationBegin)

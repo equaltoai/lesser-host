@@ -35,7 +35,9 @@ Yes. Host owns hosted identity, Soul registry state, HostedGenesisSession truth,
 3. Add two additive InstanceKey-authenticated reads:
    - `GET /api/v1/soul/instance/recovery/agents`: bounded metadata inventory for Host-defined agents owned by the authenticated Slug;
    - `GET /api/v1/soul/instance/recovery/agents/{agentId}`: exact declaration detail plus explicit provenance/integrity classification.
-4. Make both reads side-effect-free: no `convergeHostedGenesisPublished`, finalize, publication, version increment, identity mutation, or audit content containing declarations.
+4. Make both reads Soul-business-state side-effect-free: no `convergeHostedGenesisPublished`, finalize, publication,
+   version increment, identity/session/version/S3 mutation, or audit content containing declarations. Preserve normal
+   `InstanceKey.LastUsedAt` and redacted security-audit telemetry.
 5. Treat Silas as `legacy_declarations_only`. Do not fabricate or silently restore an alleged historical registration. A future public artifact requires a separately authorized forward publication/re-attestation with a new honest version.
 6. Return Della's and Iris's complete immutable version-chain metadata without flattening or replacing version 2.
 
@@ -56,7 +58,8 @@ Yes. Host owns hosted identity, Soul registry state, HostedGenesisSession truth,
 - Della/Iris version 1 and 2 history remains visible and checksum verified; Mags version 1 remains intact.
 - Silas is recoverable for exact declarations without turning his `404` into fabricated history.
 - Inventory is bounded, paginated, tenant-scoped, and content-free.
-- Repeating reads produces identical semantic output and no DynamoDB/S3 writes, publication, or Host version changes.
+- Repeating reads produces identical semantic output and no identity/promotion/session/conversation/version/S3 writes,
+  publication, or Host version changes. InstanceKey last-used and redacted audit telemetry are expected.
 - Invalid/revoked keys, cross-tenant agents, mismatched bindings, checksum failures, and oversize payloads fail closed and audit safely.
 - Full Go, contract, and Gov-infra rubric gates pass with fresh Evidence.
 

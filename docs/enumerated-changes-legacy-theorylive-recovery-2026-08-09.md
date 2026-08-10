@@ -14,7 +14,7 @@
 - **Acceptance**: a positive `selfDescriptionVersion` with zero version rows and no current object produces three explicit integrity findings and a non-zero scan result.
 - **Validation**: focused script tests, live dry-run against Silas, `go test ./...`, `go vet ./...`, tracked-source gofmt, Gov-infra rubric
 - **Conventional Commit subject**: `fix(soul): detect missing registration history`
-- **Status**: implemented as commit `3fe4426`; not pushed or deployed
+- **Status**: implemented by PR #1029 and deployed by the operator before this recovery-API follow-up
 
 ### 2. Add a pure tenant-bound recovery-source selector
 
@@ -30,6 +30,7 @@
 - **Acceptance**: fixtures for published verified, legacy declarations-only, checksum mismatch, binding mismatch, ambiguity, and no-source states classify deterministically without writes or message decode.
 - **Validation**: unit tests, `go test ./...`, `go vet ./...`, tracked-source gofmt, Gov-infra rubric
 - **Conventional Commit subject**: `feat(soul): classify legacy recovery sources`
+- **Status**: implemented in the recovery-API follow-up PR
 
 ### 3. Expose a bounded InstanceKey-authenticated recovery inventory
 
@@ -45,6 +46,7 @@
 - **Acceptance**: `GET /api/v1/soul/instance/recovery/agents` returns only bounded metadata for the authenticated Managed instance, with pagination and no messages/declarations.
 - **Validation**: valid/invalid/revoked/cross-tenant/auth/rate-limit/audit tests, `go test ./...`, `go vet ./...`, Gov-infra rubric
 - **Conventional Commit subject**: `feat(soul): add instance recovery inventory`
+- **Status**: implemented in the recovery-API follow-up PR
 
 ### 4. Expose exact side-effect-free recovery detail
 
@@ -57,9 +59,10 @@
 - **Trust-API/CSP/instance-auth impact**: preserves; no raw key or private messages returned/logged
 - **Consumer-release-verification impact**: none
 - **Framework consumption**: idiomatic
-- **Acceptance**: `GET /api/v1/soul/instance/recovery/agents/{agentId}` returns exact declarations, migration-read SHA256, immutable version metadata, and an explicit integrity classification without convergence, finalize, publish, or any write.
-- **Validation**: four-agent state fixtures, no-write mocks, checksum/binding/oversize failure tests, `go test ./...`, `go vet ./...`, Gov-infra rubric
+- **Acceptance**: `GET /api/v1/soul/instance/recovery/agents/{agentId}` returns exact declarations, migration-read SHA256, immutable version metadata, and an explicit integrity classification without convergence, finalize, publish, or any Soul registry business-state write. InstanceKey last-used and redacted audit telemetry remain active.
+- **Validation**: published/legacy/conflict state fixtures, no-artifact-write mocks, checksum/binding/oversize failure tests, `go test ./...`, `go vet ./...`, Gov-infra rubric
 - **Conventional Commit subject**: `feat(soul): add exact recovery detail read`
+- **Status**: implemented in the recovery-API follow-up PR
 
 ### 5. Publish the recovery contract and operator runbook
 
@@ -75,6 +78,7 @@
 - **Acceptance**: schemas distinguish `published_artifact_verified`, `legacy_declarations_only`, and integrity-conflict states; docs explicitly reject public projection as lossless history and prohibit replay/publication side effects.
 - **Validation**: contract verifier, fixture/schema tests, Gov-infra rubric
 - **Conventional Commit subject**: `docs(soul): publish legacy recovery contract`
+- **Status**: implemented in the recovery-API follow-up PR
 
 ### 6. Prove lab and live read-only recovery behavior
 
