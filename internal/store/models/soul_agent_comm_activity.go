@@ -43,6 +43,11 @@ type SoulAgentCommActivity struct {
 	MessageID string `theorydb:"attr:messageId" json:"message_id,omitempty"`
 	InReplyTo string `theorydb:"attr:inReplyTo" json:"in_reply_to,omitempty"`
 
+	// ActedBy is pure caller attribution (local lesser username of the real human
+	// who initiated the send under a share grant). It is never an authorization
+	// input and is never resolved against host-side identity.
+	ActedBy string `theorydb:"attr:actedBy,omitempty" json:"acted_by,omitempty"`
+
 	BoundaryCheck       string `theorydb:"attr:boundaryCheck" json:"boundary_check,omitempty"` // passed|violated|skipped
 	PreferenceRespected *bool  `theorydb:"attr:preferenceRespected" json:"preference_respected,omitempty"`
 
@@ -94,6 +99,7 @@ func (a *SoulAgentCommActivity) UpdateKeys() error {
 	a.Action = strings.ToLower(strings.TrimSpace(a.Action))
 	a.MessageID = strings.TrimSpace(a.MessageID)
 	a.InReplyTo = strings.TrimSpace(a.InReplyTo)
+	a.ActedBy = strings.TrimSpace(a.ActedBy)
 	a.BoundaryCheck = strings.ToLower(strings.TrimSpace(a.BoundaryCheck))
 
 	ts := a.Timestamp.UTC().Format("2006-01-02T15:04:05.000000000Z")
