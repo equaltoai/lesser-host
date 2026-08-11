@@ -1357,6 +1357,7 @@ func (s *Server) recordSoulCommSend(ctx *apptheory.Context, key *models.Instance
 		Action:              "send",
 		MessageID:           messageID,
 		InReplyTo:           req.inReplyTo,
+		ActedBy:             req.actedBy,
 		BoundaryCheck:       models.SoulCommBoundaryCheckPassed,
 		PreferenceRespected: decision.preferenceRespected,
 		Timestamp:           now,
@@ -1377,6 +1378,7 @@ func (s *Server) recordSoulCommSend(ctx *apptheory.Context, key *models.Instance
 		Actor:     fmt.Sprintf("instance:%s", strings.TrimSpace(key.InstanceSlug)),
 		Action:    fmt.Sprintf("soul.comm.send.%s", req.channel),
 		Target:    fmt.Sprintf("soul_agent_identity:%s", req.agentIDHex),
+		ActedBy:   req.actedBy,
 		CreatedAt: now,
 	})
 	return nil

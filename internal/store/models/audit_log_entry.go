@@ -23,6 +23,11 @@ type AuditLogEntry struct {
 	RequestID string    `theorydb:"attr:requestID" json:"request_id"`
 	CreatedAt time.Time `theorydb:"attr:createdAt" json:"created_at"`
 
+	// ActedBy is pure caller attribution (local lesser username of the real human
+	// who initiated the action under a share grant). Like source provenance, it
+	// is audit context only and must never become an authorization input.
+	ActedBy string `theorydb:"attr:actedBy,omitempty" json:"acted_by,omitempty"`
+
 	// Source provenance is provider-derived request metadata used only for
 	// audit/rate-limit context. It must never become an authorization input.
 	SourceIP         string `theorydb:"attr:sourceIP,omitempty" json:"source_ip,omitempty"`
@@ -53,6 +58,7 @@ func (a *AuditLogEntry) UpdateKeys() error {
 		a.ID = fmt.Sprintf("%d", createdAt.UnixNano())
 	}
 	target := strings.TrimSpace(a.Target)
+	a.ActedBy = strings.TrimSpace(a.ActedBy)
 	pk := fmt.Sprintf("AUDIT#%s", target)
 	if len(pk) > auditLogPartitionKeyMaxBytes {
 		a.PK = ""

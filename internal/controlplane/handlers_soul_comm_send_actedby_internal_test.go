@@ -80,6 +80,18 @@ func capturedModelArgs[T any](calls []mock.Call) []*T {
 	return out
 }
 
+// capturedPersistedCommActivity returns the comm activity record written by the
+// send path, skipping the empty Model prototypes used by read-side guard queries
+// (rate-limit counts and reply-boundary scans).
+func capturedPersistedCommActivity(calls []mock.Call) *models.SoulAgentCommActivity {
+	for _, activity := range capturedModelArgs[models.SoulAgentCommActivity](calls) {
+		if activity != nil && strings.TrimSpace(activity.MessageID) != "" {
+			return activity
+		}
+	}
+	return nil
+}
+
 func TestHandleSoulCommSend_ActedByAcceptedPersistedEchoed(t *testing.T) {
 	t.Parallel()
 
@@ -122,6 +134,22 @@ func TestHandleSoulCommSend_ActedByAcceptedPersistedEchoed(t *testing.T) {
 	if idems[0].ActedBy != commSendActedByTestUser {
 		t.Fatalf("expected persisted idempotency actedBy %q, got %#v", commSendActedByTestUser, idems[0].ActedBy)
 	}
+
+	activity := capturedPersistedCommActivity(tdb.db.Calls)
+	if activity == nil {
+		t.Fatalf("expected a persisted SoulAgentCommActivity model")
+	}
+	if activity.ActedBy != commSendActedByTestUser {
+		t.Fatalf("expected persisted activity actedBy %q, got %#v", commSendActedByTestUser, activity.ActedBy)
+	}
+
+	audits := capturedModelArgs[models.AuditLogEntry](tdb.db.Calls)
+	if len(audits) == 0 {
+		t.Fatalf("expected a persisted AuditLogEntry model")
+	}
+	if audits[0].ActedBy != commSendActedByTestUser {
+		t.Fatalf("expected persisted audit actedBy %q, got %#v", commSendActedByTestUser, audits[0].ActedBy)
+	}
 }
 
 func TestHandleSoulCommSend_AbsentActedByUnchanged(t *testing.T) {
@@ -157,6 +185,22 @@ func TestHandleSoulCommSend_AbsentActedByUnchanged(t *testing.T) {
 	}
 	if statuses[0].ActedBy != "" {
 		t.Fatalf("expected empty persisted actedBy, got %#v", statuses[0].ActedBy)
+	}
+
+	activity := capturedPersistedCommActivity(tdb.db.Calls)
+	if activity == nil {
+		t.Fatalf("expected a persisted SoulAgentCommActivity model")
+	}
+	if activity.ActedBy != "" {
+		t.Fatalf("expected empty persisted activity actedBy, got %#v", activity.ActedBy)
+	}
+
+	audits := capturedModelArgs[models.AuditLogEntry](tdb.db.Calls)
+	if len(audits) == 0 {
+		t.Fatalf("expected a persisted AuditLogEntry model")
+	}
+	if audits[0].ActedBy != "" {
+		t.Fatalf("expected empty persisted audit actedBy, got %#v", audits[0].ActedBy)
 	}
 }
 
