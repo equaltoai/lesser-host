@@ -33,6 +33,10 @@ type SoulCommMessageStatus struct {
 	InstanceSlug   string `theorydb:"attr:instanceSlug" json:"instance_slug,omitempty"`
 	AgentID        string `theorydb:"attr:agentId" json:"agent_id"`
 	IdempotencyKey string `theorydb:"attr:idempotencyKey" json:"idempotency_key,omitempty"`
+	// ActedBy is pure caller attribution (local lesser username of the real human
+	// who initiated the send under a share grant). It is never an authorization
+	// input and is never resolved against host-side identity.
+	ActedBy string `theorydb:"attr:actedBy" json:"acted_by,omitempty"`
 
 	ChannelType string `theorydb:"attr:channelType" json:"channel_type"` // email|sms|voice
 	To          string `theorydb:"attr:to" json:"to"`
@@ -114,6 +118,7 @@ func (m *SoulCommMessageStatus) UpdateKeys() error {
 	m.InstanceSlug = strings.ToLower(strings.TrimSpace(m.InstanceSlug))
 	m.AgentID = strings.ToLower(strings.TrimSpace(m.AgentID))
 	m.IdempotencyKey = strings.TrimSpace(m.IdempotencyKey)
+	m.ActedBy = strings.TrimSpace(m.ActedBy)
 	m.ChannelType = strings.ToLower(strings.TrimSpace(m.ChannelType))
 	m.To = strings.TrimSpace(m.To)
 	m.Provider = strings.ToLower(strings.TrimSpace(m.Provider))

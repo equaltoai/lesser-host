@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/mail"
 	"net/url"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -66,6 +67,11 @@ const (
 	commReplyBoundaryReasonNoPriorConversation = "no_prior_conversation"
 )
 
+// commActedByRegex bounds the optional actedBy caller-attribution field to a local
+// lesser username shape. actedBy is attribution only: it is never resolved against
+// host-side identity and is never an authorization input.
+var commActedByRegex = regexp.MustCompile(`^[a-z0-9_-]{1,30}$`)
+
 type soulCommSendRequest struct {
 	Channel        string   `json:"channel"`
 	AgentID        string   `json:"agentId"`
@@ -77,6 +83,7 @@ type soulCommSendRequest struct {
 	Body           string   `json:"body"`
 	InReplyTo      *string  `json:"inReplyTo,omitempty"`
 	IdempotencyKey string   `json:"idempotencyKey,omitempty"`
+	ActedBy        string   `json:"actedBy,omitempty"`
 }
 
 type soulCommSendResponse struct {
@@ -90,6 +97,7 @@ type soulCommSendResponse struct {
 	To                string `json:"to"`
 	Provider          string `json:"provider,omitempty"`
 	ProviderMessageID string `json:"providerMessageId,omitempty"`
+	ActedBy           string `json:"actedBy,omitempty"`
 	CreatedAt         string `json:"createdAt"`
 }
 
@@ -107,6 +115,7 @@ type soulCommStatusResponse struct {
 	ReplyBody         string   `json:"replyBody,omitempty"`
 	ReplyConfidence   *float64 `json:"replyConfidence,omitempty"`
 	ReplyReceivedAt   string   `json:"replyReceivedAt,omitempty"`
+	ActedBy           string   `json:"actedBy,omitempty"`
 	CreatedAt         string   `json:"createdAt"`
 	UpdatedAt         string   `json:"updatedAt,omitempty"`
 }
@@ -132,6 +141,7 @@ type validatedSoulCommSendRequest struct {
 	providerReplyTo string
 	threadID        string
 	idempotencyKey  string
+	actedBy         string
 }
 
 type soulCommSendRoute struct {
@@ -319,6 +329,12 @@ func parseSoulCommSendRequest(ctx *apptheory.Context, metrics *soulCommSendMetri
 		return validatedSoulCommSendRequest{}, apptheory.NewAppTheoryError(commCodeInvalidRequest, "idempotencyKey is invalid").WithStatusCode(http.StatusBadRequest)
 	}
 
+	actedBy := strings.TrimSpace(req.ActedBy)
+	if actedBy != "" && !commActedByRegex.MatchString(actedBy) {
+		metrics.status = commMetricInvalidRequest
+		return validatedSoulCommSendRequest{}, apptheory.NewAppTheoryError(commCodeInvalidRequest, "actedBy is invalid").WithStatusCode(http.StatusBadRequest).WithDetails(map[string]any{"field": "actedBy"})
+	}
+
 	return validatedSoulCommSendRequest{
 		channel:        channel,
 		agentIDHex:     agentIDHex,
@@ -330,6 +346,7 @@ func parseSoulCommSendRequest(ctx *apptheory.Context, metrics *soulCommSendMetri
 		body:           body,
 		inReplyTo:      inReplyTo,
 		idempotencyKey: idempotencyKey,
+		actedBy:        actedBy,
 	}, nil
 }
 
@@ -848,6 +865,7 @@ func soulCommSendRequestHash(instanceSlug string, req validatedSoulCommSendReque
 		Body         string   `json:"body"`
 		InReplyTo    string   `json:"inReplyTo,omitempty"`
 		ThreadID     string   `json:"threadId,omitempty"`
+		ActedBy      string   `json:"actedBy,omitempty"`
 	}{
 		InstanceSlug: strings.ToLower(strings.TrimSpace(instanceSlug)),
 		Channel:      strings.ToLower(strings.TrimSpace(req.channel)),
@@ -860,6 +878,7 @@ func soulCommSendRequestHash(instanceSlug string, req validatedSoulCommSendReque
 		Body:         strings.TrimSpace(req.body),
 		InReplyTo:    strings.TrimSpace(req.inReplyTo),
 		ThreadID:     strings.TrimSpace(req.threadID),
+		ActedBy:      strings.TrimSpace(req.actedBy),
 	}
 	if payload.Channel == commChannelEmail {
 		payload.To = normalizeCommIdempotencyEmail(payload.To)
@@ -888,6 +907,7 @@ func (s *Server) claimSoulCommSendIdempotency(ctx *apptheory.Context, key *model
 		MessageID:      messageID,
 		ChannelType:    req.channel,
 		To:             req.to,
+		ActedBy:        req.actedBy,
 		Status:         models.SoulCommSendIdempotencyStatusProcessing,
 		ResponseStatus: models.SoulCommMessageStatusAccepted,
 		CreatedAt:      now,
@@ -1312,6 +1332,7 @@ func (s *Server) recordSoulCommSend(ctx *apptheory.Context, key *models.Instance
 		InstanceSlug:      strings.TrimSpace(key.InstanceSlug),
 		AgentID:           req.agentIDHex,
 		IdempotencyKey:    req.idempotencyKey,
+		ActedBy:           req.actedBy,
 		ChannelType:       req.channel,
 		To:                req.to,
 		Provider:          delivery.provider,
@@ -1362,7 +1383,7 @@ func (s *Server) recordSoulCommSend(ctx *apptheory.Context, key *models.Instance
 }
 
 func soulCommSendJSON(messageID string, instanceSlug string, req validatedSoulCommSendRequest, delivery soulCommSendDelivery, now time.Time) (*apptheory.Response, *apptheory.AppTheoryError) {
-	return soulCommSendJSONFields(messageID, instanceSlug, soulCommSendResultStatus(delivery.initialStatus), req.channel, req.agentIDHex, req.to, delivery.provider, delivery.providerMessageID, req.inReplyTo, req.threadID, now)
+	return soulCommSendJSONFields(messageID, instanceSlug, soulCommSendResultStatus(delivery.initialStatus), req.channel, req.agentIDHex, req.to, delivery.provider, delivery.providerMessageID, req.inReplyTo, req.threadID, req.actedBy, now)
 }
 
 func soulCommSendResultStatus(initialStatus string) string {
@@ -1373,7 +1394,7 @@ func soulCommSendResultStatus(initialStatus string) string {
 	return statusValue
 }
 
-func soulCommSendJSONFields(messageID string, instanceSlug string, status string, channel string, agentID string, to string, provider string, providerMessageID string, threadRoot string, threadIDOverride string, createdAt time.Time) (*apptheory.Response, *apptheory.AppTheoryError) {
+func soulCommSendJSONFields(messageID string, instanceSlug string, status string, channel string, agentID string, to string, provider string, providerMessageID string, threadRoot string, threadIDOverride string, actedBy string, createdAt time.Time) (*apptheory.Response, *apptheory.AppTheoryError) {
 	deliveryID := models.SoulCommMailboxDeliveryID(instanceSlug, agentID, models.SoulCommDirectionOutbound, messageID)
 	if strings.TrimSpace(threadRoot) == "" {
 		threadRoot = messageID
@@ -1393,6 +1414,7 @@ func soulCommSendJSONFields(messageID string, instanceSlug string, status string
 		To:                strings.TrimSpace(to),
 		Provider:          strings.TrimSpace(provider),
 		ProviderMessageID: strings.TrimSpace(providerMessageID),
+		ActedBy:           strings.TrimSpace(actedBy),
 		CreatedAt:         createdAt.UTC().Format(time.RFC3339Nano),
 	})
 	if err != nil {
@@ -1402,11 +1424,11 @@ func soulCommSendJSONFields(messageID string, instanceSlug string, status string
 }
 
 func soulCommSendJSONFromStatusItem(item models.SoulCommMessageStatus) (*apptheory.Response, *apptheory.AppTheoryError) {
-	return soulCommSendJSONFields(item.MessageID, item.InstanceSlug, item.Status, item.ChannelType, item.AgentID, item.To, item.Provider, item.ProviderMessageID, item.MessageID, "", item.CreatedAt)
+	return soulCommSendJSONFields(item.MessageID, item.InstanceSlug, item.Status, item.ChannelType, item.AgentID, item.To, item.Provider, item.ProviderMessageID, item.MessageID, "", item.ActedBy, item.CreatedAt)
 }
 
 func soulCommSendJSONFromIdempotencyItem(item models.SoulCommSendIdempotency) (*apptheory.Response, *apptheory.AppTheoryError) {
-	return soulCommSendJSONFields(item.MessageID, item.InstanceSlug, item.ResponseStatus, item.ChannelType, item.AgentID, item.To, item.Provider, item.ProviderMessageID, item.MessageID, "", item.CreatedAt)
+	return soulCommSendJSONFields(item.MessageID, item.InstanceSlug, item.ResponseStatus, item.ChannelType, item.AgentID, item.To, item.Provider, item.ProviderMessageID, item.MessageID, "", item.ActedBy, item.CreatedAt)
 }
 
 func soulCommStatusJSON(item models.SoulCommMessageStatus) soulCommStatusResponse {
@@ -1423,6 +1445,7 @@ func soulCommStatusJSON(item models.SoulCommMessageStatus) soulCommStatusRespons
 		ReplyMessageID:    strings.TrimSpace(item.ReplyMessageID),
 		ReplyBody:         strings.TrimSpace(item.ReplyBody),
 		ReplyConfidence:   item.ReplyConfidence,
+		ActedBy:           strings.TrimSpace(item.ActedBy),
 		CreatedAt:         item.CreatedAt.UTC().Format(time.RFC3339Nano),
 	}
 	if !item.ReplyReceivedAt.IsZero() {
