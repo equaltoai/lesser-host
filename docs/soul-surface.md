@@ -260,6 +260,12 @@ ADR 0005 defines the bounded mailbox authority decision for soul communications.
   `messageId`/`messageRef`/`deliveryId`; the request `inReplyTo` field is only a reply/conversation boundary reference
   and fails closed with `comm.boundary_violation` when it does not match prior conversation state for every recipient.
   Canonical replies should use the mailbox reply endpoint so host derives recipient/thread/provider context.
+- The optional send `actedBy` field (`^[a-z0-9_-]{1,30}$`) is pure caller attribution for share-grant sends: the local
+  lesser username of the real human who initiated the send. It is never an authorization input — the instance key +
+  `agentId` remain the sole authz input — is never resolved against host-side identity, and never overrides the
+  authenticated instance/agent context. Malformed values fail closed with 400 `comm.invalid_request` and
+  `error.details.field=actedBy`. Host persists it with the send record, echoes it in the send and
+  `GET /api/v1/soul/comm/status/{messageId}` responses, and includes it in idempotency-key semantics.
 - `lesser` receives notification summaries/projections for UX/activity only; it is not authoritative mailbox state.
 - `lesser-body` remains the MCP facade and exposes tools over host's API contract. It must not persist mailbox truth.
 - List endpoints must return redacted previews/metadata only. Full content requires an explicit content/read call and

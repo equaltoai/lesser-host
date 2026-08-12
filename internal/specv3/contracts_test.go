@@ -40,6 +40,7 @@ func TestV3ContractFixturesValidate(t *testing.T) {
 			fixtures: []string{
 				filepath.Join(fixturesDir, "soul-comm-send.request.example.json"),
 				filepath.Join(fixturesDir, "soul-comm-send.request.reply-boundary.example.json"),
+				filepath.Join(fixturesDir, "soul-comm-send.request.acted-by.example.json"),
 			},
 		},
 		{

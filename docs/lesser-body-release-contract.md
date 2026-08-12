@@ -208,6 +208,12 @@ instance-authenticated mailbox contract:
   `comm.boundary_violation` with `error.details.field=inReplyTo`. Body should remove, rename, or prevalidate any
   `email_send.messageId`-style argument rather than forwarding it as Host `inReplyTo`; mailbox replies should use
   `email_reply` / Host's mailbox reply endpoint.
+- when a caller acts under a lesser agent share grant, body send tools should pass the real caller's local lesser
+  username as Host `actedBy` (`^[a-z0-9_-]{1,30}$`). Host treats `actedBy` as pure attribution — never authorization,
+  never resolved against host-side identity — persists it with the send record, echoes it in the send and
+  `GET /api/v1/soul/comm/status/{messageId}` responses, fails closed with 400 `comm.invalid_request` +
+  `error.details.field=actedBy` on malformed values, and includes it in idempotency-key semantics (same key with a
+  different `actedBy` is a `comm.idempotency_conflict`).
 - mailbox list filters and bounded `query` are exact-agent host-side filters only; body must not implement global mailbox
   search or store durable query indexes
 - mailbox list tools should use host-side `fields` projection (for example

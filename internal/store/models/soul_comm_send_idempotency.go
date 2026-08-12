@@ -29,9 +29,12 @@ type SoulCommSendIdempotency struct {
 	IdempotencyKey string `theorydb:"attr:idempotencyKey" json:"idempotency_key"`
 	RequestHash    string `theorydb:"attr:requestHash" json:"request_hash"`
 
-	MessageID      string `theorydb:"attr:messageId" json:"message_id"`
-	ChannelType    string `theorydb:"attr:channelType" json:"channel_type"`
-	To             string `theorydb:"attr:to" json:"to"`
+	MessageID   string `theorydb:"attr:messageId" json:"message_id"`
+	ChannelType string `theorydb:"attr:channelType" json:"channel_type"`
+	To          string `theorydb:"attr:to" json:"to"`
+	// ActedBy is pure caller attribution carried from the original send request
+	// so idempotent replays can echo it. It is never an authorization input.
+	ActedBy        string `theorydb:"attr:actedBy" json:"acted_by,omitempty"`
 	Status         string `theorydb:"attr:status" json:"status"`                  // processing|succeeded|failed
 	ResponseStatus string `theorydb:"attr:responseStatus" json:"response_status"` // accepted|sent|failed
 
@@ -130,6 +133,7 @@ func (m *SoulCommSendIdempotency) UpdateKeys() error {
 	m.MessageID = strings.TrimSpace(m.MessageID)
 	m.ChannelType = strings.ToLower(strings.TrimSpace(m.ChannelType))
 	m.To = strings.TrimSpace(m.To)
+	m.ActedBy = strings.TrimSpace(m.ActedBy)
 	m.Status = strings.ToLower(strings.TrimSpace(m.Status))
 	m.ResponseStatus = strings.ToLower(strings.TrimSpace(m.ResponseStatus))
 	m.Provider = strings.ToLower(strings.TrimSpace(m.Provider))
