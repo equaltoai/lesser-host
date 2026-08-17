@@ -671,57 +671,11 @@ func TestP0_SetupCreateAdminPasskey_DoesNotLinkBootstrapWalletCredential(t *test
 		},
 	}
 
-	tdb.qCP.On("First", mock.AnythingOfType("*models.ControlPlaneConfig")).Return(theoryErrors.ErrItemNotFound).Once()
-	tdb.qSetup.On("First", mock.AnythingOfType("*models.SetupSession")).Return(nil).Run(func(args mock.Arguments) {
-		dest := testutil.RequireMockArg[*models.SetupSession](t, args, 0)
-		*dest = models.SetupSession{
-			ID:         "setup-token",
-			Purpose:    setupPurposeBootstrap,
-			WalletAddr: "0xboot",
-			IssuedAt:   time.Now().UTC(),
-			ExpiresAt:  time.Now().UTC().Add(1 * time.Hour),
-		}
-		_ = dest.UpdateKeys()
-	}).Once()
-	tdb.qUser.On("First", mock.AnythingOfType("*models.User")).Return(theoryErrors.ErrItemNotFound).Once()
-	tdb.qWebAuthnChal.On("First", mock.AnythingOfType("*models.WebAuthnChallenge")).Return(nil).Run(func(args mock.Arguments) {
-		dest := testutil.RequireMockArg[*models.WebAuthnChallenge](t, args, 0)
-		*dest = models.WebAuthnChallenge{
-			Challenge:   "pc1",
-			UserID:      testUsernameAlice,
-			Type:        "registration",
-			SessionData: []byte(`{}`),
-			ExpiresAt:   time.Now().UTC().Add(10 * time.Minute),
-		}
-		_ = dest.UpdateKeys()
-	}).Once()
+	stubSetupPasskeyAdminCreationPrereqs(t, tdb)
 
 	createdKinds := map[string]bool{}
 	tx.On("Create", mock.Anything, mock.Anything).Return(tx).Times(4).Run(func(args mock.Arguments) {
-		switch item := args.Get(0).(type) {
-		case *models.User:
-			createdKinds["user"] = true
-			if item.Username != testUsernameAlice || item.Role != models.RoleAdmin {
-				t.Fatalf("unexpected setup admin user: %#v", item)
-			}
-		case *models.WebAuthnCredential:
-			createdKinds["webauthn_credential"] = true
-			if item.UserID != testUsernameAlice || item.Name != "Setup Admin Passkey" {
-				t.Fatalf("unexpected stored passkey: %#v", item)
-			}
-		case *models.OperatorSession:
-			createdKinds["operator_session"] = true
-			if item.Username != testUsernameAlice || item.Role != models.RoleAdmin || item.Method != "webauthn" {
-				t.Fatalf("unexpected operator session: %#v", item)
-			}
-		case *models.ControlPlaneConfig:
-			createdKinds["control_plane"] = true
-			if item.PrimaryAdminUsername != testUsernameAlice {
-				t.Fatalf("unexpected control plane config: %#v", item)
-			}
-		default:
-			t.Fatalf("unexpected transaction create item type %T", item)
-		}
+		assertSetupPasskeyCreateAdminItem(t, args.Get(0), createdKinds)
 	})
 	auditActions := map[string]bool{}
 	tx.On("Put", mock.Anything, mock.Anything).Return(tx).Twice().Run(func(args mock.Arguments) {
@@ -729,10 +683,7 @@ func TestP0_SetupCreateAdminPasskey_DoesNotLinkBootstrapWalletCredential(t *test
 		auditActions[audit.Action] = true
 	})
 	tx.On("Delete", mock.Anything, mock.Anything).Return(tx).Once().Run(func(args mock.Arguments) {
-		challenge := testutil.RequireMockArg[*models.WebAuthnChallenge](t, args, 0)
-		if challenge.Challenge != "pc1" {
-			t.Fatalf("unexpected deleted challenge: %#v", challenge)
-		}
+		assertSetupPasskeyChallengeDelete(t, args)
 	})
 
 	body, _ := json.Marshal(setupCreateAdminRequest{
@@ -773,6 +724,73 @@ func TestP0_SetupCreateAdminPasskey_DoesNotLinkBootstrapWalletCredential(t *test
 	}
 	tdb.qCred.AssertNotCalled(t, "Create")
 	tdb.qWalletIndex.AssertNotCalled(t, "Create")
+}
+
+func stubSetupPasskeyAdminCreationPrereqs(t *testing.T, tdb setupTestDB) {
+	t.Helper()
+
+	tdb.qCP.On("First", mock.AnythingOfType("*models.ControlPlaneConfig")).Return(theoryErrors.ErrItemNotFound).Once()
+	tdb.qSetup.On("First", mock.AnythingOfType("*models.SetupSession")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SetupSession](t, args, 0)
+		*dest = models.SetupSession{
+			ID:         "setup-token",
+			Purpose:    setupPurposeBootstrap,
+			WalletAddr: "0xboot",
+			IssuedAt:   time.Now().UTC(),
+			ExpiresAt:  time.Now().UTC().Add(1 * time.Hour),
+		}
+		_ = dest.UpdateKeys()
+	}).Once()
+	tdb.qUser.On("First", mock.AnythingOfType("*models.User")).Return(theoryErrors.ErrItemNotFound).Once()
+	tdb.qWebAuthnChal.On("First", mock.AnythingOfType("*models.WebAuthnChallenge")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.WebAuthnChallenge](t, args, 0)
+		*dest = models.WebAuthnChallenge{
+			Challenge:   "pc1",
+			UserID:      testUsernameAlice,
+			Type:        "registration",
+			SessionData: []byte(`{}`),
+			ExpiresAt:   time.Now().UTC().Add(10 * time.Minute),
+		}
+		_ = dest.UpdateKeys()
+	}).Once()
+}
+
+func assertSetupPasskeyCreateAdminItem(t *testing.T, raw any, createdKinds map[string]bool) {
+	t.Helper()
+
+	switch item := raw.(type) {
+	case *models.User:
+		createdKinds["user"] = true
+		if item.Username != testUsernameAlice || item.Role != models.RoleAdmin {
+			t.Fatalf("unexpected setup admin user: %#v", item)
+		}
+	case *models.WebAuthnCredential:
+		createdKinds["webauthn_credential"] = true
+		if item.UserID != testUsernameAlice || item.Name != "Setup Admin Passkey" {
+			t.Fatalf("unexpected stored passkey: %#v", item)
+		}
+	case *models.OperatorSession:
+		createdKinds["operator_session"] = true
+		if item.Username != testUsernameAlice || item.Role != models.RoleAdmin || item.Method != testSessionMethodWebAuthn {
+			t.Fatalf("unexpected operator session: %#v", item)
+		}
+	case *models.ControlPlaneConfig:
+		createdKinds["control_plane"] = true
+		if item.PrimaryAdminUsername != testUsernameAlice {
+			t.Fatalf("unexpected control plane config: %#v", item)
+		}
+	default:
+		t.Fatalf("unexpected transaction create item type %T", raw)
+	}
+}
+
+func assertSetupPasskeyChallengeDelete(t *testing.T, args mock.Arguments) {
+	t.Helper()
+
+	challenge := testutil.RequireMockArg[*models.WebAuthnChallenge](t, args, 0)
+	if challenge.Challenge != "pc1" {
+		t.Fatalf("unexpected deleted challenge: %#v", challenge)
+	}
 }
 
 func TestHandleSetupCreateAdmin_RejectsBootstrapWalletAsPrimaryAdmin(t *testing.T) {
@@ -1004,12 +1022,7 @@ func TestParseSetupCreateAdminRequestInput_ValidatesWalletFields(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, appErr := parseSetupCreateAdminRequestInput(&apptheory.Context{
-				Request: apptheory.Request{Body: []byte(tc.body)},
-			})
-			if appErr == nil || appErr.Code != appErrCodeBadRequest || !strings.Contains(appErr.Message, tc.wantMsg) {
-				t.Fatalf("expected bad_request %q, got %#v", tc.wantMsg, appErr)
-			}
+			assertSetupCreateAdminParseError(t, tc.body, tc.wantMsg)
 		})
 	}
 }
@@ -1030,13 +1043,19 @@ func TestParseSetupCreateAdminRequestInput_ValidatesPasskeyFieldsAndModeSelectio
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, appErr := parseSetupCreateAdminRequestInput(&apptheory.Context{
-				Request: apptheory.Request{Body: []byte(tc.body)},
-			})
-			if appErr == nil || appErr.Code != appErrCodeBadRequest || !strings.Contains(appErr.Message, tc.wantMsg) {
-				t.Fatalf("expected bad_request %q, got %#v", tc.wantMsg, appErr)
-			}
+			assertSetupCreateAdminParseError(t, tc.body, tc.wantMsg)
 		})
+	}
+}
+
+func assertSetupCreateAdminParseError(t *testing.T, body string, wantMsg string) {
+	t.Helper()
+
+	_, appErr := parseSetupCreateAdminRequestInput(&apptheory.Context{
+		Request: apptheory.Request{Body: []byte(body)},
+	})
+	if appErr == nil || appErr.Code != appErrCodeBadRequest || !strings.Contains(appErr.Message, wantMsg) {
+		t.Fatalf("expected bad_request %q, got %#v", wantMsg, appErr)
 	}
 }
 
