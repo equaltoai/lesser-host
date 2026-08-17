@@ -59,7 +59,7 @@ Legend:
 | Security | SEC-1 | Static security scan runs with pinned tooling (Go + Solidity) | `gov-infra/evidence/SEC-1-output.log` |
 | Security | SEC-2 | Dependency vulnerability scan runs with pinned tooling | `gov-infra/evidence/SEC-2-output.log` |
 | Security | SEC-3 | Supply-chain verification gates run (full-SHA Actions pinning with syntax self-tests + dependency lifecycle scan) | `gov-infra/evidence/SEC-3-output.log` |
-| Security | SEC-4 | Domain-specific P0 security regression tests run, including scoped x402 grant minimization/authority invariants | `gov-infra/evidence/SEC-4-output.log` |
+| Security | SEC-4 | Domain-specific P0 security regression tests run, including scoped x402 grant minimization/authority invariants and bootstrap/setup passkey-only primary-admin invariants (setup-session gate, bootstrap-wallet non-credentialization, anonymous rejection, fail-closed partial-state handling) | `gov-infra/evidence/SEC-4-output.log` |
 | Security | SEC-10 | The full Consumer release verification locked-file semantic diff is empty/whitespace-only or exactly the reviewed Project 17 M15 fingerprint; any additional drift fails closed | `gov-infra/evidence/SEC-10-output.log` |
 | Security | SEC-14 | Hosted-genesis MicroVM registry boundary stays Host-owned, TableTheory-friendly, and reconstruction-backed | `gov-infra/evidence/SEC-14-output.log` |
 | Security | SEC-15 | Hosted Genesis declaration production is five-body-only and MicroVM-only across deployed Host Go code; aiworker stays transport-only and missing/unknown contract configuration fails closed | `gov-infra/evidence/SEC-15-output.log` |

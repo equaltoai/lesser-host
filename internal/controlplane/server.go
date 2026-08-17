@@ -156,6 +156,7 @@ func (s *Server) RegisterRoutes(app *apptheory.App) {
 	app.Get("/setup/status", s.handleSetupStatus)
 	app.Post("/setup/bootstrap/challenge", s.handleSetupBootstrapChallenge)
 	app.Post("/setup/bootstrap/verify", s.handleSetupBootstrapVerify)
+	app.Post("/setup/webauthn/register/begin", s.handleSetupWebAuthnRegisterBegin)
 	app.Post("/setup/admin", s.handleSetupCreateAdmin)
 	app.Post("/setup/finalize", s.handleSetupFinalize, apptheory.RequireAuth())
 

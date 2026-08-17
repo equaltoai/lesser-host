@@ -1,4 +1,5 @@
 import { fetchJson, jsonRequest } from './http';
+import type { WebAuthnBeginResponse } from './webauthn';
 
 export interface SetupStatusResponse {
 	control_plane_state: 'locked' | 'active';
@@ -34,6 +35,11 @@ export interface SetupBootstrapVerifyResponse {
 
 export interface SetupCreateAdminResponse {
 	username: string;
+	token_type?: string;
+	token?: string;
+	expires_at?: string;
+	role?: string;
+	method?: string;
 }
 
 export interface OperatorLoginResponse {
@@ -101,10 +107,29 @@ export function setupCreateAdmin(
 	input: {
 		username: string;
 		displayName?: string;
-		wallet: { challengeId: string; address: string; signature: string; message: string };
+		wallet?: { challengeId: string; address: string; signature: string; message: string };
+		passkey?: {
+			challenge: string;
+			response: Record<string, unknown>;
+			credential_name?: string;
+		};
 	},
 ): Promise<SetupCreateAdminResponse> {
 	return fetchJson<SetupCreateAdminResponse>('/setup/admin', {
+		method: 'POST',
+		headers: {
+			authorization: `Bearer ${setupSessionToken}`,
+			'content-type': 'application/json',
+		},
+		body: JSON.stringify(input),
+	});
+}
+
+export function setupPasskeyRegisterBegin(
+	setupSessionToken: string,
+	input: { username: string; displayName?: string },
+): Promise<WebAuthnBeginResponse> {
+	return fetchJson<WebAuthnBeginResponse>('/setup/webauthn/register/begin', {
 		method: 'POST',
 		headers: {
 			authorization: `Bearer ${setupSessionToken}`,

@@ -58,14 +58,19 @@ func newWebAuthnTestDB() webAuthnTestDB {
 
 type stubWebAuthnEngine struct {
 	beginRegistration func(user webauthn.User, opts ...webauthn.RegistrationOption) (*protocol.CredentialCreation, *webauthn.SessionData, error)
+	createCredential  func(user webauthn.User, session webauthn.SessionData, parsedResponse *protocol.ParsedCredentialCreationData) (*webauthn.Credential, error)
 	beginLogin        func(user webauthn.User, opts ...webauthn.LoginOption) (*protocol.CredentialAssertion, *webauthn.SessionData, error)
+	validateLogin     func(user webauthn.User, session webauthn.SessionData, parsedResponse *protocol.ParsedCredentialAssertionData) (*webauthn.Credential, error)
 }
 
 func (s stubWebAuthnEngine) BeginRegistration(user webauthn.User, opts ...webauthn.RegistrationOption) (*protocol.CredentialCreation, *webauthn.SessionData, error) {
 	return s.beginRegistration(user, opts...)
 }
 
-func (s stubWebAuthnEngine) CreateCredential(_ webauthn.User, _ webauthn.SessionData, _ *protocol.ParsedCredentialCreationData) (*webauthn.Credential, error) {
+func (s stubWebAuthnEngine) CreateCredential(user webauthn.User, session webauthn.SessionData, parsedResponse *protocol.ParsedCredentialCreationData) (*webauthn.Credential, error) {
+	if s.createCredential != nil {
+		return s.createCredential(user, session, parsedResponse)
+	}
 	return nil, nil
 }
 
@@ -73,7 +78,10 @@ func (s stubWebAuthnEngine) BeginLogin(user webauthn.User, opts ...webauthn.Logi
 	return s.beginLogin(user, opts...)
 }
 
-func (s stubWebAuthnEngine) ValidateLogin(_ webauthn.User, _ webauthn.SessionData, _ *protocol.ParsedCredentialAssertionData) (*webauthn.Credential, error) {
+func (s stubWebAuthnEngine) ValidateLogin(user webauthn.User, session webauthn.SessionData, parsedResponse *protocol.ParsedCredentialAssertionData) (*webauthn.Credential, error) {
+	if s.validateLogin != nil {
+		return s.validateLogin(user, session, parsedResponse)
+	}
 	return nil, nil
 }
 
