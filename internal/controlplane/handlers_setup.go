@@ -757,7 +757,7 @@ func (s *Server) mapSetupPasskeyCreateAdminConditionFailure(ctx *apptheory.Conte
 	return newAppTheoryError("app.conflict", "setup state changed before the admin passkey was committed; reload setup status and retry")
 }
 
-func (s *Server) handleSetupCreateAdminWithPasskey(ctx *apptheory.Context, cfg *models.ControlPlaneConfig, req setupCreateAdminRequest) (*apptheory.Response, error) {
+func (s *Server) handleSetupCreateAdminWithPasskey(ctx *apptheory.Context, req setupCreateAdminRequest) (*apptheory.Response, error) {
 	if err := s.ensureWebAuthnConfigured(); err != nil {
 		return nil, err
 	}
@@ -788,7 +788,9 @@ func (s *Server) handleSetupCreateAdminWithPasskey(ctx *apptheory.Context, cfg *
 		CreatedAt: now,
 	}
 	applyAuditSourceProvenance(ctx, passkeyAudit)
-	_ = passkeyAudit.UpdateKeys()
+	if updateErr := passkeyAudit.UpdateKeys(); updateErr != nil {
+		return nil, newAppTheoryError("app.internal", "internal error")
+	}
 
 	token, sessionModel, expiresAt, err := buildOperatorSessionModel(req.Username, models.RoleAdmin, "webauthn", now)
 	if err != nil {
@@ -802,19 +804,7 @@ func (s *Server) handleSetupCreateAdminWithPasskey(ctx *apptheory.Context, cfg *
 		tx.Create(user)
 		tx.Create(storedCredential)
 		tx.Create(sessionModel)
-		if cfg == nil {
-			tx.Create(controlPlane)
-		} else {
-			tx.UpdateWithBuilder(controlPlane, func(ub core.UpdateBuilder) error {
-				ub.Set("PrimaryAdminUsername", controlPlane.PrimaryAdminUsername)
-				ub.Set("BootstrappedAt", controlPlane.BootstrappedAt)
-				return nil
-			},
-				tabletheory.IfExists(),
-				tabletheory.Condition("PrimaryAdminUsername", "=", ""),
-				tabletheory.Condition("BootstrappedAt", "=", time.Time{}),
-			)
-		}
+		tx.Create(controlPlane)
 		tx.Put(setupAudit)
 		tx.Put(passkeyAudit)
 		tx.Delete(
@@ -843,8 +833,7 @@ func (s *Server) handleSetupCreateAdminWithPasskey(ctx *apptheory.Context, cfg *
 }
 
 func (s *Server) handleSetupCreateAdmin(ctx *apptheory.Context) (*apptheory.Response, error) {
-	cfg, appErr := s.validateSetupCreateAdminState(ctx)
-	if appErr != nil {
+	if _, appErr := s.validateSetupCreateAdminState(ctx); appErr != nil {
 		return nil, appErr
 	}
 
@@ -854,7 +843,7 @@ func (s *Server) handleSetupCreateAdmin(ctx *apptheory.Context) (*apptheory.Resp
 	}
 
 	if req.Passkey != nil {
-		return s.handleSetupCreateAdminWithPasskey(ctx, cfg, req)
+		return s.handleSetupCreateAdminWithPasskey(ctx, req)
 	}
 	return s.handleSetupCreateAdminWithWallet(ctx, req)
 }

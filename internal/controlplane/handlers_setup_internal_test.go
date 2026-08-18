@@ -1,6 +1,7 @@
 package controlplane
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -404,6 +405,40 @@ func TestHandleSetupWebAuthnRegisterBegin_Success(t *testing.T) {
 	}
 }
 
+func TestP0_SetupWebAuthnRegisterBegin_RequiresSetupSession(t *testing.T) {
+	t.Parallel()
+
+	tdb := newSetupTestDB()
+	s := &Server{
+		cfg:   config.Config{BootstrapWalletAddress: "0xboot"},
+		store: store.New(tdb.db),
+		webAuthn: stubWebAuthnEngine{
+			beginRegistration: func(_ webauthn.User, _ ...webauthn.RegistrationOption) (*protocol.CredentialCreation, *webauthn.SessionData, error) {
+				t.Fatal("BeginRegistration must not run without a setup session")
+				return nil, nil, nil
+			},
+		},
+	}
+
+	tdb.qCP.On("First", mock.AnythingOfType("*models.ControlPlaneConfig")).Return(theoryErrors.ErrItemNotFound).Once()
+
+	body := []byte(`{"username":"alice","displayName":"Alice Root"}`)
+	resp, err := s.handleSetupWebAuthnRegisterBegin(&apptheory.Context{
+		Request: apptheory.Request{Body: body},
+	})
+	if resp != nil {
+		t.Fatalf("expected no response, got %#v", resp)
+	}
+	appErr, ok := err.(*apptheory.AppTheoryError)
+	if !ok {
+		t.Fatalf("expected *apptheory.AppTheoryError, got %T: %v", err, err)
+	}
+	if appErr.Code != testProvisionConsentCodeUnauthorized {
+		t.Fatalf("expected unauthorized, got %#v", appErr)
+	}
+	tdb.qSetup.AssertNotCalled(t, "First", mock.Anything)
+}
+
 func TestRequireSetupSession_ExpiredDeletesAndUnauthorized(t *testing.T) {
 	t.Parallel()
 
@@ -724,6 +759,63 @@ func TestP0_SetupCreateAdminPasskey_DoesNotLinkBootstrapWalletCredential(t *test
 	}
 	tdb.qCred.AssertNotCalled(t, "Create")
 	tdb.qWalletIndex.AssertNotCalled(t, "Create")
+}
+
+func TestHandleSetupCreateAdminWithPasskey_FailsWhenPasskeyAuditKeysInvalid(t *testing.T) {
+	t.Parallel()
+
+	tdb := newSetupTestDB()
+	s := &Server{
+		cfg:   config.Config{BootstrapWalletAddress: "0xboot"},
+		store: store.New(tdb.db),
+		webAuthn: stubWebAuthnEngine{
+			createCredential: func(_ webauthn.User, _ webauthn.SessionData, _ *protocol.ParsedCredentialCreationData) (*webauthn.Credential, error) {
+				return &webauthn.Credential{
+					ID:              bytes.Repeat([]byte("x"), 780),
+					PublicKey:       []byte("public-key"),
+					AttestationType: "none",
+					Authenticator: webauthn.Authenticator{
+						AAGUID:    make([]byte, 16),
+						SignCount: 1,
+					},
+					Flags: webauthn.CredentialFlags{
+						UserPresent:  true,
+						UserVerified: true,
+					},
+				}, nil
+			},
+		},
+	}
+
+	stubSetupPasskeyAdminCreationPrereqs(t, tdb)
+
+	body, _ := json.Marshal(setupCreateAdminRequest{
+		Username:    testUsernameAlice,
+		DisplayName: "Alice",
+		Passkey: &webAuthnFinishRegistrationRequest{
+			Challenge:      "pc1",
+			Response:       makeSetupPasskeyCreationResponse(t, "pc1"),
+			CredentialName: "Setup Admin Passkey",
+		},
+	})
+	resp, err := s.handleSetupCreateAdmin(&apptheory.Context{
+		RequestID: "rid-passkey-audit-too-long",
+		Request: apptheory.Request{
+			Body:    body,
+			Headers: map[string][]string{"authorization": {"Bearer setup-token"}},
+		},
+	})
+	if resp != nil {
+		t.Fatalf("expected no response, got %#v", resp)
+	}
+	appErr, ok := err.(*apptheory.AppTheoryError)
+	if !ok {
+		t.Fatalf("expected *apptheory.AppTheoryError, got %T: %v", err, err)
+	}
+	if appErr.Code != appErrCodeInternal || appErr.Message != "internal error" {
+		t.Fatalf("expected internal error, got %#v", appErr)
+	}
+	tdb.db.AssertNotCalled(t, "TransactWrite", mock.Anything, mock.Anything)
 }
 
 func stubSetupPasskeyAdminCreationPrereqs(t *testing.T, tdb setupTestDB) {

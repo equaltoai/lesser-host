@@ -26,6 +26,7 @@ import {
   renderProvisionRunnerPreBuildCommands,
 } from "./provision-runner-buildspec";
 import { CostTelemetryWorker } from "./cost-telemetry-worker-construct";
+import { synthGoBuildEnv } from "./go-build-env";
 import { configureWebDelivery } from "./web-delivery";
 import {
   configureHostedGenesisMicrovm,
@@ -1773,12 +1774,7 @@ export class LesserHostStack extends cdk.Stack {
       {
         cwd: repoRoot,
         stdio: "inherit",
-        env: {
-          ...process.env,
-          CGO_ENABLED: "0",
-          GOOS: "linux",
-          GOARCH: "amd64",
-        },
+        env: synthGoBuildEnv(repoRoot),
       },
     );
     const code = lambda.Code.fromAsset(buildDir);

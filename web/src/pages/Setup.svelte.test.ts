@@ -579,6 +579,74 @@ describe('Setup two-wallet role state machine', () => {
 		await waitForText(target, 'Setup complete');
 	});
 
+	it('surfaces a passkey ceremony failure before the admin is created', async () => {
+		mockCredentialCreate.mockRejectedValueOnce(new Error('Platform authenticator unavailable'));
+
+		const target = mountSetup();
+
+		await completeStep1(target);
+
+		const step2 = cardByHeading(target, 'Step 2 — Create primary admin');
+		await clickEnabledButton(step2, 'Passkey-only');
+		await typeInto(inputByLabel(step2, 'Username'), 'passkey-admin');
+		await clickEnabledButton(step2, 'Create admin with passkey');
+
+		await waitForText(target, 'Platform authenticator unavailable');
+		expect(mockSetupCreateAdmin).not.toHaveBeenCalled();
+		expect(target.textContent).not.toContain('Primary admin passkey ready');
+		expect(enabledButtonByText(cardByHeading(target, 'Step 2 — Create primary admin'), 'Create admin with passkey')).toBeTruthy();
+	});
+
+	it('treats an invalid passkey-admin response as actionable and lets the operator retry', async () => {
+		mockSetupCreateAdmin.mockImplementationOnce(async (_setupToken, input) => {
+			return {
+				username: input.username,
+				token_type: 'Bearer',
+				token: '',
+				expires_at: expiresAt,
+				role: 'customer',
+				method: 'wallet',
+			};
+		});
+
+		const target = mountSetup();
+
+		await completeStep1(target);
+
+		const step2 = cardByHeading(target, 'Step 2 — Create primary admin');
+		await clickEnabledButton(step2, 'Passkey-only');
+		await typeInto(inputByLabel(step2, 'Username'), 'passkey-admin');
+		await clickEnabledButton(step2, 'Create admin with passkey');
+
+		await waitForText(target, 'Primary admin passkey setup did not return an admin session.');
+		expect(target.textContent).not.toContain('Primary admin passkey ready');
+
+		await clickEnabledButton(cardByHeading(target, 'Step 2 — Create primary admin'), 'Create admin with passkey');
+		await waitForText(target, 'Primary admin passkey ready');
+		expect(mockSetupCreateAdmin).toHaveBeenCalledTimes(2);
+	});
+
+	it('treats a cancelled passkey ceremony as recoverable and resets state for retry', async () => {
+		mockCredentialCreate.mockResolvedValueOnce(null);
+
+		const target = mountSetup();
+
+		await completeStep1(target);
+
+		const step2 = cardByHeading(target, 'Step 2 — Create primary admin');
+		await clickEnabledButton(step2, 'Passkey-only');
+		await typeInto(inputByLabel(step2, 'Username'), 'passkey-admin');
+		await clickEnabledButton(step2, 'Create admin with passkey');
+
+		await waitForText(target, 'No credential returned.');
+		expect(mockSetupCreateAdmin).not.toHaveBeenCalled();
+		expect(target.textContent).not.toContain('Primary admin passkey ready');
+
+		await clickEnabledButton(cardByHeading(target, 'Step 2 — Create primary admin'), 'Create admin with passkey');
+		await waitForText(target, 'Primary admin passkey ready');
+		expect(mockSetupCreateAdmin).toHaveBeenCalledTimes(1);
+	});
+
 	it('clears stale admin challenge and cached admin session state when the admin account changes', async () => {
 		const target = mountSetup();
 
