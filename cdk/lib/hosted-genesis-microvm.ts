@@ -15,6 +15,8 @@ import * as lambda from "aws-cdk-lib/aws-lambda";
 import * as s3assets from "aws-cdk-lib/aws-s3-assets";
 import type { Construct } from "constructs";
 
+import { synthGoBuildEnv } from "./go-build-env";
+
 export const HOSTED_GENESIS_MICROVM_NAMESPACE = "hosted-genesis" as const;
 export const HOSTED_GENESIS_MICROVM_SOURCE_OF_TRUTH =
   "host-dynamodb-hosted-genesis-session" as const;
@@ -1179,12 +1181,7 @@ function buildGoBootstrapAsset(
   execFileSync("go", ["build", "-o", path.join(buildDir, "bootstrap"), entry], {
     cwd: repoRoot,
     stdio: "inherit",
-    env: {
-      ...process.env,
-      CGO_ENABLED: "0",
-      GOOS: "linux",
-      GOARCH: "amd64",
-    },
+    env: synthGoBuildEnv(repoRoot),
   });
   return lambda.Code.fromAsset(buildDir);
 }
@@ -1247,12 +1244,7 @@ function buildHostedGenesisMicrovmWorkloadAsset(
     {
       cwd: repoRoot,
       stdio: "inherit",
-      env: {
-        ...process.env,
-        CGO_ENABLED: "0",
-        GOOS: "linux",
-        GOARCH: "arm64",
-      },
+      env: synthGoBuildEnv(repoRoot, { GOARCH: "arm64" }),
     },
   );
   // Write the Dockerfile into the same buildDir s3assets.Asset packages, so the

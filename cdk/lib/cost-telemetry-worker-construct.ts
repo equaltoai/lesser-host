@@ -8,6 +8,8 @@ import * as events from 'aws-cdk-lib/aws-events';
 import * as targets from 'aws-cdk-lib/aws-events-targets';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 
+import { synthGoBuildEnv } from './go-build-env';
+
 /**
  * Properties for CostTelemetryWorker.
  *
@@ -39,12 +41,7 @@ export class CostTelemetryWorker extends Construct {
 		execFileSync('go', ['build', '-o', path.join(buildDir, 'bootstrap'), './cmd/cost-telemetry-worker'], {
 			cwd: props.repoRoot,
 			stdio: 'inherit',
-			env: {
-				...process.env,
-				CGO_ENABLED: '0',
-				GOOS: 'linux',
-				GOARCH: 'amd64',
-			},
+			env: synthGoBuildEnv(props.repoRoot),
 		});
 
 		this.fn = new lambda.Function(this, 'Fn', {
