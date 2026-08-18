@@ -683,3 +683,176 @@ describe('Setup two-wallet role state machine', () => {
 		});
 	});
 });
+
+function stepIndicatorState(target: HTMLElement, label: string): string {
+	const indicator = Array.from(target.querySelectorAll('.gr-step-indicator')).find((el) => {
+		const labelEl = el.querySelector('.gr-step-label');
+		return Boolean(labelEl) && normalizedText(labelEl as Element) === label;
+	});
+	if (!(indicator instanceof HTMLElement)) {
+		throw new Error(`step indicator not found: ${label}`);
+	}
+	const badge = indicator.querySelector('.gr-step-badge');
+	if (!badge) {
+		throw new Error(`step badge not found: ${label}`);
+	}
+	if (badge.classList.contains('gr-step-badge--success')) return 'completed';
+	if (badge.classList.contains('gr-step-badge--gray')) return 'pending';
+	if (badge.classList.contains('gr-step-badge--primary')) return 'active';
+	return 'unknown';
+}
+
+function scriptFunctionBody(name: string): string {
+	const start = source.indexOf(`\tasync function ${name}(`);
+	if (start < 0) throw new Error(`function not found in Setup.svelte: ${name}`);
+	const end = source.indexOf('\n\tasync function ', start + 1);
+	return source.slice(start, end < 0 ? source.length : end);
+}
+
+function reloadedPrimaryAdminStatus(): SetupStatusResponse {
+	return lockedStatus({
+		finalize_allowed: true,
+		bootstrapped_at: '2026-07-06T17:05:00Z',
+		primary_admin_set: true,
+		primary_admin_username: 'primary-admin',
+	});
+}
+
+describe('Setup durable step state after reload (issue #1039)', () => {
+	beforeEach(() => {
+		currentStatus = reloadedPrimaryAdminStatus();
+	});
+
+	it('activates Step 3 instead of Step 1 when the primary admin already exists and no setup token is held', async () => {
+		const target = mountSetup();
+		await waitForText(target, 'Primary admin already configured');
+
+		expect(sessionStorage.getItem('lesser-host:setupSessionToken')).toBeNull();
+		expect(mockSetupBootstrapVerify).not.toHaveBeenCalled();
+
+		expect(stepIndicatorState(target, 'Bootstrap session')).toBe('completed');
+		expect(stepIndicatorState(target, 'Create admin')).toBe('completed');
+		expect(stepIndicatorState(target, 'Register passkey')).toBe('active');
+		expect(stepIndicatorState(target, 'Finalize')).toBe('pending');
+	});
+
+	it('retires the bootstrap controls instead of claiming a setup token is in memory', async () => {
+		const target = mountSetup();
+		await waitForText(target, 'Primary admin already configured');
+
+		const step1 = cardByHeading(target, 'Step 1 — Bootstrap session');
+		expect(step1.textContent).toContain('Bootstrap completed and retired');
+		expect(step1.textContent).not.toContain('Setup session token is held in memory');
+		expect(buttonsByText(step1, 'Create challenge')).toHaveLength(0);
+		expect(buttonsByText(step1, 'Sign & verify')).toHaveLength(0);
+
+		expect(target.textContent).toContain('Bootstrap authority is retired');
+		expect(buttonsByText(target, 'Connect bootstrap wallet')).toHaveLength(0);
+		expect(buttonsByText(target, 'Reconnect bootstrap wallet')).toHaveLength(0);
+		expect(target.textContent).not.toContain('Expected bootstrap address');
+	});
+
+	it('enables passkey registration once the primary admin wallet is connected', async () => {
+		const target = mountSetup();
+		await waitForText(target, 'Primary admin already configured');
+
+		await connectWallet(target, 'Connect primary admin wallet', primaryAdminAddress);
+
+		const step3 = cardByHeading(target, 'Step 3 — Register primary admin passkey');
+		expect(step3.textContent).toContain('Wallet sign-in available');
+
+		await clickEnabledButton(step3, 'Register passkey');
+		await waitForText(target, 'Primary admin passkey ready');
+
+		expect(mockWalletChallenge).toHaveBeenCalledWith({
+			username: 'primary-admin',
+			address: primaryAdminAddress,
+			chainId: 11155111,
+		});
+		expect(mockWebAuthnRegisterBegin).toHaveBeenCalledWith('admin-session-admin-challenge-1');
+		expect(mockWebAuthnRegisterFinish).toHaveBeenCalledTimes(1);
+	});
+
+	it('issues no bootstrap challenge request once the primary admin exists', async () => {
+		const target = mountSetup();
+		await waitForText(target, 'Primary admin already configured');
+
+		await connectWallet(target, 'Connect primary admin wallet', primaryAdminAddress);
+		await clickEnabledButton(
+			cardByHeading(target, 'Step 3 — Register primary admin passkey'),
+			'Register passkey',
+		);
+		await waitForText(target, 'Primary admin passkey ready');
+
+		const step4 = cardByHeading(target, 'Step 4 — Finalize');
+		await checkByLabel(step4, 'I understand finalize is irreversible for this stage.');
+		await checkByLabel(step4, 'I have access to the primary admin credential and can authenticate again later.');
+		await typeInto(inputByLabel(step4, 'Type FINALIZE to confirm'), 'FINALIZE');
+		await clickEnabledButton(step4, 'Finalize control plane');
+		await waitForText(target, 'Setup complete');
+
+		expect(mockSetupBootstrapChallenge).not.toHaveBeenCalled();
+		expect(mockSetupBootstrapVerify).not.toHaveBeenCalled();
+		expect(mockSetupCreateAdmin).not.toHaveBeenCalled();
+
+		// The call path itself is guarded, not only the UI affordance: both bootstrap
+		// requests return early on the durable primary_admin_set milestone.
+		const beginBody = scriptFunctionBody('beginBootstrap');
+		const beginGuard = beginBody.indexOf('if (status.primary_admin_set) {');
+		const beginCall = beginBody.indexOf('setupBootstrapChallenge(');
+		expect(beginGuard).toBeGreaterThan(-1);
+		expect(beginCall).toBeGreaterThan(-1);
+		expect(beginGuard).toBeLessThan(beginCall);
+		expect(beginBody.slice(beginGuard, beginCall)).toContain('return;');
+
+		const completeBody = scriptFunctionBody('completeBootstrap');
+		const completeGuard = completeBody.indexOf('if (status?.primary_admin_set) {');
+		const completeCall = completeBody.indexOf('setupBootstrapVerify(');
+		expect(completeGuard).toBeGreaterThan(-1);
+		expect(completeCall).toBeGreaterThan(-1);
+		expect(completeGuard).toBeLessThan(completeCall);
+		expect(completeBody.slice(completeGuard, completeCall)).toContain('return;');
+	});
+
+	it('registers the passkey and finalizes through normal primary admin authentication', async () => {
+		const target = mountSetup();
+		await waitForText(target, 'Primary admin already configured');
+
+		await connectWallet(target, 'Connect primary admin wallet', primaryAdminAddress);
+		await clickEnabledButton(
+			cardByHeading(target, 'Step 3 — Register primary admin passkey'),
+			'Register passkey',
+		);
+		await waitForText(target, 'Primary admin passkey ready');
+
+		const step4 = cardByHeading(target, 'Step 4 — Finalize');
+		await checkByLabel(step4, 'I understand finalize is irreversible for this stage.');
+		await checkByLabel(step4, 'I have access to the primary admin credential and can authenticate again later.');
+		await typeInto(inputByLabel(step4, 'Type FINALIZE to confirm'), 'FINALIZE');
+		await clickEnabledButton(step4, 'Finalize control plane');
+		await waitForText(target, 'Setup complete');
+
+		expect(mockWalletLogin).toHaveBeenCalledTimes(1);
+		expect(mockSetupFinalize).toHaveBeenCalledTimes(1);
+		expect(mockSetupFinalize).toHaveBeenCalledWith('admin-session-admin-challenge-1');
+		expect(mockSetupFinalize).not.toHaveBeenCalledWith('setup-session-token');
+	});
+
+	it('keeps two-wallet isolation after reload: the bootstrap wallet never authenticates the primary admin', async () => {
+		const target = mountSetup();
+		await waitForText(target, 'Primary admin already configured');
+
+		await connectWallet(target, 'Connect primary admin wallet', bootstrapAddress);
+		expect(target.textContent).toContain('Switch wallet account');
+
+		await clickEnabledButton(
+			cardByHeading(target, 'Step 3 — Register primary admin passkey'),
+			'Check passkeys',
+		);
+
+		expect(mockWalletChallenge).not.toHaveBeenCalled();
+		expect(mockWalletLogin).not.toHaveBeenCalled();
+		expect(mockWebAuthnLoginBegin).toHaveBeenCalledWith('primary-admin');
+		expect(mockSetupBootstrapChallenge).not.toHaveBeenCalled();
+	});
+});

@@ -213,6 +213,10 @@
 			bootstrapError = 'Control plane is already active.';
 			return;
 		}
+		if (status.primary_admin_set) {
+			bootstrapError = 'Bootstrap authority is retired: the primary admin already exists.';
+			return;
+		}
 		if (!status.bootstrap_wallet_address_set) {
 			bootstrapError = 'Bootstrap wallet is not configured.';
 			return;
@@ -235,6 +239,10 @@
 	async function completeBootstrap() {
 		bootstrapError = null;
 
+		if (status?.primary_admin_set) {
+			bootstrapError = 'Bootstrap authority is retired: the primary admin already exists.';
+			return;
+		}
 		if (!bootstrapProvider) {
 			bootstrapError = 'Connect the bootstrap wallet first.';
 			return;
@@ -603,7 +611,9 @@
 		}
 	}
 
-	const step1Complete = $derived(Boolean(setupSessionToken));
+	const bootstrapSessionAvailable = $derived(Boolean(setupSessionToken));
+	const bootstrapRetired = $derived(Boolean(status?.primary_admin_set));
+	const step1Complete = $derived(bootstrapSessionAvailable || bootstrapRetired);
 	const step2Complete = $derived(Boolean(status?.primary_admin_set));
 	const step3Complete = $derived(passkeyRegistered);
 	const step4Complete = $derived(Boolean(status && !status.locked));
@@ -615,6 +625,9 @@
 
 	const activeStep = $derived.by(() => {
 		if (step4Complete) return 0;
+		// Durable server milestones outrank the ephemeral bootstrap session: once
+		// primary_admin_set is true, step1Complete is satisfied by bootstrapRetired, so a
+		// reload or a new canonical hostname routes to Step 3/4 and never back to Step 1.
 		if (!step1Complete) return 1;
 		if (!step2Complete) return 2;
 		if (!step3Complete) return 3;
@@ -698,34 +711,41 @@
 					<div class="setup__wallet">
 						<div class="setup__wallet-role">
 							<Heading level={3} size="base">Step 1 bootstrap wallet</Heading>
-							<Text size="sm" color="secondary">
-								Use only the configured one-time bootstrap wallet to create the setup session. It is
-								retired from this page after Step 1 succeeds.
-							</Text>
-							<div class="setup__wallet-actions">
-								<Button
-									variant="outline"
-									onclick={() => void connectBootstrapWallet()}
-									disabled={step1Complete}
-								>
-									{bootstrapWalletAddress ? 'Reconnect bootstrap wallet' : 'Connect bootstrap wallet'}
-								</Button>
-							</div>
+							{#if bootstrapRetired}
+								<Text size="sm" color="secondary">
+									Bootstrap authority is retired: the primary admin already exists, so no bootstrap wallet
+									connection is required or accepted on this deployment.
+								</Text>
+							{:else}
+								<Text size="sm" color="secondary">
+									Use only the configured one-time bootstrap wallet to create the setup session. It is
+									retired from this page after Step 1 succeeds.
+								</Text>
+								<div class="setup__wallet-actions">
+									<Button
+										variant="outline"
+										onclick={() => void connectBootstrapWallet()}
+										disabled={step1Complete}
+									>
+										{bootstrapWalletAddress ? 'Reconnect bootstrap wallet' : 'Connect bootstrap wallet'}
+									</Button>
+								</div>
 
-							{#if bootstrapWalletError}
-								<Alert variant="error" title="Bootstrap wallet error">{bootstrapWalletError}</Alert>
-							{/if}
-							{#if bootstrapWalletNotice}
-								<Alert variant="info" title="Bootstrap wallet retired">{bootstrapWalletNotice}</Alert>
-							{/if}
+								{#if bootstrapWalletError}
+									<Alert variant="error" title="Bootstrap wallet error">{bootstrapWalletError}</Alert>
+								{/if}
+								{#if bootstrapWalletNotice}
+									<Alert variant="info" title="Bootstrap wallet retired">{bootstrapWalletNotice}</Alert>
+								{/if}
 
-							<DefinitionList>
-								<DefinitionItem label="Connected bootstrap address" monospace>{bootstrapWalletAddress || '—'}</DefinitionItem>
-								<DefinitionItem label="Bootstrap chain ID" monospace>{String(bootstrapWalletChainId)}</DefinitionItem>
-								<DefinitionItem label="Expected bootstrap address" monospace>
-									{status.bootstrap_wallet_address || '—'}
-								</DefinitionItem>
-							</DefinitionList>
+								<DefinitionList>
+									<DefinitionItem label="Connected bootstrap address" monospace>{bootstrapWalletAddress || '—'}</DefinitionItem>
+									<DefinitionItem label="Bootstrap chain ID" monospace>{String(bootstrapWalletChainId)}</DefinitionItem>
+									<DefinitionItem label="Expected bootstrap address" monospace>
+										{status.bootstrap_wallet_address || '—'}
+									</DefinitionItem>
+								</DefinitionList>
+							{/if}
 						</div>
 
 						<div class="setup__wallet-role">
@@ -794,45 +814,60 @@
 							<Heading level={2} size="xl">Step 1 — Bootstrap session</Heading>
 						{/snippet}
 
-						<Text size="sm" color="secondary">
-							This verifies the configured bootstrap wallet and creates a short-lived setup session. The
-							bootstrap wallet is one-time setup authority only; it cannot become the primary admin wallet.
-						</Text>
+						{#if bootstrapRetired}
+							<Text size="sm" color="secondary">
+								Bootstrap authority is retired for this deployment: the primary admin already exists, so
+								the one-time bootstrap session can no longer be created or replayed. Continue with the
+								primary admin credential.
+							</Text>
 
-						<div class="setup__row">
-							<Button
-								variant="outline"
-								onclick={() => void beginBootstrap()}
-								disabled={bootstrapLoading || step1Complete || !bootstrapWalletAddress}
-							>
-								Create challenge
-							</Button>
-							<Button
-								variant="solid"
-								onclick={() => void completeBootstrap()}
-								disabled={bootstrapLoading || step1Complete || !bootstrapChallenge}
-							>
-								Sign & verify
-							</Button>
-						</div>
+							<Alert variant="success" title="Bootstrap completed and retired">
+								<Text size="sm">
+									Step 1 was completed on this control plane and is recorded in durable server state. No
+									bootstrap wallet and no setup session token are required to finish setup.
+								</Text>
+							</Alert>
+						{:else}
+							<Text size="sm" color="secondary">
+								This verifies the configured bootstrap wallet and creates a short-lived setup session. The
+								bootstrap wallet is one-time setup authority only; it cannot become the primary admin wallet.
+							</Text>
+
+							<div class="setup__row">
+								<Button
+									variant="outline"
+									onclick={() => void beginBootstrap()}
+									disabled={bootstrapLoading || step1Complete || !bootstrapWalletAddress}
+								>
+									Create challenge
+								</Button>
+								<Button
+									variant="solid"
+									onclick={() => void completeBootstrap()}
+									disabled={bootstrapLoading || step1Complete || !bootstrapChallenge}
+								>
+									Sign & verify
+								</Button>
+							</div>
+
+							{#if bootstrapSessionAvailable}
+								<Alert variant="success" title="Setup session created">
+									<Text size="sm">
+										Setup session token is held in memory for this page only. Proceed to Step 2 with either
+										the wallet-first or passkey-only primary admin path; refreshing the page requires signing
+										Step 1 again.
+									</Text>
+								</Alert>
+							{:else if bootstrapChallenge}
+								<Alert variant="info" title="Signature required">
+									<Text size="sm">Sign the exact message below with the bootstrap wallet.</Text>
+								</Alert>
+								<pre class="setup__message">{bootstrapChallenge.message}</pre>
+							{/if}
+						{/if}
 
 						{#if bootstrapError}
 							<Alert variant="error" title="Bootstrap failed">{bootstrapError}</Alert>
-						{/if}
-
-						{#if step1Complete}
-							<Alert variant="success" title="Setup session created">
-								<Text size="sm">
-									Setup session token is held in memory for this page only. Proceed to Step 2 with either
-									the wallet-first or passkey-only primary admin path; refreshing the page requires signing
-									Step 1 again.
-								</Text>
-							</Alert>
-						{:else if bootstrapChallenge}
-							<Alert variant="info" title="Signature required">
-								<Text size="sm">Sign the exact message below with the bootstrap wallet.</Text>
-							</Alert>
-							<pre class="setup__message">{bootstrapChallenge.message}</pre>
 						{/if}
 					</Card>
 
