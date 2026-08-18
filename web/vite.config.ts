@@ -56,6 +56,7 @@ export default defineConfig(({ mode }) => {
 				'/auth': { target: controlPlaneOrigin, changeOrigin: true, secure: false },
 				'/setup/status': { target: controlPlaneOrigin, changeOrigin: true, secure: false },
 				'/setup/bootstrap': { target: controlPlaneOrigin, changeOrigin: true, secure: false },
+				'/setup/webauthn': { target: controlPlaneOrigin, changeOrigin: true, secure: false },
 				'/setup/admin': { target: controlPlaneOrigin, changeOrigin: true, secure: false },
 				'/setup/finalize': { target: controlPlaneOrigin, changeOrigin: true, secure: false },
 

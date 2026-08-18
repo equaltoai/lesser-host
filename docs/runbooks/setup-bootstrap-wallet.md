@@ -73,14 +73,20 @@ aws ssm get-parameter \
 
 After importing the key, open `/setup` and sign the bootstrap challenge once. The setup session token is
 memory-only in the page: it is not initialized from `sessionStorage`, and refreshing the page requires
-signing Step 1 again. After Step 1, the UI clears the connected bootstrap wallet. Reconnect the real
-primary admin credential, create the primary admin, register a primary admin passkey, and then finalize
-setup.
+signing Step 1 again. After Step 1, the UI clears the connected bootstrap wallet. Then either:
+
+- use the **passkey-only** Step 2 lane to create the primary admin and bind the first passkey atomically, or
+- use the **wallet-first** Step 2 lane with a distinct real primary admin wallet, then register a primary admin
+  passkey in Step 3.
+
+In both lanes the bootstrap wallet remains setup-only authority and never becomes an actor credential.
+`/setup/finalize` requires an authenticated primary admin session plus at least one registered WebAuthn
+passkey.
 
 The bootstrap wallet is one-time setup authority only. It must not be reused as the primary admin wallet,
 and `/setup/admin` rejects attempts to link the configured bootstrap wallet as the primary admin
-credential. `/setup/finalize` requires the primary admin session and at least one registered WebAuthn
-passkey.
+credential. On the passkey-only setup lane, `/setup/admin` also returns the primary admin session so the
+operator can finalize without any wallet-linked actor credential.
 
 ## Manual override
 

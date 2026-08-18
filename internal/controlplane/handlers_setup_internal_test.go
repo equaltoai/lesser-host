@@ -1,6 +1,7 @@
 package controlplane
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +13,8 @@ import (
 	theoryErrors "github.com/theory-cloud/tabletheory/v3/pkg/errors"
 	ttmocks "github.com/theory-cloud/tabletheory/v3/pkg/mocks"
 
+	"github.com/go-webauthn/webauthn/protocol"
+	"github.com/go-webauthn/webauthn/webauthn"
 	"github.com/stretchr/testify/mock"
 
 	"github.com/equaltoai/lesser-host/internal/config"
@@ -57,7 +60,29 @@ func TestParseSetupCreateAdminRequestInput(t *testing.T) {
 	if appErr != nil {
 		t.Fatalf("parseSetupCreateAdminRequestInput: %v", appErr)
 	}
-	if req.Username != testUsernameAlice || req.DisplayName != "Alice" || req.Wallet.ChallengeID != "c" {
+	if req.Username != testUsernameAlice || req.DisplayName != "Alice" || req.Wallet == nil || req.Wallet.ChallengeID != "c" {
+		t.Fatalf("unexpected request: %#v", req)
+	}
+
+	ctx.Request.Body = []byte(`{"username":"alice","passkey":{"challenge":"pc","response":{"id":"cred"}}}`)
+	req, appErr = parseSetupCreateAdminRequestInput(ctx)
+	if appErr != nil {
+		t.Fatalf("parseSetupCreateAdminRequestInput passkey: %v", appErr)
+	}
+	if req.Username != testUsernameAlice || req.Passkey == nil || req.Passkey.Challenge != "pc" {
+		t.Fatalf("unexpected request: %#v", req)
+	}
+}
+
+func TestParseSetupPasskeyRegisterBeginRequestInput(t *testing.T) {
+	t.Parallel()
+
+	ctx := &apptheory.Context{Request: apptheory.Request{Body: []byte(`{"username":"alice","displayName":" Root Admin "}`)}}
+	req, appErr := parseSetupPasskeyRegisterBeginRequestInput(ctx)
+	if appErr != nil {
+		t.Fatalf("parseSetupPasskeyRegisterBeginRequestInput: %v", appErr)
+	}
+	if req.Username != testUsernameAlice || req.DisplayName != "Root Admin" {
 		t.Fatalf("unexpected request: %#v", req)
 	}
 }
@@ -95,6 +120,7 @@ type setupTestDB struct {
 	qWalletIndex  *ttmocks.MockQuery
 	qUser         *ttmocks.MockQuery
 	qCred         *ttmocks.MockQuery
+	qWebAuthnChal *ttmocks.MockQuery
 	qWebAuthnCred *ttmocks.MockQuery
 	qAudit        *ttmocks.MockQuery
 }
@@ -107,6 +133,7 @@ func newSetupTestDB() setupTestDB {
 	qWalletIndex := new(ttmocks.MockQuery)
 	qUser := new(ttmocks.MockQuery)
 	qCred := new(ttmocks.MockQuery)
+	qWebAuthnChal := new(ttmocks.MockQuery)
 	qWebAuthnCred := new(ttmocks.MockQuery)
 	qAudit := new(ttmocks.MockQuery)
 
@@ -117,10 +144,11 @@ func newSetupTestDB() setupTestDB {
 	db.On("Model", mock.AnythingOfType("*models.WalletIndex")).Return(qWalletIndex).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.User")).Return(qUser).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.WalletCredential")).Return(qCred).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.WebAuthnChallenge")).Return(qWebAuthnChal).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.WebAuthnCredential")).Return(qWebAuthnCred).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.AuditLogEntry")).Return(qAudit).Maybe()
 
-	for _, q := range []*ttmocks.MockQuery{qCP, qSetup, qWallet, qWalletIndex, qUser, qCred, qWebAuthnCred, qAudit} {
+	for _, q := range []*ttmocks.MockQuery{qCP, qSetup, qWallet, qWalletIndex, qUser, qCred, qWebAuthnChal, qWebAuthnCred, qAudit} {
 		q.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(q).Maybe()
 		q.On("Limit", mock.Anything).Return(q).Maybe()
 		q.On("IfNotExists").Return(q).Maybe()
@@ -141,9 +169,35 @@ func newSetupTestDB() setupTestDB {
 		qWalletIndex:  qWalletIndex,
 		qUser:         qUser,
 		qCred:         qCred,
+		qWebAuthnChal: qWebAuthnChal,
 		qWebAuthnCred: qWebAuthnCred,
 		qAudit:        qAudit,
 	}
+}
+
+func makeSetupPasskeyCreationResponse(t *testing.T, challenge string) map[string]any {
+	t.Helper()
+
+	_ = challenge // registration parsing in these tests needs a valid WebAuthn shape, not challenge verification.
+
+	const raw = `{
+		"id":"6xrtBhJQW6QU4tOaB4rrHaS2Ks0yDDL_q8jDC16DEjZ-VLVf4kCRkvl2xp2D71sTPYns-exsHQHTy3G-zJRK8g",
+		"rawId":"6xrtBhJQW6QU4tOaB4rrHaS2Ks0yDDL_q8jDC16DEjZ-VLVf4kCRkvl2xp2D71sTPYns-exsHQHTy3G-zJRK8g",
+		"type":"public-key",
+		"authenticatorAttachment":"platform",
+		"clientExtensionResults":{"appid":true},
+		"response":{
+			"attestationObject":"o2NmbXRkbm9uZWdhdHRTdG10oGhhdXRoRGF0YVjEdKbqkhPJnC90siSSsyDPQCYqlMGpUKA5fyklC2CEHvBBAAAAAAAAAAAAAAAAAAAAAAAAAAAAQOsa7QYSUFukFOLTmgeK6x2ktirNMgwy_6vIwwtegxI2flS1X-JAkZL5dsadg-9bEz2J7PnsbB0B08txvsyUSvKlAQIDJiABIVggLKF5xS0_BntttUIrm2Z2tgZ4uQDwllbdIfrrBMABCNciWCDHwin8Zdkr56iSIh0MrB5qZiEzYLQpEOREhMUkY6q4Vw",
+			"clientDataJSON":"eyJjaGFsbGVuZ2UiOiJXOEd6RlU4cEdqaG9SYldyTERsYW1BZnFfeTRTMUNaRzFWdW9lUkxBUnJFIiwib3JpZ2luIjoiaHR0cHM6Ly93ZWJhdXRobi5pbyIsInR5cGUiOiJ3ZWJhdXRobi5jcmVhdGUifQ",
+			"transports":["usb","nfc","fake"]
+		}
+	}`
+
+	var out map[string]any
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		t.Fatalf("unmarshal registration fixture: %v", err)
+	}
+	return out
 }
 
 func TestHandleSetupStatus_LockedAndActive(t *testing.T) {
@@ -296,6 +350,95 @@ func TestHandleSetupBootstrapVerify_Success(t *testing.T) {
 	}
 }
 
+func TestHandleSetupWebAuthnRegisterBegin_Success(t *testing.T) {
+	t.Parallel()
+
+	tdb := newSetupTestDB()
+	s := &Server{
+		cfg:   config.Config{BootstrapWalletAddress: "0xboot"},
+		store: store.New(tdb.db),
+		webAuthn: stubWebAuthnEngine{
+			beginRegistration: func(user webauthn.User, _ ...webauthn.RegistrationOption) (*protocol.CredentialCreation, *webauthn.SessionData, error) {
+				if user.WebAuthnName() != testUsernameAlice || user.WebAuthnDisplayName() != "Alice Root" {
+					t.Fatalf("unexpected WebAuthn user: name=%q display=%q", user.WebAuthnName(), user.WebAuthnDisplayName())
+				}
+				return &protocol.CredentialCreation{}, &webauthn.SessionData{Challenge: "setup-passkey-begin"}, nil
+			},
+		},
+	}
+
+	tdb.qCP.On("First", mock.AnythingOfType("*models.ControlPlaneConfig")).Return(theoryErrors.ErrItemNotFound).Once()
+	tdb.qSetup.On("First", mock.AnythingOfType("*models.SetupSession")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SetupSession](t, args, 0)
+		*dest = models.SetupSession{
+			ID:         "setup-token",
+			Purpose:    setupPurposeBootstrap,
+			WalletAddr: "0xboot",
+			IssuedAt:   time.Now().UTC(),
+			ExpiresAt:  time.Now().UTC().Add(1 * time.Hour),
+		}
+		_ = dest.UpdateKeys()
+	}).Once()
+	tdb.qUser.On("First", mock.AnythingOfType("*models.User")).Return(theoryErrors.ErrItemNotFound).Once()
+	tdb.qWebAuthnChal.On("Create").Return(nil).Once()
+
+	body := []byte(`{"username":"alice","displayName":"Alice Root"}`)
+	resp, err := s.handleSetupWebAuthnRegisterBegin(&apptheory.Context{
+		Request: apptheory.Request{
+			Body:    body,
+			Headers: map[string][]string{"authorization": {"Bearer setup-token"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("handleSetupWebAuthnRegisterBegin err: %v", err)
+	}
+	if resp.Status != 200 {
+		t.Fatalf("expected 200, got %d", resp.Status)
+	}
+
+	var out webAuthnBeginResponse
+	if err := json.Unmarshal(resp.Body, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.Challenge != "setup-passkey-begin" {
+		t.Fatalf("unexpected challenge: %#v", out)
+	}
+}
+
+func TestP0_SetupWebAuthnRegisterBegin_RequiresSetupSession(t *testing.T) {
+	t.Parallel()
+
+	tdb := newSetupTestDB()
+	s := &Server{
+		cfg:   config.Config{BootstrapWalletAddress: "0xboot"},
+		store: store.New(tdb.db),
+		webAuthn: stubWebAuthnEngine{
+			beginRegistration: func(_ webauthn.User, _ ...webauthn.RegistrationOption) (*protocol.CredentialCreation, *webauthn.SessionData, error) {
+				t.Fatal("BeginRegistration must not run without a setup session")
+				return nil, nil, nil
+			},
+		},
+	}
+
+	tdb.qCP.On("First", mock.AnythingOfType("*models.ControlPlaneConfig")).Return(theoryErrors.ErrItemNotFound).Once()
+
+	body := []byte(`{"username":"alice","displayName":"Alice Root"}`)
+	resp, err := s.handleSetupWebAuthnRegisterBegin(&apptheory.Context{
+		Request: apptheory.Request{Body: body},
+	})
+	if resp != nil {
+		t.Fatalf("expected no response, got %#v", resp)
+	}
+	appErr, ok := err.(*apptheory.AppTheoryError)
+	if !ok {
+		t.Fatalf("expected *apptheory.AppTheoryError, got %T: %v", err, err)
+	}
+	if appErr.Code != testProvisionConsentCodeUnauthorized {
+		t.Fatalf("expected unauthorized, got %#v", appErr)
+	}
+	tdb.qSetup.AssertNotCalled(t, "First", mock.Anything)
+}
+
 func TestRequireSetupSession_ExpiredDeletesAndUnauthorized(t *testing.T) {
 	t.Parallel()
 
@@ -389,7 +532,7 @@ func TestHandleSetupCreateAdmin_AndFinalize_Success(t *testing.T) {
 	body, _ := json.Marshal(setupCreateAdminRequest{
 		Username:    testUsernameAlice,
 		DisplayName: "Alice",
-		Wallet: walletVerifyRequest{
+		Wallet: &walletVerifyRequest{
 			ChallengeID: "wc1",
 			Address:     addr,
 			Signature:   sig,
@@ -437,6 +580,311 @@ func TestHandleSetupCreateAdmin_AndFinalize_Success(t *testing.T) {
 	}
 }
 
+func TestP0_SetupCreateAdminPasskey_RequiresSetupSession(t *testing.T) {
+	t.Parallel()
+
+	tdb := newSetupTestDB()
+	s := &Server{
+		cfg:   config.Config{BootstrapWalletAddress: "0xboot"},
+		store: store.New(tdb.db),
+		webAuthn: stubWebAuthnEngine{
+			createCredential: func(_ webauthn.User, _ webauthn.SessionData, _ *protocol.ParsedCredentialCreationData) (*webauthn.Credential, error) {
+				t.Fatal("CreateCredential must not run without a setup session")
+				return nil, nil
+			},
+		},
+	}
+	tdb.qCP.On("First", mock.AnythingOfType("*models.ControlPlaneConfig")).Return(theoryErrors.ErrItemNotFound).Once()
+
+	body, _ := json.Marshal(setupCreateAdminRequest{
+		Username: testUsernameAlice,
+		Passkey: &webAuthnFinishRegistrationRequest{
+			Challenge: "pc1",
+			Response:  makeSetupPasskeyCreationResponse(t, "pc1"),
+		},
+	})
+	resp, err := s.handleSetupCreateAdmin(&apptheory.Context{Request: apptheory.Request{Body: body}})
+	if resp != nil {
+		t.Fatalf("expected no response, got %#v", resp)
+	}
+	appErr, ok := err.(*apptheory.AppTheoryError)
+	if !ok {
+		t.Fatalf("expected *apptheory.AppTheoryError, got %T: %v", err, err)
+	}
+	if appErr.Code != testProvisionConsentCodeUnauthorized {
+		t.Fatalf("expected unauthorized, got %#v", appErr)
+	}
+}
+
+func TestP0_SetupCreateAdminPasskey_RejectsPreexistingAdminBeforeChallengeConsumption(t *testing.T) {
+	t.Parallel()
+
+	tdb := newSetupTestDB()
+	s := &Server{
+		cfg:      config.Config{BootstrapWalletAddress: "0xboot"},
+		store:    store.New(tdb.db),
+		webAuthn: stubWebAuthnEngine{},
+	}
+	tdb.qCP.On("First", mock.AnythingOfType("*models.ControlPlaneConfig")).Return(theoryErrors.ErrItemNotFound).Once()
+	tdb.qSetup.On("First", mock.AnythingOfType("*models.SetupSession")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SetupSession](t, args, 0)
+		*dest = models.SetupSession{
+			ID:         "setup-token",
+			Purpose:    setupPurposeBootstrap,
+			WalletAddr: "0xboot",
+			IssuedAt:   time.Now().UTC(),
+			ExpiresAt:  time.Now().UTC().Add(1 * time.Hour),
+		}
+		_ = dest.UpdateKeys()
+	}).Once()
+	tdb.qUser.On("First", mock.AnythingOfType("*models.User")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.User](t, args, 0)
+		*dest = models.User{
+			Username:       testUsernameAlice,
+			Role:           models.RoleAdmin,
+			Approved:       true,
+			ApprovalStatus: models.UserApprovalStatusApproved,
+			CreatedAt:      time.Now().UTC().Add(-1 * time.Minute),
+		}
+		_ = dest.UpdateKeys()
+	}).Once()
+
+	body, _ := json.Marshal(setupCreateAdminRequest{
+		Username: testUsernameAlice,
+		Passkey: &webAuthnFinishRegistrationRequest{
+			Challenge: "pc1",
+			Response:  makeSetupPasskeyCreationResponse(t, "pc1"),
+		},
+	})
+	resp, err := s.handleSetupCreateAdmin(&apptheory.Context{
+		Request: apptheory.Request{
+			Body:    body,
+			Headers: map[string][]string{"authorization": {"Bearer setup-token"}},
+		},
+	})
+	if resp != nil {
+		t.Fatalf("expected no response, got %#v", resp)
+	}
+	appErr, ok := err.(*apptheory.AppTheoryError)
+	if !ok {
+		t.Fatalf("expected *apptheory.AppTheoryError, got %T: %v", err, err)
+	}
+	if appErr.Code != appErrCodeConflict || !strings.Contains(appErr.Message, "resolve partial setup state") {
+		t.Fatalf("expected named conflict, got %#v", appErr)
+	}
+	tdb.qWebAuthnChal.AssertNotCalled(t, "First", mock.Anything)
+	tdb.db.AssertNotCalled(t, "TransactWrite", mock.Anything, mock.Anything)
+}
+
+func TestP0_SetupCreateAdminPasskey_DoesNotLinkBootstrapWalletCredential(t *testing.T) {
+	t.Parallel()
+
+	tdb := newSetupTestDB()
+	tx := new(ttmocks.MockTransactionBuilder)
+	tdb.db.TransactWriteBuilder = tx
+	tdb.db.On("TransactWrite", mock.Anything, mock.Anything).Return(nil).Once()
+
+	s := &Server{
+		cfg:   config.Config{BootstrapWalletAddress: "0xboot"},
+		store: store.New(tdb.db),
+		webAuthn: stubWebAuthnEngine{
+			createCredential: func(_ webauthn.User, _ webauthn.SessionData, _ *protocol.ParsedCredentialCreationData) (*webauthn.Credential, error) {
+				return &webauthn.Credential{
+					ID:              []byte("setup-passkey-cred"),
+					PublicKey:       []byte("public-key"),
+					AttestationType: "none",
+					Authenticator: webauthn.Authenticator{
+						AAGUID:    make([]byte, 16),
+						SignCount: 1,
+					},
+					Flags: webauthn.CredentialFlags{
+						UserPresent:  true,
+						UserVerified: true,
+					},
+				}, nil
+			},
+		},
+	}
+
+	stubSetupPasskeyAdminCreationPrereqs(t, tdb)
+
+	createdKinds := map[string]bool{}
+	tx.On("Create", mock.Anything, mock.Anything).Return(tx).Times(4).Run(func(args mock.Arguments) {
+		assertSetupPasskeyCreateAdminItem(t, args.Get(0), createdKinds)
+	})
+	auditActions := map[string]bool{}
+	tx.On("Put", mock.Anything, mock.Anything).Return(tx).Twice().Run(func(args mock.Arguments) {
+		audit := testutil.RequireMockArg[*models.AuditLogEntry](t, args, 0)
+		auditActions[audit.Action] = true
+	})
+	tx.On("Delete", mock.Anything, mock.Anything).Return(tx).Once().Run(func(args mock.Arguments) {
+		assertSetupPasskeyChallengeDelete(t, args)
+	})
+
+	body, _ := json.Marshal(setupCreateAdminRequest{
+		Username:    testUsernameAlice,
+		DisplayName: "Alice",
+		Passkey: &webAuthnFinishRegistrationRequest{
+			Challenge:      "pc1",
+			Response:       makeSetupPasskeyCreationResponse(t, "pc1"),
+			CredentialName: "Setup Admin Passkey",
+		},
+	})
+	resp, err := s.handleSetupCreateAdmin(&apptheory.Context{
+		RequestID: "rid-passkey",
+		Request: apptheory.Request{
+			Body:    body,
+			Headers: map[string][]string{"authorization": {"Bearer setup-token"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("handleSetupCreateAdmin passkey err: %v", err)
+	}
+	if resp.Status != 201 {
+		t.Fatalf("expected 201, got %d", resp.Status)
+	}
+
+	var out setupCreateAdminResponse
+	if err := json.Unmarshal(resp.Body, &out); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if out.Username != testUsernameAlice || out.Token == "" || out.Method != "webauthn" || out.Role != models.RoleAdmin {
+		t.Fatalf("unexpected response: %#v", out)
+	}
+	if !createdKinds["user"] || !createdKinds["webauthn_credential"] || !createdKinds["operator_session"] || !createdKinds["control_plane"] {
+		t.Fatalf("missing transaction writes: %#v", createdKinds)
+	}
+	if !auditActions["setup.create_admin"] || !auditActions["auth.webauthn.register"] {
+		t.Fatalf("expected setup + passkey audit entries, got %#v", auditActions)
+	}
+	tdb.qCred.AssertNotCalled(t, "Create")
+	tdb.qWalletIndex.AssertNotCalled(t, "Create")
+}
+
+func TestHandleSetupCreateAdminWithPasskey_FailsWhenPasskeyAuditKeysInvalid(t *testing.T) {
+	t.Parallel()
+
+	tdb := newSetupTestDB()
+	s := &Server{
+		cfg:   config.Config{BootstrapWalletAddress: "0xboot"},
+		store: store.New(tdb.db),
+		webAuthn: stubWebAuthnEngine{
+			createCredential: func(_ webauthn.User, _ webauthn.SessionData, _ *protocol.ParsedCredentialCreationData) (*webauthn.Credential, error) {
+				return &webauthn.Credential{
+					ID:              bytes.Repeat([]byte("x"), 780),
+					PublicKey:       []byte("public-key"),
+					AttestationType: "none",
+					Authenticator: webauthn.Authenticator{
+						AAGUID:    make([]byte, 16),
+						SignCount: 1,
+					},
+					Flags: webauthn.CredentialFlags{
+						UserPresent:  true,
+						UserVerified: true,
+					},
+				}, nil
+			},
+		},
+	}
+
+	stubSetupPasskeyAdminCreationPrereqs(t, tdb)
+
+	body, _ := json.Marshal(setupCreateAdminRequest{
+		Username:    testUsernameAlice,
+		DisplayName: "Alice",
+		Passkey: &webAuthnFinishRegistrationRequest{
+			Challenge:      "pc1",
+			Response:       makeSetupPasskeyCreationResponse(t, "pc1"),
+			CredentialName: "Setup Admin Passkey",
+		},
+	})
+	resp, err := s.handleSetupCreateAdmin(&apptheory.Context{
+		RequestID: "rid-passkey-audit-too-long",
+		Request: apptheory.Request{
+			Body:    body,
+			Headers: map[string][]string{"authorization": {"Bearer setup-token"}},
+		},
+	})
+	if resp != nil {
+		t.Fatalf("expected no response, got %#v", resp)
+	}
+	appErr, ok := err.(*apptheory.AppTheoryError)
+	if !ok {
+		t.Fatalf("expected *apptheory.AppTheoryError, got %T: %v", err, err)
+	}
+	if appErr.Code != appErrCodeInternal || appErr.Message != "internal error" {
+		t.Fatalf("expected internal error, got %#v", appErr)
+	}
+	tdb.db.AssertNotCalled(t, "TransactWrite", mock.Anything, mock.Anything)
+}
+
+func stubSetupPasskeyAdminCreationPrereqs(t *testing.T, tdb setupTestDB) {
+	t.Helper()
+
+	tdb.qCP.On("First", mock.AnythingOfType("*models.ControlPlaneConfig")).Return(theoryErrors.ErrItemNotFound).Once()
+	tdb.qSetup.On("First", mock.AnythingOfType("*models.SetupSession")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SetupSession](t, args, 0)
+		*dest = models.SetupSession{
+			ID:         "setup-token",
+			Purpose:    setupPurposeBootstrap,
+			WalletAddr: "0xboot",
+			IssuedAt:   time.Now().UTC(),
+			ExpiresAt:  time.Now().UTC().Add(1 * time.Hour),
+		}
+		_ = dest.UpdateKeys()
+	}).Once()
+	tdb.qUser.On("First", mock.AnythingOfType("*models.User")).Return(theoryErrors.ErrItemNotFound).Once()
+	tdb.qWebAuthnChal.On("First", mock.AnythingOfType("*models.WebAuthnChallenge")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.WebAuthnChallenge](t, args, 0)
+		*dest = models.WebAuthnChallenge{
+			Challenge:   "pc1",
+			UserID:      testUsernameAlice,
+			Type:        "registration",
+			SessionData: []byte(`{}`),
+			ExpiresAt:   time.Now().UTC().Add(10 * time.Minute),
+		}
+		_ = dest.UpdateKeys()
+	}).Once()
+}
+
+func assertSetupPasskeyCreateAdminItem(t *testing.T, raw any, createdKinds map[string]bool) {
+	t.Helper()
+
+	switch item := raw.(type) {
+	case *models.User:
+		createdKinds["user"] = true
+		if item.Username != testUsernameAlice || item.Role != models.RoleAdmin {
+			t.Fatalf("unexpected setup admin user: %#v", item)
+		}
+	case *models.WebAuthnCredential:
+		createdKinds["webauthn_credential"] = true
+		if item.UserID != testUsernameAlice || item.Name != "Setup Admin Passkey" {
+			t.Fatalf("unexpected stored passkey: %#v", item)
+		}
+	case *models.OperatorSession:
+		createdKinds["operator_session"] = true
+		if item.Username != testUsernameAlice || item.Role != models.RoleAdmin || item.Method != testSessionMethodWebAuthn {
+			t.Fatalf("unexpected operator session: %#v", item)
+		}
+	case *models.ControlPlaneConfig:
+		createdKinds["control_plane"] = true
+		if item.PrimaryAdminUsername != testUsernameAlice {
+			t.Fatalf("unexpected control plane config: %#v", item)
+		}
+	default:
+		t.Fatalf("unexpected transaction create item type %T", raw)
+	}
+}
+
+func assertSetupPasskeyChallengeDelete(t *testing.T, args mock.Arguments) {
+	t.Helper()
+
+	challenge := testutil.RequireMockArg[*models.WebAuthnChallenge](t, args, 0)
+	if challenge.Challenge != "pc1" {
+		t.Fatalf("unexpected deleted challenge: %#v", challenge)
+	}
+}
+
 func TestHandleSetupCreateAdmin_RejectsBootstrapWalletAsPrimaryAdmin(t *testing.T) {
 	t.Parallel()
 
@@ -460,7 +908,7 @@ func TestHandleSetupCreateAdmin_RejectsBootstrapWalletAsPrimaryAdmin(t *testing.
 	body, _ := json.Marshal(setupCreateAdminRequest{
 		Username:    testUsernameAlice,
 		DisplayName: "Alice",
-		Wallet: walletVerifyRequest{
+		Wallet: &walletVerifyRequest{
 			ChallengeID: "wc1",
 			Address:     strings.ToLower(bootstrapAddr),
 			Signature:   "sig",
@@ -666,13 +1114,40 @@ func TestParseSetupCreateAdminRequestInput_ValidatesWalletFields(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, appErr := parseSetupCreateAdminRequestInput(&apptheory.Context{
-				Request: apptheory.Request{Body: []byte(tc.body)},
-			})
-			if appErr == nil || appErr.Code != appErrCodeBadRequest || !strings.Contains(appErr.Message, tc.wantMsg) {
-				t.Fatalf("expected bad_request %q, got %#v", tc.wantMsg, appErr)
-			}
+			assertSetupCreateAdminParseError(t, tc.body, tc.wantMsg)
 		})
+	}
+}
+
+func TestParseSetupCreateAdminRequestInput_ValidatesPasskeyFieldsAndModeSelection(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		body    string
+		wantMsg string
+	}{
+		{name: "missing_mode", body: `{"username":"alice"}`, wantMsg: "exactly one admin credential path is required"},
+		{name: "both_modes", body: `{"username":"alice","wallet":{"challengeId":"c","address":"a","signature":"s","message":"m"},"passkey":{"challenge":"pc","response":{"id":"cred"}}}`, wantMsg: "exactly one admin credential path is required"},
+		{name: "missing_passkey_challenge", body: `{"username":"alice","passkey":{"response":{"id":"cred"}}}`, wantMsg: "passkey.challenge is required"},
+		{name: "missing_passkey_response", body: `{"username":"alice","passkey":{"challenge":"pc"}}`, wantMsg: "passkey.response is required"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assertSetupCreateAdminParseError(t, tc.body, tc.wantMsg)
+		})
+	}
+}
+
+func assertSetupCreateAdminParseError(t *testing.T, body string, wantMsg string) {
+	t.Helper()
+
+	_, appErr := parseSetupCreateAdminRequestInput(&apptheory.Context{
+		Request: apptheory.Request{Body: []byte(body)},
+	})
+	if appErr == nil || appErr.Code != appErrCodeBadRequest || !strings.Contains(appErr.Message, wantMsg) {
+		t.Fatalf("expected bad_request %q, got %#v", wantMsg, appErr)
 	}
 }
 

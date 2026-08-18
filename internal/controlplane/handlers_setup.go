@@ -7,6 +7,8 @@ import (
 	"time"
 
 	apptheory "github.com/theory-cloud/apptheory/v3/runtime"
+	"github.com/theory-cloud/tabletheory/v3"
+	"github.com/theory-cloud/tabletheory/v3/pkg/core"
 	theoryErrors "github.com/theory-cloud/tabletheory/v3/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/httpx"
@@ -55,13 +57,24 @@ type setupBootstrapVerifyResponse struct {
 }
 
 type setupCreateAdminRequest struct {
-	Username    string              `json:"username"`
-	DisplayName string              `json:"displayName,omitempty"`
-	Wallet      walletVerifyRequest `json:"wallet"`
+	Username    string                             `json:"username"`
+	DisplayName string                             `json:"displayName,omitempty"`
+	Wallet      *walletVerifyRequest               `json:"wallet,omitempty"`
+	Passkey     *webAuthnFinishRegistrationRequest `json:"passkey,omitempty"`
 }
 
 type setupCreateAdminResponse struct {
-	Username string `json:"username"`
+	Username  string    `json:"username"`
+	TokenType string    `json:"token_type,omitempty"`
+	Token     string    `json:"token,omitempty"`
+	ExpiresAt time.Time `json:"expires_at,omitempty"`
+	Role      string    `json:"role,omitempty"`
+	Method    string    `json:"method,omitempty"`
+}
+
+type setupPasskeyRegisterBeginRequest struct {
+	Username    string `json:"username"`
+	DisplayName string `json:"displayName,omitempty"`
 }
 
 type setupFinalizeResponse struct {
@@ -437,6 +450,55 @@ func (s *Server) validateSetupCreateAdminState(ctx *apptheory.Context) (*models.
 	return cfg, nil
 }
 
+func validateSetupAdminIdentity(username string, displayName string) (string, string, *apptheory.AppTheoryError) {
+	displayName = strings.TrimSpace(displayName)
+	username = strings.TrimSpace(username)
+	if username == "" {
+		return "", "", newAppTheoryError("app.bad_request", "username is required")
+	}
+
+	normalized, err := soul.ValidateManagedHandle(username)
+	if err != nil {
+		return "", "", newAppTheoryError("app.bad_request", err.Error())
+	}
+	if strings.EqualFold(normalized, setupBootstrapUser) {
+		return "", "", newAppTheoryError("app.bad_request", "username is reserved")
+	}
+	return normalized, displayName, nil
+}
+
+func parseSetupPasskeyRegisterBeginRequestInput(ctx *apptheory.Context) (setupPasskeyRegisterBeginRequest, *apptheory.AppTheoryError) {
+	var req setupPasskeyRegisterBeginRequest
+	if parseErr := httpx.ParseJSON(ctx, &req); parseErr != nil {
+		if appErr, ok := parseErr.(*apptheory.AppTheoryError); ok {
+			return setupPasskeyRegisterBeginRequest{}, appErr
+		}
+		return setupPasskeyRegisterBeginRequest{}, newAppTheoryError("app.bad_request", "invalid request")
+	}
+
+	username, displayName, appErr := validateSetupAdminIdentity(req.Username, req.DisplayName)
+	if appErr != nil {
+		return setupPasskeyRegisterBeginRequest{}, appErr
+	}
+	req.Username = username
+	req.DisplayName = displayName
+	return req, nil
+}
+
+func (s *Server) setupAdminExistingUserConflict(ctx *apptheory.Context, username string) *apptheory.AppTheoryError {
+	user, err := s.loadUser(ctx, username)
+	if theoryErrors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return newAppTheoryError("app.internal", "internal error")
+	}
+	if strings.TrimSpace(user.Role) == models.RoleAdmin {
+		return newAppTheoryError("app.conflict", "setup primary admin candidate already exists; resolve partial setup state before retrying")
+	}
+	return newAppTheoryError("app.conflict", "username already exists")
+}
+
 func parseSetupCreateAdminRequestInput(ctx *apptheory.Context) (setupCreateAdminRequest, *apptheory.AppTheoryError) {
 	var req setupCreateAdminRequest
 	if parseErr := httpx.ParseJSON(ctx, &req); parseErr != nil {
@@ -446,35 +508,46 @@ func parseSetupCreateAdminRequestInput(ctx *apptheory.Context) (setupCreateAdmin
 		return setupCreateAdminRequest{}, newAppTheoryError("app.bad_request", "invalid request")
 	}
 
-	req.DisplayName = strings.TrimSpace(req.DisplayName)
-	req.Wallet.ChallengeID = strings.TrimSpace(req.Wallet.ChallengeID)
-	req.Wallet.Address = strings.TrimSpace(req.Wallet.Address)
-	req.Wallet.Signature = strings.TrimSpace(req.Wallet.Signature)
-	req.Wallet.Message = strings.TrimSpace(req.Wallet.Message)
-
-	username, err := soul.ValidateManagedHandle(req.Username)
-	if strings.TrimSpace(req.Username) == "" {
-		return setupCreateAdminRequest{}, newAppTheoryError("app.bad_request", "username is required")
-	}
-	if err != nil {
-		return setupCreateAdminRequest{}, newAppTheoryError("app.bad_request", err.Error())
+	username, displayName, appErr := validateSetupAdminIdentity(req.Username, req.DisplayName)
+	if appErr != nil {
+		return setupCreateAdminRequest{}, appErr
 	}
 	req.Username = username
-	if strings.EqualFold(req.Username, setupBootstrapUser) {
-		return setupCreateAdminRequest{}, newAppTheoryError("app.bad_request", "username is reserved")
+	req.DisplayName = displayName
+
+	if (req.Wallet == nil) == (req.Passkey == nil) {
+		return setupCreateAdminRequest{}, newAppTheoryError("app.bad_request", "exactly one admin credential path is required")
 	}
 
-	if req.Wallet.ChallengeID == "" {
-		return setupCreateAdminRequest{}, newAppTheoryError("app.bad_request", "wallet.challengeId is required")
+	if req.Wallet != nil {
+		req.Wallet.ChallengeID = strings.TrimSpace(req.Wallet.ChallengeID)
+		req.Wallet.Address = strings.TrimSpace(req.Wallet.Address)
+		req.Wallet.Signature = strings.TrimSpace(req.Wallet.Signature)
+		req.Wallet.Message = strings.TrimSpace(req.Wallet.Message)
+
+		if req.Wallet.ChallengeID == "" {
+			return setupCreateAdminRequest{}, newAppTheoryError("app.bad_request", "wallet.challengeId is required")
+		}
+		if req.Wallet.Address == "" {
+			return setupCreateAdminRequest{}, newAppTheoryError("app.bad_request", "wallet.address is required")
+		}
+		if req.Wallet.Signature == "" {
+			return setupCreateAdminRequest{}, newAppTheoryError("app.bad_request", "wallet.signature is required")
+		}
+		if req.Wallet.Message == "" {
+			return setupCreateAdminRequest{}, newAppTheoryError("app.bad_request", "wallet.message is required")
+		}
 	}
-	if req.Wallet.Address == "" {
-		return setupCreateAdminRequest{}, newAppTheoryError("app.bad_request", "wallet.address is required")
-	}
-	if req.Wallet.Signature == "" {
-		return setupCreateAdminRequest{}, newAppTheoryError("app.bad_request", "wallet.signature is required")
-	}
-	if req.Wallet.Message == "" {
-		return setupCreateAdminRequest{}, newAppTheoryError("app.bad_request", "wallet.message is required")
+
+	if req.Passkey != nil {
+		req.Passkey.Challenge = strings.TrimSpace(req.Passkey.Challenge)
+		req.Passkey.CredentialName = strings.TrimSpace(req.Passkey.CredentialName)
+		if req.Passkey.Challenge == "" {
+			return setupCreateAdminRequest{}, newAppTheoryError("app.bad_request", "passkey.challenge is required")
+		}
+		if len(req.Passkey.Response) == 0 {
+			return setupCreateAdminRequest{}, newAppTheoryError("app.bad_request", "passkey.response is required")
+		}
 	}
 
 	return req, nil
@@ -530,7 +603,7 @@ func (s *Server) rejectBootstrapWalletAsSetupAdmin(walletAddr string) *apptheory
 	return newAppTheoryError("app.forbidden", "bootstrap wallet is one-time setup authority and cannot be the primary admin wallet")
 }
 
-func (s *Server) createSetupAdminUser(ctx *apptheory.Context, username string, displayName string, now time.Time) *apptheory.AppTheoryError {
+func buildSetupAdminUserModel(username string, displayName string, now time.Time) (*models.User, *apptheory.AppTheoryError) {
 	user := &models.User{
 		Username:       strings.TrimSpace(username),
 		Role:           models.RoleAdmin,
@@ -540,7 +613,15 @@ func (s *Server) createSetupAdminUser(ctx *apptheory.Context, username string, d
 		CreatedAt:      now,
 	}
 	if err := user.UpdateKeys(); err != nil {
-		return newAppTheoryError("app.internal", "internal error")
+		return nil, newAppTheoryError("app.internal", "internal error")
+	}
+	return user, nil
+}
+
+func (s *Server) createSetupAdminUser(ctx *apptheory.Context, username string, displayName string, now time.Time) *apptheory.AppTheoryError {
+	user, appErr := buildSetupAdminUserModel(username, displayName, now)
+	if appErr != nil {
+		return appErr
 	}
 	if err := s.store.DB.WithContext(ctx.Context()).Model(user).IfNotExists().Create(); err != nil {
 		if theoryErrors.IsConditionFailed(err) {
@@ -549,6 +630,19 @@ func (s *Server) createSetupAdminUser(ctx *apptheory.Context, username string, d
 		return newAppTheoryError("app.internal", "failed to create admin")
 	}
 	return nil
+}
+
+func buildSetupCreateAdminAudit(ctx *apptheory.Context, bootstrapWallet string, username string, now time.Time) *models.AuditLogEntry {
+	audit := &models.AuditLogEntry{
+		Actor:     fmt.Sprintf("bootstrap_wallet:%s", strings.ToLower(strings.TrimSpace(bootstrapWallet))),
+		Action:    "setup.create_admin",
+		Target:    fmt.Sprintf("operator:%s", username),
+		RequestID: ctx.RequestID,
+		CreatedAt: now.UTC(),
+	}
+	applyAuditSourceProvenance(ctx, audit)
+	_ = audit.UpdateKeys()
+	return audit
 }
 
 func (s *Server) linkSetupAdminWallet(ctx *apptheory.Context, username string, walletAddr string, chainID int, now time.Time) *apptheory.AppTheoryError {
@@ -576,16 +670,166 @@ func (s *Server) linkSetupAdminWallet(ctx *apptheory.Context, username string, w
 	return nil
 }
 
-func (s *Server) setControlPlanePrimaryAdmin(ctx *apptheory.Context, username string) *apptheory.AppTheoryError {
+func buildControlPlanePrimaryAdminUpdate(username string) *models.ControlPlaneConfig {
 	cp := &models.ControlPlaneConfig{
 		PrimaryAdminUsername: strings.TrimSpace(username),
 		BootstrappedAt:       time.Time{},
 	}
 	_ = cp.UpdateKeys()
+	return cp
+}
+
+func (s *Server) setControlPlanePrimaryAdmin(ctx *apptheory.Context, username string) *apptheory.AppTheoryError {
+	cp := buildControlPlanePrimaryAdminUpdate(username)
 	if err := s.store.DB.WithContext(ctx.Context()).Model(cp).CreateOrUpdate(); err != nil {
 		return newAppTheoryError("app.internal", "failed to update control plane config")
 	}
 	return nil
+}
+
+func (s *Server) handleSetupWebAuthnRegisterBegin(ctx *apptheory.Context) (*apptheory.Response, error) {
+	if err := s.ensureWebAuthnConfigured(); err != nil {
+		return nil, err
+	}
+	if _, appErr := s.validateSetupCreateAdminState(ctx); appErr != nil {
+		return nil, appErr
+	}
+
+	req, appErr := parseSetupPasskeyRegisterBeginRequestInput(ctx)
+	if appErr != nil {
+		return nil, appErr
+	}
+	if appErr := s.setupAdminExistingUserConflict(ctx, req.Username); appErr != nil {
+		return nil, appErr
+	}
+
+	return s.beginWebAuthnRegistration(ctx, req.Username, req.DisplayName, nil)
+}
+
+func (s *Server) handleSetupCreateAdminWithWallet(ctx *apptheory.Context, req setupCreateAdminRequest) (*apptheory.Response, error) {
+	if req.Wallet == nil {
+		return nil, newAppTheoryError("app.bad_request", "wallet credential path is required")
+	}
+	if bootstrapAdminErr := s.rejectBootstrapWalletAsSetupAdmin(req.Wallet.Address); bootstrapAdminErr != nil {
+		return nil, bootstrapAdminErr
+	}
+
+	adminWalletAddr, chainID, appErr := s.verifySetupCreateAdminWallet(ctx, req.Username, *req.Wallet)
+	if appErr != nil {
+		return nil, appErr
+	}
+
+	now := time.Now().UTC()
+	if appErr := s.createSetupAdminUser(ctx, req.Username, req.DisplayName, now); appErr != nil {
+		return nil, appErr
+	}
+	if appErr := s.linkSetupAdminWallet(ctx, req.Username, adminWalletAddr, chainID, now); appErr != nil {
+		return nil, appErr
+	}
+	if appErr := s.setControlPlanePrimaryAdmin(ctx, req.Username); appErr != nil {
+		return nil, appErr
+	}
+
+	audit := buildSetupCreateAdminAudit(ctx, s.cfg.BootstrapWalletAddress, req.Username, now)
+	if err := s.store.DB.WithContext(ctx.Context()).Model(audit).Create(); err != nil {
+		return nil, newAppTheoryError("app.internal", "failed to write audit log")
+	}
+
+	return apptheory.JSON(http.StatusCreated, setupCreateAdminResponse{Username: req.Username})
+}
+
+func (s *Server) mapSetupPasskeyCreateAdminConditionFailure(ctx *apptheory.Context, username string, challenge string) *apptheory.AppTheoryError {
+	if appErr := s.setupAdminExistingUserConflict(ctx, username); appErr != nil {
+		return appErr
+	}
+	if _, err := s.getWebAuthnChallenge(ctx, challenge); theoryErrors.IsNotFound(err) {
+		return newAppTheoryError("app.unauthorized", "unauthorized")
+	} else if err != nil {
+		return newAppTheoryError("app.internal", "internal error")
+	}
+	cfg, err := s.loadControlPlaneConfig(ctx)
+	if err != nil {
+		return newAppTheoryError("app.internal", "internal error")
+	}
+	if cfg != nil && strings.TrimSpace(cfg.PrimaryAdminUsername) != "" {
+		return newAppTheoryError("app.conflict", "primary admin already created")
+	}
+	return newAppTheoryError("app.conflict", "setup state changed before the admin passkey was committed; reload setup status and retry")
+}
+
+func (s *Server) handleSetupCreateAdminWithPasskey(ctx *apptheory.Context, req setupCreateAdminRequest) (*apptheory.Response, error) {
+	if err := s.ensureWebAuthnConfigured(); err != nil {
+		return nil, err
+	}
+	if req.Passkey == nil {
+		return nil, newAppTheoryError("app.bad_request", "passkey credential path is required")
+	}
+	if appErr := s.setupAdminExistingUserConflict(ctx, req.Username); appErr != nil {
+		return nil, appErr
+	}
+
+	storedCredential, err := s.completeWebAuthnRegistration(ctx, req.Username, req.DisplayName, *req.Passkey, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	now := storedCredential.CreatedAt.UTC()
+	user, appErr := buildSetupAdminUserModel(req.Username, req.DisplayName, now)
+	if appErr != nil {
+		return nil, appErr
+	}
+	controlPlane := buildControlPlanePrimaryAdminUpdate(req.Username)
+	setupAudit := buildSetupCreateAdminAudit(ctx, s.cfg.BootstrapWalletAddress, req.Username, now)
+	passkeyAudit := &models.AuditLogEntry{
+		Actor:     req.Username,
+		Action:    "auth.webauthn.register",
+		Target:    fmt.Sprintf("webauthn_credential:%s", storedCredential.ID),
+		RequestID: ctx.RequestID,
+		CreatedAt: now,
+	}
+	applyAuditSourceProvenance(ctx, passkeyAudit)
+	if updateErr := passkeyAudit.UpdateKeys(); updateErr != nil {
+		return nil, newAppTheoryError("app.internal", "internal error")
+	}
+
+	token, sessionModel, expiresAt, err := buildOperatorSessionModel(req.Username, models.RoleAdmin, "webauthn", now)
+	if err != nil {
+		return nil, newAppTheoryError("app.internal", "failed to create operator session")
+	}
+
+	challengeModel := &models.WebAuthnChallenge{Challenge: req.Passkey.Challenge}
+	_ = challengeModel.UpdateKeys()
+
+	if err := s.store.DB.TransactWrite(ctx.Context(), func(tx core.TransactionBuilder) error {
+		tx.Create(user)
+		tx.Create(storedCredential)
+		tx.Create(sessionModel)
+		tx.Create(controlPlane)
+		tx.Put(setupAudit)
+		tx.Put(passkeyAudit)
+		tx.Delete(
+			challengeModel,
+			tabletheory.IfExists(),
+			tabletheory.Condition("TTL", ">", now.Unix()),
+			tabletheory.Condition("UserID", "=", req.Username),
+			tabletheory.Condition("Type", "=", "registration"),
+		)
+		return nil
+	}); err != nil {
+		if theoryErrors.IsConditionFailed(err) {
+			return nil, s.mapSetupPasskeyCreateAdminConditionFailure(ctx, req.Username, req.Passkey.Challenge)
+		}
+		return nil, newAppTheoryError("app.internal", "failed to create admin")
+	}
+
+	return apptheory.JSON(http.StatusCreated, setupCreateAdminResponse{
+		Username:  req.Username,
+		TokenType: "Bearer",
+		Token:     token,
+		ExpiresAt: expiresAt,
+		Role:      models.RoleAdmin,
+		Method:    "webauthn",
+	})
 }
 
 func (s *Server) handleSetupCreateAdmin(ctx *apptheory.Context) (*apptheory.Response, error) {
@@ -598,41 +842,10 @@ func (s *Server) handleSetupCreateAdmin(ctx *apptheory.Context) (*apptheory.Resp
 		return nil, appErr
 	}
 
-	if bootstrapAdminErr := s.rejectBootstrapWalletAsSetupAdmin(req.Wallet.Address); bootstrapAdminErr != nil {
-		return nil, bootstrapAdminErr
+	if req.Passkey != nil {
+		return s.handleSetupCreateAdminWithPasskey(ctx, req)
 	}
-
-	adminWalletAddr, chainID, appErr := s.verifySetupCreateAdminWallet(ctx, req.Username, req.Wallet)
-	if appErr != nil {
-		return nil, appErr
-	}
-
-	now := time.Now().UTC()
-
-	if appErr := s.createSetupAdminUser(ctx, req.Username, req.DisplayName, now); appErr != nil {
-		return nil, appErr
-	}
-	if appErr := s.linkSetupAdminWallet(ctx, req.Username, adminWalletAddr, chainID, now); appErr != nil {
-		return nil, appErr
-	}
-	if appErr := s.setControlPlanePrimaryAdmin(ctx, req.Username); appErr != nil {
-		return nil, appErr
-	}
-
-	audit := &models.AuditLogEntry{
-		Actor:     fmt.Sprintf("bootstrap_wallet:%s", strings.ToLower(strings.TrimSpace(s.cfg.BootstrapWalletAddress))),
-		Action:    "setup.create_admin",
-		Target:    fmt.Sprintf("operator:%s", req.Username),
-		RequestID: ctx.RequestID,
-		CreatedAt: now,
-	}
-	applyAuditSourceProvenance(ctx, audit)
-	_ = audit.UpdateKeys()
-	if err := s.store.DB.WithContext(ctx.Context()).Model(audit).Create(); err != nil {
-		return nil, newAppTheoryError("app.internal", "failed to write audit log")
-	}
-
-	return apptheory.JSON(http.StatusCreated, setupCreateAdminResponse{Username: req.Username})
+	return s.handleSetupCreateAdminWithWallet(ctx, req)
 }
 
 func (s *Server) requirePrimaryAdminPasskey(ctx *apptheory.Context, username string) *apptheory.AppTheoryError {

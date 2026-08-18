@@ -7,6 +7,8 @@ import * as iam from 'aws-cdk-lib/aws-iam';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import { Construct } from 'constructs';
 
+import { synthGoBuildEnv } from './go-build-env';
+
 export interface SetupBootstrapWalletProvisioning {
 	readonly address: string;
 	readonly source: 'cdk-owned' | 'override';
@@ -127,12 +129,7 @@ function buildGoBootstrapCode(id: string, entry: string): lambda.Code {
 	execFileSync('go', ['build', '-o', path.join(buildDir, 'bootstrap'), entry], {
 		cwd: root,
 		stdio: 'inherit',
-		env: {
-			...process.env,
-			CGO_ENABLED: '0',
-			GOOS: 'linux',
-			GOARCH: 'amd64',
-		},
+		env: synthGoBuildEnv(root),
 	});
 	return lambda.Code.fromAsset(buildDir);
 }

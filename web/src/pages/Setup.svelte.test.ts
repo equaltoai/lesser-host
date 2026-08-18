@@ -9,6 +9,7 @@ import type { SetupStatusResponse, WalletChallengeResponse } from 'src/lib/api/c
 
 vi.mock('src/lib/api/controlPlane', () => ({
 	getSetupStatus: vi.fn(),
+	setupPasskeyRegisterBegin: vi.fn(),
 	setupBootstrapChallenge: vi.fn(),
 	setupBootstrapVerify: vi.fn(),
 	setupCreateAdmin: vi.fn(),
@@ -19,6 +20,8 @@ vi.mock('src/lib/api/controlPlane', () => ({
 
 vi.mock('src/lib/api/webauthn', () => ({
 	webAuthnCredentials: vi.fn(),
+	webAuthnLoginBegin: vi.fn(),
+	webAuthnLoginFinish: vi.fn(),
 	webAuthnRegisterBegin: vi.fn(),
 	webAuthnRegisterFinish: vi.fn(),
 }));
@@ -38,13 +41,21 @@ vi.mock('src/lib/wallet/ethereum', () => ({
 import Setup from './Setup.svelte';
 import {
 	getSetupStatus,
+	setupPasskeyRegisterBegin,
 	setupBootstrapChallenge,
 	setupBootstrapVerify,
 	setupCreateAdmin,
+	setupFinalize,
 	walletChallenge,
 	walletLogin,
 } from 'src/lib/api/controlPlane';
-import { webAuthnCredentials } from 'src/lib/api/webauthn';
+import {
+	webAuthnCredentials,
+	webAuthnLoginBegin,
+	webAuthnLoginFinish,
+	webAuthnRegisterBegin,
+	webAuthnRegisterFinish,
+} from 'src/lib/api/webauthn';
 import { getChainId, getEthereumProvider, personalSign, requestAccounts } from 'src/lib/wallet/ethereum';
 
 const source = readFileSync('src/pages/Setup.svelte', 'utf8');
@@ -53,14 +64,22 @@ const bootstrapAddress = '0xb000000000000000000000000000000000000001';
 const primaryAdminAddress = '0xa000000000000000000000000000000000000001';
 const secondAdminAddress = '0xa000000000000000000000000000000000000002';
 const expiresAt = '2026-07-06T18:00:00Z';
+const encodedChallenge = 'Y2hhbGxlbmdl';
+const encodedUserID = 'dXNlcg=='.replace(/=/g, '');
 
 const mockGetSetupStatus = vi.mocked(getSetupStatus);
+const mockSetupPasskeyRegisterBegin = vi.mocked(setupPasskeyRegisterBegin);
 const mockSetupBootstrapChallenge = vi.mocked(setupBootstrapChallenge);
 const mockSetupBootstrapVerify = vi.mocked(setupBootstrapVerify);
 const mockSetupCreateAdmin = vi.mocked(setupCreateAdmin);
+const mockSetupFinalize = vi.mocked(setupFinalize);
 const mockWalletChallenge = vi.mocked(walletChallenge);
 const mockWalletLogin = vi.mocked(walletLogin);
 const mockWebAuthnCredentials = vi.mocked(webAuthnCredentials);
+const mockWebAuthnLoginBegin = vi.mocked(webAuthnLoginBegin);
+const mockWebAuthnLoginFinish = vi.mocked(webAuthnLoginFinish);
+const mockWebAuthnRegisterBegin = vi.mocked(webAuthnRegisterBegin);
+const mockWebAuthnRegisterFinish = vi.mocked(webAuthnRegisterFinish);
 const mockGetEthereumProvider = vi.mocked(getEthereumProvider);
 const mockRequestAccounts = vi.mocked(requestAccounts);
 const mockGetChainId = vi.mocked(getChainId);
@@ -72,6 +91,26 @@ let walletChallengeSeq = 0;
 const challengeUsernames = new Map<string, string>();
 const mockProvider = { request: vi.fn() } satisfies Eip1193Provider;
 const mounted: Array<{ instance: Record<string, never>; target: HTMLElement }> = [];
+const mockCredentialCreate = vi.fn();
+const mockCredentialGet = vi.fn();
+
+class MockPublicKeyCredential {
+	id: string;
+	rawId: ArrayBuffer;
+	response: unknown;
+	type = 'public-key';
+	authenticatorAttachment = 'platform';
+
+	constructor(id: string, response: unknown) {
+		this.id = id;
+		this.rawId = new TextEncoder().encode(`${id}-raw`).buffer;
+		this.response = response;
+	}
+
+	getClientExtensionResults() {
+		return {};
+	}
+}
 
 function lockedStatus(overrides: Partial<SetupStatusResponse> = {}): SetupStatusResponse {
 	return {
@@ -83,6 +122,21 @@ function lockedStatus(overrides: Partial<SetupStatusResponse> = {}): SetupStatus
 		bootstrap_wallet_address: bootstrapAddress,
 		primary_admin_set: false,
 		primary_admin_username: undefined,
+		stage: 'lab',
+		...overrides,
+	};
+}
+
+function activeStatus(overrides: Partial<SetupStatusResponse> = {}): SetupStatusResponse {
+	return {
+		control_plane_state: 'active',
+		locked: false,
+		finalize_allowed: false,
+		bootstrapped_at: '2026-07-06T17:10:00Z',
+		bootstrap_wallet_address_set: true,
+		bootstrap_wallet_address: undefined,
+		primary_admin_set: true,
+		primary_admin_username: 'primary-admin',
 		stage: 'lab',
 		...overrides,
 	};
@@ -107,6 +161,51 @@ function makeChallenge(
 	};
 }
 
+function makeCreationBegin(challenge: string) {
+	return {
+		challenge,
+		publicKey: {
+			challenge: encodedChallenge,
+			user: {
+				id: encodedUserID,
+				name: 'primary-admin',
+				displayName: 'Primary Admin',
+			},
+			rp: {
+				name: 'lesser-host',
+			},
+			pubKeyCredParams: [{ type: 'public-key', alg: -7 }],
+		},
+	};
+}
+
+function makeLoginBegin(challenge: string) {
+	return {
+		challenge,
+		publicKey: {
+			challenge: encodedChallenge,
+			allowCredentials: [],
+		},
+	};
+}
+
+function makeCreationCredential(id = 'setup-passkey') {
+	return new MockPublicKeyCredential(id, {
+		attestationObject: new TextEncoder().encode('attestation-object').buffer,
+		clientDataJSON: new TextEncoder().encode('client-data-json').buffer,
+		getTransports: () => ['internal'],
+	});
+}
+
+function makeAssertionCredential(id = 'setup-passkey') {
+	return new MockPublicKeyCredential(id, {
+		authenticatorData: new TextEncoder().encode('authenticator-data').buffer,
+		clientDataJSON: new TextEncoder().encode('client-data-json').buffer,
+		signature: new TextEncoder().encode('signature').buffer,
+		userHandle: null,
+	});
+}
+
 beforeEach(() => {
 	currentStatus = lockedStatus();
 	nextWalletAddress = bootstrapAddress;
@@ -117,6 +216,7 @@ beforeEach(() => {
 	document.body.innerHTML = '';
 
 	mockGetSetupStatus.mockImplementation(async () => ({ ...currentStatus }));
+	mockSetupPasskeyRegisterBegin.mockResolvedValue(makeCreationBegin('setup-passkey-register-begin'));
 	mockSetupBootstrapChallenge.mockImplementation(async (address, chainId) =>
 		makeChallenge('bootstrap-challenge', address, chainId, 'bootstrap signature message'),
 	);
@@ -131,7 +231,24 @@ beforeEach(() => {
 			primary_admin_set: true,
 			primary_admin_username: input.username,
 		});
+		if (input.passkey) {
+			return {
+				username: input.username,
+				token_type: 'Bearer',
+				token: 'admin-session-passkey-create',
+				expires_at: expiresAt,
+				role: 'admin',
+				method: 'webauthn',
+			};
+		}
 		return { username: input.username };
+	});
+	mockSetupFinalize.mockImplementation(async () => {
+		currentStatus = activeStatus({ primary_admin_username: currentStatus.primary_admin_username });
+		return {
+			locked: false,
+			bootstrapped_at: '2026-07-06T17:10:00Z',
+		};
 	});
 	mockWalletChallenge.mockImplementation(async ({ username, address, chainId }) => {
 		walletChallengeSeq += 1;
@@ -148,10 +265,42 @@ beforeEach(() => {
 		method: 'wallet',
 	}));
 	mockWebAuthnCredentials.mockResolvedValue({ credentials: [] });
+	mockWebAuthnLoginBegin.mockResolvedValue(makeLoginBegin('passkey-login-begin'));
+	mockWebAuthnLoginFinish.mockImplementation(async ({ username, challenge }) => ({
+		token_type: 'Bearer',
+		token: `passkey-session-${challenge}`,
+		expires_at: expiresAt,
+		username,
+		role: 'admin',
+		method: 'webauthn',
+	}));
+	mockWebAuthnRegisterBegin.mockResolvedValue(makeCreationBegin('account-passkey-register-begin'));
+	mockWebAuthnRegisterFinish.mockResolvedValue({ ok: true });
 	mockGetEthereumProvider.mockReturnValue(mockProvider);
 	mockRequestAccounts.mockImplementation(async () => [nextWalletAddress]);
 	mockGetChainId.mockResolvedValue(11155111);
 	mockPersonalSign.mockImplementation(async (_provider, message, address) => `sig:${address}:${message}`);
+
+	mockCredentialCreate.mockReset();
+	mockCredentialGet.mockReset();
+	mockCredentialCreate.mockResolvedValue(makeCreationCredential());
+	mockCredentialGet.mockResolvedValue(makeAssertionCredential());
+
+	Object.defineProperty(window, 'PublicKeyCredential', {
+		value: MockPublicKeyCredential,
+		configurable: true,
+	});
+	Object.defineProperty(globalThis, 'PublicKeyCredential', {
+		value: MockPublicKeyCredential,
+		configurable: true,
+	});
+	Object.defineProperty(navigator, 'credentials', {
+		value: {
+			create: mockCredentialCreate,
+			get: mockCredentialGet,
+		},
+		configurable: true,
+	});
 });
 
 afterEach(() => {
@@ -248,7 +397,25 @@ async function completeStep1(target: HTMLElement) {
 	await clickEnabledButton(cardByHeading(target, 'Step 1 — Bootstrap session'), 'Create challenge');
 	await waitForText(target, 'bootstrap signature message');
 	await clickEnabledButton(cardByHeading(target, 'Step 1 — Bootstrap session'), 'Sign & verify');
-	await waitForText(target, 'Step 2 is waiting for an explicit primary admin wallet connection');
+	await waitForText(target, 'Step 2 — Create primary admin');
+}
+
+function checkboxByText(root: ParentNode, text: string): HTMLInputElement {
+	const label = Array.from(root.querySelectorAll('label')).find((candidate) =>
+		normalizedText(candidate).includes(text),
+	);
+	const input = label?.querySelector('input[type="checkbox"]');
+	if (!(input instanceof HTMLInputElement)) {
+		throw new Error(`checkbox not found: ${text}`);
+	}
+	return input;
+}
+
+async function checkByLabel(root: ParentNode, text: string) {
+	const input = checkboxByText(root, text);
+	input.checked = true;
+	input.dispatchEvent(new Event('change', { bubbles: true }));
+	await flushAsync();
 }
 
 describe('Setup bootstrap session state', () => {
@@ -269,8 +436,7 @@ describe('Setup two-wallet role state machine', () => {
 
 		const step2 = cardByHeading(target, 'Step 2 — Create primary admin');
 		expect(step2.textContent).toContain('Connect primary admin wallet');
-		expect(step2.textContent).toContain('admin challenge controls stay unavailable');
-		expect(step2.textContent).not.toContain('Username*');
+		expect(step2.textContent).toContain('wallet-first mode is waiting');
 		expect(buttonsByText(step2, 'Create challenge')).toHaveLength(0);
 		expect(mockWalletChallenge).not.toHaveBeenCalled();
 	});
@@ -332,6 +498,155 @@ describe('Setup two-wallet role state machine', () => {
 		);
 	});
 
+	it('creates a passkey-only primary admin and finalizes without linking any wallet credential', async () => {
+		const target = mountSetup();
+
+		await completeStep1(target);
+
+		const step2 = cardByHeading(target, 'Step 2 — Create primary admin');
+		await clickEnabledButton(step2, 'Passkey-only');
+		await typeInto(inputByLabel(step2, 'Username'), 'passkey-admin');
+		await typeInto(inputByLabel(step2, 'Initial passkey name'), 'Setup admin passkey');
+		await clickEnabledButton(step2, 'Create admin with passkey');
+
+		expect(mockSetupPasskeyRegisterBegin).toHaveBeenCalledWith('setup-session-token', {
+			username: 'passkey-admin',
+			displayName: undefined,
+		});
+		expect(mockSetupCreateAdmin).toHaveBeenCalledWith(
+			'setup-session-token',
+			expect.objectContaining({
+				username: 'passkey-admin',
+				passkey: expect.objectContaining({
+					challenge: 'setup-passkey-register-begin',
+					credential_name: 'Setup admin passkey',
+				}),
+			}),
+		);
+		expect(mockWalletChallenge).not.toHaveBeenCalled();
+		expect(mockWalletLogin).not.toHaveBeenCalled();
+		expect(mockCredentialCreate).toHaveBeenCalledTimes(1);
+		await waitForText(target, 'Primary admin passkey ready');
+
+		const step4 = cardByHeading(target, 'Step 4 — Finalize');
+		await checkByLabel(step4, 'I understand finalize is irreversible for this stage.');
+		await checkByLabel(step4, 'I have access to the primary admin credential and can authenticate again later.');
+		await typeInto(inputByLabel(step4, 'Type FINALIZE to confirm'), 'FINALIZE');
+		await clickEnabledButton(step4, 'Finalize control plane');
+
+		expect(mockSetupFinalize).toHaveBeenCalledWith('admin-session-passkey-create');
+		expect(mockWalletLogin).not.toHaveBeenCalled();
+		await waitForText(target, 'Setup complete');
+	});
+
+	it('recovers the primary admin session with a passkey after refresh and finalizes without a wallet', async () => {
+		currentStatus = lockedStatus({
+			bootstrapped_at: '2026-07-06T17:05:00Z',
+			primary_admin_set: true,
+			primary_admin_username: 'passkey-admin',
+		});
+		mockWebAuthnCredentials.mockResolvedValueOnce({
+			credentials: [
+				{
+					id: 'cred-1',
+					name: 'Setup admin passkey',
+					created_at: '2026-07-06T17:06:00Z',
+					last_used_at: '2026-07-06T17:06:00Z',
+				},
+			],
+		});
+
+		const target = mountSetup();
+		await waitForText(target, 'Primary admin already configured');
+
+		const step3 = cardByHeading(target, 'Step 3 — Register primary admin passkey');
+		await clickEnabledButton(step3, 'Check passkeys');
+
+		expect(mockWebAuthnLoginBegin).toHaveBeenCalledWith('passkey-admin');
+		expect(mockWebAuthnLoginFinish).toHaveBeenCalledTimes(1);
+		expect(mockWalletLogin).not.toHaveBeenCalled();
+		expect(mockCredentialGet).toHaveBeenCalledTimes(1);
+		await waitForText(target, 'Primary admin passkey ready');
+
+		const step4 = cardByHeading(target, 'Step 4 — Finalize');
+		await checkByLabel(step4, 'I understand finalize is irreversible for this stage.');
+		await checkByLabel(step4, 'I have access to the primary admin credential and can authenticate again later.');
+		await typeInto(inputByLabel(step4, 'Type FINALIZE to confirm'), 'FINALIZE');
+		await clickEnabledButton(step4, 'Finalize control plane');
+
+		expect(mockSetupFinalize).toHaveBeenCalledWith('passkey-session-passkey-login-begin');
+		expect(mockWalletLogin).not.toHaveBeenCalled();
+		await waitForText(target, 'Setup complete');
+	});
+
+	it('surfaces a passkey ceremony failure before the admin is created', async () => {
+		mockCredentialCreate.mockRejectedValueOnce(new Error('Platform authenticator unavailable'));
+
+		const target = mountSetup();
+
+		await completeStep1(target);
+
+		const step2 = cardByHeading(target, 'Step 2 — Create primary admin');
+		await clickEnabledButton(step2, 'Passkey-only');
+		await typeInto(inputByLabel(step2, 'Username'), 'passkey-admin');
+		await clickEnabledButton(step2, 'Create admin with passkey');
+
+		await waitForText(target, 'Platform authenticator unavailable');
+		expect(mockSetupCreateAdmin).not.toHaveBeenCalled();
+		expect(target.textContent).not.toContain('Primary admin passkey ready');
+		expect(enabledButtonByText(cardByHeading(target, 'Step 2 — Create primary admin'), 'Create admin with passkey')).toBeTruthy();
+	});
+
+	it('treats an invalid passkey-admin response as actionable and lets the operator retry', async () => {
+		mockSetupCreateAdmin.mockImplementationOnce(async (_setupToken, input) => {
+			return {
+				username: input.username,
+				token_type: 'Bearer',
+				token: '',
+				expires_at: expiresAt,
+				role: 'customer',
+				method: 'wallet',
+			};
+		});
+
+		const target = mountSetup();
+
+		await completeStep1(target);
+
+		const step2 = cardByHeading(target, 'Step 2 — Create primary admin');
+		await clickEnabledButton(step2, 'Passkey-only');
+		await typeInto(inputByLabel(step2, 'Username'), 'passkey-admin');
+		await clickEnabledButton(step2, 'Create admin with passkey');
+
+		await waitForText(target, 'Primary admin passkey setup did not return an admin session.');
+		expect(target.textContent).not.toContain('Primary admin passkey ready');
+
+		await clickEnabledButton(cardByHeading(target, 'Step 2 — Create primary admin'), 'Create admin with passkey');
+		await waitForText(target, 'Primary admin passkey ready');
+		expect(mockSetupCreateAdmin).toHaveBeenCalledTimes(2);
+	});
+
+	it('treats a cancelled passkey ceremony as recoverable and resets state for retry', async () => {
+		mockCredentialCreate.mockResolvedValueOnce(null);
+
+		const target = mountSetup();
+
+		await completeStep1(target);
+
+		const step2 = cardByHeading(target, 'Step 2 — Create primary admin');
+		await clickEnabledButton(step2, 'Passkey-only');
+		await typeInto(inputByLabel(step2, 'Username'), 'passkey-admin');
+		await clickEnabledButton(step2, 'Create admin with passkey');
+
+		await waitForText(target, 'No credential returned.');
+		expect(mockSetupCreateAdmin).not.toHaveBeenCalled();
+		expect(target.textContent).not.toContain('Primary admin passkey ready');
+
+		await clickEnabledButton(cardByHeading(target, 'Step 2 — Create primary admin'), 'Create admin with passkey');
+		await waitForText(target, 'Primary admin passkey ready');
+		expect(mockSetupCreateAdmin).toHaveBeenCalledTimes(1);
+	});
+
 	it('clears stale admin challenge and cached admin session state when the admin account changes', async () => {
 		const target = mountSetup();
 
@@ -366,5 +681,178 @@ describe('Setup two-wallet role state machine', () => {
 			address: primaryAdminAddress,
 			chainId: 11155111,
 		});
+	});
+});
+
+function stepIndicatorState(target: HTMLElement, label: string): string {
+	const indicator = Array.from(target.querySelectorAll('.gr-step-indicator')).find((el) => {
+		const labelEl = el.querySelector('.gr-step-label');
+		return Boolean(labelEl) && normalizedText(labelEl as Element) === label;
+	});
+	if (!(indicator instanceof HTMLElement)) {
+		throw new Error(`step indicator not found: ${label}`);
+	}
+	const badge = indicator.querySelector('.gr-step-badge');
+	if (!badge) {
+		throw new Error(`step badge not found: ${label}`);
+	}
+	if (badge.classList.contains('gr-step-badge--success')) return 'completed';
+	if (badge.classList.contains('gr-step-badge--gray')) return 'pending';
+	if (badge.classList.contains('gr-step-badge--primary')) return 'active';
+	return 'unknown';
+}
+
+function scriptFunctionBody(name: string): string {
+	const start = source.indexOf(`\tasync function ${name}(`);
+	if (start < 0) throw new Error(`function not found in Setup.svelte: ${name}`);
+	const end = source.indexOf('\n\tasync function ', start + 1);
+	return source.slice(start, end < 0 ? source.length : end);
+}
+
+function reloadedPrimaryAdminStatus(): SetupStatusResponse {
+	return lockedStatus({
+		finalize_allowed: true,
+		bootstrapped_at: '2026-07-06T17:05:00Z',
+		primary_admin_set: true,
+		primary_admin_username: 'primary-admin',
+	});
+}
+
+describe('Setup durable step state after reload (issue #1039)', () => {
+	beforeEach(() => {
+		currentStatus = reloadedPrimaryAdminStatus();
+	});
+
+	it('activates Step 3 instead of Step 1 when the primary admin already exists and no setup token is held', async () => {
+		const target = mountSetup();
+		await waitForText(target, 'Primary admin already configured');
+
+		expect(sessionStorage.getItem('lesser-host:setupSessionToken')).toBeNull();
+		expect(mockSetupBootstrapVerify).not.toHaveBeenCalled();
+
+		expect(stepIndicatorState(target, 'Bootstrap session')).toBe('completed');
+		expect(stepIndicatorState(target, 'Create admin')).toBe('completed');
+		expect(stepIndicatorState(target, 'Register passkey')).toBe('active');
+		expect(stepIndicatorState(target, 'Finalize')).toBe('pending');
+	});
+
+	it('retires the bootstrap controls instead of claiming a setup token is in memory', async () => {
+		const target = mountSetup();
+		await waitForText(target, 'Primary admin already configured');
+
+		const step1 = cardByHeading(target, 'Step 1 — Bootstrap session');
+		expect(step1.textContent).toContain('Bootstrap completed and retired');
+		expect(step1.textContent).not.toContain('Setup session token is held in memory');
+		expect(buttonsByText(step1, 'Create challenge')).toHaveLength(0);
+		expect(buttonsByText(step1, 'Sign & verify')).toHaveLength(0);
+
+		expect(target.textContent).toContain('Bootstrap authority is retired');
+		expect(buttonsByText(target, 'Connect bootstrap wallet')).toHaveLength(0);
+		expect(buttonsByText(target, 'Reconnect bootstrap wallet')).toHaveLength(0);
+		expect(target.textContent).not.toContain('Expected bootstrap address');
+	});
+
+	it('enables passkey registration once the primary admin wallet is connected', async () => {
+		const target = mountSetup();
+		await waitForText(target, 'Primary admin already configured');
+
+		await connectWallet(target, 'Connect primary admin wallet', primaryAdminAddress);
+
+		const step3 = cardByHeading(target, 'Step 3 — Register primary admin passkey');
+		expect(step3.textContent).toContain('Wallet sign-in available');
+
+		await clickEnabledButton(step3, 'Register passkey');
+		await waitForText(target, 'Primary admin passkey ready');
+
+		expect(mockWalletChallenge).toHaveBeenCalledWith({
+			username: 'primary-admin',
+			address: primaryAdminAddress,
+			chainId: 11155111,
+		});
+		expect(mockWebAuthnRegisterBegin).toHaveBeenCalledWith('admin-session-admin-challenge-1');
+		expect(mockWebAuthnRegisterFinish).toHaveBeenCalledTimes(1);
+	});
+
+	it('issues no bootstrap challenge request once the primary admin exists', async () => {
+		const target = mountSetup();
+		await waitForText(target, 'Primary admin already configured');
+
+		await connectWallet(target, 'Connect primary admin wallet', primaryAdminAddress);
+		await clickEnabledButton(
+			cardByHeading(target, 'Step 3 — Register primary admin passkey'),
+			'Register passkey',
+		);
+		await waitForText(target, 'Primary admin passkey ready');
+
+		const step4 = cardByHeading(target, 'Step 4 — Finalize');
+		await checkByLabel(step4, 'I understand finalize is irreversible for this stage.');
+		await checkByLabel(step4, 'I have access to the primary admin credential and can authenticate again later.');
+		await typeInto(inputByLabel(step4, 'Type FINALIZE to confirm'), 'FINALIZE');
+		await clickEnabledButton(step4, 'Finalize control plane');
+		await waitForText(target, 'Setup complete');
+
+		expect(mockSetupBootstrapChallenge).not.toHaveBeenCalled();
+		expect(mockSetupBootstrapVerify).not.toHaveBeenCalled();
+		expect(mockSetupCreateAdmin).not.toHaveBeenCalled();
+
+		// The call path itself is guarded, not only the UI affordance: both bootstrap
+		// requests return early on the durable primary_admin_set milestone.
+		const beginBody = scriptFunctionBody('beginBootstrap');
+		const beginGuard = beginBody.indexOf('if (status.primary_admin_set) {');
+		const beginCall = beginBody.indexOf('setupBootstrapChallenge(');
+		expect(beginGuard).toBeGreaterThan(-1);
+		expect(beginCall).toBeGreaterThan(-1);
+		expect(beginGuard).toBeLessThan(beginCall);
+		expect(beginBody.slice(beginGuard, beginCall)).toContain('return;');
+
+		const completeBody = scriptFunctionBody('completeBootstrap');
+		const completeGuard = completeBody.indexOf('if (status?.primary_admin_set) {');
+		const completeCall = completeBody.indexOf('setupBootstrapVerify(');
+		expect(completeGuard).toBeGreaterThan(-1);
+		expect(completeCall).toBeGreaterThan(-1);
+		expect(completeGuard).toBeLessThan(completeCall);
+		expect(completeBody.slice(completeGuard, completeCall)).toContain('return;');
+	});
+
+	it('registers the passkey and finalizes through normal primary admin authentication', async () => {
+		const target = mountSetup();
+		await waitForText(target, 'Primary admin already configured');
+
+		await connectWallet(target, 'Connect primary admin wallet', primaryAdminAddress);
+		await clickEnabledButton(
+			cardByHeading(target, 'Step 3 — Register primary admin passkey'),
+			'Register passkey',
+		);
+		await waitForText(target, 'Primary admin passkey ready');
+
+		const step4 = cardByHeading(target, 'Step 4 — Finalize');
+		await checkByLabel(step4, 'I understand finalize is irreversible for this stage.');
+		await checkByLabel(step4, 'I have access to the primary admin credential and can authenticate again later.');
+		await typeInto(inputByLabel(step4, 'Type FINALIZE to confirm'), 'FINALIZE');
+		await clickEnabledButton(step4, 'Finalize control plane');
+		await waitForText(target, 'Setup complete');
+
+		expect(mockWalletLogin).toHaveBeenCalledTimes(1);
+		expect(mockSetupFinalize).toHaveBeenCalledTimes(1);
+		expect(mockSetupFinalize).toHaveBeenCalledWith('admin-session-admin-challenge-1');
+		expect(mockSetupFinalize).not.toHaveBeenCalledWith('setup-session-token');
+	});
+
+	it('keeps two-wallet isolation after reload: the bootstrap wallet never authenticates the primary admin', async () => {
+		const target = mountSetup();
+		await waitForText(target, 'Primary admin already configured');
+
+		await connectWallet(target, 'Connect primary admin wallet', bootstrapAddress);
+		expect(target.textContent).toContain('Switch wallet account');
+
+		await clickEnabledButton(
+			cardByHeading(target, 'Step 3 — Register primary admin passkey'),
+			'Check passkeys',
+		);
+
+		expect(mockWalletChallenge).not.toHaveBeenCalled();
+		expect(mockWalletLogin).not.toHaveBeenCalled();
+		expect(mockWebAuthnLoginBegin).toHaveBeenCalledWith('primary-admin');
+		expect(mockSetupBootstrapChallenge).not.toHaveBeenCalled();
 	});
 });
