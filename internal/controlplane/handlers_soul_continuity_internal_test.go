@@ -117,6 +117,110 @@ func TestHandleSoulAppendContinuity_VerifiesSignedEntry(t *testing.T) {
 	}
 }
 
+func TestHandleSoulAppendContinuity_DuplicateSignedEntryIsIdempotent(t *testing.T) {
+	t.Parallel()
+
+	tdb := newSoulLifecycleTestDB()
+	s := &Server{
+		store: store.New(tdb.db),
+		cfg: config.Config{
+			SoulEnabled:                 true,
+			SoulChainID:                 1,
+			SoulRegistryContractAddress: "0x0000000000000000000000000000000000000001",
+		},
+	}
+
+	agentIDHex := soulLifecycleTestAgentIDHex
+	key, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	wallet := strings.ToLower(crypto.PubkeyToAddress(key.PublicKey).Hex())
+
+	tdb.qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.Domain](t, args, 0)
+		*dest = models.Domain{Domain: "example.com", InstanceSlug: "inst1", Status: models.DomainStatusVerified}
+	}).Twice()
+	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
+		*dest = models.Instance{Slug: "inst1", Owner: "admin"}
+	}).Twice()
+	tdb.qWalletIdx.On("First", mock.AnythingOfType("*models.WalletIndex")).Return(theoryErrors.ErrItemNotFound).Twice()
+	tdb.qIdentity.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
+		*dest = models.SoulAgentIdentity{
+			AgentID:   agentIDHex,
+			Domain:    "example.com",
+			LocalID:   "agent-alice",
+			Wallet:    wallet,
+			Status:    models.SoulAgentStatusActive,
+			UpdatedAt: time.Now().Add(-time.Minute).UTC(),
+		}
+	}).Twice()
+
+	entryType := models.SoulContinuityEntryTypeModelChange
+	timestamp := canonicalSoulSignedTimestamp(time.Now().UTC())
+	summary := "Updated underlying model to claude-opus-4-6."
+	references := []string{"boundary-001"}
+	digest, appErr := computeSoulContinuityEntryDigest(entryType, timestamp, summary, "", references, "")
+	if appErr != nil {
+		t.Fatalf("digest: %v", appErr)
+	}
+	sig, err := crypto.Sign(accounts.TextHash(digest), key)
+	if err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	reqBody := mustMarshalJSON(t, map[string]any{
+		"type":       entryType,
+		"timestamp":  timestamp,
+		"summary":    summary,
+		"references": references,
+		"signature":  "0x" + hex.EncodeToString(sig),
+	})
+
+	tdb.qContinuity.On("Create").Unset()
+	tdb.qContinuity.On("Create").Return(nil).Once()
+	tdb.qContinuity.On("Create").Return(theoryErrors.ErrConditionFailed).Once()
+	var stored models.SoulAgentContinuity
+	tdb.qContinuity.On("First", mock.AnythingOfType("*models.SoulAgentContinuity")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulAgentContinuity](t, args, 0)
+		*dest = stored
+	}).Once()
+
+	appendEntry := func(requestID string) *apptheory.Response {
+		ctx := &apptheory.Context{
+			RequestID:    requestID,
+			AuthIdentity: "admin",
+			Params:       map[string]string{"agentId": agentIDHex},
+			Request:      apptheory.Request{Body: reqBody},
+		}
+		ctx.Set(ctxKeyOperatorRole, models.RoleAdmin)
+		resp, handleErr := s.handleSoulAppendContinuity(ctx)
+		if handleErr != nil {
+			t.Fatalf("append %s: %v", requestID, handleErr)
+		}
+		return resp
+	}
+
+	first := appendEntry("r-continuity-1")
+	if first.Status != http.StatusCreated {
+		t.Fatalf("first append expected 201, got %d (body=%q)", first.Status, string(first.Body))
+	}
+	stored = mustUnmarshalJSON[soulAppendContinuityResponse](t, first.Body).Entry
+	if stored.PK == "" || stored.SK == "" {
+		_ = stored.UpdateKeys()
+	}
+
+	retry := appendEntry("r-continuity-2")
+	if retry.Status != http.StatusOK {
+		t.Fatalf("duplicate append expected idempotent 200, got %d (body=%q)", retry.Status, string(retry.Body))
+	}
+	replayed := mustUnmarshalJSON[soulAppendContinuityResponse](t, retry.Body).Entry
+	if replayed.Type != stored.Type || replayed.Summary != stored.Summary || !replayed.Timestamp.Equal(stored.Timestamp) {
+		t.Fatalf("duplicate append returned a different entry: got %#v want %#v", replayed, stored)
+	}
+}
+
 func TestParseSoulSignedTimestamp_CanonicalizesLikeJavaScriptISOString(t *testing.T) {
 	t.Parallel()
 

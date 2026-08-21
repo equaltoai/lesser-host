@@ -1,6 +1,7 @@
 package controlplane
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"github.com/cyberphone/json-canonicalization/go/src/webpki.org/jsoncanonicalizer"
 	"github.com/ethereum/go-ethereum/crypto"
 	apptheory "github.com/theory-cloud/apptheory/v3/runtime"
+	theoryErrors "github.com/theory-cloud/tabletheory/v3/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/httpx"
 	"github.com/equaltoai/lesser-host/internal/store/models"
@@ -95,7 +97,14 @@ func (s *Server) handleSoulAppendContinuity(ctx *apptheory.Context) (*apptheory.
 	_ = entry.UpdateKeys()
 
 	if err := s.store.DB.WithContext(ctx.Context()).Model(entry).Create(); err != nil {
-		return nil, newAppTheoryError("app.internal", "failed to create continuity entry")
+		if !theoryErrors.IsConditionFailed(err) {
+			return nil, newAppTheoryError("app.internal", "failed to create continuity entry")
+		}
+		existing, replayErr := s.loadMatchingSoulContinuityReplay(ctx, entry, digest)
+		if replayErr != nil {
+			return nil, replayErr
+		}
+		return apptheory.JSON(http.StatusOK, soulAppendContinuityResponse{Entry: *existing})
 	}
 
 	// Audit log.
@@ -108,6 +117,37 @@ func (s *Server) handleSoulAppendContinuity(ctx *apptheory.Context) (*apptheory.
 	})
 
 	return apptheory.JSON(http.StatusCreated, soulAppendContinuityResponse{Entry: *entry})
+}
+
+func (s *Server) loadMatchingSoulContinuityReplay(ctx *apptheory.Context, entry *models.SoulAgentContinuity, requestDigest []byte) (*models.SoulAgentContinuity, *apptheory.AppTheoryError) {
+	var existing models.SoulAgentContinuity
+	if err := s.store.DB.WithContext(ctx.Context()).
+		Model(&models.SoulAgentContinuity{}).
+		Where("PK", "=", entry.PK).
+		Where("SK", "=", entry.SK).
+		First(&existing); err != nil {
+		return nil, newAppTheoryError("app.internal", "failed to load continuity entry")
+	}
+
+	references := existing.ReferencesV2
+	if len(references) == 0 {
+		references = parseLegacyContinuityReferences(existing.ReferencesJSON)
+	}
+	existingDigest, appErr := computeSoulContinuityEntryDigest(
+		existing.Type,
+		canonicalSoulSignedTimestamp(existing.Timestamp),
+		existing.Summary,
+		existing.Recovery,
+		references,
+		"",
+	)
+	if appErr != nil {
+		return nil, newAppTheoryError("app.internal", "failed to validate continuity entry")
+	}
+	if !bytes.Equal(existingDigest, requestDigest) {
+		return nil, newAppTheoryError("app.conflict", "continuity entry already exists")
+	}
+	return &existing, nil
 }
 
 type soulAppendContinuityData struct {
