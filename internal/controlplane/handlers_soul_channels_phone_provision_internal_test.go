@@ -120,7 +120,7 @@ func captureSoulPhoneAuditWrites(t *testing.T, tdb soulLifecycleTestDB) *[]model
 	var modeled *models.AuditLogEntry
 	writes := make([]models.AuditLogEntry, 0, 1)
 	for _, call := range tdb.db.ExpectedCalls {
-		if call.Method == "Model" && len(call.Arguments) == 1 && call.Arguments[0] == mock.AnythingOfType("*models.AuditLogEntry") {
+		if call.Method == modelCallMethod && len(call.Arguments) == 1 && call.Arguments[0] == mock.AnythingOfType("*models.AuditLogEntry") {
 			call.RunFn = func(args mock.Arguments) {
 				modeled = testutil.RequireMockArg[*models.AuditLogEntry](t, args, 0)
 			}
