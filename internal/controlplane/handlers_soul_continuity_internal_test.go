@@ -1,8 +1,10 @@
 package controlplane
 
 import (
+	"crypto/ecdsa"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"testing"
@@ -219,6 +221,158 @@ func TestHandleSoulAppendContinuity_DuplicateSignedEntryIsIdempotent(t *testing.
 	if replayed.Type != stored.Type || replayed.Summary != stored.Summary || !replayed.Timestamp.Equal(stored.Timestamp) {
 		t.Fatalf("duplicate append returned a different entry: got %#v want %#v", replayed, stored)
 	}
+}
+
+func TestHandleSoulAppendContinuity_SameKeyDifferentSignedContentConflicts(t *testing.T) {
+	t.Parallel()
+
+	s, tdb, key, agentIDHex := newSoulContinuityAppendTestServer(t, 2)
+	entryType := models.SoulContinuityEntryTypeModelChange
+	timestamp := canonicalSoulSignedTimestamp(time.Now().UTC())
+	references := []string{"boundary-001"}
+	firstBody := mustSignSoulContinuityAppendRequest(t, key, entryType, timestamp, "Updated underlying model to claude-opus-4-6.", references)
+	conflictingBody := mustSignSoulContinuityAppendRequest(t, key, entryType, timestamp, "Updated underlying model to gpt-5.6.", references)
+
+	tdb.qContinuity.On("Create").Unset()
+	tdb.qContinuity.On("Create").Return(nil).Once()
+	tdb.qContinuity.On("Create").Return(theoryErrors.ErrConditionFailed).Once()
+	var stored models.SoulAgentContinuity
+	tdb.qContinuity.On("First", mock.AnythingOfType("*models.SoulAgentContinuity")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulAgentContinuity](t, args, 0)
+		*dest = stored
+	}).Once()
+
+	first, err := appendSoulContinuityForTest(s, agentIDHex, "r-continuity-conflict-1", firstBody)
+	if err != nil {
+		t.Fatalf("first append: %v", err)
+	}
+	if first.Status != http.StatusCreated {
+		t.Fatalf("first append expected 201, got %d (body=%q)", first.Status, string(first.Body))
+	}
+	stored = mustUnmarshalJSON[soulAppendContinuityResponse](t, first.Body).Entry
+	if stored.PK == "" || stored.SK == "" {
+		_ = stored.UpdateKeys()
+	}
+
+	resp, err := appendSoulContinuityForTest(s, agentIDHex, "r-continuity-conflict-2", conflictingBody)
+	if resp != nil {
+		t.Fatalf("conflicting append returned response: %#v", resp)
+	}
+	appErr, ok := err.(*apptheory.AppTheoryError)
+	if !ok {
+		t.Fatalf("conflicting append expected AppTheory error, got %T: %v", err, err)
+	}
+	if appErr.Code != appTheoryCodeConflict || appErr.StatusCode != http.StatusConflict || appErr.Message != "continuity entry already exists" {
+		t.Fatalf("conflicting append expected fail-closed 409, got %#v", appErr)
+	}
+}
+
+func TestHandleSoulAppendContinuity_ReplayLoadFailureFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	s, tdb, key, agentIDHex := newSoulContinuityAppendTestServer(t, 2)
+	entryType := models.SoulContinuityEntryTypeModelChange
+	timestamp := canonicalSoulSignedTimestamp(time.Now().UTC())
+	reqBody := mustSignSoulContinuityAppendRequest(t, key, entryType, timestamp, "Updated underlying model to claude-opus-4-6.", []string{"boundary-001"})
+
+	tdb.qContinuity.On("Create").Unset()
+	tdb.qContinuity.On("Create").Return(nil).Once()
+	tdb.qContinuity.On("Create").Return(theoryErrors.ErrConditionFailed).Once()
+	tdb.qContinuity.On("First", mock.AnythingOfType("*models.SoulAgentContinuity")).Return(errors.New("forced replay load failure")).Once()
+
+	first, err := appendSoulContinuityForTest(s, agentIDHex, "r-continuity-load-1", reqBody)
+	if err != nil {
+		t.Fatalf("first append: %v", err)
+	}
+	if first.Status != http.StatusCreated {
+		t.Fatalf("first append expected 201, got %d (body=%q)", first.Status, string(first.Body))
+	}
+
+	resp, err := appendSoulContinuityForTest(s, agentIDHex, "r-continuity-load-2", reqBody)
+	if resp != nil {
+		t.Fatalf("failed replay load returned response: %#v", resp)
+	}
+	appErr, ok := err.(*apptheory.AppTheoryError)
+	if !ok {
+		t.Fatalf("failed replay load expected AppTheory error, got %T: %v", err, err)
+	}
+	if appErr.Code != appTheoryCodeInternal || appErr.StatusCode != http.StatusInternalServerError || appErr.Message != "failed to load continuity entry" {
+		t.Fatalf("failed replay load expected fail-closed 500, got %#v", appErr)
+	}
+}
+
+func newSoulContinuityAppendTestServer(t *testing.T, appendCalls int) (*Server, soulLifecycleTestDB, *ecdsa.PrivateKey, string) {
+	t.Helper()
+
+	tdb := newSoulLifecycleTestDB()
+	s := &Server{
+		store: store.New(tdb.db),
+		cfg: config.Config{
+			SoulEnabled:                 true,
+			SoulChainID:                 1,
+			SoulRegistryContractAddress: "0x0000000000000000000000000000000000000001",
+		},
+	}
+	key, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	wallet := strings.ToLower(crypto.PubkeyToAddress(key.PublicKey).Hex())
+	agentIDHex := soulLifecycleTestAgentIDHex
+
+	tdb.qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.Domain](t, args, 0)
+		*dest = models.Domain{Domain: "example.com", InstanceSlug: "inst1", Status: models.DomainStatusVerified}
+	}).Times(appendCalls)
+	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
+		*dest = models.Instance{Slug: "inst1", Owner: "admin"}
+	}).Times(appendCalls)
+	tdb.qWalletIdx.On("First", mock.AnythingOfType("*models.WalletIndex")).Return(theoryErrors.ErrItemNotFound).Times(appendCalls)
+	tdb.qIdentity.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
+		*dest = models.SoulAgentIdentity{
+			AgentID:   agentIDHex,
+			Domain:    "example.com",
+			LocalID:   "agent-alice",
+			Wallet:    wallet,
+			Status:    models.SoulAgentStatusActive,
+			UpdatedAt: time.Now().Add(-time.Minute).UTC(),
+		}
+	}).Times(appendCalls)
+
+	return s, tdb, key, agentIDHex
+}
+
+func mustSignSoulContinuityAppendRequest(t *testing.T, key *ecdsa.PrivateKey, entryType, timestamp, summary string, references []string) []byte {
+	t.Helper()
+
+	digest, appErr := computeSoulContinuityEntryDigest(entryType, timestamp, summary, "", references, "")
+	if appErr != nil {
+		t.Fatalf("digest: %v", appErr)
+	}
+	sig, err := crypto.Sign(accounts.TextHash(digest), key)
+	if err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	return mustMarshalJSON(t, map[string]any{
+		"type":       entryType,
+		"timestamp":  timestamp,
+		"summary":    summary,
+		"references": references,
+		"signature":  "0x" + hex.EncodeToString(sig),
+	})
+}
+
+func appendSoulContinuityForTest(s *Server, agentIDHex, requestID string, body []byte) (*apptheory.Response, error) {
+	ctx := &apptheory.Context{
+		RequestID:    requestID,
+		AuthIdentity: "admin",
+		Params:       map[string]string{"agentId": agentIDHex},
+		Request:      apptheory.Request{Body: body},
+	}
+	ctx.Set(ctxKeyOperatorRole, models.RoleAdmin)
+	return s.handleSoulAppendContinuity(ctx)
 }
 
 func TestParseSoulSignedTimestamp_CanonicalizesLikeJavaScriptISOString(t *testing.T) {
