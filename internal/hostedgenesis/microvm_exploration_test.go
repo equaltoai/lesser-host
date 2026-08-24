@@ -6,8 +6,8 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
-	runtimemicrovm "github.com/theory-cloud/apptheory/v3/runtime/microvm"
-	microvmtestkit "github.com/theory-cloud/apptheory/v3/testkit/microvm"
+	runtimemicrovm "github.com/theory-cloud/apptheory/v4/runtime/microvm"
+	microvmtestkit "github.com/theory-cloud/apptheory/v4/testkit/microvm"
 )
 
 func TestMicroVMRunRequestUsesAppTheoryM16Contract(t *testing.T) {

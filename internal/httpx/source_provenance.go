@@ -5,7 +5,7 @@ import (
 	"encoding/hex"
 	"strings"
 
-	apptheory "github.com/theory-cloud/apptheory/v3/runtime"
+	apptheory "github.com/theory-cloud/apptheory/v4/runtime"
 )
 
 // TrustedSourceInfo is the sanitized, provider-derived source metadata host uses
