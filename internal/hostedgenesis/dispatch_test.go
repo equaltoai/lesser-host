@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
-	runtimemicrovm "github.com/theory-cloud/apptheory/v3/runtime/microvm"
+	runtimemicrovm "github.com/theory-cloud/apptheory/v4/runtime/microvm"
 )
 
 // stubControllerServer is an httptest.Server-backed stub of the governed

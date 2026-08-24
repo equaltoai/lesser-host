@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/mock"
-	"github.com/theory-cloud/apptheory/v3/pkg/limited"
-	apptheory "github.com/theory-cloud/apptheory/v3/runtime"
+	"github.com/theory-cloud/apptheory/v4/pkg/limited"
+	apptheory "github.com/theory-cloud/apptheory/v4/runtime"
 	theoryErrors "github.com/theory-cloud/tabletheory/v3/pkg/errors"
 	ttmocks "github.com/theory-cloud/tabletheory/v3/pkg/mocks"
 

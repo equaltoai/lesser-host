@@ -14,8 +14,8 @@ import (
 
 	"github.com/ethereum/go-ethereum/accounts"
 	"github.com/ethereum/go-ethereum/crypto"
-	apptheory "github.com/theory-cloud/apptheory/v3/runtime"
-	runtimemicrovm "github.com/theory-cloud/apptheory/v3/runtime/microvm"
+	apptheory "github.com/theory-cloud/apptheory/v4/runtime"
+	runtimemicrovm "github.com/theory-cloud/apptheory/v4/runtime/microvm"
 	"github.com/theory-cloud/tabletheory/v3/pkg/core"
 	theoryErrors "github.com/theory-cloud/tabletheory/v3/pkg/errors"
 	ttmocks "github.com/theory-cloud/tabletheory/v3/pkg/mocks"
