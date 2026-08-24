@@ -81,7 +81,8 @@ payload_equals() {
   [[ "${actual}" == "${expected}" ]]
 }
 
-# AppTheory v3.0.1 / TableTheory v3.0.2 migration allowance:
+# AppTheory v3.0.1 / TableTheory v3.0.2 migration allowance, extended for the
+# AppTheory v4.0.0 line:
 # the instance-auth mechanism remains locked (sha256 bearer matching, raw-key
 # handling, revocation, and audit behavior must not change), but the framework
 # major-version migration necessarily updates the AppTheory and TableTheory
@@ -106,14 +107,20 @@ is_allowed_framework_migration_diff() {
         '-	ttmocks "github.com/theory-cloud/tabletheory/v2/pkg/mocks"' \
         '+	apptheory "github.com/theory-cloud/apptheory/v3/runtime"' \
         '+	theoryErrors "github.com/theory-cloud/tabletheory/v3/pkg/errors"' \
-        '+	ttmocks "github.com/theory-cloud/tabletheory/v3/pkg/mocks"'
+        '+	ttmocks "github.com/theory-cloud/tabletheory/v3/pkg/mocks"' \
+        || payload_equals "${payload}" \
+        '-	apptheory "github.com/theory-cloud/apptheory/v3/runtime"' \
+        '+	apptheory "github.com/theory-cloud/apptheory/v4/runtime"'
       ;;
     "internal/trust/auth_instance.go")
       payload_equals "${payload}" \
         '-	apptheory "github.com/theory-cloud/apptheory/v2/runtime"' \
         '-	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"' \
         '+	apptheory "github.com/theory-cloud/apptheory/v3/runtime"' \
-        '+	theoryErrors "github.com/theory-cloud/tabletheory/v3/pkg/errors"'
+        '+	theoryErrors "github.com/theory-cloud/tabletheory/v3/pkg/errors"' \
+        || payload_equals "${payload}" \
+        '-	apptheory "github.com/theory-cloud/apptheory/v3/runtime"' \
+        '+	apptheory "github.com/theory-cloud/apptheory/v4/runtime"'
       ;;
     *)
       return 1
@@ -140,7 +147,7 @@ for f in "${LOCKED_FILES[@]}"; do
   elif [[ -z "${diff_output}" ]]; then
     echo "  ${f}: whitespace-only diff (acceptable)"
   elif is_allowed_framework_migration_diff "${f}" "${diff_output}"; then
-    echo "  ${f}: framework-major compatibility diff only (AppTheory/TableTheory v3 imports; trust semantics preserved)"
+    echo "  ${f}: framework-major compatibility diff only (AppTheory/TableTheory import paths; trust semantics preserved)"
   else
     lines=""
     lines="$(printf '%s\n' "${diff_output}" | wc -l | tr -d ' ')"
