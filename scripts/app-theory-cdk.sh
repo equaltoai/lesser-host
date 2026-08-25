@@ -139,6 +139,14 @@ case "$action" in
       exit 0
     fi
 
+    # Issue #1052: prune hosted-genesis microvm image versions BEFORE the
+    # deploy publishes a new one. AWS::Lambda::MicrovmImage hard-caps an image
+    # at 50 versions; the tool keeps the newest N (default 5) of this stage's
+    # image and deletes the rest serially, failing closed if the image is
+    # still at/over the cap (the deploy would otherwise 402). This runs on
+    # every real deploy through the AppTheory contract; dry-run skips it.
+    (cd "$repo_root" && go run ./scripts/hosted-genesis-microvm-prune prune "$stage")
+
     ./node_modules/.bin/cdk deploy --app "$synth_out" --all --require-approval never
     ;;
   down)
