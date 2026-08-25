@@ -44,7 +44,13 @@ const (
 
 	updateMaxTransitionsPerRun   = 6
 	updateRunnerStartClaimMaxAge = 2 * time.Minute
-	updateProcessingLeaseTTL     = 90 * time.Second
+	// updateProcessingLeaseTTL must exceed the ProvisionWorker function
+	// timeout (120s, cdk/lib/lesser-host-stack.ts): the lease is acquired once
+	// per invocation (processUpdateJob) and never renewed, so an invocation
+	// must never hold an expired lease while still running, or the sweep could
+	// re-lease the job mid-step. Envelope ordering:
+	// provision queue visibility (6m) > lease TTL (150s) > fn timeout (120s).
+	updateProcessingLeaseTTL     = 150 * time.Second
 	updateRunnerMissingMaxAge    = 10 * time.Minute
 	updateSweepLimit             = 100
 	updateVerifyInternalError    = "internal error"
@@ -55,7 +61,12 @@ const (
 	// must clear that comfortably; a hung endpoint must fail its own lane with
 	// a clear error instead of consuming the whole worker invocation budget
 	// (ProvisionWorker runs at 120s). The lane makes at most three sequential
-	// calls, so worst case stays well inside the budget.
+	// calls, so worst case (three hung calls) is ~45s, well inside the budget.
+	// advanceUpdateVerify applies it both as the request-context deadline and,
+	// via outboundhttp.WithTimeout, as the SSRF-protected client's Timeout, so
+	// it is the operative bound in production (net/http takes the earlier of
+	// Client.Timeout and the context deadline; Server.httpClient alone would
+	// cap the lane at 10s).
 	updateVerifyHTTPTimeout = 15 * time.Second
 )
 
@@ -2286,7 +2297,13 @@ func (s *Server) advanceUpdateVerify(ctx context.Context, job *models.UpdateJob,
 	}
 
 	verifyDomain := updateVerifyDomain(job.BaseDomain, s.cfg.Stage)
-	client := outboundhttp.NewSSRFProtectedClient(s.httpClient)
+	// The SSRF wrapper propagates base.Timeout (Server.httpClient is 10s), and
+	// net/http applies the earlier of Client.Timeout and the request-context
+	// deadline — so without the override the 10s base would win and the 15s
+	// lane bound would never bind in production. WithTimeout makes the lane
+	// bound the operative one: Client.Timeout and the per-call context
+	// deadline both sit at updateVerifyHTTPTimeout.
+	client := outboundhttp.NewSSRFProtectedClient(s.httpClient, outboundhttp.WithTimeout(updateVerifyHTTPTimeout))
 
 	cfg, cfgErr := fetchInstanceConfigV2(ctx, client, verifyDomain)
 	transOK, transErr := verifyUpdateTranslation(ctx, client, verifyDomain, cfg, cfgErr, job.TranslationEnabled)

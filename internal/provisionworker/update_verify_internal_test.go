@@ -12,6 +12,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/equaltoai/lesser-host/internal/outboundhttp"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
@@ -273,6 +274,59 @@ func TestVerifyLaneCall_SlowEndpointFailsLaneScoped(t *testing.T) {
 
 	ctx := context.Background()
 	client := ts.Client()
+
+	t.Run("fetchInstanceConfigV2", func(t *testing.T) {
+		t.Parallel()
+		start := time.Now()
+		_, err := fetchInstanceConfigV2(ctx, client, ts.URL)
+		elapsed := time.Since(start)
+		require.ErrorContains(t, err, "context deadline exceeded")
+		require.GreaterOrEqual(t, elapsed, updateVerifyHTTPTimeout)
+		require.Less(t, elapsed, delay, "slow endpoint must fail its own call, not hang the invocation")
+	})
+
+	t.Run("requireInstanceEndpoint2xx", func(t *testing.T) {
+		t.Parallel()
+		start := time.Now()
+		err := requireInstanceEndpoint2xx(ctx, client, ts.URL, "/ok")
+		elapsed := time.Since(start)
+		require.ErrorContains(t, err, "context deadline exceeded")
+		require.GreaterOrEqual(t, elapsed, updateVerifyHTTPTimeout)
+		require.Less(t, elapsed, delay, "slow endpoint must fail its own call, not hang the invocation")
+	})
+}
+
+func TestVerifyLaneCall_ProductionWiringBoundedByLaneTimeout(t *testing.T) {
+	t.Parallel()
+
+	// Production wiring exercised end to end: advanceUpdateVerify builds the
+	// lane client as outboundhttp.NewSSRFProtectedClient(s.httpClient,
+	// outboundhttp.WithTimeout(updateVerifyHTTPTimeout)), where s.httpClient is
+	// &http.Client{Timeout: 10s} (server.go). NewSSRFProtectedClient adopts
+	// base.Timeout and then applies opts, so the WithTimeout override must win;
+	// net/http then applies the earlier of Client.Timeout and the request
+	// context deadline — with the fix both sit at updateVerifyHTTPTimeout. On
+	// the pre-fix wiring the base 10s would be the operative production bound
+	// and the call would fail at ~10s, failing the >= updateVerifyHTTPTimeout
+	// assertions below.
+	const delay = 30 * time.Second
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-time.After(delay):
+		case <-r.Context().Done():
+		}
+		if r.Context().Err() == nil {
+			w.WriteHeader(http.StatusOK)
+		}
+	})
+	ts := httptest.NewTLSServer(handler)
+	t.Cleanup(ts.Close)
+
+	base := ts.Client()             // test-transport seam, preserved by the SSRF wrapper
+	base.Timeout = 10 * time.Second // mirrors Server.httpClient (server.go)
+	client := outboundhttp.NewSSRFProtectedClient(base, outboundhttp.WithTimeout(updateVerifyHTTPTimeout))
+
+	ctx := context.Background()
 
 	t.Run("fetchInstanceConfigV2", func(t *testing.T) {
 		t.Parallel()

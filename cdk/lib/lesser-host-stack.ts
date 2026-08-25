@@ -212,7 +212,13 @@ export class LesserHostStack extends cdk.Stack {
       queueName: `${namePrefix}-provision-queue`,
       // This queue backs managed provisioning + update orchestration. A low maxReceiveCount can
       // strand long-running jobs in "running" when a transient worker failure DLQs the next poll.
-      visibilityTimeout: cdk.Duration.minutes(2),
+      // Visibility ordering invariant for update jobs:
+      //   provision queue visibility (6m) > processing lease TTL (150s) > ProvisionWorker fn timeout (120s)
+      // A message must never become visible again while its invocation still runs (visibility > fn
+      // timeout, the standard at-least-once multiple), and the invocation must finish before its
+      // one-shot processing lease expires (lease TTL > fn timeout) so the sweep cannot re-lease a
+      // job mid-step.
+      visibilityTimeout: cdk.Duration.minutes(6),
       deadLetterQueue: { queue: provisionDLQ, maxReceiveCount: 10 },
       encryption: sqs.QueueEncryption.SQS_MANAGED,
     });
