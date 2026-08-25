@@ -50,10 +50,10 @@ const (
 	// must never hold an expired lease while still running, or the sweep could
 	// re-lease the job mid-step. Envelope ordering:
 	// provision queue visibility (6m) > lease TTL (150s) > fn timeout (120s).
-	updateProcessingLeaseTTL     = 150 * time.Second
-	updateRunnerMissingMaxAge    = 10 * time.Minute
-	updateSweepLimit             = 100
-	updateVerifyInternalError    = "internal error"
+	updateProcessingLeaseTTL  = 150 * time.Second
+	updateRunnerMissingMaxAge = 10 * time.Minute
+	updateSweepLimit          = 100
+	updateVerifyInternalError = "internal error"
 
 	// updateVerifyHTTPTimeout bounds each individual outbound call in the
 	// managed-update verification lane. Live instance endpoints are inherently
