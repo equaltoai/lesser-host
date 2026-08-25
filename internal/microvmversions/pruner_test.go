@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -26,11 +27,21 @@ type stubClient struct {
 	listErr   error // returned when listCalls >= listErrOn
 	listErrOn int   // 0 = never
 
+	// activeOverride, when non-nil, supplies LatestActiveImageVersion per
+	// ResolveImage call (consumed in call order) so tests can simulate the
+	// active version advancing between the initial resolve and the re-resolve.
+	activeOverride []string
+	resolveCalls   int
+
 	failures map[string]*deleteBehavior
 
 	deleteOrder []string
 	inFlight    int32
 	maxInFlight int32
+
+	// events, when non-nil, records "list" on each ListVersions call so tests
+	// can assert ordering against the injected sleep implementation.
+	events *orderRecorder
 }
 
 type deleteBehavior struct {
@@ -54,13 +65,21 @@ func (s *stubClient) ResolveImage(_ context.Context, name string) (Image, error)
 	if !s.found {
 		return Image{}, ErrImageNotFound
 	}
-	return s.image, nil
+	s.resolveCalls++
+	img := s.image
+	if len(s.activeOverride) >= s.resolveCalls {
+		img.LatestActiveImageVersion = s.activeOverride[s.resolveCalls-1]
+	}
+	return img, nil
 }
 
 func (s *stubClient) ListVersions(_ context.Context, _ string) ([]Version, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.listCalls++
+	if s.events != nil {
+		s.events.add("list")
+	}
 	if s.listErr != nil && s.listCalls >= s.listErrOn {
 		return nil, s.listErr
 	}
@@ -134,6 +153,30 @@ func (r *sleepRecorder) count() int {
 	return len(r.sleeps)
 }
 
+// orderRecorder records sleep and list events on one log so tests can assert
+// that the confirmation re-list happens only after the settle-wait.
+type orderRecorder struct {
+	mu     sync.Mutex
+	events []string
+}
+
+func (r *orderRecorder) add(ev string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.events = append(r.events, ev)
+}
+
+func (r *orderRecorder) sleep(_ context.Context, _ time.Duration) error {
+	r.add("sleep")
+	return nil
+}
+
+func (r *orderRecorder) log() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.events...)
+}
+
 func TestPruneKeepsNewestNDeletesOldestFirst(t *testing.T) {
 	s := newStub(versions(10))
 	rec := &sleepRecorder{}
@@ -156,8 +199,8 @@ func TestPruneKeepsNewestNDeletesOldestFirst(t *testing.T) {
 	if res.Kept != 5 {
 		t.Fatalf("kept = %d, want 5", res.Kept)
 	}
-	if rec.count() != 4 { // settle-waits between the 5 serialized deletes
-		t.Fatalf("settle sleeps = %d, want 4", rec.count())
+	if rec.count() != 5 { // 4 settle-waits between the 5 serialized deletes + 1 settle before the re-list
+		t.Fatalf("settle sleeps = %d, want 5", rec.count())
 	}
 }
 
@@ -197,12 +240,178 @@ func TestPruneSkipsUnsettledAndGoneStates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Prune returned error: %v", err)
 	}
-	wantOrder := []string{"v1", "v2", "v3"}
+	// Keep = newest 5 live versions (v2..v6: PENDING/IN_PROGRESS consume slots,
+	// DELETING v7 is protected but non-consuming, DELETED v8 is excluded
+	// entirely). Only v1 is older than the newest-5 live, so only v1 is deleted.
+	wantOrder := []string{"v1"}
 	if !equalStrings(s.deleteOrder, wantOrder) {
 		t.Fatalf("delete order = %v, want %v", s.deleteOrder, wantOrder)
 	}
-	if res.RemainingCount != 4 { // v4 (newest-5) + v5..v7 (unsettled); v8 excluded (DELETED)
-		t.Fatalf("remaining = %d, want 4", res.RemainingCount)
+	if res.RemainingCount != 6 { // v2..v6 (kept live) + v7 (DELETING, not gone yet); v8 excluded (DELETED)
+		t.Fatalf("remaining = %d, want 6", res.RemainingCount)
+	}
+}
+
+func TestPruneGhostNewestDoNotConsumeKeepSlots(t *testing.T) {
+	// Out-of-band manual pruning of recent versions (the operator's
+	// 2026-08-25 incident) leaves DELETED/DELETING ghosts in the newest
+	// positions. The keep set must come from live versions below them: ghosts
+	// must not consume keep slots, or older SUCCESSFUL versions would be
+	// irreversibly deleted.
+	vs := []Version{
+		{ImageVersion: "v1", CreatedAt: t1(1), State: "SUCCESSFUL"},
+		{ImageVersion: "v2", CreatedAt: t1(2), State: "SUCCESSFUL"},
+		{ImageVersion: "v3", CreatedAt: t1(3), State: "SUCCESSFUL"},
+		{ImageVersion: "v4", CreatedAt: t1(4), State: "SUCCESSFUL"},
+		{ImageVersion: "v5", CreatedAt: t1(5), State: "SUCCESSFUL"},
+		{ImageVersion: "v6", CreatedAt: t1(6), State: "DELETING"},
+		{ImageVersion: "v7", CreatedAt: t1(7), State: "DELETED"},
+		{ImageVersion: "v8", CreatedAt: t1(8), State: "DELETED"},
+		{ImageVersion: "v9", CreatedAt: t1(9), State: "DELETED"},
+	}
+	s := newStub(vs)
+	p := NewPruner(s, WithSleep((&sleepRecorder{}).sleep))
+
+	res, err := p.Prune(context.Background(), s.image.Name)
+	if err != nil {
+		t.Fatalf("Prune returned error: %v", err)
+	}
+	if len(s.deleteOrder) != 0 {
+		t.Fatalf("ghosts consumed keep slots and live versions were deleted: %v", s.deleteOrder)
+	}
+	// All live versions survive; the DELETING ghost still counts toward the cap
+	// until it finishes reaping, DELETED ghosts do not.
+	if res.RemainingCount != 6 {
+		t.Fatalf("remaining = %d, want 6 (v1..v5 live + v6 DELETING)", res.RemainingCount)
+	}
+}
+
+func TestPruneGhostNewestKeepsNewestLiveBelow(t *testing.T) {
+	// Ghosts in the top positions must not shift the keep boundary: no live
+	// version beyond newest-live-N (+ the active pin) may be deleted.
+	vs := []Version{
+		{ImageVersion: "v1", CreatedAt: t1(1), State: "SUCCESSFUL"},
+		{ImageVersion: "v2", CreatedAt: t1(2), State: "SUCCESSFUL"},
+		{ImageVersion: "v3", CreatedAt: t1(3), State: "SUCCESSFUL"},
+		{ImageVersion: "v4", CreatedAt: t1(4), State: "SUCCESSFUL"},
+		{ImageVersion: "v5", CreatedAt: t1(5), State: "SUCCESSFUL"},
+		{ImageVersion: "v6", CreatedAt: t1(6), State: "SUCCESSFUL"},
+		{ImageVersion: "v7", CreatedAt: t1(7), State: "SUCCESSFUL"},
+		{ImageVersion: "v8", CreatedAt: t1(8), State: "DELETING"},
+		{ImageVersion: "v9", CreatedAt: t1(9), State: "DELETED"},
+		{ImageVersion: "v10", CreatedAt: t1(10), State: "DELETED"},
+	}
+	s := newStub(vs)
+	s.image.LatestActiveImageVersion = "v2" // active pin older than the newest-5 live
+	p := NewPruner(s, WithSleep((&sleepRecorder{}).sleep))
+
+	res, err := p.Prune(context.Background(), s.image.Name)
+	if err != nil {
+		t.Fatalf("Prune returned error: %v", err)
+	}
+	// Keep = newest 5 live (v3..v7) + active v2. Only v1 lies beyond that set.
+	wantOrder := []string{"v1"}
+	if !equalStrings(s.deleteOrder, wantOrder) {
+		t.Fatalf("delete order = %v, want %v (no live version beyond newest-live-5+active deleted)", s.deleteOrder, wantOrder)
+	}
+	if res.RemainingCount != 7 { // v2..v7 (kept) + v8 (DELETING); v9/v10 excluded (DELETED)
+		t.Fatalf("remaining = %d, want 7", res.RemainingCount)
+	}
+}
+
+func TestPruneImageNotFoundFailsClosedWhenRequired(t *testing.T) {
+	// The deploy template declares the image, so "not found" is name drift or
+	// out-of-band whole-image deletion — fail closed instead of silently
+	// skipping the prune.
+	s := newStub(nil)
+	s.found = false
+	p := NewPruner(s, WithImageRequired(true), WithSleep((&sleepRecorder{}).sleep))
+
+	res, err := p.Prune(context.Background(), "lesser-host-lab_hosted_genesis")
+	if err == nil {
+		t.Fatal("expected fail-closed when the image is required, got nil")
+	}
+	if !strings.Contains(err.Error(), "lesser-host-lab_hosted_genesis") {
+		t.Fatalf("error must name the expected image: %v", err)
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("error must include the resolution failure: %v", err)
+	}
+	if res.Deleted != 0 {
+		t.Fatalf("no deletions may happen on a required-but-missing image, got %d", res.Deleted)
+	}
+}
+
+func TestPruneReResolvesActiveVersionBeforeDeleting(t *testing.T) {
+	// The active controller version can advance between the initial resolve and
+	// the delete phase; the pin used for selection must be the freshest
+	// re-resolved value, or the now-active version could be deleted.
+	s := newStub(versions(10))
+	s.image.LatestActiveImageVersion = "v2"
+	s.activeOverride = []string{"v2", "v5"} // initial resolve v2, re-resolve v5
+	p := NewPruner(s, WithSleep((&sleepRecorder{}).sleep))
+
+	res, err := p.Prune(context.Background(), s.image.Name)
+	if err != nil {
+		t.Fatalf("Prune returned error: %v", err)
+	}
+	wantOrder := []string{"v1", "v2", "v3", "v4"} // v5 pinned by the re-resolved active version
+	if !equalStrings(s.deleteOrder, wantOrder) {
+		t.Fatalf("delete order = %v, want %v (re-resolved active v5 must survive)", s.deleteOrder, wantOrder)
+	}
+	if res.RemainingCount != 6 { // v5 (active) + newest 5 (v6..v10)
+		t.Fatalf("remaining = %d, want 6", res.RemainingCount)
+	}
+}
+
+func TestPruneWarnsOnEmptyActiveVersion(t *testing.T) {
+	// A resolved image with no LatestActiveImageVersion means no active-version
+	// pin: deletion is still bounded by newest-N, but the operator must hear
+	// that the pin is missing.
+	s := newStub(versions(10)) // LatestActiveImageVersion stays ""
+	p := NewPruner(s, WithSleep((&sleepRecorder{}).sleep))
+
+	res, err := p.Prune(context.Background(), s.image.Name)
+	if err != nil {
+		t.Fatalf("Prune returned error: %v", err)
+	}
+	warned := false
+	for _, w := range res.Warnings {
+		if strings.Contains(w, "LatestActiveImageVersion is empty") {
+			warned = true
+		}
+	}
+	if !warned {
+		t.Fatalf("expected empty-active warning, got %v", res.Warnings)
+	}
+}
+
+func TestPruneSettlesBeforeConfirmationReList(t *testing.T) {
+	// The confirmation re-list must happen only after a settle-wait so
+	// in-flight deletions finish reaping; without it a still-reaping DELETING
+	// version could be misread as a stuck one.
+	s := newStub(versions(10))
+	rec := &orderRecorder{}
+	s.events = rec
+	p := NewPruner(s, WithSleep(rec.sleep))
+
+	if _, err := p.Prune(context.Background(), s.image.Name); err != nil {
+		t.Fatalf("Prune returned error: %v", err)
+	}
+	ev := rec.log()
+	// list (initial), 4 delete-settles, 1 re-list settle, list (confirmation)
+	wantSettles := 5
+	sleeps := 0
+	for _, e := range ev {
+		if e == "sleep" {
+			sleeps++
+		}
+	}
+	if sleeps != wantSettles {
+		t.Fatalf("sleeps = %d, want %d (%v)", sleeps, wantSettles, ev)
+	}
+	if len(ev) < 2 || ev[len(ev)-2] != "sleep" || ev[len(ev)-1] != "list" {
+		t.Fatalf("confirmation re-list must follow the settle-wait, got %v", ev)
 	}
 }
 
@@ -225,9 +434,10 @@ func TestPruneConflictRetrySucceeds(t *testing.T) {
 		t.Fatalf("delete order = %v, want %v", s.deleteOrder, wantOrder)
 	}
 	// sleeps: v1 backoff (5s), v1 backoff (10s), settle after v1, v2 backoff
-	// (5s), settle after v2, settle after v3, settle after v4 = 7
-	if rec.count() != 7 {
-		t.Fatalf("sleep count = %d, want 7", rec.count())
+	// (5s), settle after v2, settle after v3, settle after v4, settle before
+	// re-list = 8
+	if rec.count() != 8 {
+		t.Fatalf("sleep count = %d, want 8", rec.count())
 	}
 	sleeps := rec.sleeps
 	if sleeps[0] != 5*time.Second || sleeps[1] != 10*time.Second {
@@ -262,6 +472,7 @@ func TestPruneFailClosedWhenStillAtCap(t *testing.T) {
 
 func TestPruneFailOpenOnHeadroom(t *testing.T) {
 	s := newStub(versions(30))
+	s.image.LatestActiveImageVersion = "v30" // avoid the empty-active warning; this test is about headroom
 	s.failures["v1"] = &deleteBehavior{terminal: errors.New("permanent failure")}
 	p := NewPruner(s, WithSleep((&sleepRecorder{}).sleep))
 
@@ -414,13 +625,5 @@ func t1(hour int) time.Time {
 }
 
 func equalStrings(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
+	return slices.Equal(a, b)
 }
