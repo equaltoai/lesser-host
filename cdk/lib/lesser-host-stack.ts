@@ -824,6 +824,11 @@ export class LesserHostStack extends cdk.Stack {
         MANAGED_PROVISION_CONSENT_ENCRYPTION_KEY_HEX:
           managedProvisionConsentEncryptionKeyHex.trim(),
       },
+      // ProvisionWorker performs sequential public HTTPS verification calls
+      // (live instance endpoints measured ~6.7s cold) plus DynamoDB writes in
+      // a single invocation; the goLambda default (10s) cannot fit that.
+      // Matches the sibling worker envelope ({ memorySize: 512, timeoutSeconds: 120 }).
+      { memorySize: 512, timeoutSeconds: 120 },
     );
 
     const commWorkerFn = this.goLambda("CommWorker", "./cmd/comm-worker", {

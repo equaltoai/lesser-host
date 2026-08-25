@@ -48,6 +48,15 @@ const (
 	updateRunnerMissingMaxAge    = 10 * time.Minute
 	updateSweepLimit             = 100
 	updateVerifyInternalError    = "internal error"
+
+	// updateVerifyHTTPTimeout bounds each individual outbound call in the
+	// managed-update verification lane. Live instance endpoints are inherently
+	// slow (measured ~6.7s cold for /api/v2/instance), so the per-call bound
+	// must clear that comfortably; a hung endpoint must fail its own lane with
+	// a clear error instead of consuming the whole worker invocation budget
+	// (ProvisionWorker runs at 120s). The lane makes at most three sequential
+	// calls, so worst case stays well inside the budget.
+	updateVerifyHTTPTimeout = 15 * time.Second
 )
 
 const (
@@ -1984,7 +1993,9 @@ func fetchInstanceConfigV2(ctx context.Context, client *http.Client, baseDomain 
 	}
 
 	u := fmt.Sprintf("https://%s/api/v2/instance", host)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	callCtx, cancel := context.WithTimeout(ctx, updateVerifyHTTPTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(callCtx, http.MethodGet, u, nil)
 	if err != nil {
 		return parsed, err
 	}
@@ -2023,7 +2034,9 @@ func requireInstanceEndpoint2xx(ctx context.Context, client *http.Client, baseDo
 	}
 
 	u := fmt.Sprintf("https://%s%s", host, path)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	callCtx, cancel := context.WithTimeout(ctx, updateVerifyHTTPTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(callCtx, http.MethodGet, u, nil)
 	if err != nil {
 		return err
 	}
