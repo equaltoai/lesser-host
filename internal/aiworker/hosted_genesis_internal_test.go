@@ -13,8 +13,8 @@ import (
 	"time"
 
 	"github.com/aws/aws-lambda-go/events"
-	apptheory "github.com/theory-cloud/apptheory/v3/runtime"
-	runtimemicrovm "github.com/theory-cloud/apptheory/v3/runtime/microvm"
+	apptheory "github.com/theory-cloud/apptheory/v4/runtime"
+	runtimemicrovm "github.com/theory-cloud/apptheory/v4/runtime/microvm"
 	theoryErrors "github.com/theory-cloud/tabletheory/v3/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/artifacts"

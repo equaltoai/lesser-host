@@ -13,7 +13,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/accounts"
 	"github.com/ethereum/go-ethereum/crypto"
-	apptheory "github.com/theory-cloud/apptheory/v3/runtime"
+	apptheory "github.com/theory-cloud/apptheory/v4/runtime"
 	theoryErrors "github.com/theory-cloud/tabletheory/v3/pkg/errors"
 
 	"github.com/stretchr/testify/mock"
@@ -112,6 +112,45 @@ func newProvisionPhoneServer(tdb soulLifecycleTestDB, packs soulPackStore) *Serv
 			Stage:                       "lab",
 		},
 	}
+}
+
+func captureSoulPhoneAuditWrites(t *testing.T, tdb soulLifecycleTestDB) *[]models.AuditLogEntry {
+	t.Helper()
+
+	var modeled *models.AuditLogEntry
+	writes := make([]models.AuditLogEntry, 0, 1)
+	for _, call := range tdb.db.ExpectedCalls {
+		if call.Method == modelCallMethod && len(call.Arguments) == 1 && call.Arguments[0] == mock.AnythingOfType("*models.AuditLogEntry") {
+			call.RunFn = func(args mock.Arguments) {
+				modeled = testutil.RequireMockArg[*models.AuditLogEntry](t, args, 0)
+			}
+		}
+	}
+	for _, call := range tdb.qAudit.ExpectedCalls {
+		if call.Method == "Create" {
+			call.RunFn = func(mock.Arguments) {
+				if modeled == nil {
+					t.Fatal("audit Create called without an AuditLogEntry model")
+				}
+				writes = append(writes, *modeled)
+			}
+		}
+	}
+	return &writes
+}
+
+func requireSoulPhoneAuditPersisted(t *testing.T, writes []models.AuditLogEntry, action string) {
+	t.Helper()
+	for _, entry := range writes {
+		if entry.Action != action {
+			continue
+		}
+		if strings.TrimSpace(entry.PK) == "" || strings.TrimSpace(entry.SK) == "" {
+			t.Fatalf("audit %q persisted with empty keys: PK=%q SK=%q", action, entry.PK, entry.SK)
+		}
+		return
+	}
+	t.Fatalf("audit %q was not persisted; writes=%#v", action, writes)
 }
 
 func newProvisionPhoneSigningIdentity(t *testing.T, version int) (*ecdsa.PrivateKey, *models.SoulAgentIdentity) {
@@ -479,6 +518,7 @@ func TestHandleSoulProvisionPhoneChannel_InvalidSignatureIsRejected(t *testing.T
 
 func TestHandleSoulProvisionPhoneChannel_SuccessPublishesRegistrationAndRecordsPhoneChannel(t *testing.T) {
 	tdb := newSoulLifecycleTestDB()
+	auditWrites := captureSoulPhoneAuditWrites(t, tdb)
 	key, identity := newProvisionPhoneSigningIdentity(t, 3)
 	seedProvisionPhoneAccess(t, tdb, identity)
 
@@ -527,6 +567,7 @@ func TestHandleSoulProvisionPhoneChannel_SuccessPublishesRegistrationAndRecordsP
 	assertProvisionPhoneProviderCalls(t, ordered, configured)
 	assertProvisionPhoneConfirmResponse(t, resp.Body)
 	assertProvisionPhonePublishedRegistration(t, packs, identity.AgentID)
+	requireSoulPhoneAuditPersisted(t, *auditWrites, "soul.channel.phone.provision")
 }
 
 func TestHandleSoulProvisionPhoneChannel_WebhookConfigFailureStopsPublish(t *testing.T) {
@@ -697,6 +738,7 @@ func TestHandleSoulDeprovisionPhoneChannel_UpdateFailureReturnsInternal(t *testi
 
 func TestHandleSoulDeprovisionPhoneChannel_SuccessReleasesProviderNumberAndClearsENS(t *testing.T) {
 	tdb := newSoulLifecycleTestDB()
+	auditWrites := captureSoulPhoneAuditWrites(t, tdb)
 	_, identity := newProvisionPhoneSigningIdentity(t, 3)
 	seedProvisionPhoneAccess(t, tdb, identity)
 	tdb.qChannel.On("First", mock.AnythingOfType("*models.SoulAgentChannel")).Return(nil).Run(func(args mock.Arguments) {
@@ -734,6 +776,7 @@ func TestHandleSoulDeprovisionPhoneChannel_SuccessReleasesProviderNumberAndClear
 	if len(released) != 1 || released[0] != "+15551234567" {
 		t.Fatalf("unexpected released numbers: %#v", released)
 	}
+	requireSoulPhoneAuditPersisted(t, *auditWrites, "soul.channel.phone.deprovision")
 }
 
 func assertProvisionPhoneRegistrationVersioned(t *testing.T, reg map[string]any, identity *models.SoulAgentIdentity) {

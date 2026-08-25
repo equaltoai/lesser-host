@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	runtimemicrovm "github.com/theory-cloud/apptheory/v3/runtime/microvm"
+	runtimemicrovm "github.com/theory-cloud/apptheory/v4/runtime/microvm"
 
 	"github.com/equaltoai/lesser-host/internal/ai/llm"
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis"

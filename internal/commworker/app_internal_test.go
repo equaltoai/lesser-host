@@ -3,7 +3,7 @@ package commworker
 import (
 	"testing"
 
-	apptheory "github.com/theory-cloud/apptheory/v3/runtime"
+	apptheory "github.com/theory-cloud/apptheory/v4/runtime"
 )
 
 func TestRegister_ReturnsAppAndHandlesNilInputs(t *testing.T) {

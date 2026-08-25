@@ -12,8 +12,8 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/mock"
-	apptheory "github.com/theory-cloud/apptheory/v3/runtime"
-	runtimemicrovm "github.com/theory-cloud/apptheory/v3/runtime/microvm"
+	apptheory "github.com/theory-cloud/apptheory/v4/runtime"
+	runtimemicrovm "github.com/theory-cloud/apptheory/v4/runtime/microvm"
 	ttmocks "github.com/theory-cloud/tabletheory/v3/pkg/mocks"
 
 	"github.com/equaltoai/lesser-host/internal/ai/modelselection"

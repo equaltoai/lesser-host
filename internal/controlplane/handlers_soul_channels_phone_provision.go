@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	apptheory "github.com/theory-cloud/apptheory/v3/runtime"
+	apptheory "github.com/theory-cloud/apptheory/v4/runtime"
 	theoryErrors "github.com/theory-cloud/tabletheory/v3/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/httpx"
@@ -266,13 +266,13 @@ func (s *Server) finalizeSoulProvisionPhoneChannel(
 		return nil, appErr
 	}
 
-	_ = s.store.DB.WithContext(ctx.Context()).Model(&models.AuditLogEntry{
+	s.tryWriteAuditLog(ctx, &models.AuditLogEntry{
 		Actor:     strings.TrimSpace(ctx.AuthIdentity),
 		Action:    "soul.channel.phone.provision",
 		Target:    fmt.Sprintf("soul_agent:%s:channel:phone", agentIDHex),
 		RequestID: strings.TrimSpace(ctx.RequestID),
 		CreatedAt: now,
-	}).Create()
+	})
 
 	return apptheory.JSON(http.StatusCreated, soulProvisionPhoneConfirmResponse{
 		Version:             "1",
@@ -382,13 +382,13 @@ func (s *Server) finalizeSoulDeprovisionPhoneChannel(ctx *apptheory.Context, age
 		}
 	}
 
-	_ = s.store.DB.WithContext(ctx.Context()).Model(&models.AuditLogEntry{
+	s.tryWriteAuditLog(ctx, &models.AuditLogEntry{
 		Actor:     strings.TrimSpace(ctx.AuthIdentity),
 		Action:    "soul.channel.phone.deprovision",
 		Target:    fmt.Sprintf("soul_agent:%s:channel:phone", agentIDHex),
 		RequestID: strings.TrimSpace(ctx.RequestID),
 		CreatedAt: now,
-	}).Create()
+	})
 
 	return apptheory.JSON(http.StatusOK, map[string]any{"ok": true})
 }
