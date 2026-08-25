@@ -143,9 +143,13 @@ case "$action" in
     # deploy publishes a new one. AWS::Lambda::MicrovmImage hard-caps an image
     # at 50 versions; the tool keeps the newest N (default 5) of this stage's
     # image and deletes the rest serially, failing closed if the image is
-    # still at/over the cap (the deploy would otherwise 402). This runs on
-    # every real deploy through the AppTheory contract; dry-run skips it.
-    (cd "$repo_root" && go run ./scripts/hosted-genesis-microvm-prune prune "$stage")
+    # still at/over the cap (the deploy would otherwise 402). The synthesized
+    # template path is passed so the tool can fail closed on image-resolution
+    # failure when the template still declares the image (name drift /
+    # out-of-band whole-image deletion) instead of mistaking it for a first
+    # deploy. This runs on every real deploy through the AppTheory contract;
+    # dry-run skips it (it makes no AWS mutations).
+    (cd "$repo_root" && go run ./scripts/hosted-genesis-microvm-prune prune "$stage" "$template_path")
 
     ./node_modules/.bin/cdk deploy --app "$synth_out" --all --require-approval never
     ;;
