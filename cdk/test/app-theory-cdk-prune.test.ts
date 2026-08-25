@@ -33,3 +33,31 @@ test('AppTheory wrapper prunes microvm images after dry-run and before cdk deplo
 		'prune must receive the stage and the synthesized template path',
 	);
 });
+
+// Issue #1056: the wrapper's `go run` sites (bootstrap-wallet helper and
+// hosted-genesis microvm prune) inherit the operator's ambient GOTOOLCHAIN,
+// so `GOTOOLCHAIN=local` + a local Go older than go.mod's directive aborts
+// the deploy fail-closed after all guards pass (synth survives only because
+// synthGoBuildEnv derives GOTOOLCHAIN from go.mod). Pin the export before
+// both sites so the class cannot regress.
+test('AppTheory wrapper pins GOTOOLCHAIN=auto before both go-run sites', () => {
+	const wrapper = readFileSync(join(process.cwd(), '..', 'scripts', 'app-theory-cdk.sh'), 'utf8');
+
+	const toolchainExportIndex = wrapper.indexOf('export GOTOOLCHAIN=auto');
+	const bootstrapWalletIndex = wrapper.indexOf('go run ./scripts/bootstrap-wallet');
+	const pruneIndex = wrapper.indexOf('go run ./scripts/hosted-genesis-microvm-prune');
+
+	assert.ok(toolchainExportIndex !== -1, 'wrapper must export GOTOOLCHAIN=auto');
+	assert.ok(
+		bootstrapWalletIndex !== -1,
+		'wrapper must keep the bootstrap-wallet go helper',
+	);
+	assert.ok(
+		pruneIndex !== -1,
+		'wrapper must keep the hosted-genesis-microvm-prune go helper',
+	);
+	assert.ok(
+		toolchainExportIndex < bootstrapWalletIndex && toolchainExportIndex < pruneIndex,
+		'GOTOOLCHAIN=auto must be exported before both go-run sites so ambient GOTOOLCHAIN (e.g. GOTOOLCHAIN=local) cannot abort the deploy',
+	);
+});

@@ -29,6 +29,15 @@ case "$stage" in
     ;;
 esac
 
+# Both `go run` sites below (bootstrap-wallet helper, hosted-genesis microvm
+# prune) must resolve the toolchain from go.mod rather than inherit the
+# operator's ambient GOTOOLCHAIN (e.g. GOTOOLCHAIN=local with a newer local
+# Go refuses go.mod's 1.26.x directive and aborts the deploy fail-closed
+# after all guards have passed). go.mod is the toolchain source of truth;
+# `auto` resolves it at run time, mirroring synthGoBuildEnv's go.mod-derived
+# toolchain selection.
+export GOTOOLCHAIN=auto
+
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 repo_root="$(cd "$script_dir/.." && pwd -P)"
 cdk_dir="$repo_root/cdk"
