@@ -278,8 +278,8 @@ github.com/supranational/blst v0.3.16 h1:bTDadT+3fK497EvLdWRQEjiGnUtzJ7jjIUMF0jq
 github.com/supranational/blst v0.3.16/go.mod h1:jZJtfjgudtNl4en1tzwPIV3KjUnQUvG3/j+w+fVonLw=
 github.com/syndtr/goleveldb v1.0.1-0.20210819022825-2ae1ddf74ef7 h1:epCh84lMvA70Z7CTTCmYQn2CKbY8j86K7/FAIr141uY=
 github.com/syndtr/goleveldb v1.0.1-0.20210819022825-2ae1ddf74ef7/go.mod h1:q4W45IWZaF22tdD+VEXcAWRA037jwmWEB5VWYORlTpc=
-github.com/theory-cloud/apptheory/v4 v4.0.0 h1:xtviPaBdgSfFyEIuc4DWUyyvyOML0bb9Fv2dYjqdO3g=
-github.com/theory-cloud/apptheory/v4 v4.0.0/go.mod h1:W0X5wp/HF/dKvJQATyStyzn5bMxoPmVJ3+cDIN5bIF0=
+github.com/theory-cloud/apptheory/v4 v4.1.0 h1:Ed6tgIOHYrOcWzt0LZEO0orXsTkkyH0dQM5Xf3HMvu0=
+github.com/theory-cloud/apptheory/v4 v4.1.0/go.mod h1:W0X5wp/HF/dKvJQATyStyzn5bMxoPmVJ3+cDIN5bIF0=
 github.com/theory-cloud/tabletheory/v3 v3.0.6 h1:R0YwCLfLn/9GBx3UKU2+nuN8OUT5HJP6xPok2/aRz+8=
 github.com/theory-cloud/tabletheory/v3 v3.0.6/go.mod h1:pvwWngnJS39oCf30H8OjrZLbi1HKkuElohIOnKIsO0Y=
 github.com/tidwall/gjson v1.14.2/go.mod h1:/wbyibRr2FHMks5tjHJ5F8dMZh3AcwJEMf5vlfC0lxk=

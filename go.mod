@@ -34,7 +34,7 @@ require (
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
 	github.com/stretchr/testify v1.12.0
 	github.com/stripe/stripe-go/v79 v79.12.0
-	github.com/theory-cloud/apptheory/v4 v4.0.0
+	github.com/theory-cloud/apptheory/v4 v4.1.0
 	github.com/theory-cloud/tabletheory/v3 v3.0.6
 	golang.org/x/net v0.56.0
 )
