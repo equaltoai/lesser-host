@@ -763,6 +763,9 @@ ensure_soul_binding_integration_secret() {
 # VAPID_SECRET_ARN / VAPID_PUBLIC_KEY / VAPID_SUBJECT environment variables
 # (cmd/lesser/up.go + cmd/lesser/cdk.go). Never rotates a healthy secret; a
 # pre-existing secret (created by the manual script or a prior run) is reused.
+# Read failures fail closed (never fall through to regeneration); the only
+# in-place rewrite is a genuinely key-material-less payload, which the receipt
+# records as regenerated=true so it is visible to audit.
 
 vapid_secret_name() {
   key_stage=$(managed_instance_key_stage)
@@ -786,12 +789,20 @@ generate_vapid_pair() {
   printf "%s" "$public_key"
 }
 
+# The VAPID receipt is audit-only: it is embedded in state.managed.json for the
+# deploy record but nothing in lesser-host validates or consumes it at ingest
+# time - it is never a gate. It records ARN / public key / subject / reuse /
+# regeneration so an operator can audit key continuity: regenerated=true flags
+# an in-place keypair rewrite that invalidates existing web-push subscriptions
+# (which bind to the VAPID applicationServerKey), and reused=true means the same
+# secret object was kept (ARN unchanged) rather than a new one created.
 write_vapid_key_receipt() {
   receipt_path="$1"
   secret_arn="$2"
   public_key="$3"
   subject="$4"
   reused="$5"
+  regenerated="$6"
   key_slug=$(managed_instance_key_slug)
   key_stage=$(managed_instance_key_stage)
   jq -n \
@@ -802,8 +813,9 @@ write_vapid_key_receipt() {
     --arg instance_slug "$key_slug" \
     --arg stage "$key_stage" \
     --arg reused "$reused" \
+    --arg regenerated "$regenerated" \
     --arg verified_at "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
-    '{version:1,source:$source,secret_arn:$secret_arn,public_key:$public_key,subject:$subject,instance_slug:$instance_slug,stage:$stage,reused:($reused=="true"),verified_at:$verified_at}' > "$receipt_path"
+    '{version:1,source:$source,secret_arn:$secret_arn,public_key:$public_key,subject:$subject,instance_slug:$instance_slug,stage:$stage,reused:($reused=="true"),regenerated:($regenerated=="true"),verified_at:$verified_at}' > "$receipt_path"
 }
 
 ensure_vapid_key_secret() {
@@ -814,34 +826,57 @@ ensure_vapid_key_secret() {
 
   desc_path="$STATE_DIR/vapid-key-describe.json"
   desc_err="$STATE_DIR/vapid-key-describe.err"
+  secret_value_err="$STATE_DIR/vapid-key-secret-value.err"
   payload_path="$STATE_DIR/vapid-key-payload.json"
   priv_path="$STATE_DIR/vapid-key-private.pem"
   pub_der_path="$STATE_DIR/vapid-key-public.der"
   VAPID_RECEIPT_PATH="$STATE_DIR/vapid-key.json"
-  rm -f "$desc_path" "$desc_err" "$payload_path" "$priv_path" "$pub_der_path" "$VAPID_RECEIPT_PATH"
+  rm -f "$desc_path" "$desc_err" "$secret_value_err" "$payload_path" "$priv_path" "$pub_der_path" "$VAPID_RECEIPT_PATH"
+
+  # Private-key-bearing temp files (the EC PEM and the payload JSON) must not
+  # be world-readable, and must be removed even when a later step fails under
+  # set -e (put/create/describe failure, bad payload, ...).
+  umask 077
+  cleanup_vapid_temp_files() { rm -f "$payload_path" "$desc_err" "$secret_value_err" "$priv_path" "$pub_der_path"; }
+  trap cleanup_vapid_temp_files EXIT
 
   public_key=""
   subject=""
   reused="false"
+  regenerated="false"
 
   if aws secretsmanager describe-secret --profile managed --secret-id "$secret_ref" --output json > "$desc_path" 2>"$desc_err"; then
     secret_arn=$(jq -r '.ARN // empty' "$desc_path")
     test -n "$secret_arn" && test "$secret_arn" != "null" || fail "VAPID secret ARN is missing"
-    existing_secret=$(aws secretsmanager get-secret-value --profile managed --secret-id "$secret_arn" --query SecretString --output text 2>/dev/null || echo "")
-    if [ -n "$existing_secret" ] && [ "$existing_secret" != "None" ] && [ "$existing_secret" != "null" ]; then
-      public_key=$(printf '%s' "$existing_secret" | jq -r '.public_key // empty')
-      private_key=$(printf '%s' "$existing_secret" | jq -r '.private_key // empty')
-      subject=$(printf '%s' "$existing_secret" | jq -r '.subject // empty')
-      created_at=$(printf '%s' "$existing_secret" | jq -r '.created_at // empty')
+    # Fail closed on read failure: a transient get-secret-value error
+    # (throttle/5xx/network) must abort the deploy, never fall through to an
+    # in-place regeneration that would silently invalidate every web-push
+    # subscription for the instance.
+    if existing_secret=$(aws secretsmanager get-secret-value --profile managed --secret-id "$secret_arn" --query SecretString --output text 2>"$secret_value_err"); then
+      if [ -n "$existing_secret" ] && [ "$existing_secret" != "None" ] && [ "$existing_secret" != "null" ]; then
+        if ! printf '%s' "$existing_secret" | jq -e 'type == "object"' >/dev/null 2>&1; then
+          fail "VAPID secret $secret_arn has a corrupt (non-JSON) payload"
+        fi
+        public_key=$(printf '%s' "$existing_secret" | jq -r '.public_key // empty')
+        private_key=$(printf '%s' "$existing_secret" | jq -r '.private_key // empty')
+        subject=$(printf '%s' "$existing_secret" | jq -r '.subject // empty')
+        created_at=$(printf '%s' "$existing_secret" | jq -r '.created_at // empty')
+      fi
+    else
+      cat "$secret_value_err" >&2
+      fail "failed to read VAPID secret value: $secret_arn"
     fi
     if [ -n "$subject" ] && [ "$subject" != "null" ]; then
       resolved_subject="$subject"
     else
       resolved_subject="$(vapid_resolve_subject)"
     fi
-    if [ -z "${public_key:-}" ] || [ -z "${private_key:-}" ]; then
-      # Secret exists but lacks key material; regenerate in place, preserving
-      # the subject. This is not a rotation of a healthy secret.
+    if [ -z "${public_key:-}" ] || [ "$public_key" = "null" ] || [ -z "${private_key:-}" ] || [ "$private_key" = "null" ]; then
+      # The value was read successfully but genuinely lacks key material
+      # (missing/empty fields); regenerate in place, preserving the subject.
+      # This is not a rotation of a healthy secret, and the receipt records
+      # regenerated=true so the rewrite is visible to audit.
+      echo "WARN: VAPID secret $secret_arn lacks key material; regenerating key pair in place (subject preserved)" >&2
       public_key="$(generate_vapid_pair "$priv_path" "$pub_der_path")"
       jq -n \
         --rawfile priv "$priv_path" \
@@ -852,6 +887,11 @@ ensure_vapid_key_secret() {
         '{public_key:$pub, private_key:$priv, subject:$sub, created_at:$created, updated_at:$now}' \
         > "$payload_path"
       aws secretsmanager put-secret-value --profile managed --secret-id "$secret_arn" --secret-string "file://$payload_path" >/dev/null
+      regenerated="true"
+    elif ! printf "%s" "$public_key" | grep -Eq '^[A-Za-z0-9_-]{87}$'; then
+      fail "VAPID secret $secret_arn has a malformed public key (expected 87-char urlsafe base64)"
+    elif ! printf "%s" "$private_key" | grep -q '^-----BEGIN EC PRIVATE KEY-----'; then
+      fail "VAPID secret $secret_arn has a malformed private key (expected EC PEM)"
     fi
     reused="true"
   else
@@ -880,20 +920,18 @@ ensure_vapid_key_secret() {
     reused="false"
   fi
 
-  rm -f "$payload_path" "$desc_err" "$priv_path" "$pub_der_path"
+  rm -f "$payload_path" "$desc_err" "$secret_value_err" "$priv_path" "$pub_der_path"
 
   test -n "$secret_arn" && test "$secret_arn" != "None" && test "$secret_arn" != "null" || fail "failed to resolve VAPID secret ARN"
   case "$secret_arn" in arn:*) ;; *) fail "VAPID_SECRET_ARN must start with arn:";; esac
-  if [ -z "${public_key:-}" ] || [ "$public_key" = "null" ]; then
-    public_key=$(aws secretsmanager get-secret-value --profile managed --secret-id "$secret_arn" --query SecretString --output text | jq -r '.public_key')
-  fi
+  test -n "${public_key:-}" || fail "failed to resolve VAPID public key"
   if [ -z "${resolved_subject:-}" ]; then resolved_subject="$(vapid_resolve_subject)"; fi
 
   export VAPID_SECRET_ARN="$secret_arn"
   export VAPID_PUBLIC_KEY="$public_key"
   export VAPID_SUBJECT="$resolved_subject"
   export VAPID_RECEIPT_PATH
-  write_vapid_key_receipt "$VAPID_RECEIPT_PATH" "$secret_arn" "$public_key" "$resolved_subject" "$reused"
+  write_vapid_key_receipt "$VAPID_RECEIPT_PATH" "$secret_arn" "$public_key" "$resolved_subject" "$reused" "$regenerated"
 }
 
 validate_https_custom_domain() {
