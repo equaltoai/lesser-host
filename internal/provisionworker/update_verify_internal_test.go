@@ -3,6 +3,7 @@ package provisionworker
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/equaltoai/lesser-host/internal/outboundhttp"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
@@ -191,4 +193,158 @@ func TestManagedUpdateVerificationFailureMessage(t *testing.T) {
 	translationOK := false
 	got = managedUpdateVerificationFailureMessage(&models.UpdateJob{VerifyTranslationOK: &translationOK})
 	require.Contains(t, got, "translation: failed")
+}
+
+// capturingRoundTripper records requests without dialing any network and
+// returns a canned response, so tests can inspect the request construction.
+type capturingRoundTripper struct {
+	reqs []*http.Request
+	resp *http.Response
+}
+
+func (c *capturingRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	c.reqs = append(c.reqs, req)
+	return c.resp, nil
+}
+
+// assertRequestTimeout verifies a verify-lane request carries the per-call
+// deadline on its request context.
+func assertRequestTimeout(t *testing.T, req *http.Request) {
+	t.Helper()
+	deadline, ok := req.Context().Deadline()
+	require.True(t, ok, "verify-lane request must carry a per-call deadline")
+	remaining := time.Until(deadline)
+	require.Greater(t, remaining, time.Duration(0))
+	require.LessOrEqual(t, remaining, updateVerifyHTTPTimeout)
+}
+
+func TestVerifyLaneCalls_CarryPerCallTimeout(t *testing.T) {
+	t.Parallel()
+
+	t.Run("fetchInstanceConfigV2", func(t *testing.T) {
+		t.Parallel()
+		capture := &capturingRoundTripper{
+			resp: &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(`{}`)),
+			},
+		}
+		_, err := fetchInstanceConfigV2(context.Background(), &http.Client{Transport: capture}, "https://instance.example")
+		require.NoError(t, err)
+		require.Len(t, capture.reqs, 1)
+		assertRequestTimeout(t, capture.reqs[0])
+	})
+
+	t.Run("requireInstanceEndpoint2xx", func(t *testing.T) {
+		t.Parallel()
+		capture := &capturingRoundTripper{
+			resp: &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader("")),
+			},
+		}
+		require.NoError(t, requireInstanceEndpoint2xx(context.Background(), &http.Client{Transport: capture}, "https://instance.example", "/ok"))
+		require.Len(t, capture.reqs, 1)
+		assertRequestTimeout(t, capture.reqs[0])
+	})
+}
+
+func TestVerifyLaneCall_SlowEndpointFailsLaneScoped(t *testing.T) {
+	t.Parallel()
+
+	// The handler hangs far past the per-call timeout. Without the per-call
+	// bound this would block for the whole delay (an invocation-wide hang);
+	// with it, each lane call fails on its own in ~updateVerifyHTTPTimeout
+	// with a clear lane-scoped error. ts.Client() carries no client-level
+	// timeout, so the per-call context timeout is the only bound in play.
+	const delay = 30 * time.Second
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-time.After(delay):
+		case <-r.Context().Done():
+		}
+		if r.Context().Err() == nil {
+			w.WriteHeader(http.StatusOK)
+		}
+	})
+	ts := httptest.NewTLSServer(handler)
+	t.Cleanup(ts.Close)
+
+	ctx := context.Background()
+	client := ts.Client()
+
+	t.Run("fetchInstanceConfigV2", func(t *testing.T) {
+		t.Parallel()
+		start := time.Now()
+		_, err := fetchInstanceConfigV2(ctx, client, ts.URL)
+		elapsed := time.Since(start)
+		require.ErrorContains(t, err, "context deadline exceeded")
+		require.GreaterOrEqual(t, elapsed, updateVerifyHTTPTimeout)
+		require.Less(t, elapsed, delay, "slow endpoint must fail its own call, not hang the invocation")
+	})
+
+	t.Run("requireInstanceEndpoint2xx", func(t *testing.T) {
+		t.Parallel()
+		start := time.Now()
+		err := requireInstanceEndpoint2xx(ctx, client, ts.URL, "/ok")
+		elapsed := time.Since(start)
+		require.ErrorContains(t, err, "context deadline exceeded")
+		require.GreaterOrEqual(t, elapsed, updateVerifyHTTPTimeout)
+		require.Less(t, elapsed, delay, "slow endpoint must fail its own call, not hang the invocation")
+	})
+}
+
+func TestVerifyLaneCall_ProductionWiringBoundedByLaneTimeout(t *testing.T) {
+	t.Parallel()
+
+	// Production wiring exercised end to end: advanceUpdateVerify builds the
+	// lane client as outboundhttp.NewSSRFProtectedClient(s.httpClient,
+	// outboundhttp.WithTimeout(updateVerifyHTTPTimeout)), where s.httpClient is
+	// &http.Client{Timeout: 10s} (server.go). NewSSRFProtectedClient adopts
+	// base.Timeout and then applies opts, so the WithTimeout override must win;
+	// net/http then applies the earlier of Client.Timeout and the request
+	// context deadline — with the fix both sit at updateVerifyHTTPTimeout. On
+	// the pre-fix wiring the base 10s would be the operative production bound
+	// and the call would fail at ~10s, failing the >= updateVerifyHTTPTimeout
+	// assertions below.
+	const delay = 30 * time.Second
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-time.After(delay):
+		case <-r.Context().Done():
+		}
+		if r.Context().Err() == nil {
+			w.WriteHeader(http.StatusOK)
+		}
+	})
+	ts := httptest.NewTLSServer(handler)
+	t.Cleanup(ts.Close)
+
+	base := ts.Client()             // test-transport seam, preserved by the SSRF wrapper
+	base.Timeout = 10 * time.Second // mirrors Server.httpClient (server.go)
+	client := outboundhttp.NewSSRFProtectedClient(base, outboundhttp.WithTimeout(updateVerifyHTTPTimeout))
+
+	ctx := context.Background()
+
+	t.Run("fetchInstanceConfigV2", func(t *testing.T) {
+		t.Parallel()
+		start := time.Now()
+		_, err := fetchInstanceConfigV2(ctx, client, ts.URL)
+		elapsed := time.Since(start)
+		require.ErrorContains(t, err, "context deadline exceeded")
+		require.GreaterOrEqual(t, elapsed, updateVerifyHTTPTimeout)
+		require.Less(t, elapsed, delay, "slow endpoint must fail its own call, not hang the invocation")
+	})
+
+	t.Run("requireInstanceEndpoint2xx", func(t *testing.T) {
+		t.Parallel()
+		start := time.Now()
+		err := requireInstanceEndpoint2xx(ctx, client, ts.URL, "/ok")
+		elapsed := time.Since(start)
+		require.ErrorContains(t, err, "context deadline exceeded")
+		require.GreaterOrEqual(t, elapsed, updateVerifyHTTPTimeout)
+		require.Less(t, elapsed, delay, "slow endpoint must fail its own call, not hang the invocation")
+	})
 }
