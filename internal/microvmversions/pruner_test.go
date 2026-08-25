@@ -28,8 +28,9 @@ type stubClient struct {
 	listErrOn int   // 0 = never
 
 	// activeOverride, when non-nil, supplies LatestActiveImageVersion per
-	// ResolveImage call (consumed in call order) so tests can simulate the
-	// active version advancing between the initial resolve and the re-resolve.
+	// ResolveImage call in order; the last supplied value sticks for all
+	// subsequent calls, so a test can model the active version advancing once
+	// and staying (re-resolves return current truth).
 	activeOverride []string
 	resolveCalls   int
 
@@ -69,6 +70,8 @@ func (s *stubClient) ResolveImage(_ context.Context, name string) (Image, error)
 	img := s.image
 	if len(s.activeOverride) >= s.resolveCalls {
 		img.LatestActiveImageVersion = s.activeOverride[s.resolveCalls-1]
+	} else if len(s.activeOverride) > 0 {
+		img.LatestActiveImageVersion = s.activeOverride[len(s.activeOverride)-1]
 	}
 	return img, nil
 }
@@ -364,26 +367,105 @@ func TestPruneReResolvesActiveVersionBeforeDeleting(t *testing.T) {
 	}
 }
 
-func TestPruneWarnsOnEmptyActiveVersion(t *testing.T) {
-	// A resolved image with no LatestActiveImageVersion means no active-version
-	// pin: deletion is still bounded by newest-N, but the operator must hear
-	// that the pin is missing.
-	s := newStub(versions(10)) // LatestActiveImageVersion stays ""
+func TestPruneSkipsVersionThatBecomesActiveMidDeleteLoop(t *testing.T) {
+	// TOCTOU: the active controller version can advance between selection and
+	// deletion (a second theory-app-up on the same stage, or a
+	// continue-update-rollback publishing an old version — the incident's
+	// v46-of-50 shape). The pruner must re-resolve before each delete and skip
+	// any target that has become active mid-loop, never deleting it.
+	s := newStub(versions(10))
+	s.image.LatestActiveImageVersion = "v5"
+	// initial resolve v5, pre-delete refresh v5, then per-delete re-resolves;
+	// v3 becomes the active version just before its turn in the delete loop.
+	s.activeOverride = []string{"v5", "v5", "v5", "v5", "v3"}
 	p := NewPruner(s, WithSleep((&sleepRecorder{}).sleep))
 
 	res, err := p.Prune(context.Background(), s.image.Name)
 	if err != nil {
 		t.Fatalf("Prune returned error: %v", err)
 	}
+	wantOrder := []string{"v1", "v2", "v4"} // v3 became active mid-loop and is skipped
+	if !equalStrings(s.deleteOrder, wantOrder) {
+		t.Fatalf("delete order = %v, want %v (newly-active v3 must never be deleted)", s.deleteOrder, wantOrder)
+	}
+	if res.SkippedActive != 1 {
+		t.Fatalf("skipped-active = %d, want 1", res.SkippedActive)
+	}
+	if res.Deleted != 3 || res.TargetDeletes != 4 {
+		t.Fatalf("deleted=%d target=%d, want 3/4", res.Deleted, res.TargetDeletes)
+	}
 	warned := false
 	for _, w := range res.Warnings {
-		if strings.Contains(w, "LatestActiveImageVersion is empty") {
+		if strings.Contains(w, "became the active controller version during pruning") {
 			warned = true
 		}
 	}
 	if !warned {
-		t.Fatalf("expected empty-active warning, got %v", res.Warnings)
+		t.Fatalf("expected a loud skip warning, got %v", res.Warnings)
 	}
+	if res.RemainingCount != 7 { // v3 (now active) + v5..v10 (kept)
+		t.Fatalf("remaining = %d, want 7", res.RemainingCount)
+	}
+}
+
+func TestPruneWarnsOnEmptyActiveVersion(t *testing.T) {
+	// A resolved image with no LatestActiveImageVersion means no fresh
+	// active-version pin. The warning must be honest about what the pruner
+	// actually keeps protecting.
+	t.Run("no previous pin", func(t *testing.T) {
+		s := newStub(versions(10)) // LatestActiveImageVersion stays "" on every resolve
+		p := NewPruner(s, WithSleep((&sleepRecorder{}).sleep))
+
+		res, err := p.Prune(context.Background(), s.image.Name)
+		if err != nil {
+			t.Fatalf("Prune returned error: %v", err)
+		}
+		warned := false
+		for _, w := range res.Warnings {
+			if strings.Contains(w, "LatestActiveImageVersion is empty") &&
+				strings.Contains(w, "no active-version pin available") {
+				warned = true
+			}
+		}
+		if !warned {
+			t.Fatalf("expected empty-active warning, got %v", res.Warnings)
+		}
+	})
+	t.Run("previous pin retained", func(t *testing.T) {
+		// The initial resolve supplies v2; the re-resolve comes back empty.
+		// The pruner retains the previous pin (protection unchanged) and must
+		// say so honestly instead of claiming there is no pin at all.
+		s := newStub(versions(10))
+		s.image.LatestActiveImageVersion = "v2"
+		s.activeOverride = []string{"v2", ""} // initial v2, then the fresh resolve reports empty
+		p := NewPruner(s, WithSleep((&sleepRecorder{}).sleep))
+
+		res, err := p.Prune(context.Background(), s.image.Name)
+		if err != nil {
+			t.Fatalf("Prune returned error: %v", err)
+		}
+		warned := false
+		for _, w := range res.Warnings {
+			if strings.Contains(w, "LatestActiveImageVersion is empty") &&
+				strings.Contains(w, `retaining the previously resolved pin "v2"`) {
+				warned = true
+			}
+		}
+		if !warned {
+			t.Fatalf("expected retained-pin warning, got %v", res.Warnings)
+		}
+		if res.ActiveVersion != "v2" {
+			t.Fatalf("ActiveVersion = %q, want retained pin v2", res.ActiveVersion)
+		}
+		for _, d := range s.deleteOrder {
+			if d == "v2" {
+				t.Fatalf("retained pin v2 must still be protected from deletion, got delete order %v", s.deleteOrder)
+			}
+		}
+		if res.RemainingCount != 6 { // retained-pin v2 + newest 5 (v6..v10)
+			t.Fatalf("remaining = %d, want 6", res.RemainingCount)
+		}
+	})
 }
 
 func TestPruneSettlesBeforeConfirmationReList(t *testing.T) {

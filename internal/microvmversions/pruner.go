@@ -10,10 +10,13 @@
 // references, and serializes the deletes with settle-waits because concurrent
 // deletes race the image's UPDATING state machine (ConflictException — the
 // live prune observed 11/45 conflicts in a tight loop, all succeeding on retry
-// with ~5s spacing). The keep set is computed over live versions only:
-// DELETED ghosts are excluded entirely and DELETING versions are protected but
-// do not consume a keep slot, so out-of-band deletions of recent versions can
-// never push older SUCCESSFUL rollback versions into the delete set.
+// with ~5s spacing). The active-version pin is re-checked before EACH delete:
+// a version that becomes active after selection (a racing deploy or a rollback
+// to an old version) is skipped, never deleted. The keep set is computed over
+// live versions only: DELETED ghosts are excluded entirely and DELETING
+// versions are protected but do not consume a keep slot, so out-of-band
+// deletions of recent versions can never push older SUCCESSFUL rollback
+// versions into the delete set.
 //
 // Failure policy:
 //   - If pruning cannot bring the image back under the 50-version cap, Prune
@@ -90,7 +93,8 @@ type Result struct {
 	TargetDeletes  int // versions selected for deletion
 	Deleted        int // versions successfully deleted
 	DeleteFailed   int // versions whose delete failed (retries exhausted or terminal error)
-	Kept           int // versions not targeted for deletion (newest N + active + non-deletable states)
+	SkippedActive  int // versions selected for deletion but skipped because they became the active controller version mid-loop (per-delete TOCTOU guard)
+	Kept           int // versions not targeted for deletion (newest N + active + non-deletable states); versions skipped as newly-active are reported in SkippedActive
 	RemainingCount int // versions reported by the final listing (excluding DELETED)
 	Warnings       []string
 }
@@ -188,8 +192,10 @@ func ImageNameForStage(stage string) string {
 
 // Prune resolves imageName, selects the deletable versions (oldest beyond the
 // newest keepN live versions, never the active controller version, never
-// unsettled states), deletes them serially with settle-waits, then confirms
-// the image is back under the version cap.
+// unsettled states), deletes them serially with settle-waits while re-checking
+// the active-version pin before each delete (a version that becomes active
+// mid-loop is skipped, never deleted), then confirms the image is back under
+// the version cap.
 //
 // Fail-closed: if the image cannot be brought under the cap, the cap cannot be
 // verified (list failures), or the image is marked required but cannot be
@@ -219,7 +225,7 @@ func (p *Pruner) Prune(ctx context.Context, imageName string) (Result, error) {
 	// Re-resolve the image so the active-version pin is as fresh as possible
 	// before anything outside the newest N is deleted: the controller may have
 	// advanced LatestActiveImageVersion between the initial resolve and now.
-	activeVersion, warns, err := p.refreshActiveVersion(ctx, imageName)
+	activeVersion, warns, err := p.refreshActiveVersion(ctx, imageName, image.LatestActiveImageVersion)
 	if err != nil {
 		return res, err
 	}
@@ -233,9 +239,10 @@ func (p *Pruner) Prune(ctx context.Context, imageName string) (Result, error) {
 	res.TargetDeletes = len(deletable)
 	res.Kept = res.Listed - res.TargetDeletes
 
-	deleted, failed, warnings, err := p.deleteAll(ctx, image.ARN, deletable)
+	deleted, failed, skippedActive, warnings, err := p.deleteAll(ctx, imageName, image.ARN, deletable)
 	res.Deleted = deleted
 	res.DeleteFailed = failed
+	res.SkippedActive = skippedActive
 	res.Warnings = append(res.Warnings, warnings...)
 	if err != nil {
 		return res, err
@@ -294,28 +301,62 @@ func (p *Pruner) resolveRequiredOrNoop(ctx context.Context, imageName string) (I
 // refreshActiveVersion re-resolves the image for a fresh active-version pin
 // before anything outside the newest N is deleted. A re-resolve failure is
 // fail-closed (we must not delete without a fresh pin). An empty active
-// version is warned about — with no pin, only versions outside the newest N
-// are at risk.
-func (p *Pruner) refreshActiveVersion(ctx context.Context, imageName string) (string, []string, error) {
+// version is warned about: if the initial resolve supplied a pin, that pin is
+// retained (stale but still protective — the selection keep set still shields
+// it) and the warning says so; if there was never a pin, only versions outside
+// the newest N are at risk.
+func (p *Pruner) refreshActiveVersion(ctx context.Context, imageName, previous string) (string, []string, error) {
 	current, err := p.client.ResolveImage(ctx, imageName)
 	if err != nil {
 		return "", nil, fmt.Errorf("microvmversions: re-resolve image %q before pruning: %w", imageName, err)
 	}
 	if current.LatestActiveImageVersion == "" {
+		if previous != "" {
+			return "", []string{fmt.Sprintf(
+				"image %q resolved but LatestActiveImageVersion is empty; retaining the previously resolved pin %q (stale but still protective — only versions outside the newest %d may be deleted)",
+				imageName, previous, p.keepN)}, nil
+		}
 		return "", []string{fmt.Sprintf(
-			"image %q resolved but LatestActiveImageVersion is empty; no active-version pin (only versions outside the newest %d may be deleted)",
+			"image %q resolved but LatestActiveImageVersion is empty; no active-version pin available (only versions outside the newest %d may be deleted)",
 			imageName, p.keepN)}, nil
 	}
 	return current.LatestActiveImageVersion, nil, nil
 }
 
 // deleteAll deletes the selected versions serially with settle-waits so the
-// image's UPDATING state machine does not race the next delete. Failures are
-// fail-open (warnings): the image may still have headroom, and the deploy's
-// only true precondition is a version count under the cap. A settle-wait
-// failure is the only hard error (we cannot confirm serialization).
-func (p *Pruner) deleteAll(ctx context.Context, imageARN string, deletable []Version) (deleted, failed int, warnings []string, err error) {
-	for i, v := range deletable {
+// image's UPDATING state machine does not race the next delete. Before each
+// delete the image is re-resolved (TOCTOU guard): a target that has become the
+// active controller version since selection — a second theory-app-up on the
+// same stage, or a rollback publishing an old version — is skipped loudly,
+// never deleted. A re-resolve failure is the only hard error: we must not
+// delete without a fresh active pin. Delete failures are fail-open (warnings):
+// the image may still have headroom, and the deploy's only true precondition
+// is a version count under the cap. A settle-wait failure is also a hard error
+// (we cannot confirm serialization).
+func (p *Pruner) deleteAll(ctx context.Context, imageName, imageARN string, deletable []Version) (deleted, failed, skippedActive int, warnings []string, err error) {
+	firstDelete := true
+	for _, v := range deletable {
+		active, err := p.currentActiveVersion(ctx, imageName)
+		if err != nil {
+			return deleted, failed, skippedActive, warnings, fmt.Errorf(
+				"microvmversions: before deleting version %s: %w", v.ImageVersion, err)
+		}
+		if active == v.ImageVersion {
+			skippedActive++
+			warnings = append(warnings, fmt.Sprintf(
+				"image version %s became the active controller version during pruning; skipped (the active version is never deleted)",
+				v.ImageVersion))
+			continue
+		}
+		// Settle-wait before each delete except the first so consecutive deletes
+		// stay >= settleAfterDelete apart even when a skipped target sits between
+		// them (the skip itself needs no settle — no delete happened).
+		if !firstDelete {
+			if sleepErr := p.sleep(ctx, p.settleAfterDelete); sleepErr != nil {
+				return deleted, failed, skippedActive, warnings, fmt.Errorf("microvmversions: settle wait: %w", sleepErr)
+			}
+		}
+		firstDelete = false
 		if delErr := p.deleteWithRetry(ctx, imageARN, v.ImageVersion); delErr != nil {
 			failed++
 			warnings = append(warnings, fmt.Sprintf(
@@ -324,15 +365,20 @@ func (p *Pruner) deleteAll(ctx context.Context, imageARN string, deletable []Ver
 		} else {
 			deleted++
 		}
-		// Settle-wait between serialized deletes so the image's UPDATING state
-		// machine does not race the next delete (skip after the last).
-		if i < len(deletable)-1 {
-			if sleepErr := p.sleep(ctx, p.settleAfterDelete); sleepErr != nil {
-				return deleted, failed, warnings, fmt.Errorf("microvmversions: settle wait: %w", sleepErr)
-			}
-		}
 	}
-	return deleted, failed, warnings, nil
+	return deleted, failed, skippedActive, warnings, nil
+}
+
+// currentActiveVersion re-resolves the image for the freshest active-version
+// pin. A resolution failure is fail-closed: the caller must not delete without
+// a fresh pin. An empty pin means the check cannot detect a mid-loop
+// activation (the newest-N selection bound remains the only protection).
+func (p *Pruner) currentActiveVersion(ctx context.Context, imageName string) (string, error) {
+	current, err := p.client.ResolveImage(ctx, imageName)
+	if err != nil {
+		return "", fmt.Errorf("microvmversions: re-resolve image %q: %w", imageName, err)
+	}
+	return current.LatestActiveImageVersion, nil
 }
 
 // selectDeletable returns the versions eligible for deletion, oldest first.
