@@ -394,13 +394,7 @@ func TestPruneSkipsVersionThatBecomesActiveMidDeleteLoop(t *testing.T) {
 	if res.Deleted != 3 || res.TargetDeletes != 4 {
 		t.Fatalf("deleted=%d target=%d, want 3/4", res.Deleted, res.TargetDeletes)
 	}
-	warned := false
-	for _, w := range res.Warnings {
-		if strings.Contains(w, "became the active controller version during pruning") {
-			warned = true
-		}
-	}
-	if !warned {
+	if !hasWarningContaining(res.Warnings, "became the active controller version during pruning") {
 		t.Fatalf("expected a loud skip warning, got %v", res.Warnings)
 	}
 	if res.RemainingCount != 7 { // v3 (now active) + v5..v10 (kept)
@@ -420,14 +414,7 @@ func TestPruneWarnsOnEmptyActiveVersion(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Prune returned error: %v", err)
 		}
-		warned := false
-		for _, w := range res.Warnings {
-			if strings.Contains(w, "LatestActiveImageVersion is empty") &&
-				strings.Contains(w, "no active-version pin available") {
-				warned = true
-			}
-		}
-		if !warned {
+		if !hasWarningContaining(res.Warnings, "LatestActiveImageVersion is empty", "no active-version pin available") {
 			t.Fatalf("expected empty-active warning, got %v", res.Warnings)
 		}
 	})
@@ -444,14 +431,7 @@ func TestPruneWarnsOnEmptyActiveVersion(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Prune returned error: %v", err)
 		}
-		warned := false
-		for _, w := range res.Warnings {
-			if strings.Contains(w, "LatestActiveImageVersion is empty") &&
-				strings.Contains(w, `retaining the previously resolved pin "v2"`) {
-				warned = true
-			}
-		}
-		if !warned {
+		if !hasWarningContaining(res.Warnings, "LatestActiveImageVersion is empty", `retaining the previously resolved pin "v2"`) {
 			t.Fatalf("expected retained-pin warning, got %v", res.Warnings)
 		}
 		if res.ActiveVersion != "v2" {
@@ -466,6 +446,23 @@ func TestPruneWarnsOnEmptyActiveVersion(t *testing.T) {
 			t.Fatalf("remaining = %d, want 6", res.RemainingCount)
 		}
 	})
+}
+
+// hasWarningContaining reports whether any warning contains every substring.
+func hasWarningContaining(warnings []string, substrs ...string) bool {
+	for _, w := range warnings {
+		ok := true
+		for _, s := range substrs {
+			if !strings.Contains(w, s) {
+				ok = false
+				break
+			}
+		}
+		if ok {
+			return true
+		}
+	}
+	return false
 }
 
 func TestPruneSettlesBeforeConfirmationReList(t *testing.T) {
