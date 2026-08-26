@@ -307,9 +307,19 @@ func (s *Server) listSoulAgentMintConversationSummaries(ctx context.Context, age
 	return summaries, nil
 }
 
+// listSoulAgentMintConversationsWithoutPrivateDecode returns the agent's mint
+// conversations without decoding private transcript fields.
+//
+// The read is bounded end-to-end: the query applies Limit(limit) so DynamoDB
+// evaluates at most limit items, and the response is defensively capped at the
+// same bound. Within the returned page, items are sorted by created_at
+// descending (existing contract; SK ordering is used only to select the page).
 func (s *Server) listSoulAgentMintConversationsWithoutPrivateDecode(ctx context.Context, agentIDHex string, limit int) ([]*models.SoulAgentMintConversation, *apptheory.AppTheoryError) {
 	if s == nil || s.store == nil || s.store.DB == nil {
 		return nil, soulMintInstanceReadError(soulMintInstanceReadCodeInternal, "internal error", http.StatusInternalServerError, nil)
+	}
+	if limit <= 0 {
+		limit = soulMintInstanceReadListDefaultLimit
 	}
 
 	var items []*models.SoulAgentMintConversation
@@ -317,6 +327,8 @@ func (s *Server) listSoulAgentMintConversationsWithoutPrivateDecode(ctx context.
 		Model(&models.SoulAgentMintConversation{}).
 		Where("PK", "=", fmt.Sprintf("SOUL#AGENT#%s", agentIDHex)).
 		Where("SK", "BEGINS_WITH", "MINT_CONVERSATION#").
+		OrderBy("SK", "DESC").
+		Limit(limit).
 		All(&items); err != nil && !theoryErrors.IsNotFound(err) {
 		return nil, soulMintInstanceReadError(soulMintInstanceReadCodeInternal, "failed to list mint conversations", http.StatusInternalServerError, nil)
 	}
@@ -333,7 +345,8 @@ func (s *Server) listSoulAgentMintConversationsWithoutPrivateDecode(ctx context.
 		return left.CreatedAt.After(right.CreatedAt)
 	})
 
-	if limit > 0 && len(items) > limit {
+	// Defensive response bound; the query itself is already limited.
+	if len(items) > limit {
 		items = items[:limit]
 	}
 	return items, nil

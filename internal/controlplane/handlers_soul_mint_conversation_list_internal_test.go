@@ -23,18 +23,25 @@ import (
 // test files in this package.
 const constTestListRegPrefix = "list-reg"
 
-// mockMethodAll is the testify mock method name for DynamoDB All(). Centralized
+// filterMockAllCalls is testify mock method name for DynamoDB All(). Centralized
 // to avoid goconst duplicate-string findings across the filter helpers below.
 const mockMethodAll = "All"
 
-func filterMockAllCalls(q *ttmocks.MockQuery) {
+// filterMockQueryCalls removes previously registered expectations for the given
+// method so a test can replace the standard Maybe stub (for example to capture
+// the exact limit argument passed to the query builder).
+func filterMockQueryCalls(q *ttmocks.MockQuery, method string) {
 	var filtered []*mock.Call
 	for _, call := range q.ExpectedCalls {
-		if call.Method != mockMethodAll {
+		if call.Method != method {
 			filtered = append(filtered, call)
 		}
 	}
 	q.ExpectedCalls = filtered
+}
+
+func filterMockAllCalls(q *ttmocks.MockQuery) {
+	filterMockQueryCalls(q, mockMethodAll)
 }
 
 func TestSoulInstanceListMintConversationSummaries_ReturnsConversationsForAgent(t *testing.T) {

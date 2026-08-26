@@ -2,9 +2,11 @@ package controlplane
 
 import (
 	"encoding/json"
+	"net/http"
 	"testing"
 
 	apptheory "github.com/theory-cloud/apptheory/v4/runtime"
+	"github.com/theory-cloud/tabletheory/v3/pkg/core"
 	theoryErrors "github.com/theory-cloud/tabletheory/v3/pkg/errors"
 	ttmocks "github.com/theory-cloud/tabletheory/v3/pkg/mocks"
 
@@ -67,14 +69,111 @@ func TestHandleCreateInstance_AndListInstances(t *testing.T) {
 		t.Fatalf("expected 201, got %d", resp.Status)
 	}
 
-	tdb.qInst.On("Scan", mock.AnythingOfType("*[]*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
-		dest := testutil.RequireMockArg[*[]*models.Instance](t, args, 0)
-		*dest = []*models.Instance{{Slug: "demo"}}
-	}).Once()
+	tdb.qInst.On("AllPaginated", mock.AnythingOfType("*[]*models.Instance")).
+		Return(&core.PaginatedResult{}, nil).
+		Run(func(args mock.Arguments) {
+			dest := testutil.RequireMockArg[*[]*models.Instance](t, args, 0)
+			*dest = []*models.Instance{{Slug: "demo"}}
+		}).Once()
 
 	resp, err = s.handleListInstances(adminCtx())
 	if err != nil || resp.Status != 200 {
 		t.Fatalf("list instances: resp=%#v err=%v", resp, err)
+	}
+}
+
+func TestHandleListInstances_BoundedByLimitRespectsPageSize(t *testing.T) {
+	t.Parallel()
+
+	tdb := newAdminInstanceTestDB()
+	s := &Server{cfg: config.Config{TipEnabled: false}, store: store.New(tdb.db)}
+
+	// Scan is intentionally NOT stubbed: if the handler regresses to the
+	// previous unbounded full-table .Scan(), testify fails the test with an
+	// unexpected method call (scan-forbidding pattern).
+	appliedLimit := 0
+	filterMockQueryCalls(tdb.qInst, "Limit")
+	tdb.qInst.On("Limit", mock.Anything).Return(tdb.qInst).Run(func(args mock.Arguments) {
+		appliedLimit = args.Get(0).(int)
+	}).Maybe()
+
+	tdb.qInst.On("AllPaginated", mock.AnythingOfType("*[]*models.Instance")).
+		Return(&core.PaginatedResult{HasMore: true, NextCursor: "cursor-2"}, nil).
+		Run(func(args mock.Arguments) {
+			dest := testutil.RequireMockArg[*[]*models.Instance](t, args, 0)
+			*dest = []*models.Instance{{Slug: "a"}, {Slug: "b"}, {Slug: "c"}, {Slug: "d"}, {Slug: "e"}}
+		}).Once()
+
+	ctx := adminCtx()
+	ctx.Request.Query = map[string][]string{"limit": {"2"}}
+
+	resp, err := s.handleListInstances(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Status != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.Status)
+	}
+	if appliedLimit != 2 {
+		t.Fatalf("expected query Limit(2), got Limit(%d)", appliedLimit)
+	}
+
+	var out listInstancesResponse
+	if err := json.Unmarshal(resp.Body, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(out.Instances) != 2 {
+		t.Fatalf("expected bounded page of 2 instances, got %d", len(out.Instances))
+	}
+	if out.Count != 2 {
+		t.Fatalf("expected count 2, got %d", out.Count)
+	}
+	if out.Limit != 2 {
+		t.Fatalf("expected echoed limit 2, got %d", out.Limit)
+	}
+	if out.NextCursor != "cursor-2" {
+		t.Fatalf("expected next_cursor cursor-2, got %q", out.NextCursor)
+	}
+}
+
+func TestHandleListInstances_AppliesCursorAndDefaultLimit(t *testing.T) {
+	t.Parallel()
+
+	tdb := newAdminInstanceTestDB()
+	s := &Server{cfg: config.Config{TipEnabled: false}, store: store.New(tdb.db)}
+
+	appliedLimit := 0
+	filterMockQueryCalls(tdb.qInst, "Limit")
+	tdb.qInst.On("Limit", mock.Anything).Return(tdb.qInst).Run(func(args mock.Arguments) {
+		appliedLimit = args.Get(0).(int)
+	}).Maybe()
+	appliedCursor := ""
+	tdb.qInst.On("Cursor", mock.Anything).Return(tdb.qInst).Run(func(args mock.Arguments) {
+		appliedCursor = args.Get(0).(string)
+	}).Maybe()
+
+	tdb.qInst.On("AllPaginated", mock.AnythingOfType("*[]*models.Instance")).
+		Return(&core.PaginatedResult{HasMore: true, NextCursor: "cursor-next"}, nil).
+		Run(func(args mock.Arguments) {
+			dest := testutil.RequireMockArg[*[]*models.Instance](t, args, 0)
+			*dest = []*models.Instance{{Slug: "a"}, {Slug: "b"}}
+		}).Once()
+
+	ctx := adminCtx()
+	ctx.Request.Query = map[string][]string{"cursor": {"tok-1"}}
+
+	resp, err := s.handleListInstances(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Status != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.Status)
+	}
+	if appliedLimit != instancesListDefaultLimit {
+		t.Fatalf("expected default query Limit(%d), got Limit(%d)", instancesListDefaultLimit, appliedLimit)
+	}
+	if appliedCursor != "tok-1" {
+		t.Fatalf("expected cursor tok-1 passed through, got %q", appliedCursor)
 	}
 }
 

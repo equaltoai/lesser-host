@@ -85,6 +85,115 @@ func TestHandleSoulAgentListMintConversations_SortsNewestFirst(t *testing.T) {
 	}
 }
 
+func TestHandleSoulAgentListMintConversations_AppliesLimitToQuery(t *testing.T) {
+	t.Parallel()
+
+	tdb := newMintConversationTestDB()
+	s := newMintConversationServer(tdb)
+	identity := testMintConversationIdentity()
+
+	stubMintConversationIdentity(t, tdb, identity, nil)
+	stubMintConversationDomainAccess(t, tdb, identity.Domain)
+
+	// Capture the limit actually applied to the query builder. The default
+	// Maybe Limit stub is filtered out so this capture stub is the one
+	// testify matches.
+	appliedLimit := 0
+	filterMockQueryCalls(tdb.qConv, "Limit")
+	tdb.qConv.On("Limit", mock.Anything).Return(tdb.qConv).Run(func(args mock.Arguments) {
+		appliedLimit = args.Get(0).(int)
+	}).Maybe()
+
+	base := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	seeded := []*models.SoulAgentMintConversation{
+		{AgentID: identity.AgentID, ConversationID: "conv-0", Status: models.SoulMintConversationStatusInProgress, CreatedAt: base},
+		{AgentID: identity.AgentID, ConversationID: "conv-1", Status: models.SoulMintConversationStatusInProgress, CreatedAt: base.Add(time.Minute)},
+		{AgentID: identity.AgentID, ConversationID: "conv-2", Status: models.SoulMintConversationStatusInProgress, CreatedAt: base.Add(2 * time.Minute)},
+		{AgentID: identity.AgentID, ConversationID: "conv-3", Status: models.SoulMintConversationStatusInProgress, CreatedAt: base.Add(3 * time.Minute)},
+		{AgentID: identity.AgentID, ConversationID: "conv-4", Status: models.SoulMintConversationStatusInProgress, CreatedAt: base.Add(4 * time.Minute)},
+	}
+	tdb.qConv.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.SoulAgentMintConversation](t, args, 0)
+		*dest = seeded
+	}).Once()
+
+	ctx := adminCtx()
+	ctx.AuthIdentity = testUsernameAlice
+	ctx.Params = map[string]string{"agentId": identity.AgentID}
+	ctx.Request.Query = map[string][]string{"limit": {"2"}}
+
+	resp, err := s.handleSoulAgentListMintConversations(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Status != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.Status)
+	}
+	if appliedLimit != 2 {
+		t.Fatalf("expected query Limit(2), got Limit(%d)", appliedLimit)
+	}
+
+	var out soulAgentMintConversationsResponse
+	if err := json.Unmarshal(resp.Body, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.Count != 2 || len(out.Conversations) != 2 {
+		t.Fatalf("expected bounded page of 2 conversations, got %#v", out)
+	}
+}
+
+func TestHandleSoulInstanceListMintConversations_AppliesLimitToQuery(t *testing.T) {
+	t.Parallel()
+
+	tdb := newMintConversationTestDB()
+	s := newMintConversationServer(tdb)
+	identity := testMintConversationIdentity()
+
+	expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, "inst1")
+	stubMintConversationIdentity(t, tdb, identity, nil)
+	stubMintConversationInstanceDomain(t, tdb, identity.Domain, "inst1")
+
+	appliedLimit := 0
+	filterMockQueryCalls(tdb.qConv, "Limit")
+	tdb.qConv.On("Limit", mock.Anything).Return(tdb.qConv).Run(func(args mock.Arguments) {
+		appliedLimit = args.Get(0).(int)
+	}).Maybe()
+
+	base := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	seeded := []*models.SoulAgentMintConversation{
+		{AgentID: identity.AgentID, ConversationID: "conv-0", Status: models.SoulMintConversationStatusInProgress, CreatedAt: base},
+		{AgentID: identity.AgentID, ConversationID: "conv-1", Status: models.SoulMintConversationStatusInProgress, CreatedAt: base.Add(time.Minute)},
+		{AgentID: identity.AgentID, ConversationID: "conv-2", Status: models.SoulMintConversationStatusInProgress, CreatedAt: base.Add(2 * time.Minute)},
+		{AgentID: identity.AgentID, ConversationID: "conv-3", Status: models.SoulMintConversationStatusInProgress, CreatedAt: base.Add(3 * time.Minute)},
+		{AgentID: identity.AgentID, ConversationID: "conv-4", Status: models.SoulMintConversationStatusInProgress, CreatedAt: base.Add(4 * time.Minute)},
+	}
+	tdb.qConv.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.SoulAgentMintConversation](t, args, 0)
+		*dest = seeded
+	}).Once()
+
+	ctx := newMintConversationInstanceReadContext(identity.AgentID, "", map[string][]string{"limit": {"2"}})
+
+	resp, err := s.handleSoulInstanceListMintConversations(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Status != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.Status)
+	}
+	if appliedLimit != 2 {
+		t.Fatalf("expected query Limit(2), got Limit(%d)", appliedLimit)
+	}
+
+	var out soulInstanceMintConversationsResponse
+	if err := json.Unmarshal(resp.Body, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.Count != 2 || len(out.Conversations) != 2 {
+		t.Fatalf("expected bounded page of 2 conversations, got %#v", out)
+	}
+}
+
 func TestHandleSoulAgentGetMintConversation_AllowsPendingAgent(t *testing.T) {
 	t.Parallel()
 
