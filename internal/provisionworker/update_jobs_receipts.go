@@ -50,10 +50,21 @@ func updateMCPReceiptIngestInstanceUpdate(job *models.UpdateJob, mcpWiredAt time
 	}
 }
 
-func updateSoulBindingIntegrationInstanceUpdate(job *models.UpdateJob) func(core.UpdateBuilder) error {
+// updateDeployReceiptInstanceUpdate stamps the instance record with the
+// deployed lesser version at receipt ingest time, before verification runs.
+// The deploy runner's receipt is the proof the version was applied; waiting
+// for full verification to stamp it leaves the record stale at the previous
+// version whenever a verification false-negative (transient post-deploy miss)
+// fails the job (issue #1060). The version stamp matches updateVerifyInstanceUpdate's
+// guard: full lesser updates only, never body-only or MCP-only jobs.
+func updateDeployReceiptInstanceUpdate(job *models.UpdateJob) func(core.UpdateBuilder) error {
 	return func(ub core.UpdateBuilder) error {
-		if job != nil {
-			setSoulBindingIntegrationInstanceARN(ub, job.SoulBindingIntegrationSecretARN)
+		if job == nil {
+			return nil
+		}
+		setSoulBindingIntegrationInstanceARN(ub, job.SoulBindingIntegrationSecretARN)
+		if !job.BodyOnly && !job.MCPOnly && strings.TrimSpace(job.LesserVersion) != "" {
+			ub.Set("LesserVersion", strings.TrimSpace(job.LesserVersion))
 		}
 		return nil
 	}

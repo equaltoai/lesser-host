@@ -100,6 +100,11 @@ type Server struct {
 
 	smFactory  secretsManagerClientFactory
 	iamFactory iamClientFactory
+
+	// verifyFetchRetryPolicy overrides the bounded retry policy for the
+	// managed-update verification fetch (nil = package default). Test seam
+	// only: production always uses the default 60-90s post-deploy window.
+	verifyFetchRetryPolicy *verifyFetchRetryPolicy
 }
 
 // NewServer constructs a Server with AWS service clients and a store.
