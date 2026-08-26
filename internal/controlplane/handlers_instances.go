@@ -125,8 +125,10 @@ type instanceResponse struct {
 }
 
 type listInstancesResponse struct {
-	Instances []instanceResponse `json:"instances"`
-	Count     int                `json:"count"`
+	Instances  []instanceResponse `json:"instances"`
+	Count      int                `json:"count"`
+	Limit      int                `json:"limit,omitempty"`
+	NextCursor string             `json:"next_cursor,omitempty"`
 }
 
 type createInstanceKeyResponse struct {
@@ -441,18 +443,41 @@ func (s *Server) handleCreateInstance(ctx *apptheory.Context) (*apptheory.Respon
 	return apptheory.JSON(http.StatusCreated, s.instanceResponseWithDerivedFields(inst))
 }
 
+const (
+	// instancesListDefaultLimit is the default page size for GET /api/v1/instances.
+	instancesListDefaultLimit = 50
+	// instancesListMaxLimit caps the page size for GET /api/v1/instances.
+	instancesListMaxLimit = 200
+)
+
 func (s *Server) handleListInstances(ctx *apptheory.Context) (*apptheory.Response, error) {
 	if err := requireAdmin(ctx); err != nil {
 		return nil, err
 	}
 
+	// Bounded paginated listing: each request reads at most limit items
+	// (DynamoDB Scan Limit) and resumes via the opaque cursor. There is no
+	// index that groups all instances, so the bounded paginated scan is the
+	// sanctioned replacement for the previous unbounded full-table Scan.
+	limit := parseLimit(queryFirst(ctx, "limit"), instancesListDefaultLimit, 1, instancesListMaxLimit)
+	cursor := strings.TrimSpace(httpx.FirstQueryValue(ctx.Request.Query, "cursor"))
+
 	var items []*models.Instance
-	err := s.store.DB.WithContext(ctx.Context()).
+	qb := s.store.DB.WithContext(ctx.Context()).
 		Model(&models.Instance{}).
 		Filter("SK", "=", models.SKMetadata).
-		Scan(&items)
+		Limit(limit)
+	if cursor != "" {
+		qb = qb.Cursor(cursor)
+	}
+	paged, err := qb.AllPaginated(&items)
 	if err != nil {
 		return nil, newAppTheoryError("app.internal", "failed to list instances")
+	}
+
+	// Defensive response bound; the query itself is already limited.
+	if limit > 0 && len(items) > limit {
+		items = items[:limit]
 	}
 
 	out := make([]instanceResponse, 0, len(items))
@@ -460,9 +485,16 @@ func (s *Server) handleListInstances(ctx *apptheory.Context) (*apptheory.Respons
 		out = append(out, s.instanceResponseWithDerivedFields(inst))
 	}
 
+	nextCursor := ""
+	if paged != nil {
+		nextCursor = strings.TrimSpace(paged.NextCursor)
+	}
+
 	return apptheory.JSON(http.StatusOK, listInstancesResponse{
-		Instances: out,
-		Count:     len(out),
+		Instances:  out,
+		Count:      len(out),
+		Limit:      limit,
+		NextCursor: nextCursor,
 	})
 }
 

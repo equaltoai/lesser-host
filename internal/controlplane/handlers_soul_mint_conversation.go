@@ -418,9 +418,28 @@ func requireMintConversationID(ctx *apptheory.Context) (string, *apptheory.AppTh
 	return conversationID, nil
 }
 
+// soulMintConversationListDefaultLimit is the default page size for mint
+// conversation listings. The operator list route clamps caller-provided limits
+// to [1, soulMintConversationListMaxLimit]; this constant backs the defensive
+// clamp below so a non-positive limit can never degrade into an unbounded read.
+const soulMintConversationListDefaultLimit = 20
+
+// soulMintConversationListMaxLimit caps the page size for the operator mint
+// conversation list route (GET /api/v1/soul/agents/{agentId}/mint-conversations).
+const soulMintConversationListMaxLimit = 100
+
+// listSoulAgentMintConversations returns the agent's mint conversations.
+//
+// The read is bounded end-to-end: the query applies Limit(limit) so DynamoDB
+// evaluates at most limit items, and the response is defensively capped at the
+// same bound. Within the returned page, items are sorted by created_at
+// descending (existing contract; SK ordering is used only to select the page).
 func (s *Server) listSoulAgentMintConversations(ctx context.Context, agentIDHex string, limit int) ([]*models.SoulAgentMintConversation, *apptheory.AppTheoryError) {
 	if s == nil || s.store == nil || s.store.DB == nil {
 		return nil, newAppTheoryError("app.internal", "internal error")
+	}
+	if limit <= 0 {
+		limit = soulMintConversationListDefaultLimit
 	}
 
 	var items []*models.SoulAgentMintConversation
@@ -428,6 +447,8 @@ func (s *Server) listSoulAgentMintConversations(ctx context.Context, agentIDHex 
 		Model(&models.SoulAgentMintConversation{}).
 		Where("PK", "=", fmt.Sprintf("SOUL#AGENT#%s", agentIDHex)).
 		Where("SK", "BEGINS_WITH", "MINT_CONVERSATION#").
+		OrderBy("SK", "DESC").
+		Limit(limit).
 		All(&items); err != nil && !theoryErrors.IsNotFound(err) {
 		return nil, newAppTheoryError("app.internal", "failed to list mint conversations")
 	}
@@ -444,7 +465,8 @@ func (s *Server) listSoulAgentMintConversations(ctx context.Context, agentIDHex 
 		return left.CreatedAt.After(right.CreatedAt)
 	})
 
-	if limit > 0 && len(items) > limit {
+	// Defensive response bound; the query itself is already limited.
+	if len(items) > limit {
 		items = items[:limit]
 	}
 	for _, item := range items {
@@ -762,7 +784,7 @@ func (s *Server) handleSoulAgentListMintConversations(ctx *apptheory.Context) (*
 		return nil, appErr
 	}
 
-	items, appErr := s.listSoulAgentMintConversations(ctx.Context(), agentCtx.agentIDHex, parseLimit(queryFirst(ctx, "limit"), 20, 1, 100))
+	items, appErr := s.listSoulAgentMintConversations(ctx.Context(), agentCtx.agentIDHex, parseLimit(queryFirst(ctx, "limit"), soulMintConversationListDefaultLimit, 1, soulMintConversationListMaxLimit))
 	if appErr != nil {
 		return nil, appErr
 	}
