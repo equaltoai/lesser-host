@@ -20,17 +20,71 @@ var (
 	ErrConflict = errors.New("microvm image version delete conflict")
 )
 
+// microvmListPageSize is the page size sent for every paged list call to the
+// lambdamicrovms service. The service caps maxResults at 50 and rejects larger
+// values with a ValidationException (issue #1058: ListMicrovmImages with
+// maxResults=100 aborted a lab deploy fail-closed; factory manual verification
+// hit the same bound on ListMicrovmImageVersions — 100 rejected, <=50
+// accepted). The SDK performs no client-side bound check (ListMicrovmImages
+// has no input-validation middleware at all; ListMicrovmImageVersions
+// validates only that ImageIdentifier is present), so the cap is enforced only
+// on the wire. We send exactly 50: the cap is a fixed service constant — the
+// image also hard-caps at 50 versions (issue #1052) and the cap is not an
+// adjustable quota — so there is no drift risk, and using the full page size
+// minimizes round trips during pagination while staying wire-valid. Every list
+// call in this package emits microvmListPageSize.
+const microvmListPageSize = 50
+
+// sdkSurface is the subset of *lambdamicrovms.Client that SDKClient calls.
+// Declared as an interface so tests can drive the exact construction path the
+// deploy uses — NewSDKClient over a stub that enforces the service's
+// validation bounds — without any AWS calls. *lambdamicrovms.Client satisfies
+// it structurally.
+type sdkSurface interface {
+	lambdamicrovms.ListMicrovmImagesAPIClient
+	lambdamicrovms.ListMicrovmImageVersionsAPIClient
+	DeleteMicrovmImageVersion(ctx context.Context, params *lambdamicrovms.DeleteMicrovmImageVersionInput, optFns ...func(*lambdamicrovms.Options)) (*lambdamicrovms.DeleteMicrovmImageVersionOutput, error)
+}
+
 // SDKClient adapts the aws-sdk-go-v2 lambdamicrovms service to the Client
 // interface. The SDK ships the lambda-microvms service model (v1.0.0), so no
 // hand-rolled signed client is needed; the aws CLI lacks the namespace but the
 // SDK's botocore-derived model exposes it.
 type SDKClient struct {
-	sdk *lambdamicrovms.Client
+	sdk sdkSurface
 }
 
 // NewSDKClient wraps a configured lambdamicrovms client.
-func NewSDKClient(sdk *lambdamicrovms.Client) *SDKClient {
+func NewSDKClient(sdk sdkSurface) *SDKClient {
 	return &SDKClient{sdk: sdk}
+}
+
+// validateListMaxResults enforces the lambdamicrovms service's documented
+// maxResults bound — a value above microvmListPageSize is rejected with a
+// ValidationException, the exact error shape the service returns on the wire
+// (issue #1058). The SDK does not validate this bound client-side, so the test
+// stub calls this shared helper to mirror the service contract and make any
+// future out-of-bound page size fail in CI. The real client never needs to
+// reject: every list call emits microvmListPageSize by construction.
+func validateListMaxResults(maxResults int32) error {
+	if maxResults > microvmListPageSize {
+		return serviceValidationError(fmt.Sprintf(
+			"1 validation error detected: Value '%d' at 'maxResults' failed to satisfy constraint: Member must have value less than or equal to %d",
+			maxResults, microvmListPageSize))
+	}
+	return nil
+}
+
+// serviceValidationError builds the error shape the lambdamicrovms service
+// returns for invalid request parameters: a client-fault ValidationException,
+// classifiable with errors.As on smithy.APIError exactly like a real service
+// response.
+func serviceValidationError(message string) error {
+	return &smithy.GenericAPIError{
+		Code:    "ValidationException",
+		Message: message,
+		Fault:   smithy.FaultClient,
+	}
 }
 
 // ResolveImage finds the image with the exact requested name and returns its
@@ -43,7 +97,7 @@ func (c *SDKClient) ResolveImage(ctx context.Context, name string) (Image, error
 	for {
 		out, err := c.sdk.ListMicrovmImages(ctx, &lambdamicrovms.ListMicrovmImagesInput{
 			NameFilter: aws.String(name),
-			MaxResults: aws.Int32(100),
+			MaxResults: aws.Int32(microvmListPageSize),
 			NextToken:  nextToken,
 		})
 		if err != nil {
@@ -79,14 +133,14 @@ func (c *SDKClient) ResolveImage(ctx context.Context, name string) (Image, error
 }
 
 // ListVersions lists every version of the image, paging through the service's
-// 50-item page size.
+// page size (microvmListPageSize — the service's maxResults cap, issue #1058).
 func (c *SDKClient) ListVersions(ctx context.Context, imageARN string) ([]Version, error) {
 	var versions []Version
 	var nextToken *string
 	for {
 		out, err := c.sdk.ListMicrovmImageVersions(ctx, &lambdamicrovms.ListMicrovmImageVersionsInput{
 			ImageIdentifier: aws.String(imageARN),
-			MaxResults:      aws.Int32(50),
+			MaxResults:      aws.Int32(microvmListPageSize),
 			NextToken:       nextToken,
 		})
 		if err != nil {
