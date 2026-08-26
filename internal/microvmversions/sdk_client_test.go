@@ -245,6 +245,14 @@ func TestStubRejectsOutOfBoundPageSize(t *testing.T) {
 		if !isValidationException(err) {
 			t.Fatalf("validateListMaxResults(%d) = %v, want a ValidationException", bad, err)
 		}
+		// Stub/service error fidelity: the rejection must be the modeled concrete
+		// type the real service deserializes into, so errors.As(*types.ValidationException)
+		// succeeds exactly as it does against a real wire response (attack
+		// remediation: the stub must not emit a generic API error).
+		var ve *types.ValidationException
+		if !errors.As(err, &ve) || ve.Message == nil {
+			t.Fatalf("validateListMaxResults(%d) = %v, want a *types.ValidationException carrying a message", bad, err)
+		}
 	}
 	if err := validateListMaxResults(microvmListPageSize); err != nil {
 		t.Fatalf("validateListMaxResults(%d) = %v, want nil (the cap itself is wire-valid)", microvmListPageSize, err)
@@ -261,6 +269,10 @@ func TestStubRejectsOutOfBoundPageSize(t *testing.T) {
 	}
 	if !isValidationException(err) {
 		t.Fatalf("stub rejection must be a ValidationException, got %v", err)
+	}
+	var ve *types.ValidationException
+	if !errors.As(err, &ve) {
+		t.Fatalf("stub rejection must be a *types.ValidationException (the wire-deserialized type), got %v", err)
 	}
 }
 
@@ -284,12 +296,17 @@ func TestStubRejectsEmptyRequiredMembers(t *testing.T) {
 	}
 }
 
-// isValidationException reports whether err is a smithy API error carrying the
-// service's ValidationException code.
+// isValidationException reports whether err is the service's ValidationException:
+// either a smithy API error carrying that code, or the modeled concrete type the
+// SDK deserializes on the wire.
 func isValidationException(err error) bool {
 	if err == nil {
 		return false
 	}
 	var apiErr smithy.APIError
-	return errors.As(err, &apiErr) && apiErr.ErrorCode() == validationExceptionCode
+	if errors.As(err, &apiErr) && apiErr.ErrorCode() == validationExceptionCode {
+		return true
+	}
+	var ve *types.ValidationException
+	return errors.As(err, &ve)
 }

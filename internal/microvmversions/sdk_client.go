@@ -76,15 +76,13 @@ func validateListMaxResults(maxResults int32) error {
 }
 
 // serviceValidationError builds the error shape the lambdamicrovms service
-// returns for invalid request parameters: a client-fault ValidationException,
-// classifiable with errors.As on smithy.APIError exactly like a real service
-// response.
+// returns for invalid request parameters: the modeled ValidationException the
+// SDK deserializes on the wire. Returning the concrete *types.ValidationException
+// keeps stub rejections indistinguishable from a real service response —
+// errors.As(*types.ValidationException) succeeds exactly as it does against the
+// wire, and the error still classifies via smithy.APIError (issue #1058).
 func serviceValidationError(message string) error {
-	return &smithy.GenericAPIError{
-		Code:    "ValidationException",
-		Message: message,
-		Fault:   smithy.FaultClient,
-	}
+	return &types.ValidationException{Message: aws.String(message)}
 }
 
 // ResolveImage finds the image with the exact requested name and returns its
