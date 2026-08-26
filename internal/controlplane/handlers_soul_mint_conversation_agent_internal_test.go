@@ -101,7 +101,7 @@ func TestHandleSoulAgentListMintConversations_AppliesLimitToQuery(t *testing.T) 
 	appliedLimit := 0
 	filterMockQueryCalls(tdb.qConv, "Limit")
 	tdb.qConv.On("Limit", mock.Anything).Return(tdb.qConv).Run(func(args mock.Arguments) {
-		appliedLimit = args.Get(0).(int)
+		appliedLimit = testutil.RequireMockArg[int](t, args, 0)
 	}).Maybe()
 
 	base := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
@@ -156,7 +156,7 @@ func TestHandleSoulInstanceListMintConversations_AppliesLimitToQuery(t *testing.
 	appliedLimit := 0
 	filterMockQueryCalls(tdb.qConv, "Limit")
 	tdb.qConv.On("Limit", mock.Anything).Return(tdb.qConv).Run(func(args mock.Arguments) {
-		appliedLimit = args.Get(0).(int)
+		appliedLimit = testutil.RequireMockArg[int](t, args, 0)
 	}).Maybe()
 
 	base := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)

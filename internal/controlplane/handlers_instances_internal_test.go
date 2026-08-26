@@ -94,7 +94,7 @@ func TestHandleListInstances_BoundedByLimitRespectsPageSize(t *testing.T) {
 	appliedLimit := 0
 	filterMockQueryCalls(tdb.qInst, "Limit")
 	tdb.qInst.On("Limit", mock.Anything).Return(tdb.qInst).Run(func(args mock.Arguments) {
-		appliedLimit = args.Get(0).(int)
+		appliedLimit = testutil.RequireMockArg[int](t, args, 0)
 	}).Maybe()
 
 	tdb.qInst.On("AllPaginated", mock.AnythingOfType("*[]*models.Instance")).
@@ -145,11 +145,11 @@ func TestHandleListInstances_AppliesCursorAndDefaultLimit(t *testing.T) {
 	appliedLimit := 0
 	filterMockQueryCalls(tdb.qInst, "Limit")
 	tdb.qInst.On("Limit", mock.Anything).Return(tdb.qInst).Run(func(args mock.Arguments) {
-		appliedLimit = args.Get(0).(int)
+		appliedLimit = testutil.RequireMockArg[int](t, args, 0)
 	}).Maybe()
 	appliedCursor := ""
 	tdb.qInst.On("Cursor", mock.Anything).Return(tdb.qInst).Run(func(args mock.Arguments) {
-		appliedCursor = args.Get(0).(string)
+		appliedCursor = testutil.RequireMockArg[string](t, args, 0)
 	}).Maybe()
 
 	tdb.qInst.On("AllPaginated", mock.AnythingOfType("*[]*models.Instance")).
