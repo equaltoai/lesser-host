@@ -200,8 +200,6 @@ func (s *Server) persistSoulAgentPolicyFields(ctx context.Context, identity *mod
 	}
 	update := &models.SoulAgentIdentity{
 		AgentID:                          identity.AgentID,
-		Status:                           strings.TrimSpace(identity.Status),
-		LifecycleStatus:                  strings.TrimSpace(identity.LifecycleStatus),
 		PolicyVersion:                    identity.PolicyVersion,
 		AnchorState:                      identity.AnchorState,
 		OperationalBinding:               identity.OperationalBinding,
@@ -228,8 +226,6 @@ func (s *Server) persistSoulAgentPolicyFields(ctx context.Context, identity *mod
 		"VoiceAllowed",
 		"PublicPaidCallerAccess",
 		"PolicyMigrationState",
-		"GSI3PK",
-		"GSI3SK",
 		"UpdatedAt",
 	); err != nil {
 		return newAppTheoryError("app.internal", "failed to persist soul policy")

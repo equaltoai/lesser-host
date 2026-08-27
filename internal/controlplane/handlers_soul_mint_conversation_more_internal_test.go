@@ -40,7 +40,6 @@ type mintConversationTestDB struct {
 	qInstance    *ttmocks.MockQuery
 	qKey         *ttmocks.MockQuery
 	qConv        *ttmocks.MockQuery
-	qMarker      *ttmocks.MockQuery
 	qHosted      *ttmocks.MockQuery
 	qMintIdem    *ttmocks.MockQuery
 	qBudget      *ttmocks.MockQuery
@@ -74,7 +73,6 @@ func newMintConversationTestDB() *mintConversationTestDB {
 		qInstance:    new(ttmocks.MockQuery),
 		qKey:         new(ttmocks.MockQuery),
 		qConv:        new(ttmocks.MockQuery),
-		qMarker:      new(ttmocks.MockQuery),
 		qHosted:      new(ttmocks.MockQuery),
 		qMintIdem:    new(ttmocks.MockQuery),
 		qBudget:      new(ttmocks.MockQuery),
@@ -103,7 +101,6 @@ func newMintConversationTestDB() *mintConversationTestDB {
 			tdb.convModels = append(tdb.convModels, &copy)
 		}
 	})
-	db.On("Model", mock.AnythingOfType("*models.SoulAgentMintConversationGSI4BackfillMarker")).Return(tdb.qMarker).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.HostedGenesisSession")).Return(tdb.qHosted).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulMintConversationIdempotency")).Return(tdb.qMintIdem).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.InstanceBudgetMonth")).Return(tdb.qBudget).Maybe()
@@ -129,7 +126,7 @@ func newMintConversationTestDB() *mintConversationTestDB {
 		}
 	})
 
-	for _, q := range []*ttmocks.MockQuery{tdb.qReg, tdb.qOp, tdb.qDomain, tdb.qInstance, tdb.qKey, tdb.qConv, tdb.qMarker, tdb.qHosted, tdb.qMintIdem, tdb.qBudget, tdb.qIdentity, tdb.qAudit, tdb.qWalletIdx, tdb.qPromotion, tdb.qLifecycle, tdb.qWalletAgent, tdb.qDomainAgent, tdb.qCapAgent, tdb.qUser, tdb.qChannel, tdb.qENS} {
+	for _, q := range []*ttmocks.MockQuery{tdb.qReg, tdb.qOp, tdb.qDomain, tdb.qInstance, tdb.qKey, tdb.qConv, tdb.qHosted, tdb.qMintIdem, tdb.qBudget, tdb.qIdentity, tdb.qAudit, tdb.qWalletIdx, tdb.qPromotion, tdb.qLifecycle, tdb.qWalletAgent, tdb.qDomainAgent, tdb.qCapAgent, tdb.qUser, tdb.qChannel, tdb.qENS} {
 		q.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(q).Maybe()
 		q.On("Index", mock.Anything).Return(q).Maybe()
 		q.On("OrderBy", mock.Anything, mock.Anything).Return(q).Maybe()
@@ -140,22 +137,11 @@ func newMintConversationTestDB() *mintConversationTestDB {
 		q.On("Create").Return(nil).Maybe()
 		q.On("CreateOrUpdate").Return(nil).Maybe()
 		q.On("Delete").Return(nil).Maybe()
-		// qConv is excluded from the Update catch-all (like All below): the
-		// persistence-helper tests register exact field-list Update expectations
-		// and rely on AssertExpectations to enforce them. testify matches the
-		// FIRST compatible expectation, so a catch-all registered here would
-		// shadow the exact Once() expectations registered later in the test body
-		// and they could never be consumed (silently unenforced).
-		if q != tdb.qConv {
-			q.On("Update", mock.Anything).Return(nil).Maybe()
-		}
+		q.On("Update", mock.Anything).Return(nil).Maybe()
 		if q != tdb.qConv {
 			q.On("All", mock.Anything).Return(nil).Maybe()
 		}
 	}
-	// The gsi4 backfill gate reads the completeness marker first; default to
-	// found so the enumeration tests exercise the index path.
-	tdb.qMarker.On("First", mock.AnythingOfType("*models.SoulAgentMintConversationGSI4BackfillMarker")).Return(nil).Maybe()
 	tdb.qPromotion.On("First", mock.AnythingOfType("*models.SoulAgentPromotion")).Return(theoryErrors.ErrItemNotFound).Maybe()
 	tdb.qWalletIdx.On("First", mock.AnythingOfType("*models.WalletIndex")).Return(theoryErrors.ErrItemNotFound).Maybe()
 	tdb.qWalletAgent.On("First", mock.AnythingOfType("*models.SoulWalletAgentIndex")).Return(theoryErrors.ErrItemNotFound).Maybe()
@@ -738,54 +724,35 @@ func testMintConversationEmitEvent(t *testing.T) {
 	}
 }
 
-func requireMintConversationUpdateModelGSI4(t *testing.T, model *models.SoulAgentMintConversation, label string) {
-	t.Helper()
-	if model == nil {
-		t.Fatalf("%s update model is nil", label)
-	}
-	if model.GSI4PK != "SOUL#AGENT#"+model.AgentID || model.GSI4SK == "" {
-		t.Fatalf("%s update model missing gsi4 keys: %#v", label, model)
-	}
-}
-
 func TestMintConversationPersistenceHelpers_UpdateStoredFields(t *testing.T) {
 	t.Parallel()
 
 	tdb := newMintConversationTestDB()
 	s := newMintConversationServer(tdb)
 
-	createdAt := time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC)
-	tdb.qConv.On("Update", []string{"Messages", "GSI4PK", "GSI4SK"}).Return(nil).Once()
-	tdb.qConv.On("Update", []string{"Messages", "Usage", "GSI4PK", "GSI4SK"}).Return(nil).Once()
-	tdb.qConv.On("Update", []string{"Messages", "ProducedDeclarations", "Status", "CompletedAt", "GSI4PK", "GSI4SK"}).Return(nil).Once()
+	tdb.qConv.On("Update", []string{"Messages"}).Return(nil).Once()
+	tdb.qConv.On("Update", []string{"Messages", "Usage"}).Return(nil).Once()
+	tdb.qConv.On("Update", []string{"Messages", "ProducedDeclarations", "Status", "CompletedAt"}).Return(nil).Once()
 
-	s.updateMintConversationMessages(t.Context(), " 0xABC ", " "+mintConversationTestConversationID+" ", createdAt, []soulMintConversationMessage{{Role: "user", Content: "hello"}})
-	s.updateMintConversationTurn(t.Context(), " 0xABC ", " "+mintConversationTestConversationID+" ", createdAt, []soulMintConversationMessage{
+	s.updateMintConversationMessages(t.Context(), " 0xABC ", " "+mintConversationTestConversationID+" ", []soulMintConversationMessage{{Role: "user", Content: "hello"}})
+	s.updateMintConversationTurn(t.Context(), " 0xABC ", " "+mintConversationTestConversationID+" ", []soulMintConversationMessage{
 		{Role: "user", Content: "hello"},
 		{Role: "assistant", Content: "hi"},
 	}, models.AIUsage{Provider: "openai", Model: "gpt-5.4", TotalTokens: 12})
-	s.updateMintConversationStatus(t.Context(), " 0xABC ", " "+mintConversationTestConversationID+" ", createdAt, " Completed ", []soulMintConversationMessage{{Role: "assistant", Content: "done"}}, ` {"ok":true} `)
+	s.updateMintConversationStatus(t.Context(), " 0xABC ", " "+mintConversationTestConversationID+" ", " Completed ", []soulMintConversationMessage{{Role: "assistant", Content: "done"}}, ` {"ok":true} `)
 
 	if len(tdb.convModels) != 3 {
 		t.Fatalf("expected 3 captured models, got %d", len(tdb.convModels))
 	}
-	requireMintConversationUpdateModelGSI4(t, tdb.convModels[0], "messages")
 	if tdb.convModels[0].AgentID != "0xabc" || tdb.convModels[0].ConversationID != mintConversationTestConversationID || !strings.Contains(decodeMintConversationBlob(tdb.convModels[0].Messages), `"content":"hello"`) || tdb.convModels[0].Status != models.SoulMintConversationStatusInProgress {
 		t.Fatalf("unexpected messages update model: %#v", tdb.convModels[0])
 	}
 	if tdb.convModels[1].Usage.TotalTokens != 12 || !strings.Contains(decodeMintConversationBlob(tdb.convModels[1].Messages), `"assistant"`) || tdb.convModels[1].Status != models.SoulMintConversationStatusInProgress {
 		t.Fatalf("unexpected turn update model: %#v", tdb.convModels[1])
 	}
-	requireMintConversationUpdateModelGSI4(t, tdb.convModels[1], "turn")
 	if tdb.convModels[2].Status != models.SoulMintConversationStatusCompleted || tdb.convModels[2].CompletedAt.IsZero() || decodeMintConversationBlob(tdb.convModels[2].ProducedDeclarations) != `{"ok":true}` {
 		t.Fatalf("unexpected status update model: %#v", tdb.convModels[2])
 	}
-	requireMintConversationUpdateModelGSI4(t, tdb.convModels[2], "status")
-	// Enforce the exact field-list Once() expectations registered above. With
-	// the qConv Update catch-all excluded (see newMintConversationTestDB), these
-	// are the only Update expectations and AssertExpectations verifies each was
-	// consumed, so a write site silently dropping GSI4PK/GSI4SK cannot pass.
-	tdb.qConv.AssertExpectations(t)
 }
 
 func TestMintConversationHandleGuardsAndModelBranches(t *testing.T) {
@@ -1209,9 +1176,9 @@ func testMintConversationFinalizeRequiresRegistrationIDWithBucketConfigured(t *t
 
 func TestMintConversationNoOpPersistenceHelpers(t *testing.T) {
 	s := &Server{}
-	s.updateMintConversationMessages(t.Context(), "0xabc", "conv", time.Time{}, nil)
-	s.updateMintConversationTurn(t.Context(), "0xabc", "conv", time.Time{}, nil, models.AIUsage{})
-	s.updateMintConversationStatus(t.Context(), "0xabc", "conv", time.Time{}, "failed", nil, "")
+	s.updateMintConversationMessages(t.Context(), "0xabc", "conv", nil)
+	s.updateMintConversationTurn(t.Context(), "0xabc", "conv", nil, models.AIUsage{})
+	s.updateMintConversationStatus(t.Context(), "0xabc", "conv", "failed", nil, "")
 }
 
 func TestMintConversationDeclarationRoundTrip(t *testing.T) {
@@ -1288,22 +1255,13 @@ func testDebitMintConversationStreamCredits(t *testing.T) {
 					if conv.Status != models.SoulMintConversationStatusInProgress || conv.ChargedCredits != soulMintConversationStreamBaseCredits {
 						t.Fatalf("unexpected created conversation: %#v", conv)
 					}
-					// A new conversation carries the gsi4 keys at create time
-					// (issue #1067 part C2).
-					if conv.GSI4PK != "SOUL#AGENT#"+conv.AgentID || conv.GSI4SK == "" {
-						t.Fatalf("created conversation missing gsi4 keys: %#v", conv)
-					}
 				})
 			} else {
-				tb.On("UpdateWithBuilder", mock.AnythingOfType("*models.SoulAgentMintConversation"), mock.Anything, mock.Anything).Return(tb).Once().Run(func(args mock.Arguments) {
-					conv := testutil.RequireMockArg[*models.SoulAgentMintConversation](t, args, 0)
-					buildFn := testutil.RequireMockArg[func(core.UpdateBuilder) error](t, args, 1)
-					assertSoulMintConversationBuilderWritesGSI4(t, buildFn, conv.GSI4PK, conv.GSI4SK)
-				})
+				tb.On("UpdateWithBuilder", mock.AnythingOfType("*models.SoulAgentMintConversation"), mock.Anything, mock.Anything).Return(tb).Once()
 			}
 			tb.On("Execute").Return(nil).Once()
 
-			session := mintConversationSession{conversationID: mintConversationTestConversationID, modelSet: defaultSoulMintConversationModel, isNew: tc.fresh, createdAt: now}
+			session := mintConversationSession{conversationID: mintConversationTestConversationID, modelSet: defaultSoulMintConversationModel, isNew: tc.fresh}
 			if appErr := s.debitMintConversationStreamCredits(t.Context(), inst, "0xabc", session, "req-stream", now); appErr != nil {
 				t.Fatalf("stream debit failed: %#v", appErr)
 			}

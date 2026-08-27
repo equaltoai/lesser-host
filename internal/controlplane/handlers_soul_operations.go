@@ -526,8 +526,6 @@ func (s *Server) applySoulOperationMintSideEffects(ctx context.Context, op *mode
 		"LifecycleStatus",
 		"MintTxHash",
 		"MintedAt",
-		"GSI3PK",
-		"GSI3SK",
 		"UpdatedAt",
 		"PolicyVersion",
 		"AnchorState",
@@ -569,7 +567,7 @@ func (s *Server) applySoulOperationRotateWalletSideEffects(ctx context.Context, 
 	identity.UpdatedAt = now
 	_ = identity.UpdateKeys()
 
-	_ = s.store.DB.WithContext(ctx).Model(identity).IfExists().Update("Wallet", "GSI3PK", "GSI3SK", "UpdatedAt")
+	_ = s.store.DB.WithContext(ctx).Model(identity).IfExists().Update("Wallet", "UpdatedAt")
 
 	// Wallet → agent index maintenance (best-effort).
 	if oldWallet != "" && !strings.EqualFold(oldWallet, newWallet) {
@@ -637,7 +635,7 @@ func (s *Server) applySoulOperationBurnSideEffects(ctx context.Context, agentID 
 		UpdatedAt:       now,
 	}
 	_ = update.UpdateKeys()
-	_ = s.store.DB.WithContext(ctx).Model(update).IfExists().Update("Status", "LifecycleStatus", "Wallet", "GSI3PK", "GSI3SK", "UpdatedAt")
+	_ = s.store.DB.WithContext(ctx).Model(update).IfExists().Update("Status", "LifecycleStatus", "Wallet", "UpdatedAt")
 
 	// Clean up wallet→agent index.
 	if oldWallet != "" {

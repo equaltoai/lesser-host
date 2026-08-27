@@ -631,7 +631,6 @@ func (s *Server) persistHostedGenesisFailedRetryPending(ctx context.Context, fai
 		RequestID:      conv.RequestID,
 		UpdatedAt:      conv.UpdatedAt,
 		CompletedAt:    conv.CompletedAt,
-		CreatedAt:      conv.CreatedAt,
 	}
 	_ = updateConv.UpdateKeys()
 	if err := s.store.DB.TransactWrite(ctx, func(tx core.TransactionBuilder) error {
@@ -645,11 +644,6 @@ func (s *Server) persistHostedGenesisFailedRetryPending(ctx context.Context, fai
 			ub.Set("RequestID", strings.TrimSpace(updateConv.RequestID))
 			ub.Set("UpdatedAt", now)
 			ub.Set("CompletedAt", time.Time{})
-			// gsi4 keys are immutable (agentId + createdAt); re-write them on
-			// every conversation write so healed/backfilled items can never
-			// silently drop out of the index (guarded: a legacy item without a
-			// stored CreatedAt keeps its existing index keys).
-			setSoulMintConversationGSI4Keys(ub, updateConv)
 			return nil
 		}, tabletheory.IfExists(), tabletheory.Condition("Status", "=", models.SoulMintConversationStatusFailed))
 		return nil
@@ -673,7 +667,6 @@ func (s *Server) persistHostedGenesisPendingAssistantRetryTransition(ctx context
 		RequestID:      conv.RequestID,
 		UpdatedAt:      conv.UpdatedAt,
 		CompletedAt:    conv.CompletedAt,
-		CreatedAt:      conv.CreatedAt,
 	}
 	_ = updateConv.UpdateKeys()
 	if err := s.store.DB.TransactWrite(ctx, func(tx core.TransactionBuilder) error {
@@ -687,11 +680,6 @@ func (s *Server) persistHostedGenesisPendingAssistantRetryTransition(ctx context
 			ub.Set("RequestID", strings.TrimSpace(updateConv.RequestID))
 			ub.Set("UpdatedAt", now)
 			ub.Set("CompletedAt", time.Time{})
-			// gsi4 keys are immutable (agentId + createdAt); re-write them on
-			// every conversation write so healed/backfilled items can never
-			// silently drop out of the index (guarded: a legacy item without a
-			// stored CreatedAt keeps its existing index keys).
-			setSoulMintConversationGSI4Keys(ub, updateConv)
 			return nil
 		}, tabletheory.IfExists(), tabletheory.Condition("Status", "=", models.SoulMintConversationStatusInProgress))
 		return nil
@@ -741,7 +729,6 @@ func (s *Server) persistHostedGenesisRetryDispatchFailure(ctx context.Context, p
 	updateConv := &models.SoulAgentMintConversation{
 		AgentID:        failedConv.AgentID,
 		ConversationID: failedConv.ConversationID,
-		CreatedAt:      failedConv.CreatedAt,
 	}
 	_ = updateConv.UpdateKeys()
 	if err := s.store.DB.TransactWrite(ctx, func(tx core.TransactionBuilder) error {
@@ -755,11 +742,6 @@ func (s *Server) persistHostedGenesisRetryDispatchFailure(ctx context.Context, p
 			ub.Set("RequestID", failedConv.RequestID)
 			ub.Set("UpdatedAt", now)
 			ub.Set("CompletedAt", failedConv.CompletedAt)
-			// gsi4 keys are immutable (agentId + createdAt); re-write them on
-			// every conversation write so healed/backfilled items can never
-			// silently drop out of the index (guarded: a legacy item without a
-			// stored CreatedAt keeps its existing index keys).
-			setSoulMintConversationGSI4Keys(ub, updateConv)
 			return nil
 		}, tabletheory.IfExists(), tabletheory.Condition("Status", "=", models.SoulMintConversationStatusInProgress))
 		return nil
@@ -1059,7 +1041,6 @@ func (s *Server) persistHostedGenesisMicroVMRecoveryFailure(ctx *apptheory.Conte
 	updateConv := &models.SoulAgentMintConversation{
 		AgentID:        failedConv.AgentID,
 		ConversationID: failedConv.ConversationID,
-		CreatedAt:      failedConv.CreatedAt,
 	}
 	_ = updateConv.UpdateKeys()
 	if err := s.store.DB.TransactWrite(ctx.Context(), func(tx core.TransactionBuilder) error {
@@ -1072,11 +1053,6 @@ func (s *Server) persistHostedGenesisMicroVMRecoveryFailure(ctx *apptheory.Conte
 			ub.Set("RequestID", failedConv.RequestID)
 			ub.Set("UpdatedAt", now)
 			ub.Set("CompletedAt", failedConv.CompletedAt)
-			// gsi4 keys are immutable (agentId + createdAt); re-write them on
-			// every conversation write so healed/backfilled items can never
-			// silently drop out of the index (guarded: a legacy item without a
-			// stored CreatedAt keeps its existing index keys).
-			setSoulMintConversationGSI4Keys(ub, updateConv)
 			return nil
 		}, tabletheory.IfExists())
 		return nil

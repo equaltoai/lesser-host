@@ -265,14 +265,6 @@ func (s *Store) FailHostedGenesisSessionAndConversation(ctx context.Context, ses
 			ub.Set("RequestID", conversation.RequestID)
 			ub.Set("UpdatedAt", conversation.UpdatedAt)
 			ub.Set("CompletedAt", conversation.CompletedAt)
-			// gsi4 keys are immutable (agentId + createdAt); re-write them on
-			// every conversation write so healed/backfilled items can never
-			// silently drop out of the index. Guarded: a legacy item without a
-			// stored CreatedAt keeps its existing index keys.
-			if conversation.GSI4PK != "" && conversation.GSI4SK != "" {
-				ub.Set("GSI4PK", conversation.GSI4PK)
-				ub.Set("GSI4SK", conversation.GSI4SK)
-			}
 			return nil
 		}, tabletheory.IfExists(),
 			tabletheory.Condition("Status", "=", string(expectedStatus)),
@@ -421,14 +413,6 @@ func (s *Store) PublishHostedGenesisSessionAndConversation(ctx context.Context, 
 			ub.Set("RequestID", conversation.RequestID)
 			ub.Set("UpdatedAt", conversation.UpdatedAt)
 			ub.Set("CompletedAt", conversation.CompletedAt)
-			// gsi4 keys are immutable (agentId + createdAt); re-write them on
-			// every conversation write so healed/backfilled items can never
-			// silently drop out of the index. Guarded: a legacy item without a
-			// stored CreatedAt keeps its existing index keys.
-			if conversation.GSI4PK != "" && conversation.GSI4SK != "" {
-				ub.Set("GSI4PK", conversation.GSI4PK)
-				ub.Set("GSI4SK", conversation.GSI4SK)
-			}
 			return nil
 		}, tabletheory.IfExists(), tabletheory.Condition("Status", "=", string(expectedStatus)))
 		return nil

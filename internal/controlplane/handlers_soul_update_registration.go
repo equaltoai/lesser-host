@@ -1606,7 +1606,7 @@ func (s *Server) updateSoulAgentCapabilities(ctx context.Context, identity *mode
 	identity.UpdatedAt = now
 	_ = identity.UpdateKeys()
 
-	if err := s.store.DB.WithContext(ctx).Model(identity).IfExists().Update("Capabilities", "GSI3PK", "GSI3SK", "UpdatedAt"); err != nil {
+	if err := s.store.DB.WithContext(ctx).Model(identity).IfExists().Update("Capabilities", "UpdatedAt"); err != nil {
 		return newAppTheoryError("app.internal", "failed to update identity")
 	}
 

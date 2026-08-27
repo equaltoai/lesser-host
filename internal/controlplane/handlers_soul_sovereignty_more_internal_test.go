@@ -47,7 +47,7 @@ func newSoulSovereigntyActionsTestDB() soulSovereigntyActionsTestDB {
 		q.On("IfExists").Return(q).Maybe()
 		q.On("IfNotExists").Return(q).Maybe()
 	}
-	qID.On("Update", []string{"Status", "LifecycleStatus", "LifecycleReason", "GSI3PK", "GSI3SK", "UpdatedAt"}).Return(nil).Maybe()
+	qID.On("Update", []string{"Status", "LifecycleStatus", "LifecycleReason", "UpdatedAt"}).Return(nil).Maybe()
 	qDispute.On("Update", []string{"OptInStatus", "Status", "Result", "Score", "EvaluatedAt", "UpdatedAt"}).Return(nil).Maybe()
 	qDispute.On("Update", []string{"OptInStatus", "UpdatedAt"}).Return(nil).Maybe()
 	qAudit.On("Create").Return(nil).Maybe()
@@ -101,7 +101,7 @@ func TestHandleSoulSelfSuspend_SuccessAndUpdateError(t *testing.T) {
 		tdb.qID.ExpectedCalls = nil
 		tdb.qID.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(tdb.qID).Maybe()
 		tdb.qID.On("IfExists").Return(tdb.qID).Maybe()
-		tdb.qID.On("Update", []string{"Status", "LifecycleStatus", "LifecycleReason", "GSI3PK", "GSI3SK", "UpdatedAt"}).Return(nil).Once()
+		tdb.qID.On("Update", []string{"Status", "LifecycleStatus", "LifecycleReason", "UpdatedAt"}).Return(nil).Once()
 		tdb.qID.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(nil).Run(func(args mock.Arguments) {
 			dest := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
 			*dest = models.SoulAgentIdentity{
@@ -146,7 +146,7 @@ func TestHandleSoulSelfSuspend_SuccessAndUpdateError(t *testing.T) {
 		tdb.qID.ExpectedCalls = nil
 		tdb.qID.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(tdb.qID).Maybe()
 		tdb.qID.On("IfExists").Return(tdb.qID).Maybe()
-		tdb.qID.On("Update", []string{"Status", "LifecycleStatus", "LifecycleReason", "GSI3PK", "GSI3SK", "UpdatedAt"}).Return(errors.New("boom")).Once()
+		tdb.qID.On("Update", []string{"Status", "LifecycleStatus", "LifecycleReason", "UpdatedAt"}).Return(errors.New("boom")).Once()
 		tdb.qID.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(nil).Run(func(args mock.Arguments) {
 			dest := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
 			*dest = models.SoulAgentIdentity{
