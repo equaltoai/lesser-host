@@ -116,14 +116,28 @@ export class LesserHostStack extends cdk.Stack {
     // gsi3: SoulAgentIdentity status enumeration index (issue #1061 part C1).
     // PK is IDENTITY#<status>, SK is <agentId>. Exactly one GSI is created per
     // deploy (DynamoDB allows one GlobalSecondaryIndex creation per UpdateTable),
-    // so this index deploys in its own stack update and the operator backfills
+    // so this index deployed in its own stack update and the operator backfilled
     // existing items with scripts/soul-agent-identity-gsi3-backfill before the
-    // consumers trust it. The soul mint-conversation GSI is part C2 (#1067) and
-    // will be gsi4 in a separate deploy.
+    // consumers trust it.
     stateTable.addGlobalSecondaryIndex({
       indexName: "gsi3",
       partitionKey: { name: "gsi3PK", type: dynamodb.AttributeType.STRING },
       sortKey: { name: "gsi3SK", type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+    // gsi4: SoulAgentMintConversation agent-scoped time-ordered index (issue
+    // #1067, part C2 of #1061). PK is SOUL#AGENT#<agentId> (the base PK), SK is
+    // <createdAt>#<conversationId> (fixed-width nanosecond UTC timestamp), so the
+    // operator mint-conversation list is a key-bounded recency-ordered GSI query
+    // instead of an SK-ordered base-table query (SK is a crypto/rand token with no
+    // recency meaning). One GSI per deploy: gsi4 is the only index added by its
+    // own stack update; the operator backfills existing items with
+    // scripts/soul-agent-identity-gsi3-backfill (now dual-model) before the
+    // consumers trust it.
+    stateTable.addGlobalSecondaryIndex({
+      indexName: "gsi4",
+      partitionKey: { name: "gsi4PK", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "gsi4SK", type: dynamodb.AttributeType.STRING },
       projectionType: dynamodb.ProjectionType.ALL,
     });
 
