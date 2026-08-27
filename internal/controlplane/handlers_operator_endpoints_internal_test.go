@@ -9,6 +9,7 @@ import (
 	"time"
 
 	apptheory "github.com/theory-cloud/apptheory/v4/runtime"
+	core "github.com/theory-cloud/tabletheory/v3/pkg/core"
 	ttmocks "github.com/theory-cloud/tabletheory/v3/pkg/mocks"
 
 	"github.com/stretchr/testify/mock"
@@ -66,6 +67,14 @@ func newOperatorEndpointTestDB() operatorEndpointTestDB {
 		q.On("CreateOrUpdate").Return(nil).Maybe()
 		addStandardMockQueryStubs(q)
 	}
+
+	// listActiveInstances (issue #1061 part D) is the only qInstance read that
+	// applies a Limit; pin the literal page size (100) so any drift in the
+	// walk's page size fails every test that feeds it. Registered after the
+	// generic Limit stub above (filterMockQueryCalls removes the generic one,
+	// since testify resolves first-registered-match-wins).
+	filterMockQueryCalls(qInstance, "Limit")
+	qInstance.On("Limit", 100).Return(qInstance).Maybe()
 
 	// Instance.First and ProvisionJob.First are NOT defaulted here — broad
 	// Maybe() expectations shadow the per-test Once() rows that remediation and
@@ -192,7 +201,7 @@ func TestHandleOperatorReleases_HappyPath(t *testing.T) {
 	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
 	early := now.Add(-24 * time.Hour)
 
-	tdb.qInstance.On("All", mock.AnythingOfType("*[]*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+	tdb.qInstance.On("AllPaginated", mock.AnythingOfType("*[]*models.Instance")).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.Instance](t, args, 0)
 		*dest = []*models.Instance{
 			instanceWithProvisionJob("alpha", "v1.4.2", "prov-alpha", now),
@@ -265,7 +274,7 @@ func TestHandleOperatorReleases_NoInstances(t *testing.T) {
 		ManagedLesserBodyDefaultVersion: "v0.3.0",
 	}}
 
-	tdb.qInstance.On("All", mock.AnythingOfType("*[]*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+	tdb.qInstance.On("AllPaginated", mock.AnythingOfType("*[]*models.Instance")).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.Instance](t, args, 0)
 		*dest = []*models.Instance{}
 	}).Once()
@@ -312,7 +321,7 @@ func TestHandleOperatorReleases_FiltersInactive(t *testing.T) {
 		ManagedLesserDefaultVersion: "v1.4.2",
 	}}
 
-	tdb.qInstance.On("All", mock.AnythingOfType("*[]*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+	tdb.qInstance.On("AllPaginated", mock.AnythingOfType("*[]*models.Instance")).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.Instance](t, args, 0)
 		*dest = []*models.Instance{
 			instanceWithProvisionJob("active-a", "v1.4.2", "prov-a", time.Now()),
@@ -358,7 +367,7 @@ func TestHandleOperatorReleases_UsesProvisionJobTimestamps(t *testing.T) {
 	earlyProv := time.Date(2026, 1, 15, 0, 0, 0, 0, time.UTC)
 	lateInstance := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
 
-	tdb.qInstance.On("All", mock.AnythingOfType("*[]*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+	tdb.qInstance.On("AllPaginated", mock.AnythingOfType("*[]*models.Instance")).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.Instance](t, args, 0)
 		*dest = []*models.Instance{
 			{
@@ -416,7 +425,7 @@ func TestHandleOperatorReleases_AggregatesUpdateProvisionAndInstanceEvidence(t *
 	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
 	earlyProv := now.Add(-48 * time.Hour)
 
-	tdb.qInstance.On("All", mock.AnythingOfType("*[]*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+	tdb.qInstance.On("AllPaginated", mock.AnythingOfType("*[]*models.Instance")).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.Instance](t, args, 0)
 		*dest = []*models.Instance{
 			// Instance marker is stale; successful update evidence should win.
@@ -502,7 +511,7 @@ func TestHandleOperatorInstancesDrift_AllOK(t *testing.T) {
 
 	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
 
-	tdb.qInstance.On("All", mock.AnythingOfType("*[]*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+	tdb.qInstance.On("AllPaginated", mock.AnythingOfType("*[]*models.Instance")).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.Instance](t, args, 0)
 		*dest = []*models.Instance{
 			makeInstance("ok1", "v1.4.2", "v0.3.0", now, now),
@@ -534,7 +543,7 @@ func TestHandleOperatorInstancesDrift_LesserStale(t *testing.T) {
 
 	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
 
-	tdb.qInstance.On("All", mock.AnythingOfType("*[]*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+	tdb.qInstance.On("AllPaginated", mock.AnythingOfType("*[]*models.Instance")).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.Instance](t, args, 0)
 		*dest = []*models.Instance{
 			makeInstance("old1", "v1.4.0", "", now, time.Time{}),
@@ -565,7 +574,7 @@ func TestHandleOperatorInstancesDrift_BodyStale(t *testing.T) {
 
 	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
 
-	tdb.qInstance.On("All", mock.AnythingOfType("*[]*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+	tdb.qInstance.On("AllPaginated", mock.AnythingOfType("*[]*models.Instance")).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.Instance](t, args, 0)
 		*dest = []*models.Instance{
 			makeInstance("oldbody", "", "v0.2.5", now, time.Time{}),
@@ -599,7 +608,7 @@ func TestHandleOperatorInstancesDrift_MCPWireStaleEvidence(t *testing.T) {
 
 	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
 
-	tdb.qInstance.On("All", mock.AnythingOfType("*[]*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+	tdb.qInstance.On("AllPaginated", mock.AnythingOfType("*[]*models.Instance")).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.Instance](t, args, 0)
 		*dest = []*models.Instance{
 			{
@@ -667,7 +676,7 @@ func TestHandleOperatorInstancesDrift_UnknownTargetVersion(t *testing.T) {
 
 	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
 
-	tdb.qInstance.On("All", mock.AnythingOfType("*[]*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+	tdb.qInstance.On("AllPaginated", mock.AnythingOfType("*[]*models.Instance")).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.Instance](t, args, 0)
 		*dest = []*models.Instance{
 			makeInstance("x", "v1.4.2", "v0.3.0", now, now),
@@ -718,7 +727,7 @@ func TestHandleOperatorRemediateMCPDrift_NoWireStale(t *testing.T) {
 
 	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
 
-	tdb.qInstance.On("All", mock.AnythingOfType("*[]*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+	tdb.qInstance.On("AllPaginated", mock.AnythingOfType("*[]*models.Instance")).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.Instance](t, args, 0)
 		*dest = []*models.Instance{
 			makeInstance("ok1", "v1.4.2", "v0.3.0", now, now),
@@ -756,7 +765,7 @@ func TestHandleOperatorRemediateMCPDrift_VersionFromDeployedBody(t *testing.T) {
 	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
 
 	// Fleets scan: one instance with body v0.2.5 deployed, MCP wired against v0.2.4.
-	tdb.qInstance.On("All", mock.AnythingOfType("*[]*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+	tdb.qInstance.On("AllPaginated", mock.AnythingOfType("*[]*models.Instance")).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.Instance](t, args, 0)
 		*dest = []*models.Instance{
 			{
@@ -866,7 +875,7 @@ func TestHandleOperatorRemediateMCPDrift_AuditDetailsIncludeSlugList(t *testing.
 	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
 
 	// Two wire-stale instances.
-	tdb.qInstance.On("All", mock.AnythingOfType("*[]*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+	tdb.qInstance.On("AllPaginated", mock.AnythingOfType("*[]*models.Instance")).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.Instance](t, args, 0)
 		*dest = []*models.Instance{
 			{
@@ -1101,7 +1110,7 @@ func TestHandleOperatorRemediateMCPDrift_LargeFleetPersistsOneAuditRecord(t *tes
 			LesserVersion:      "v1.4.2",
 		})
 	}
-	tdb.qInstance.On("All", mock.AnythingOfType("*[]*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+	tdb.qInstance.On("AllPaginated", mock.AnythingOfType("*[]*models.Instance")).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.Instance](t, args, 0)
 		*dest = instances
 	}).Once()
@@ -1175,7 +1184,7 @@ func TestHandleOperatorRemediateMCPDrift_SingleWireStale(t *testing.T) {
 	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
 
 	// Instance scan: one wire-stale instance.
-	tdb.qInstance.On("All", mock.AnythingOfType("*[]*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+	tdb.qInstance.On("AllPaginated", mock.AnythingOfType("*[]*models.Instance")).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.Instance](t, args, 0)
 		*dest = []*models.Instance{
 			{
@@ -1257,7 +1266,7 @@ func TestHandleOperatorRemediateMCPDrift_IdempotentSkip(t *testing.T) {
 	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
 
 	// Instance scan: two wire-stale instances.
-	tdb.qInstance.On("All", mock.AnythingOfType("*[]*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+	tdb.qInstance.On("AllPaginated", mock.AnythingOfType("*[]*models.Instance")).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.Instance](t, args, 0)
 		*dest = []*models.Instance{
 			{

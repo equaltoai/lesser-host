@@ -66,6 +66,16 @@ func parseOperatorAuditLogFilters(ctx *apptheory.Context) (operatorAuditLogFilte
 	return filters, nil
 }
 
+// listOperatorAuditLogEntries no-target walk bounds (issue #1061 part D): the
+// global path is a full-table scan filtered on SK EVENT#; the walk caps reads
+// at 2,000 evaluated items (20 pages of 100) and fails closed beyond it
+// instead of reading the table unboundedly (the previous Limit(200) capped
+// items per page, not pages read).
+const (
+	auditLogWalkPageSize = 100
+	auditLogWalkMaxPages = 20
+)
+
 func (s *Server) listOperatorAuditLogEntries(ctx *apptheory.Context, filters operatorAuditLogFilters) ([]*models.AuditLogEntry, *apptheory.AppTheoryError) {
 	var items []*models.AuditLogEntry
 
@@ -93,11 +103,14 @@ func (s *Server) listOperatorAuditLogEntries(ctx *apptheory.Context, filters ope
 		return items, nil
 	}
 
-	if err := s.store.DB.WithContext(ctx.Context()).
-		Model(&models.AuditLogEntry{}).
-		Where("SK", "BEGINS_WITH", "EVENT#").
-		Limit(200).
-		All(&items); err != nil {
+	items, err := collectPartitionAll[models.AuditLogEntry](
+		s.store.DB.WithContext(ctx.Context()).
+			Model(&models.AuditLogEntry{}).
+			Where("SK", "BEGINS_WITH", "EVENT#"),
+		auditLogWalkPageSize,
+		auditLogWalkMaxPages,
+	)
+	if err != nil {
 		return nil, newAppTheoryError("app.internal", "failed to list audit log")
 	}
 

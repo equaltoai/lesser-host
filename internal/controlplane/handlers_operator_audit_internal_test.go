@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	core "github.com/theory-cloud/tabletheory/v3/pkg/core"
 	ttmocks "github.com/theory-cloud/tabletheory/v3/pkg/mocks"
 
 	"github.com/stretchr/testify/mock"
@@ -69,6 +70,14 @@ func TestHandleListOperatorAuditLog_TargetAndGlobalQueryPaths(t *testing.T) {
 	tdb := newOperatorAuditTestDB()
 	s := &Server{store: store.New(tdb.db)}
 
+	// Pin the literal Limits: the target-scoped keyed query keeps its Limit(200)
+	// and the global filter-scan walk uses the literal page size 100 (issue
+	// #1061 part D). The generic harness Limit stub is removed first because
+	// testify resolves first-registered-match-wins.
+	filterMockQueryCalls(tdb.qAudit, "Limit")
+	tdb.qAudit.On("Limit", 200).Return(tdb.qAudit).Once()
+	tdb.qAudit.On("Limit", 100).Return(tdb.qAudit).Once()
+
 	// Target-scoped query path.
 	tdb.qAudit.On("All", mock.AnythingOfType("*[]*models.AuditLogEntry")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.AuditLogEntry](t, args, 0)
@@ -99,7 +108,7 @@ func TestHandleListOperatorAuditLog_TargetAndGlobalQueryPaths(t *testing.T) {
 	}
 
 	// Global query path (no target).
-	tdb.qAudit.On("All", mock.AnythingOfType("*[]*models.AuditLogEntry")).Return(nil).Run(func(args mock.Arguments) {
+	tdb.qAudit.On("AllPaginated", mock.AnythingOfType("*[]*models.AuditLogEntry")).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.AuditLogEntry](t, args, 0)
 		*dest = []*models.AuditLogEntry{
 			{Actor: "alice", Action: "a", CreatedAt: time.Unix(5, 0).UTC()},

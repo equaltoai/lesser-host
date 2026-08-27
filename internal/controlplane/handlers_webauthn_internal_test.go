@@ -7,6 +7,7 @@ import (
 	"time"
 
 	apptheory "github.com/theory-cloud/apptheory/v4/runtime"
+	core "github.com/theory-cloud/tabletheory/v3/pkg/core"
 	theoryErrors "github.com/theory-cloud/tabletheory/v3/pkg/errors"
 	ttmocks "github.com/theory-cloud/tabletheory/v3/pkg/mocks"
 
@@ -222,7 +223,9 @@ func TestHandleWebAuthnCredentials_UnauthorizedAndSuccess(t *testing.T) {
 		t.Fatalf("expected unauthorized")
 	}
 
-	tdb.qCred.On("All", mock.AnythingOfType("*[]*models.WebAuthnCredential")).Return(nil).Run(func(args mock.Arguments) {
+	filterMockQueryCalls(tdb.qCred, "Limit")
+	tdb.qCred.On("Limit", 11).Return(tdb.qCred).Once()
+	tdb.qCred.On("AllPaginated", mock.AnythingOfType("*[]*models.WebAuthnCredential")).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.WebAuthnCredential](t, args, 0)
 		*dest = []*models.WebAuthnCredential{
 			{ID: "cred1", Name: "My Passkey", CreatedAt: time.Unix(10, 0).UTC(), LastUsedAt: time.Unix(11, 0).UTC()},
@@ -311,7 +314,9 @@ func TestHandleWebAuthnRegisterBegin_StoresChallenge(t *testing.T) {
 	}
 	s := &Server{store: store.New(tdb.db), webAuthn: engine}
 
-	tdb.qCred.On("All", mock.AnythingOfType("*[]*models.WebAuthnCredential")).Return(nil).Run(func(args mock.Arguments) {
+	filterMockQueryCalls(tdb.qCred, "Limit")
+	tdb.qCred.On("Limit", 11).Return(tdb.qCred).Once()
+	tdb.qCred.On("AllPaginated", mock.AnythingOfType("*[]*models.WebAuthnCredential")).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.WebAuthnCredential](t, args, 0)
 		// Include a credential to exercise base64 decoding path.
 		*dest = []*models.WebAuthnCredential{{ID: base64.StdEncoding.EncodeToString([]byte("id"))}}
@@ -348,7 +353,9 @@ func TestHandleWebAuthnLoginBegin_RequiresCredentialsAndStoresChallenge(t *testi
 	s := &Server{store: store.New(tdb.db), webAuthn: engine}
 
 	// No credentials => unauthorized (avoid user enumeration).
-	tdb.qCred.On("All", mock.AnythingOfType("*[]*models.WebAuthnCredential")).Return(nil).Run(func(args mock.Arguments) {
+	filterMockQueryCalls(tdb.qCred, "Limit")
+	tdb.qCred.On("Limit", 11).Return(tdb.qCred).Times(2)
+	tdb.qCred.On("AllPaginated", mock.AnythingOfType("*[]*models.WebAuthnCredential")).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.WebAuthnCredential](t, args, 0)
 		*dest = nil
 	}).Once()
@@ -358,7 +365,7 @@ func TestHandleWebAuthnLoginBegin_RequiresCredentialsAndStoresChallenge(t *testi
 		t.Fatalf("expected app.unauthorized, got %T: %v", err, err)
 	}
 
-	tdb.qCred.On("All", mock.AnythingOfType("*[]*models.WebAuthnCredential")).Return(nil).Run(func(args mock.Arguments) {
+	tdb.qCred.On("AllPaginated", mock.AnythingOfType("*[]*models.WebAuthnCredential")).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.WebAuthnCredential](t, args, 0)
 		*dest = []*models.WebAuthnCredential{{ID: base64.StdEncoding.EncodeToString([]byte("id"))}}
 	}).Once()

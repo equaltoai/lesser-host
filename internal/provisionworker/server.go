@@ -260,17 +260,36 @@ func (c provisionSweepCounts) result(now time.Time) map[string]any {
 	}
 }
 
+// listProvisionSweepJobs scans provision job rows (SK=JOB) with page-capped
+// reads resumed via the opaque cursor, failing closed after
+// provisionSweepWalkMaxPages pages (issue #1061 part D). The previous
+// Limit(provisionSweepLimit).All() capped items per page, not pages read, so
+// the sweep could read the whole table on every run.
 func (s *Server) listProvisionSweepJobs(ctx context.Context) ([]*models.ProvisionJob, error) {
-	var items []*models.ProvisionJob
-	err := s.store.DB.WithContext(ctx).
+	base := s.store.DB.WithContext(ctx).
 		Model(&models.ProvisionJob{}).
-		Where("SK", "=", models.SKJob).
-		Limit(provisionSweepLimit).
-		All(&items)
-	if err != nil && !theoryErrors.IsNotFound(err) {
-		return nil, err
+		Where("SK", "=", models.SKJob)
+	var out []*models.ProvisionJob
+	cursor := ""
+	for page := 0; ; page++ {
+		if page >= provisionSweepWalkMaxPages {
+			return nil, fmt.Errorf("bounded provision sweep walk exceeded %d pages of %d items each", provisionSweepWalkMaxPages, provisionSweepWalkPageSize)
+		}
+		qb := base.Limit(provisionSweepWalkPageSize)
+		if cursor != "" {
+			qb = qb.Cursor(cursor)
+		}
+		var items []*models.ProvisionJob
+		paged, err := qb.AllPaginated(&items)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, items...)
+		if paged == nil || !paged.HasMore || strings.TrimSpace(paged.NextCursor) == "" {
+			return out, nil
+		}
+		cursor = strings.TrimSpace(paged.NextCursor)
 	}
-	return items, nil
 }
 
 func (s *Server) processProvisionSweepJob(ctx context.Context, item *models.ProvisionJob, requestID string, now time.Time) (bool, error) {
@@ -559,9 +578,14 @@ const (
 	provisionDefaultPollDelay       = 45 * time.Second
 	provisionDefaultShortRetryDelay = 20 * time.Second
 	provisionJobLeaseDuration       = 10 * time.Second
-	provisionSweepLimit             = 200
-	provisionSweepStaleAfter        = 2 * time.Minute
-	defaultManagedAWSRegion         = "us-east-1"
+	// provisionSweepWalkPageSize/MaxPages bound the sweep's SK=JOB scan
+	// (issue #1061 part D): page-capped reads resumed via the opaque cursor,
+	// failing closed after 20 pages (2,000 evaluated items) instead of an
+	// unbounded paginated scan.
+	provisionSweepWalkPageSize = 100
+	provisionSweepWalkMaxPages = 20
+	provisionSweepStaleAfter   = 2 * time.Minute
+	defaultManagedAWSRegion    = "us-east-1"
 
 	noteMissingAccountIDRestart = "missing account id; restarting account allocation"
 

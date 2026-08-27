@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	apptheory "github.com/theory-cloud/apptheory/v4/runtime"
+	core "github.com/theory-cloud/tabletheory/v3/pkg/core"
 	theoryErrors "github.com/theory-cloud/tabletheory/v3/pkg/errors"
 	ttmocks "github.com/theory-cloud/tabletheory/v3/pkg/mocks"
 
@@ -72,7 +73,9 @@ func TestBuildWebAuthnUser_LoadsCredentials(t *testing.T) {
 	tdb := newWebAuthnMoreTestDB()
 	s := &Server{store: store.New(tdb.db)}
 
-	tdb.qCred.On("All", mock.AnythingOfType("*[]*models.WebAuthnCredential")).Return(nil).Run(func(args mock.Arguments) {
+	filterMockQueryCalls(tdb.qCred, "Limit")
+	tdb.qCred.On("Limit", 11).Return(tdb.qCred).Once()
+	tdb.qCred.On("AllPaginated", mock.AnythingOfType("*[]*models.WebAuthnCredential")).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.WebAuthnCredential](t, args, 0)
 		*dest = []*models.WebAuthnCredential{
 			nil,
@@ -107,7 +110,9 @@ func TestWebAuthnFinishHandlers_RequireConfig(t *testing.T) {
 	}
 
 	// buildWebAuthnUser: internal error when DB query fails.
-	tdb.qCred.On("All", mock.AnythingOfType("*[]*models.WebAuthnCredential")).Return(errors.New("boom")).Once()
+	filterMockQueryCalls(tdb.qCred, "Limit")
+	tdb.qCred.On("Limit", 11).Return(tdb.qCred).Once()
+	tdb.qCred.On("AllPaginated", mock.AnythingOfType("*[]*models.WebAuthnCredential")).Return((*core.PaginatedResult)(nil), errors.New("boom")).Once()
 	_, _, err := s.buildWebAuthnUser(&apptheory.Context{}, "alice")
 	if err == nil {
 		t.Fatalf("expected error")
