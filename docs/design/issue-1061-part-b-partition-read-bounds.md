@@ -67,7 +67,7 @@ page size (100).
 | 11 | store `ListHostedGenesisSessionsByAgent` (`store/soul_mint_conversation.go`) | gsi2 agent-scoped list; store-level walk |
 | 12 | store `ListHostedGenesisMicroVMExecutions` (`store/hosted_genesis_microvm_executions.go`) | PK-bounded walk; keeps the SessionID sort |
 | 13 | `listSoulAgentBoundariesNoTruncation` (`handlers_soul_boundaries.go`) | registration publication needs the full boundary list |
-| 14 | `findSoulFailureByID` (`handlers_soul_failures.go`) | failureId attribute lookup within the agent partition; read errors behave as before (treated as not-found) |
+| 14 | `findSoulFailureByID` (`handlers_soul_failures.go`) | failureId attribute lookup within the agent partition; walk errors surface as internal; not-found only after a successful full walk |
 | 15-19 | `soulreputationworker/server.go` (`listAgentValidationRecords`, `listSoulRelationships`, `listSoulAgentFailures`, `countDeclaredBoundaries`, `addLegacyEndorsers`) | event-path per-identity fan-out; cap exhaustion fails the recompute phase explicitly |
 
 ### (c) Cross-entity lookup in disguise → flagged needs-index, (b) applied as interim
