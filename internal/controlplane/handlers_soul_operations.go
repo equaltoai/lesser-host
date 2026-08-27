@@ -23,6 +23,8 @@ import (
 type listSoulOperationsResponse struct {
 	Operations []models.SoulOperation `json:"operations"`
 	Count      int                    `json:"count"`
+	Limit      int                    `json:"limit,omitempty"`
+	NextCursor string                 `json:"next_cursor,omitempty"`
 }
 
 func (s *Server) handleListSoulOperations(ctx *apptheory.Context) (*apptheory.Response, error) {
@@ -44,14 +46,29 @@ func (s *Server) handleListSoulOperations(ctx *apptheory.Context) (*apptheory.Re
 		return nil, newAppTheoryError("app.bad_request", "invalid status")
 	}
 
+	// Bounded paginated listing (issue #1061 part B): clamped Limit + opaque
+	// cursor, mirroring listSoulPublicItems. The response stays backward
+	// compatible — next_cursor/limit are additive and omitted when absent.
+	limit := envIntPositiveClampedFromString(httpx.FirstQueryValue(ctx.Request.Query, "limit"), 50, 200)
+	cursor := strings.TrimSpace(httpx.FirstQueryValue(ctx.Request.Query, "cursor"))
+
 	var items []*models.SoulOperation
-	err := s.store.DB.WithContext(ctx.Context()).
+	qb := s.store.DB.WithContext(ctx.Context()).
 		Model(&models.SoulOperation{}).
 		Index("gsi1").
 		Where("gsi1PK", "=", fmt.Sprintf("SOUL_OP_STATUS#%s", status)).
-		All(&items)
+		Limit(limit)
+	if cursor != "" {
+		qb = qb.Cursor(cursor)
+	}
+	paged, err := qb.AllPaginated(&items)
 	if err != nil {
 		return nil, newAppTheoryError("app.internal", "failed to list operations")
+	}
+
+	// Defensive response bound; the query itself is already limited.
+	if limit > 0 && len(items) > limit {
+		items = items[:limit]
 	}
 
 	out := make([]models.SoulOperation, 0, len(items))
@@ -61,7 +78,13 @@ func (s *Server) handleListSoulOperations(ctx *apptheory.Context) (*apptheory.Re
 		}
 		out = append(out, *item)
 	}
-	return apptheory.JSON(http.StatusOK, listSoulOperationsResponse{Operations: out, Count: len(out)})
+
+	nextCursor := ""
+	if paged != nil {
+		nextCursor = strings.TrimSpace(paged.NextCursor)
+	}
+
+	return apptheory.JSON(http.StatusOK, listSoulOperationsResponse{Operations: out, Count: len(out), Limit: limit, NextCursor: nextCursor})
 }
 
 func (s *Server) handleGetSoulOperation(ctx *apptheory.Context) (*apptheory.Response, error) {
