@@ -132,6 +132,29 @@ test("state table exposes the soul agent identity status enumeration index", () 
   );
 });
 
+test("state table exposes the soul agent mint conversation time-ordered index", () => {
+  const template = synthTemplate();
+  const keyed = (index: unknown, name: string, kind: string) => {
+    const keySchema = Array.isArray((index as { KeySchema?: unknown }).KeySchema)
+      ? (index as { KeySchema: Array<Record<string, unknown>> }).KeySchema
+      : [];
+    return keySchema.some((key) => key.AttributeName === name && key.KeyType === kind);
+  };
+  const tables = findResources(template, "AWS::DynamoDB::Table");
+  const matchingTable = tables.some((table) =>
+    (Array.isArray(table.GlobalSecondaryIndexes) ? table.GlobalSecondaryIndexes : []).some(
+      (index) =>
+        (index as { IndexName?: unknown }).IndexName === "gsi4" &&
+        keyed(index, "gsi4PK", "HASH") &&
+        keyed(index, "gsi4SK", "RANGE"),
+    ),
+  );
+  assert.ok(
+    matchingTable,
+    "expected state table gsi4 for soul agent mint conversation time ordering",
+  );
+});
+
 test("stack schedules the managed update sweep every five minutes", () => {
   const template = synthTemplate();
   const rules = findResources(template, "AWS::Events::Rule");

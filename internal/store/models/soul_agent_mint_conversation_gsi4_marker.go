@@ -9,29 +9,30 @@ import (
 	"time"
 )
 
-// SoulAgentIdentityGSI3BackfillMarker* are the key constants for the
-// operator backfill completeness marker for the SoulAgentIdentity gsi3 status
-// enumeration index (issue #1061 part C1).
+// SoulAgentMintConversationGSI4BackfillMarker* are the key constants for the
+// operator backfill completeness marker for the SoulAgentMintConversation gsi4
+// agent-scoped time-ordered index (issue #1067, part C2 of #1061).
 //
-// The stack update that adds gsi3 deploys before the operator runs the
-// backfill tool. During that window a gsi3 query would return an empty or
-// partial identity set as if it were complete, so the request-path consumers
-// (soul publish, soul reputation worker) fail closed until this marker exists.
+// The stack update that adds gsi4 deploys before the operator runs the
+// backfill tool. During that window a gsi4 query would return an empty or
+// partial conversation set as if it were complete, so the request-path consumer
+// (operator mint-conversation list) fails closed until this marker exists.
 // The backfill tool writes it ONLY after a complete apply pass with zero
 // errors, making it the operator's proof of completion.
 const (
-	SoulAgentIdentityGSI3BackfillMarkerPK = "META#SOULAGENTIDENTITY#GSI3"
-	SoulAgentIdentityGSI3BackfillMarkerSK = "BACKFILL"
+	SoulAgentMintConversationGSI4BackfillMarkerPK = "META#SOULAGENTMINTCONVERSATION#GSI4"
+	SoulAgentMintConversationGSI4BackfillMarkerSK = "BACKFILL"
 )
 
-// SoulAgentIdentityGSI3BackfillMarker records that the operator completed the
-// gsi3 backfill for SoulAgentIdentity items in this table/stage.
+// SoulAgentMintConversationGSI4BackfillMarker records that the operator
+// completed the gsi4 backfill for SoulAgentMintConversation items in this
+// table/stage.
 //
 // Keys:
 //
-//	PK: META#SOULAGENTIDENTITY#GSI3
+//	PK: META#SOULAGENTMINTCONVERSATION#GSI4
 //	SK: BACKFILL
-type SoulAgentIdentityGSI3BackfillMarker struct {
+type SoulAgentMintConversationGSI4BackfillMarker struct {
 	_ struct{} `theorydb:"naming:camelCase"`
 
 	PK string `theorydb:"pk,attr:PK" json:"-"`
@@ -46,23 +47,23 @@ type SoulAgentIdentityGSI3BackfillMarker struct {
 }
 
 // TableName returns the database table name for the backfill marker.
-func (SoulAgentIdentityGSI3BackfillMarker) TableName() string { return MainTableName() }
+func (SoulAgentMintConversationGSI4BackfillMarker) TableName() string { return MainTableName() }
 
 // UpdateKeys sets the database keys for the backfill marker.
-func (m *SoulAgentIdentityGSI3BackfillMarker) UpdateKeys() error {
-	m.PK = SoulAgentIdentityGSI3BackfillMarkerPK
-	m.SK = SoulAgentIdentityGSI3BackfillMarkerSK
+func (m *SoulAgentMintConversationGSI4BackfillMarker) UpdateKeys() error {
+	m.PK = SoulAgentMintConversationGSI4BackfillMarkerPK
+	m.SK = SoulAgentMintConversationGSI4BackfillMarkerSK
 	return nil
 }
 
 // GetPK returns the partition key for the backfill marker.
-func (m *SoulAgentIdentityGSI3BackfillMarker) GetPK() string { return m.PK }
+func (m *SoulAgentMintConversationGSI4BackfillMarker) GetPK() string { return m.PK }
 
 // GetSK returns the sort key for the backfill marker.
-func (m *SoulAgentIdentityGSI3BackfillMarker) GetSK() string { return m.SK }
+func (m *SoulAgentMintConversationGSI4BackfillMarker) GetSK() string { return m.SK }
 
 // String renders a one-line report of the marker without any table data.
-func (m *SoulAgentIdentityGSI3BackfillMarker) String() string {
+func (m *SoulAgentMintConversationGSI4BackfillMarker) String() string {
 	if m == nil {
 		return "nil"
 	}
