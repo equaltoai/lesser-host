@@ -34,7 +34,10 @@ const (
 
 	// identityScanProjection keeps reads key-only plus the attributes needed to
 	// compute and verify the gsi3 keys. No full item payloads are fetched.
-	identityScanProjection = "PK, SK, agentId, status, gsi3PK, gsi3SK"
+	// status is a DynamoDB reserved keyword and cannot appear literally in a
+	// ProjectionExpression; it is aliased as #s and the plan supplies that
+	// alias via ExpressionAttributeNames.
+	identityScanProjection = "PK, SK, agentId, #s, gsi3PK, gsi3SK"
 
 	attrGsi3PK = "gsi3PK"
 	attrGsi3SK = "gsi3SK"
@@ -79,6 +82,7 @@ type modelPlan struct {
 	markerSK   string
 	filter     func(*dynamodb.ScanInput)
 	projection string
+	names      map[string]string // ExpressionAttributeNames for the scan (e.g. reserved-keyword aliases)
 	classify   func(item map[string]types.AttributeValue) (gsiPK string, gsiSK string, needsWrite bool, err error)
 }
 
@@ -95,6 +99,7 @@ func identityPlan() modelPlan {
 			}
 		},
 		projection: identityScanProjection,
+		names:      map[string]string{"#s": "status"}, // status is a reserved keyword, aliased in the scan
 		classify:   classifyIdentityItem,
 	}
 }
@@ -316,6 +321,9 @@ func scanIdentityPage(ctx context.Context, opt options, plan modelPlan, ckpt che
 		ProjectionExpression: aws.String(plan.projection),
 	}
 	plan.filter(in)
+	if len(plan.names) > 0 {
+		in.ExpressionAttributeNames = plan.names
+	}
 	if ckpt.LastPK != "" || ckpt.LastSK != "" {
 		in.ExclusiveStartKey = map[string]types.AttributeValue{
 			"PK": &types.AttributeValueMemberS{Value: ckpt.LastPK},
