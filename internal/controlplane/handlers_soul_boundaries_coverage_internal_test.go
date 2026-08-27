@@ -429,14 +429,14 @@ func testBoundaryAppendRegistrationListErrorAndDuplicateDBBoundary(t *testing.T,
 
 	tdb := newSoulLifecycleTestDB()
 	s := &Server{store: store.New(tdb.db), cfg: config.Config{SoulPackBucketName: "bucket"}}
-	tdb.qBoundary.On("All", mock.AnythingOfType("*[]*models.SoulAgentBoundary")).Return(errors.New("boom")).Once()
+	tdb.qBoundary.On("AllPaginated", mock.AnythingOfType("*[]*models.SoulAgentBoundary")).Return(&core.PaginatedResult{}, errors.New("boom")).Once()
 	if _, _, _, _, _, _, appErr := s.buildSoulBoundaryAppendRegistration(t.Context(), base, "2", soulLifecycleTestAgentIDHex, identity, input); appErr == nil || appErr.Code != appErrCodeInternal {
 		t.Fatalf("expected internal error, got %#v", appErr)
 	}
 
 	tdb2 := newSoulLifecycleTestDB()
 	s2 := &Server{store: store.New(tdb2.db), cfg: config.Config{SoulPackBucketName: "bucket"}}
-	tdb2.qBoundary.On("All", mock.AnythingOfType("*[]*models.SoulAgentBoundary")).Return(nil).Run(func(args mock.Arguments) {
+	tdb2.qBoundary.On("AllPaginated", mock.AnythingOfType("*[]*models.SoulAgentBoundary")).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.SoulAgentBoundary](t, args, 0)
 		*dest = []*models.SoulAgentBoundary{{BoundaryID: input.BoundaryID}}
 	}).Once()
@@ -452,7 +452,7 @@ func testBoundaryAppendRegistrationSuccessV3MergesMissingBoundaries(t *testing.T
 	base := validBoundaryBaseRegistrationV3(t, key, soulLifecycleTestAgentIDHex, wallet)
 	older := time.Date(2026, 3, 1, 6, 0, 0, 0, time.UTC)
 	newer := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
-	tdb.qBoundary.On("All", mock.AnythingOfType("*[]*models.SoulAgentBoundary")).Return(nil).Run(func(args mock.Arguments) {
+	tdb.qBoundary.On("AllPaginated", mock.AnythingOfType("*[]*models.SoulAgentBoundary")).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.SoulAgentBoundary](t, args, 0)
 		*dest = []*models.SoulAgentBoundary{
 			{BoundaryID: "boundary-db-b", Category: boundaryTestCategoryRefusal, Statement: "later", AddedAt: newer, AddedInVersion: 2, Signature: "0x0bbb"},
@@ -505,7 +505,7 @@ func testBoundaryAppendRegistrationUnknownCapabilityAllowed(t *testing.T, key *e
 		},
 	}
 	base := validBoundaryBaseRegistrationV2(t, key, soulLifecycleTestAgentIDHex, wallet)
-	tdb.qBoundary.On("All", mock.AnythingOfType("*[]*models.SoulAgentBoundary")).Return(nil).Run(func(args mock.Arguments) {
+	tdb.qBoundary.On("AllPaginated", mock.AnythingOfType("*[]*models.SoulAgentBoundary")).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.SoulAgentBoundary](t, args, 0)
 		*dest = []*models.SoulAgentBoundary{}
 	}).Once()
@@ -555,7 +555,7 @@ func testBoundaryAppendRegistrationFirstVersionInitializesMissingFields(t *testi
 	base := validBoundaryBaseRegistrationV2(t, key, soulLifecycleTestAgentIDHex, wallet)
 	delete(base, "attestations")
 	delete(base, "boundaries")
-	tdb.qBoundary.On("All", mock.AnythingOfType("*[]*models.SoulAgentBoundary")).Return(nil).Run(func(args mock.Arguments) {
+	tdb.qBoundary.On("AllPaginated", mock.AnythingOfType("*[]*models.SoulAgentBoundary")).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.SoulAgentBoundary](t, args, 0)
 		*dest = []*models.SoulAgentBoundary{}
 	}).Once()
@@ -613,7 +613,7 @@ func testBoundaryAppendRegistrationNonMapBoundaryItemsFailSchema(t *testing.T, k
 			"signature":      "0x00",
 		},
 	}
-	tdb.qBoundary.On("All", mock.AnythingOfType("*[]*models.SoulAgentBoundary")).Return(nil).Run(func(args mock.Arguments) {
+	tdb.qBoundary.On("AllPaginated", mock.AnythingOfType("*[]*models.SoulAgentBoundary")).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.SoulAgentBoundary](t, args, 0)
 		*dest = []*models.SoulAgentBoundary{
 			{BoundaryID: "boundary-existing", Category: models.SoulBoundaryCategoryRefusal, Statement: "db-existing", AddedAt: time.Date(2026, 3, 1, 10, 0, 0, 0, time.UTC)},
@@ -639,7 +639,7 @@ func testBoundaryAppendRegistrationSkipsExistingDBBoundaries(t *testing.T, key *
 	tdb := newSoulLifecycleTestDB()
 	s := &Server{store: store.New(tdb.db), cfg: config.Config{SoulPackBucketName: "bucket"}}
 	base := validBoundaryBaseRegistrationV2(t, key, soulLifecycleTestAgentIDHex, wallet)
-	tdb.qBoundary.On("All", mock.AnythingOfType("*[]*models.SoulAgentBoundary")).Return(nil).Run(func(args mock.Arguments) {
+	tdb.qBoundary.On("AllPaginated", mock.AnythingOfType("*[]*models.SoulAgentBoundary")).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.SoulAgentBoundary](t, args, 0)
 		*dest = []*models.SoulAgentBoundary{
 			{BoundaryID: "boundary-existing", Category: models.SoulBoundaryCategoryRefusal, Statement: "db-existing", AddedAt: time.Date(2026, 3, 1, 10, 0, 0, 0, time.UTC)},
@@ -713,7 +713,7 @@ func testBoundaryAppendRegistrationInvalidJSONAndSchemaErrors(t *testing.T, key 
 		t.Run(tc.name, func(t *testing.T) {
 			tdb := newSoulLifecycleTestDB()
 			s := &Server{store: store.New(tdb.db), cfg: config.Config{SoulPackBucketName: "bucket"}}
-			tdb.qBoundary.On("All", mock.AnythingOfType("*[]*models.SoulAgentBoundary")).Return(nil).Run(func(args mock.Arguments) {
+			tdb.qBoundary.On("AllPaginated", mock.AnythingOfType("*[]*models.SoulAgentBoundary")).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 				dest := testutil.RequireMockArg[*[]*models.SoulAgentBoundary](t, args, 0)
 				*dest = []*models.SoulAgentBoundary{}
 			}).Once()
@@ -748,14 +748,14 @@ func TestListSoulAgentBoundariesNoTruncation_MoreCoverage(t *testing.T) {
 		t.Fatalf("expected internal error, got %#v", appErr)
 	}
 
-	tdb.qBoundary.On("All", mock.AnythingOfType("*[]*models.SoulAgentBoundary")).Return(errors.New("boom")).Once()
+	tdb.qBoundary.On("AllPaginated", mock.AnythingOfType("*[]*models.SoulAgentBoundary")).Return(&core.PaginatedResult{}, errors.New("boom")).Once()
 	if _, appErr := s.listSoulAgentBoundariesNoTruncation(t.Context(), soulLifecycleTestAgentIDHex); appErr == nil || appErr.Code != appErrCodeInternal {
 		t.Fatalf("expected internal error, got %#v", appErr)
 	}
 
 	tdb2 := newSoulLifecycleTestDB()
 	s2 := &Server{store: store.New(tdb2.db)}
-	tdb2.qBoundary.On("All", mock.AnythingOfType("*[]*models.SoulAgentBoundary")).Return(nil).Run(func(args mock.Arguments) {
+	tdb2.qBoundary.On("AllPaginated", mock.AnythingOfType("*[]*models.SoulAgentBoundary")).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.SoulAgentBoundary](t, args, 0)
 		*dest = []*models.SoulAgentBoundary{{BoundaryID: "b-1"}, nil}
 	}).Once()
@@ -1213,7 +1213,7 @@ func TestHandleSoulAppendBoundary_MoreBranches(t *testing.T) {
 			packs := &fakeSoulPackStore{}
 			s := newBoundaryCoverageServer(tdb, packs)
 			seedBoundaryPortalAccess(t, tdb, soulLifecycleTestAgentIDHex, wallet, 2)
-			tdb.qBoundary.On("All", mock.AnythingOfType("*[]*models.SoulAgentBoundary")).Return(nil).Run(func(args mock.Arguments) {
+			tdb.qBoundary.On("AllPaginated", mock.AnythingOfType("*[]*models.SoulAgentBoundary")).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 				dest := testutil.RequireMockArg[*[]*models.SoulAgentBoundary](t, args, 0)
 				*dest = []*models.SoulAgentBoundary{}
 			}).Once()
@@ -1266,7 +1266,7 @@ func TestHandleSoulAppendBoundary_MoreBranches(t *testing.T) {
 			NextVersion:     3,
 			SelfAttestation: "0x00",
 		}
-		tdb.qBoundary.On("All", mock.AnythingOfType("*[]*models.SoulAgentBoundary")).Return(nil).Run(func(args mock.Arguments) {
+		tdb.qBoundary.On("AllPaginated", mock.AnythingOfType("*[]*models.SoulAgentBoundary")).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 			dest := testutil.RequireMockArg[*[]*models.SoulAgentBoundary](t, args, 0)
 			*dest = []*models.SoulAgentBoundary{}
 		}).Twice()
@@ -1538,4 +1538,41 @@ func TestSortSoulBoundariesByAddedAt_AllNil(t *testing.T) {
 
 func ptrInt(v int) *int {
 	return &v
+}
+
+// TestListSoulAgentBoundariesNoTruncation_BoundedWalk verifies the boundary
+// list used by registration publication (issue #1061 part B, site 13) issues
+// page-capped reads with cursor resume and never a Scan.
+func TestListSoulAgentBoundariesNoTruncation_BoundedWalk(t *testing.T) {
+	t.Parallel()
+
+	tdb := newSoulLifecycleTestDB()
+	s := &Server{store: store.New(tdb.db)}
+
+	appliedLimits := []int{}
+	filterMockQueryCalls(tdb.qBoundary, "Limit")
+	tdb.qBoundary.On("Limit", mock.Anything).Return(tdb.qBoundary).Times(2).Run(func(args mock.Arguments) {
+		appliedLimits = append(appliedLimits, testutil.RequireMockArg[int](t, args, 0))
+	})
+	tdb.qBoundary.On("Cursor", "after-1").Return(tdb.qBoundary).Once()
+	tdb.qBoundary.On("AllPaginated", mock.AnythingOfType("*[]*models.SoulAgentBoundary")).Return(&core.PaginatedResult{HasMore: true, NextCursor: "after-1"}, nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.SoulAgentBoundary](t, args, 0)
+		*dest = []*models.SoulAgentBoundary{{AgentID: soulLifecycleTestAgentIDHex, BoundaryID: "b-1"}}
+	}).Once()
+	tdb.qBoundary.On("AllPaginated", mock.AnythingOfType("*[]*models.SoulAgentBoundary")).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.SoulAgentBoundary](t, args, 0)
+		*dest = []*models.SoulAgentBoundary{{AgentID: soulLifecycleTestAgentIDHex, BoundaryID: "b-2"}}
+	}).Once()
+
+	items, appErr := s.listSoulAgentBoundariesNoTruncation(t.Context(), soulLifecycleTestAgentIDHex)
+	if appErr != nil {
+		t.Fatalf("unexpected appErr: %v", appErr)
+	}
+	if len(items) != 2 {
+		t.Fatalf("expected 2 boundaries across pages, got %d", len(items))
+	}
+	if len(appliedLimits) != 2 || appliedLimits[0] != partitionWalkPageSize || appliedLimits[1] != partitionWalkPageSize {
+		t.Fatalf("expected every page bounded to %d, got limits %v", partitionWalkPageSize, appliedLimits)
+	}
+	tdb.qBoundary.AssertNotCalled(t, "Scan", mock.Anything)
 }

@@ -153,6 +153,11 @@ func newMintConversationTestDB() *mintConversationTestDB {
 			q.On("All", mock.Anything).Return(nil).Maybe()
 		}
 	}
+	// qHosted's agent-scoped session list is a bounded partition walk (issue
+	// #1061 part B): default to an empty paginated page so tests that do not
+	// stub the session query see an empty list. Tests that stub it filter the
+	// default first (see stubHostedGenesisSessionList).
+	tdb.qHosted.On("AllPaginated", mock.Anything).Return(&core.PaginatedResult{}, nil).Maybe()
 	// The gsi4 backfill gate reads the completeness marker first; default to
 	// found so the enumeration tests exercise the index path.
 	tdb.qMarker.On("First", mock.AnythingOfType("*models.SoulAgentMintConversationGSI4BackfillMarker")).Return(nil).Maybe()
@@ -1496,7 +1501,7 @@ func TestMintConversationBeginAndFinalize_Success(t *testing.T) {
 		addStandardMockQueryStubs(q)
 	}
 
-	qVersion.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+	qVersion.On("AllPaginated", mock.Anything).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.SoulAgentVersion](t, args, 0)
 		*dest = nil
 	}).Once()

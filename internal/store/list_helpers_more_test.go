@@ -3,13 +3,18 @@ package store
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
+	core "github.com/theory-cloud/tabletheory/v3/pkg/core"
 	ttmocks "github.com/theory-cloud/tabletheory/v3/pkg/mocks"
 
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
+
+	"github.com/equaltoai/lesser-host/internal/store/models"
+	"github.com/equaltoai/lesser-host/internal/testutil"
 )
 
 type testListItem struct {
@@ -137,4 +142,115 @@ func TestListByInstanceGSI1_ErrorsAndSorts(t *testing.T) {
 		require.Equal(t, "a", items[1].ID)
 		require.Nil(t, items[2])
 	})
+}
+
+// TestAllPartitionItemsBounded_ResumesViaCursor verifies the shared bounded
+// partition walk (issue #1061 part B) binds every page, resumes via the opaque
+// cursor, and never issues a Scan.
+func TestAllPartitionItemsBounded_ResumesViaCursor(t *testing.T) {
+	t.Parallel()
+
+	q := new(ttmocks.MockQuery)
+	appliedLimits := []int{}
+	q.On("Limit", mock.Anything).Return(q).Times(2).Run(func(args mock.Arguments) {
+		if n, ok := args.Get(0).(int); ok {
+			appliedLimits = append(appliedLimits, n)
+		}
+	})
+	q.On("Cursor", "after-1").Return(q).Once()
+	q.On("AllPaginated", mock.AnythingOfType("*[]*models.HostedGenesisSession")).Return(&core.PaginatedResult{HasMore: true, NextCursor: "after-1"}, nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.HostedGenesisSession](t, args, 0)
+		*dest = []*models.HostedGenesisSession{{ConversationID: "c1"}}
+	}).Once()
+	q.On("AllPaginated", mock.AnythingOfType("*[]*models.HostedGenesisSession")).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.HostedGenesisSession](t, args, 0)
+		*dest = []*models.HostedGenesisSession{{ConversationID: "c2"}}
+	}).Once()
+
+	items, err := allPartitionItemsBounded[models.HostedGenesisSession](q, storePartitionWalkPageSize, storePartitionWalkMaxPages)
+	require.NoError(t, err)
+	require.Len(t, items, 2)
+	require.Equal(t, []int{storePartitionWalkPageSize, storePartitionWalkPageSize}, appliedLimits)
+	q.AssertNotCalled(t, "Scan", mock.Anything)
+}
+
+// TestAllPartitionItemsBounded_ExceedsPageCapFailsClosed verifies the bounded
+// walk refuses to silently truncate a partition past the page cap.
+func TestAllPartitionItemsBounded_ExceedsPageCapFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	q := new(ttmocks.MockQuery)
+	q.On("Limit", mock.Anything).Return(q).Maybe()
+	q.On("Cursor", mock.Anything).Return(q).Maybe()
+	q.On("AllPaginated", mock.AnythingOfType("*[]*models.HostedGenesisSession")).Return(&core.PaginatedResult{HasMore: true, NextCursor: "keep-going"}, nil).Maybe()
+
+	_, err := allPartitionItemsBounded[models.HostedGenesisSession](q, storePartitionWalkPageSize, 2)
+	require.Error(t, err)
+	require.True(t, strings.Contains(err.Error(), "exceeded 2 pages"), "expected page-cap error, got %v", err)
+	q.AssertNotCalled(t, "Scan", mock.Anything)
+}
+
+// TestListHostedGenesisSessionsByAgent_BoundedWalk verifies the store method
+// (issue #1061 part B, site 11) issues page-capped reads with cursor resume
+// and never a Scan.
+func TestListHostedGenesisSessionsByAgent_BoundedWalk(t *testing.T) {
+	t.Parallel()
+
+	db := ttmocks.NewMockExtendedDBStrict()
+	q := new(ttmocks.MockQuery)
+	db.On("WithContext", context.Background()).Return(db).Once()
+	db.On("Model", mock.AnythingOfType("*models.HostedGenesisSession")).Return(q).Once()
+	q.On("Index", "gsi2").Return(q).Once()
+	q.On("Where", "gsi2PK", "=", models.HostedGenesisSessionAgentGSI2PK("inst", "agent1")).Return(q).Once()
+	q.On("Limit", 100).Return(q).Once()
+	q.On("AllPaginated", mock.AnythingOfType("*[]*models.HostedGenesisSession")).Return(&core.PaginatedResult{HasMore: true, NextCursor: "after-1"}, nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.HostedGenesisSession](t, args, 0)
+		*dest = []*models.HostedGenesisSession{{ConversationID: "c1", AgentID: "agent1"}}
+	}).Once()
+
+	db.On("WithContext", context.Background()).Return(db).Once()
+	db.On("Model", mock.AnythingOfType("*models.HostedGenesisSession")).Return(q).Once()
+	q.On("Limit", 100).Return(q).Once()
+	q.On("Cursor", "after-1").Return(q).Once()
+	q.On("AllPaginated", mock.AnythingOfType("*[]*models.HostedGenesisSession")).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.HostedGenesisSession](t, args, 0)
+		*dest = []*models.HostedGenesisSession{{ConversationID: "c2", AgentID: "agent1"}}
+	}).Once()
+
+	st := New(db)
+	items, err := st.ListHostedGenesisSessionsByAgent(context.Background(), "inst", "agent1")
+	require.NoError(t, err)
+	require.Len(t, items, 2)
+	q.AssertNotCalled(t, "Scan", mock.Anything)
+}
+
+// TestListHostedGenesisMicroVMExecutions_BoundedWalk verifies the store method
+// (issue #1061 part B, site 12) issues page-capped reads with cursor resume
+// and never a Scan.
+func TestListHostedGenesisMicroVMExecutions_BoundedWalk(t *testing.T) {
+	t.Parallel()
+
+	db := ttmocks.NewMockExtendedDBStrict()
+	q := new(ttmocks.MockQuery)
+	db.On("WithContext", context.Background()).Return(db).Twice()
+	db.On("Model", mock.AnythingOfType("*models.HostedGenesisMicroVMExecution")).Return(q).Twice()
+	q.On("Where", "PK", "=", models.HostedGenesisMicroVMExecutionPK("inst", "ns")).Return(q).Twice()
+	q.On("Limit", 100).Return(q).Times(2)
+	q.On("Cursor", "after-1").Return(q).Once()
+	q.On("AllPaginated", mock.AnythingOfType("*[]*models.HostedGenesisMicroVMExecution")).Return(&core.PaginatedResult{HasMore: true, NextCursor: "after-1"}, nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.HostedGenesisMicroVMExecution](t, args, 0)
+		*dest = []*models.HostedGenesisMicroVMExecution{{SessionID: "s2"}}
+	}).Once()
+	q.On("AllPaginated", mock.AnythingOfType("*[]*models.HostedGenesisMicroVMExecution")).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.HostedGenesisMicroVMExecution](t, args, 0)
+		*dest = []*models.HostedGenesisMicroVMExecution{{SessionID: "s1"}}
+	}).Once()
+
+	st := New(db)
+	items, err := st.ListHostedGenesisMicroVMExecutions(context.Background(), " inst ", " ns ")
+	require.NoError(t, err)
+	require.Len(t, items, 2)
+	require.Equal(t, "s1", items[0].SessionID) // sorted by SessionID
+	require.Equal(t, "s2", items[1].SessionID)
+	q.AssertNotCalled(t, "Scan", mock.Anything)
 }

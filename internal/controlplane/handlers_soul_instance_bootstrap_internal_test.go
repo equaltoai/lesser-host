@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	apptheory "github.com/theory-cloud/apptheory/v4/runtime"
+	core "github.com/theory-cloud/tabletheory/v3/pkg/core"
 	theoryErrors "github.com/theory-cloud/tabletheory/v3/pkg/errors"
 	ttmocks "github.com/theory-cloud/tabletheory/v3/pkg/mocks"
 
@@ -2279,7 +2280,7 @@ func expectSoulInstanceFinalizePublishWrites(t *testing.T, tdb *mintConversation
 		tdb.db.On("Model", mock.AnythingOfType(typeName)).Return(q).Maybe()
 		addStandardMockQueryStubs(q)
 	}
-	qVersion.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+	qVersion.On("AllPaginated", mock.Anything).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.SoulAgentVersion](t, args, 0)
 		*dest = nil
 	}).Once()

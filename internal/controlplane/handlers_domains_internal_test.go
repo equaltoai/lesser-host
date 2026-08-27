@@ -7,6 +7,7 @@ import (
 	"time"
 
 	apptheory "github.com/theory-cloud/apptheory/v4/runtime"
+	core "github.com/theory-cloud/tabletheory/v3/pkg/core"
 	theoryErrors "github.com/theory-cloud/tabletheory/v3/pkg/errors"
 	ttmocks "github.com/theory-cloud/tabletheory/v3/pkg/mocks"
 
@@ -69,7 +70,7 @@ func TestHandleListAddAndDeleteInstanceDomain(t *testing.T) {
 	}).Maybe()
 
 	// List domains.
-	tdb.qDomain.On("All", mock.AnythingOfType("*[]*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
+	tdb.qDomain.On("AllPaginated", mock.AnythingOfType("*[]*models.Domain")).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.Domain](t, args, 0)
 		*dest = []*models.Domain{{Domain: "demo.lesser.host", InstanceSlug: "demo", Type: models.DomainTypePrimary, Status: models.DomainStatusVerified}}
 	}).Once()
@@ -280,4 +281,96 @@ func TestHandleVerifyInstanceDomain_ReturnsBadRequestWhenVerificationTXTDoesNotM
 			t.Fatalf("expected app.bad_request, got %#v", err)
 		}
 	})
+}
+
+// TestHandleListInstanceDomains_BoundedPagination verifies the operator domain
+// list (issue #1061 part B) applies the clamped Limit, forwards the opaque
+// cursor, echoes next_cursor in the response, and never issues a Scan.
+func TestHandleListInstanceDomains_BoundedPagination(t *testing.T) {
+	t.Parallel()
+
+	tdb := newDomainsTestDB()
+	s := &Server{cfg: config.Config{ManagedParentDomain: "lesser.host"}, store: store.New(tdb.db)}
+	tdb.qInst.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
+		*dest = models.Instance{Slug: "demo", Status: models.InstanceStatusActive}
+		_ = dest.UpdateKeys()
+	}).Maybe()
+
+	appliedLimit := 0
+	filterMockQueryCalls(tdb.qDomain, "Limit")
+	tdb.qDomain.On("Limit", mock.Anything).Return(tdb.qDomain).Run(func(args mock.Arguments) {
+		appliedLimit = testutil.RequireMockArg[int](t, args, 0)
+	})
+	appliedCursor := ""
+	tdb.qDomain.On("Cursor", mock.Anything).Return(tdb.qDomain).Run(func(args mock.Arguments) {
+		appliedCursor = testutil.RequireMockArg[string](t, args, 0)
+	})
+	tdb.qDomain.On("AllPaginated", mock.AnythingOfType("*[]*models.Domain")).Return(&core.PaginatedResult{HasMore: true, NextCursor: " cursor-2 "}, nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.Domain](t, args, 0)
+		*dest = []*models.Domain{{Domain: "demo.lesser.host", InstanceSlug: "demo", Type: models.DomainTypePrimary, Status: models.DomainStatusVerified}}
+	}).Once()
+
+	wantCursor := "dom-tok-1"
+	ctx := adminCtx()
+	ctx.Params = map[string]string{"slug": "demo"}
+	ctx.Request.Query = map[string][]string{"limit": {"2"}, "cursor": {wantCursor}}
+	resp, err := s.handleListInstanceDomains(ctx)
+	if err != nil || resp.Status != 200 {
+		t.Fatalf("list domains: resp=%#v err=%v", resp, err)
+	}
+
+	var out listDomainsResponse
+	if err := json.Unmarshal(resp.Body, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if appliedLimit != 2 {
+		t.Fatalf("expected query Limit(2), got Limit(%d)", appliedLimit)
+	}
+	if appliedCursor != wantCursor {
+		t.Fatalf("expected cursor %q passed through, got %q", wantCursor, appliedCursor)
+	}
+	if out.Count != 1 || len(out.Domains) != 1 || out.Limit != 2 || out.NextCursor != "cursor-2" {
+		t.Fatalf("unexpected response: %#v", out)
+	}
+	tdb.qDomain.AssertNotCalled(t, "Scan", mock.Anything)
+}
+
+// TestHandleListInstanceDomains_DefaultsLimitAndClamps verifies the domain
+// list defaults to 50 and clamps oversized limit params (issue #1061 part B).
+func TestHandleListInstanceDomains_DefaultsLimitAndClamps(t *testing.T) {
+	t.Parallel()
+
+	tdb := newDomainsTestDB()
+	s := &Server{cfg: config.Config{ManagedParentDomain: "lesser.host"}, store: store.New(tdb.db)}
+	tdb.qInst.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
+		*dest = models.Instance{Slug: "demo", Status: models.InstanceStatusActive}
+		_ = dest.UpdateKeys()
+	}).Maybe()
+
+	appliedLimits := []int{}
+	filterMockQueryCalls(tdb.qDomain, "Limit")
+	tdb.qDomain.On("Limit", mock.Anything).Return(tdb.qDomain).Times(2).Run(func(args mock.Arguments) {
+		appliedLimits = append(appliedLimits, testutil.RequireMockArg[int](t, args, 0))
+	})
+	tdb.qDomain.On("AllPaginated", mock.AnythingOfType("*[]*models.Domain")).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.Domain](t, args, 0)
+		*dest = nil
+	}).Times(2)
+
+	ctxDefault := adminCtx()
+	ctxDefault.Params = map[string]string{"slug": "demo"}
+	if _, err := s.handleListInstanceDomains(ctxDefault); err != nil {
+		t.Fatalf("default limit: %v", err)
+	}
+	ctxClamp := adminCtx()
+	ctxClamp.Params = map[string]string{"slug": "demo"}
+	ctxClamp.Request.Query = map[string][]string{"limit": {"9999"}}
+	if _, err := s.handleListInstanceDomains(ctxClamp); err != nil {
+		t.Fatalf("clamped limit: %v", err)
+	}
+	if len(appliedLimits) != 2 || appliedLimits[0] != 50 || appliedLimits[1] != 200 {
+		t.Fatalf("expected default 50 and clamp 200, got %v", appliedLimits)
+	}
 }

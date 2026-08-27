@@ -17,6 +17,7 @@ import (
 	ttmocks "github.com/theory-cloud/tabletheory/v3/pkg/mocks"
 
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 
 	"github.com/equaltoai/lesser-host/internal/config"
 	"github.com/equaltoai/lesser-host/internal/store"
@@ -209,8 +210,13 @@ func TestComputeIntegritySignals_UsesDelegationOutcomesBoundariesFailuresAndEndo
 	}
 	qComm.On("OrderBy", mock.Anything, mock.Anything).Return(qComm).Maybe()
 	qComm.On("Limit", mock.Anything).Return(qComm).Maybe()
+	// Bounded partition walks (issue #1061 part B): each full-set helper reads
+	// via Limit + AllPaginated pages instead of a no-Limit All.
+	for _, q := range []*ttmocks.MockQuery{qRel, qFail, qBoundary, qV1Endorse} {
+		q.On("Limit", mock.Anything).Return(q).Once()
+	}
 
-	qRel.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+	qRel.On("AllPaginated", mock.AnythingOfType("*[]*models.SoulAgentRelationship")).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest, ok := args.Get(0).(*[]*models.SoulAgentRelationship)
 		if !ok {
 			t.Fatalf("expected *[]*models.SoulAgentRelationship, got %T", args.Get(0))
@@ -222,7 +228,7 @@ func TestComputeIntegritySignals_UsesDelegationOutcomesBoundariesFailuresAndEndo
 		}
 	}).Once()
 
-	qFail.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+	qFail.On("AllPaginated", mock.AnythingOfType("*[]*models.SoulAgentFailure")).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest, ok := args.Get(0).(*[]*models.SoulAgentFailure)
 		if !ok {
 			t.Fatalf("expected *[]*models.SoulAgentFailure, got %T", args.Get(0))
@@ -233,7 +239,7 @@ func TestComputeIntegritySignals_UsesDelegationOutcomesBoundariesFailuresAndEndo
 		}
 	}).Once()
 
-	qBoundary.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+	qBoundary.On("AllPaginated", mock.AnythingOfType("*[]*models.SoulAgentBoundary")).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest, ok := args.Get(0).(*[]*models.SoulAgentBoundary)
 		if !ok {
 			t.Fatalf("expected *[]*models.SoulAgentBoundary, got %T", args.Get(0))
@@ -241,7 +247,7 @@ func TestComputeIntegritySignals_UsesDelegationOutcomesBoundariesFailuresAndEndo
 		*dest = []*models.SoulAgentBoundary{{AgentID: agentID, BoundaryID: "b1", Statement: "no financial advice"}}
 	}).Once()
 
-	qV1Endorse.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+	qV1Endorse.On("AllPaginated", mock.AnythingOfType("*[]*models.SoulAgentPeerEndorsement")).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest, ok := args.Get(0).(*[]*models.SoulAgentPeerEndorsement)
 		if !ok {
 			t.Fatalf("expected *[]*models.SoulAgentPeerEndorsement, got %T", args.Get(0))
@@ -397,10 +403,12 @@ func newRecomputeFixture(t *testing.T) recomputeFixture {
 	qRep.On("Update", mock.Anything).Return(nil).Times(3)
 
 	qRel.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(qRel).Maybe()
-	qRel.On("All", mock.Anything).Return(nil).Maybe()
+	qRel.On("Limit", mock.Anything).Return(qRel).Maybe()
+	qRel.On("AllPaginated", mock.Anything).Return(&core.PaginatedResult{}, nil).Maybe()
 
 	qFail.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(qFail).Maybe()
-	qFail.On("All", mock.Anything).Return(nil).Maybe()
+	qFail.On("Limit", mock.Anything).Return(qFail).Maybe()
+	qFail.On("AllPaginated", mock.Anything).Return(&core.PaginatedResult{}, nil).Maybe()
 
 	qComm.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(qComm).Maybe()
 	qComm.On("OrderBy", mock.Anything, mock.Anything).Return(qComm).Maybe()
@@ -414,15 +422,18 @@ func newRecomputeFixture(t *testing.T) recomputeFixture {
 	}).Maybe()
 
 	qBoundary.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(qBoundary).Maybe()
-	qBoundary.On("All", mock.Anything).Return(nil).Maybe()
+	qBoundary.On("Limit", mock.Anything).Return(qBoundary).Maybe()
+	qBoundary.On("AllPaginated", mock.Anything).Return(&core.PaginatedResult{}, nil).Maybe()
 
 	qV1Endorse.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(qV1Endorse).Maybe()
-	qV1Endorse.On("All", mock.Anything).Return(nil).Maybe()
+	qV1Endorse.On("Limit", mock.Anything).Return(qV1Endorse).Maybe()
+	qV1Endorse.On("AllPaginated", mock.Anything).Return(&core.PaginatedResult{}, nil).Maybe()
 
 	qVal.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(qVal).Maybe()
 	qVal.On("OrderBy", mock.Anything, mock.Anything).Return(qVal).Maybe()
+	qVal.On("Limit", mock.Anything).Return(qVal).Maybe()
 	valCalls := 0
-	qVal.On("All", mock.Anything).Run(func(args mock.Arguments) {
+	qVal.On("AllPaginated", mock.Anything).Run(func(args mock.Arguments) {
 		dest, ok := args.Get(0).(*[]*models.SoulAgentValidationRecord)
 		if !ok {
 			t.Fatalf("expected *[]*models.SoulAgentValidationRecord, got %T", args.Get(0))
@@ -435,7 +446,7 @@ func newRecomputeFixture(t *testing.T) recomputeFixture {
 			*dest = nil
 		}
 		valCalls++
-	}).Return(nil).Once()
+	}).Return(&core.PaginatedResult{}, nil).Once()
 
 	packs := &fakeSoulPackStore{}
 	cfg := config.Config{
@@ -567,5 +578,144 @@ func assertZeroReputation(t *testing.T, got models.SoulAgentReputation, label st
 	}
 	if got.Validation != 0 || got.Composite != 0 || got.Economic != 0 {
 		t.Fatalf("expected zero scores for %s: %#v", label, got)
+	}
+}
+
+// newWorkerWalkQuery wires a query mock for one worker partition read that
+// returns two pages (HasMore on the first) and captures the applied limits.
+func newWorkerWalkQuery(t *testing.T, db *ttmocks.MockExtendedDB, modelType string) (*ttmocks.MockQuery, *[]int) {
+	t.Helper()
+	q := new(ttmocks.MockQuery)
+	db.On("WithContext", mock.Anything).Return(db).Maybe()
+	db.On("Model", mock.AnythingOfType(modelType)).Return(q).Maybe()
+	q.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(q).Maybe()
+	q.On("OrderBy", mock.Anything, mock.Anything).Return(q).Maybe()
+	appliedLimits := []int{}
+	q.On("Limit", mock.Anything).Return(q).Times(2).Run(func(args mock.Arguments) {
+		if n, ok := args.Get(0).(int); ok {
+			appliedLimits = append(appliedLimits, n)
+		}
+	})
+	q.On("Cursor", "after-1").Return(q).Once()
+	return q, &appliedLimits
+}
+
+// TestWorkerPartitionReads_BoundedPerIdentity verifies the five per-identity
+// worker reads (issue #1061 part B, sites 15-19) all issue page-capped
+// queries with cursor resume and never a Scan, and that the walk fails closed
+// rather than silently truncating a partition past the page cap.
+func TestWorkerPartitionReads_BoundedPerIdentity(t *testing.T) {
+	t.Parallel()
+
+	agentID := "0x00000000000000000000000000000000000000000000000000000000000000aa"
+
+	cases := []struct {
+		name      string
+		modelType string
+		call      func(srv *Server) (int, error)
+		pageOne   func(dest any)
+		pageTwo   func(dest any)
+	}{
+		{
+			name:      "validation_records",
+			modelType: "*models.SoulAgentValidationRecord",
+			call: func(srv *Server) (int, error) {
+				items, err := srv.listAgentValidationRecords(context.Background(), agentID)
+				return len(items), err
+			},
+			pageOne: func(dest any) {
+				d, _ := dest.(*[]*models.SoulAgentValidationRecord)
+				*d = []*models.SoulAgentValidationRecord{{AgentID: agentID, ChallengeID: "c1", Result: "pass", Score: 0.5}}
+			},
+			pageTwo: func(dest any) {
+				d, _ := dest.(*[]*models.SoulAgentValidationRecord)
+				*d = []*models.SoulAgentValidationRecord{{AgentID: agentID, ChallengeID: "c2", Result: "pass", Score: 0.6}}
+			},
+		},
+		{
+			name:      "relationships",
+			modelType: "*models.SoulAgentRelationship",
+			call: func(srv *Server) (int, error) {
+				items, err := srv.listSoulRelationships(context.Background(), agentID)
+				return len(items), err
+			},
+			pageOne: func(dest any) {
+				d, _ := dest.(*[]*models.SoulAgentRelationship)
+				*d = []*models.SoulAgentRelationship{{FromAgentID: "0xa", ToAgentID: agentID, Type: "delegation"}}
+			},
+			pageTwo: func(dest any) {
+				d, _ := dest.(*[]*models.SoulAgentRelationship)
+				*d = []*models.SoulAgentRelationship{{FromAgentID: "0xb", ToAgentID: agentID, Type: "endorsement"}}
+			},
+		},
+		{
+			name:      "failures",
+			modelType: "*models.SoulAgentFailure",
+			call: func(srv *Server) (int, error) {
+				items, err := srv.listSoulAgentFailures(context.Background(), agentID)
+				return len(items), err
+			},
+			pageOne: func(dest any) {
+				d, _ := dest.(*[]*models.SoulAgentFailure)
+				*d = []*models.SoulAgentFailure{{AgentID: agentID, FailureID: "f1", FailureType: "boundary_violation", Status: "open"}}
+			},
+			pageTwo: func(dest any) {
+				d, _ := dest.(*[]*models.SoulAgentFailure)
+				*d = []*models.SoulAgentFailure{{AgentID: agentID, FailureID: "f2", FailureType: "operational", Status: "recovered"}}
+			},
+		},
+		{
+			name:      "boundaries",
+			modelType: "*models.SoulAgentBoundary",
+			call: func(srv *Server) (int, error) {
+				declared, err := srv.countDeclaredBoundaries(context.Background(), agentID)
+				return int(declared), err
+			},
+			pageOne: func(dest any) {
+				d, _ := dest.(*[]*models.SoulAgentBoundary)
+				*d = []*models.SoulAgentBoundary{{AgentID: agentID, BoundaryID: "b1"}}
+			},
+			pageTwo: func(dest any) {
+				d, _ := dest.(*[]*models.SoulAgentBoundary)
+				*d = []*models.SoulAgentBoundary{{AgentID: agentID, BoundaryID: "b2"}, nil}
+			},
+		},
+		{
+			name:      "legacy_endorsements",
+			modelType: "*models.SoulAgentPeerEndorsement",
+			call: func(srv *Server) (int, error) {
+				endorsers := map[string]struct{}{}
+				err := srv.addLegacyEndorsers(context.Background(), agentID, endorsers)
+				return len(endorsers), err
+			},
+			pageOne: func(dest any) {
+				d, _ := dest.(*[]*models.SoulAgentPeerEndorsement)
+				*d = []*models.SoulAgentPeerEndorsement{{AgentID: agentID, EndorserAgentID: "0xe1"}}
+			},
+			pageTwo: func(dest any) {
+				d, _ := dest.(*[]*models.SoulAgentPeerEndorsement)
+				*d = []*models.SoulAgentPeerEndorsement{{AgentID: agentID, EndorserAgentID: "0xe2"}}
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			db := ttmocks.NewMockExtendedDB()
+			q, appliedLimits := newWorkerWalkQuery(t, db, tc.modelType)
+			q.On("AllPaginated", mock.Anything).Return(&core.PaginatedResult{HasMore: true, NextCursor: "after-1"}, nil).Run(func(args mock.Arguments) {
+				tc.pageOne(args.Get(0))
+			}).Once()
+			q.On("AllPaginated", mock.Anything).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
+				tc.pageTwo(args.Get(0))
+			}).Once()
+
+			srv := NewServer(config.Config{}, store.New(db), &fakeSoulPackStore{})
+			count, err := tc.call(srv)
+			require.NoError(t, err)
+			require.Equal(t, 2, count)
+			require.Equal(t, []int{workerPartitionWalkPageSize, workerPartitionWalkPageSize}, *appliedLimits)
+			q.AssertNotCalled(t, "Scan", mock.Anything)
+		})
 	}
 }
