@@ -1551,7 +1551,8 @@ func TestListSoulAgentBoundariesNoTruncation_BoundedWalk(t *testing.T) {
 
 	appliedLimits := []int{}
 	filterMockQueryCalls(tdb.qBoundary, "Limit")
-	tdb.qBoundary.On("Limit", mock.Anything).Return(tdb.qBoundary).Times(2).Run(func(args mock.Arguments) {
+	filterMockQueryCalls(tdb.qBoundary, "Cursor")
+	tdb.qBoundary.On("Limit", 100).Return(tdb.qBoundary).Times(2).Run(func(args mock.Arguments) {
 		appliedLimits = append(appliedLimits, testutil.RequireMockArg[int](t, args, 0))
 	})
 	tdb.qBoundary.On("Cursor", "after-1").Return(tdb.qBoundary).Once()
@@ -1571,8 +1572,9 @@ func TestListSoulAgentBoundariesNoTruncation_BoundedWalk(t *testing.T) {
 	if len(items) != 2 {
 		t.Fatalf("expected 2 boundaries across pages, got %d", len(items))
 	}
-	if len(appliedLimits) != 2 || appliedLimits[0] != partitionWalkPageSize || appliedLimits[1] != partitionWalkPageSize {
-		t.Fatalf("expected every page bounded to %d, got limits %v", partitionWalkPageSize, appliedLimits)
+	if len(appliedLimits) != 2 || appliedLimits[0] != 100 || appliedLimits[1] != 100 {
+		t.Fatalf("expected every page bounded to %d, got limits %v", 100, appliedLimits)
 	}
+	tdb.qBoundary.AssertExpectations(t)
 	tdb.qBoundary.AssertNotCalled(t, "Scan", mock.Anything)
 }
