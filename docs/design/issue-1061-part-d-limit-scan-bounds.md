@@ -56,7 +56,7 @@ truncated.
   (`app.internal`, "failed to list instances") — never a truncated fleet.
 - Sentinel audit: `listActiveInstances` has three callers —
   `handleOperatorReleases` (`handlers_operator_releases.go:52`),
-  `handleOperatorFleetDrift` (`handlers_operator_drift.go:23`),
+  `handleOperatorInstancesDrift` (`handlers_operator_drift.go:15`),
   `handleOperatorRemediateMCPDrift` (`handlers_operator_remediate_mcp.go:47`).
   All three propagate the `*apptheory.AppTheoryError` immediately
   (`if appErr != nil { return nil, appErr }`); there is no
@@ -76,7 +76,7 @@ truncated.
   `handleListOperatorProvisionJobs` (`if err != nil { return nil, ... }`); no
   swallow.
 - Adjacent (out of scope, observed): the `instance_slug` path
-  (`handlers_operator_provisioning.go:395-401`) is a **keyed gsi1 query**
+  (`handlers_operator_provisioning.go:405-411`) is a **keyed gsi1 query**
   (`gsi1PK=PROVISION_INSTANCE#<slug>`) that still uses `Limit(200).All()` —
   per-partition reads bounded by the partition (per-slug job count) but not
   page-capped. Not part of the five-site audit; flagged as a follow-up
@@ -123,7 +123,7 @@ truncated.
   with no cursor loop.
 - **Written provably-small proof (structural bound):** credential creation is
   guarded in `completeWebAuthnRegistration`
-  (`handlers_webauthn.go:248`: `len(creds) >= maxWebAuthnCredentials` → refuse),
+  (`handlers_webauthn.go:265`: `len(creds) >= maxWebAuthnCredentials` → refuse),
   and the only writer of `WEBAUTHN_CRED#` rows is
   `handleWebAuthnRegisterFinish` (single request path, one credential per
   request). Deletion (`handleWebAuthnDeleteCredential`) only shrinks the
@@ -134,7 +134,8 @@ truncated.
   single page with `HasMore=false`; an 11th+ row fails the read instead of
   silently truncating the credential set.
 - Callers: `handleWebAuthnRegisterBegin`, `handleWebAuthnRegisterFinish`,
-  `handleWebAuthnLoginBegin`, `buildWebAuthnUser` (login finish), and
+  `handleWebAuthnLoginBegin`, `buildWebAuthnUser` (login finish),
+  `handleWebAuthnCredentials` (`handlers_webauthn.go:590`), and
   `requirePrimaryAdminPasskey` (`handlers_setup.go:852`). All map the error to
   `app.internal` and return it; no swallow.
 
