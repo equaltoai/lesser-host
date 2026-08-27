@@ -140,7 +140,15 @@ func newMintConversationTestDB() *mintConversationTestDB {
 		q.On("Create").Return(nil).Maybe()
 		q.On("CreateOrUpdate").Return(nil).Maybe()
 		q.On("Delete").Return(nil).Maybe()
-		q.On("Update", mock.Anything).Return(nil).Maybe()
+		// qConv is excluded from the Update catch-all (like All below): the
+		// persistence-helper tests register exact field-list Update expectations
+		// and rely on AssertExpectations to enforce them. testify matches the
+		// FIRST compatible expectation, so a catch-all registered here would
+		// shadow the exact Once() expectations registered later in the test body
+		// and they could never be consumed (silently unenforced).
+		if q != tdb.qConv {
+			q.On("Update", mock.Anything).Return(nil).Maybe()
+		}
 		if q != tdb.qConv {
 			q.On("All", mock.Anything).Return(nil).Maybe()
 		}
@@ -773,6 +781,11 @@ func TestMintConversationPersistenceHelpers_UpdateStoredFields(t *testing.T) {
 		t.Fatalf("unexpected status update model: %#v", tdb.convModels[2])
 	}
 	requireMintConversationUpdateModelGSI4(t, tdb.convModels[2], "status")
+	// Enforce the exact field-list Once() expectations registered above. With
+	// the qConv Update catch-all excluded (see newMintConversationTestDB), these
+	// are the only Update expectations and AssertExpectations verifies each was
+	// consumed, so a write site silently dropping GSI4PK/GSI4SK cannot pass.
+	tdb.qConv.AssertExpectations(t)
 }
 
 func TestMintConversationHandleGuardsAndModelBranches(t *testing.T) {
