@@ -301,6 +301,7 @@ func (s *Server) persistHostedGenesisProgression(ctx context.Context, accepted h
 	updateConv := &models.SoulAgentMintConversation{
 		AgentID:        conv.AgentID,
 		ConversationID: conv.ConversationID,
+		CreatedAt:      conv.CreatedAt,
 	}
 	_ = updateConv.UpdateKeys()
 	expectedVersion := hostedGenesisAcceptedTurnPostPersistVersion(accepted)
@@ -318,6 +319,11 @@ func (s *Server) persistHostedGenesisProgression(ctx context.Context, accepted h
 			ub.Set("UpdatedAt", now)
 			ub.Set("CompletedAt", conv.CompletedAt)
 			ub.Set("Usage", usage)
+			// gsi4 keys are immutable (agentId + createdAt); re-write them on
+			// every conversation write so healed/backfilled items can never
+			// silently drop out of the index (guarded: a legacy item without a
+			// stored CreatedAt keeps its existing index keys).
+			setSoulMintConversationGSI4Keys(ub, updateConv)
 			return nil
 		}, tabletheory.IfExists())
 		return nil
@@ -940,6 +946,9 @@ func (s *Server) persistHostedGenesisAcceptedTurn(ctx context.Context, regCtx mi
 			AgentID:        regCtx.agentIDHex,
 			ConversationID: session.conversationID,
 		}
+		if session.conv != nil {
+			update.CreatedAt = session.conv.CreatedAt
+		}
 		_ = update.UpdateKeys()
 		tx.UpdateWithBuilder(update, func(ub core.UpdateBuilder) error {
 			ub.Add("ChargedCredits", creditsRequested)
@@ -953,6 +962,13 @@ func (s *Server) persistHostedGenesisAcceptedTurn(ctx context.Context, regCtx mi
 				ub.Set("CorrelationID", strings.TrimSpace(idem.CorrelationID))
 				ub.Set("IdempotencyKey", strings.TrimSpace(idem.IdempotencyKey))
 			}
+			// gsi4 keys are immutable (agentId + createdAt); re-write them on
+			// every conversation write so healed/backfilled items can never
+			// silently drop out of the index. Guarded: an existing conversation
+			// whose public projection row is missing (benign hydrate miss) has no
+			// stored CreatedAt here and keeps its existing index keys; the
+			// IfExists condition still fails the write when the item is absent.
+			setSoulMintConversationGSI4Keys(ub, update)
 			return nil
 		}, tabletheory.IfExists())
 		return nil
