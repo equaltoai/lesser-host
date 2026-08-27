@@ -416,6 +416,8 @@ func TestModels_UpdateKeysAndDefaults(t *testing.T) {
 		require.NoError(t, a.BeforeCreate())
 		require.Equal(t, "SOUL#AGENT#0xabc", a.PK)
 		require.Equal(t, "IDENTITY", a.SK)
+		require.Equal(t, "IDENTITY#pending", a.GSI3PK)
+		require.Equal(t, "0xabc", a.GSI3SK)
 		require.Equal(t, "0xabc", a.AgentID)
 		require.Equal(t, "example.com", a.Domain)
 		require.Equal(t, "alice", a.LocalID)
