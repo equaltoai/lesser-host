@@ -63,14 +63,27 @@ func (s *Server) handleOperatorReleases(ctx *apptheory.Context) (*apptheory.Resp
 	return apptheory.JSON(http.StatusOK, resp)
 }
 
-// listActiveInstances scans the Instance table for active instances.
+// listActiveInstances walk bounds (issue #1061 part D). The operator fleet
+// telemetry (releases/drift/remediate) needs the active-fleet snapshot; the
+// walk caps reads at 500 evaluated items (5 pages of 100) — the site's
+// documented Limit — and fails closed beyond it, never a truncated fleet.
+const (
+	activeInstancesWalkPageSize = 100
+	activeInstancesWalkMaxPages = 5
+)
+
+// listActiveInstances scans the Instance table for active instances. Reads
+// are page-capped and resumed via the opaque cursor (collectPartitionAll);
+// the previous Limit(500).All() capped items per page, not pages read, so a
+// large table was still read unboundedly (issue #1061 part D).
 func (s *Server) listActiveInstances(ctx *apptheory.Context) ([]*models.Instance, *apptheory.AppTheoryError) {
-	var items []*models.Instance
-	err := s.store.DB.WithContext(ctx.Context()).
-		Model(&models.Instance{}).
-		Where("SK", "=", models.SKMetadata).
-		Limit(500).
-		All(&items)
+	items, err := collectPartitionAll[models.Instance](
+		s.store.DB.WithContext(ctx.Context()).
+			Model(&models.Instance{}).
+			Where("SK", "=", models.SKMetadata),
+		activeInstancesWalkPageSize,
+		activeInstancesWalkMaxPages,
+	)
 	if err != nil {
 		return nil, newAppTheoryError("app.internal", "failed to list instances")
 	}

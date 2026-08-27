@@ -374,6 +374,16 @@ func (s *Server) adoptProvisionJobAccountTx(ctx *apptheory.Context, job *models.
 	return nil
 }
 
+// handleListOperatorProvisionJobs scan walk bounds (issue #1061 part D): the
+// no-slug path is a full-table scan filtered on SK=JOB; the walk caps reads at
+// 2,000 evaluated items (20 pages of 100) and fails closed beyond it instead
+// of reading the table unboundedly (the previous Limit(200) capped items per
+// page, not pages read).
+const (
+	provisionJobsWalkPageSize = 100
+	provisionJobsWalkMaxPages = 20
+)
+
 func (s *Server) handleListOperatorProvisionJobs(ctx *apptheory.Context) (*apptheory.Response, error) {
 	if err := requireOperator(ctx); err != nil {
 		return nil, err
@@ -400,12 +410,16 @@ func (s *Server) handleListOperatorProvisionJobs(ctx *apptheory.Context) (*appth
 			Limit(200).
 			All(&items)
 	} else {
-		// Operator-friendly: scan provision jobs (limited) and sort in-memory.
-		err = s.store.DB.WithContext(ctx.Context()).
-			Model(&models.ProvisionJob{}).
-			Where("SK", "=", "JOB").
-			Limit(200).
-			All(&items)
+		// Operator-friendly: page-capped scan of provision jobs (issue #1061
+		// part D) and sort in-memory. The previous Limit(200).All() capped
+		// items per page, not pages read.
+		items, err = collectPartitionAll[models.ProvisionJob](
+			s.store.DB.WithContext(ctx.Context()).
+				Model(&models.ProvisionJob{}).
+				Where("SK", "=", "JOB"),
+			provisionJobsWalkPageSize,
+			provisionJobsWalkMaxPages,
+		)
 	}
 	if err != nil {
 		return nil, newAppTheoryError("app.internal", "failed to list provisioning jobs")

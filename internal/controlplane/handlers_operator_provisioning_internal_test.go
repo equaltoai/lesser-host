@@ -7,6 +7,7 @@ import (
 	"time"
 
 	apptheory "github.com/theory-cloud/apptheory/v4/runtime"
+	core "github.com/theory-cloud/tabletheory/v3/pkg/core"
 	theoryErrors "github.com/theory-cloud/tabletheory/v3/pkg/errors"
 	ttmocks "github.com/theory-cloud/tabletheory/v3/pkg/mocks"
 
@@ -93,7 +94,9 @@ func TestHandleListOperatorProvisionJobs_FiltersAndLimits(t *testing.T) {
 		"limit":  {"1"},
 	}
 
-	tdb.qJob.On("All", mock.AnythingOfType("*[]*models.ProvisionJob")).Return(nil).Run(func(args mock.Arguments) {
+	filterMockQueryCalls(tdb.qJob, "Limit")
+	tdb.qJob.On("Limit", 100).Return(tdb.qJob).Once()
+	tdb.qJob.On("AllPaginated", mock.AnythingOfType("*[]*models.ProvisionJob")).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.ProvisionJob](t, args, 0)
 		*dest = []*models.ProvisionJob{
 			{ID: "a", Status: models.ProvisionJobStatusQueued, UpdatedAt: time.Unix(10, 0).UTC()},

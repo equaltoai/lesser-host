@@ -10,6 +10,7 @@ import (
 	"time"
 
 	apptheory "github.com/theory-cloud/apptheory/v4/runtime"
+	core "github.com/theory-cloud/tabletheory/v3/pkg/core"
 	theoryErrors "github.com/theory-cloud/tabletheory/v3/pkg/errors"
 	ttmocks "github.com/theory-cloud/tabletheory/v3/pkg/mocks"
 
@@ -564,7 +565,9 @@ func TestHandleSetupCreateAdmin_AndFinalize_Success(t *testing.T) {
 	}).Once()
 	tdb.qCP.On("CreateOrUpdate").Return(nil).Once()
 	tdb.qAudit.On("Create").Return(nil).Once()
-	tdb.qWebAuthnCred.On("All", mock.AnythingOfType("*[]*models.WebAuthnCredential")).Return(nil).Run(func(args mock.Arguments) {
+	filterMockQueryCalls(tdb.qWebAuthnCred, "Limit")
+	tdb.qWebAuthnCred.On("Limit", 11).Return(tdb.qWebAuthnCred).Once()
+	tdb.qWebAuthnCred.On("AllPaginated", mock.AnythingOfType("*[]*models.WebAuthnCredential")).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.WebAuthnCredential](t, args, 0)
 		*dest = []*models.WebAuthnCredential{{ID: "cred1", UserID: testUsernameAlice}}
 	}).Once()
@@ -1078,7 +1081,9 @@ func TestHandleSetupFinalize_RequiresPrimaryAdminPasskey(t *testing.T) {
 		*dest = models.ControlPlaneConfig{PrimaryAdminUsername: testUsernameAlice}
 		_ = dest.UpdateKeys()
 	}).Once()
-	tdb.qWebAuthnCred.On("All", mock.AnythingOfType("*[]*models.WebAuthnCredential")).Return(nil).Run(func(args mock.Arguments) {
+	filterMockQueryCalls(tdb.qWebAuthnCred, "Limit")
+	tdb.qWebAuthnCred.On("Limit", 11).Return(tdb.qWebAuthnCred).Once()
+	tdb.qWebAuthnCred.On("AllPaginated", mock.AnythingOfType("*[]*models.WebAuthnCredential")).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.WebAuthnCredential](t, args, 0)
 		*dest = nil
 	}).Once()
