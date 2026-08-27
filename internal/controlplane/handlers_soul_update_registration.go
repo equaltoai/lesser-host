@@ -1526,12 +1526,17 @@ func (s *Server) getNextSoulAgentVersion(ctx context.Context, agentIDHex string)
 		return 0, "", newAppTheoryError("app.internal", "internal error")
 	}
 
-	var items []*models.SoulAgentVersion
-	err := s.store.DB.WithContext(ctx).
-		Model(&models.SoulAgentVersion{}).
-		Where("PK", "=", fmt.Sprintf("SOUL#AGENT#%s", agentIDHex)).
-		Where("SK", "BEGINS_WITH", "VERSION#").
-		All(&items)
+	// Bounded partition walk (issue #1061 part B): page-capped reads resumed
+	// via the opaque cursor instead of a no-Limit All; fails closed on
+	// page-cap exhaustion so a version chain is never silently truncated.
+	items, err := collectPartitionAll[models.SoulAgentVersion](
+		s.store.DB.WithContext(ctx).
+			Model(&models.SoulAgentVersion{}).
+			Where("PK", "=", fmt.Sprintf("SOUL#AGENT#%s", agentIDHex)).
+			Where("SK", "BEGINS_WITH", "VERSION#"),
+		partitionWalkPageSize,
+		partitionWalkMaxPages,
+	)
 	if err != nil {
 		return 0, "", newAppTheoryError("app.internal", "failed to read version history")
 	}

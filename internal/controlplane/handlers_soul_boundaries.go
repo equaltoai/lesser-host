@@ -838,12 +838,19 @@ func (s *Server) listSoulAgentBoundariesNoTruncation(ctx context.Context, agentI
 		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
-	var items []*models.SoulAgentBoundary
-	if err := s.store.DB.WithContext(ctx).
-		Model(&models.SoulAgentBoundary{}).
-		Where("PK", "=", fmt.Sprintf("SOUL#AGENT#%s", agentIDHex)).
-		Where("SK", "BEGINS_WITH", "BOUNDARY#").
-		All(&items); err != nil {
+	// Bounded partition walk (issue #1061 part B): page-capped reads resumed
+	// via the opaque cursor instead of a no-Limit All; fails closed on
+	// page-cap exhaustion so a published boundary list is never silently
+	// truncated.
+	items, err := collectPartitionAll[models.SoulAgentBoundary](
+		s.store.DB.WithContext(ctx).
+			Model(&models.SoulAgentBoundary{}).
+			Where("PK", "=", fmt.Sprintf("SOUL#AGENT#%s", agentIDHex)).
+			Where("SK", "BEGINS_WITH", "BOUNDARY#"),
+		partitionWalkPageSize,
+		partitionWalkMaxPages,
+	)
+	if err != nil {
 		return nil, newAppTheoryError("app.internal", "failed to list boundaries")
 	}
 	return items, nil

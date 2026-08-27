@@ -68,12 +68,17 @@ func (s *Server) listOwnedInstances(ctx context.Context, username string) ([]*mo
 		return nil, nil
 	}
 
-	var instances []*models.Instance
-	err := s.store.DB.WithContext(ctx).
-		Model(&models.Instance{}).
-		Index("gsi1").
-		Where("gsi1PK", "=", fmt.Sprintf("OWNER#%s", username)).
-		All(&instances)
+	// Bounded partition walk (issue #1061 part B): page-capped reads resumed
+	// via the opaque cursor instead of a no-Limit All; fails closed on page-cap
+	// exhaustion so the caller never sees a silently truncated owner set.
+	instances, err := collectPartitionAll[models.Instance](
+		s.store.DB.WithContext(ctx).
+			Model(&models.Instance{}).
+			Index("gsi1").
+			Where("gsi1PK", "=", fmt.Sprintf("OWNER#%s", username)),
+		partitionWalkPageSize,
+		partitionWalkMaxPages,
+	)
 	if err != nil && !theoryErrors.IsNotFound(err) {
 		return nil, newAppTheoryError("app.internal", "failed to list instances")
 	}
@@ -123,12 +128,17 @@ func (s *Server) listDomainsForInstances(ctx context.Context, instances []*model
 
 func (s *Server) listVerifiedDomainsForInstance(ctx context.Context, inst *models.Instance) ([]string, *apptheory.AppTheoryError) {
 	slug := strings.ToLower(strings.TrimSpace(inst.Slug))
-	var domains []*models.Domain
-	err := s.store.DB.WithContext(ctx).
-		Model(&models.Domain{}).
-		Index("gsi1").
-		Where("gsi1PK", "=", fmt.Sprintf("INSTANCE_DOMAINS#%s", slug)).
-		All(&domains)
+	// Bounded partition walk (issue #1061 part B): page-capped reads resumed
+	// via the opaque cursor instead of a no-Limit All; fails closed on
+	// page-cap exhaustion.
+	domains, err := collectPartitionAll[models.Domain](
+		s.store.DB.WithContext(ctx).
+			Model(&models.Domain{}).
+			Index("gsi1").
+			Where("gsi1PK", "=", fmt.Sprintf("INSTANCE_DOMAINS#%s", slug)),
+		partitionWalkPageSize,
+		partitionWalkMaxPages,
+	)
 	if err != nil && !theoryErrors.IsNotFound(err) {
 		return nil, newAppTheoryError("app.internal", "failed to list domains")
 	}
@@ -166,11 +176,16 @@ func (s *Server) listAgentIDsForDomains(ctx context.Context, domainSet map[strin
 
 	agentSet := map[string]struct{}{}
 	for domain := range domainSet {
-		var idxItems []*models.SoulDomainAgentIndex
-		err := s.store.DB.WithContext(ctx).
-			Model(&models.SoulDomainAgentIndex{}).
-			Where("PK", "=", fmt.Sprintf("SOUL#DOMAIN#%s", domain)).
-			All(&idxItems)
+		// Bounded per-domain partition walk (issue #1061 part B): page-capped
+		// reads resumed via the opaque cursor instead of a no-Limit All; fails
+		// closed on page-cap exhaustion.
+		idxItems, err := collectPartitionAll[models.SoulDomainAgentIndex](
+			s.store.DB.WithContext(ctx).
+				Model(&models.SoulDomainAgentIndex{}).
+				Where("PK", "=", fmt.Sprintf("SOUL#DOMAIN#%s", domain)),
+			partitionWalkPageSize,
+			partitionWalkMaxPages,
+		)
 		if err != nil && !theoryErrors.IsNotFound(err) {
 			return nil, newAppTheoryError("app.internal", "failed to list agents")
 		}

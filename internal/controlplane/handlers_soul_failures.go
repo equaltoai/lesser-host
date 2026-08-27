@@ -187,12 +187,19 @@ func (s *Server) handleSoulRecordRecovery(ctx *apptheory.Context) (*apptheory.Re
 }
 
 func (s *Server) findSoulFailureByID(ctx *apptheory.Context, agentIDHex string, failureID string) *models.SoulAgentFailure {
-	var failures []*models.SoulAgentFailure
-	_ = s.store.DB.WithContext(ctx.Context()).
-		Model(&models.SoulAgentFailure{}).
-		Where("PK", "=", fmt.Sprintf("SOUL#AGENT#%s", agentIDHex)).
-		Where("SK", "BEGINS_WITH", "FAILURE#").
-		All(&failures)
+	// Bounded partition walk (issue #1061 part B): page-capped reads resumed
+	// via the opaque cursor instead of a no-Limit All; the failureId attribute
+	// lookup is evaluated over the bounded walk. A failureId-indexed SK would
+	// make this a point read — flagged needs-index in the issue #1061 part B
+	// report.
+	failures, _ := collectPartitionAll[models.SoulAgentFailure](
+		s.store.DB.WithContext(ctx.Context()).
+			Model(&models.SoulAgentFailure{}).
+			Where("PK", "=", fmt.Sprintf("SOUL#AGENT#%s", agentIDHex)).
+			Where("SK", "BEGINS_WITH", "FAILURE#"),
+		partitionWalkPageSize,
+		partitionWalkMaxPages,
+	)
 
 	for _, failure := range failures {
 		if failure != nil && strings.TrimSpace(failure.FailureID) == failureID {

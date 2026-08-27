@@ -50,6 +50,8 @@ func (s *Store) GetHostedGenesisMicroVMExecution(ctx context.Context, instanceSl
 
 // ListHostedGenesisMicroVMExecutions returns Host-owned operational MicroVM
 // cache rows for exactly one managed-instance slug and AppTheory namespace.
+// The read is bounded (issue #1061 part B): page-capped PK queries resumed via
+// the opaque cursor, failing closed if the partition exceeds the page cap.
 func (s *Store) ListHostedGenesisMicroVMExecutions(ctx context.Context, instanceSlug string, namespace string) ([]*models.HostedGenesisMicroVMExecution, error) {
 	if s == nil || s.DB == nil {
 		return nil, fmt.Errorf("store not initialized")
@@ -59,11 +61,13 @@ func (s *Store) ListHostedGenesisMicroVMExecutions(ctx context.Context, instance
 	if instanceSlug == "" || namespace == "" {
 		return nil, fmt.Errorf("hosted genesis microvm execution list requires instance slug and namespace")
 	}
-	var items []*models.HostedGenesisMicroVMExecution
-	err := s.DB.WithContext(ctx).
-		Model(&models.HostedGenesisMicroVMExecution{}).
-		Where("PK", "=", models.HostedGenesisMicroVMExecutionPK(instanceSlug, namespace)).
-		All(&items)
+	items, err := allPartitionItemsBounded[models.HostedGenesisMicroVMExecution](
+		s.DB.WithContext(ctx).
+			Model(&models.HostedGenesisMicroVMExecution{}).
+			Where("PK", "=", models.HostedGenesisMicroVMExecutionPK(instanceSlug, namespace)),
+		storePartitionWalkPageSize,
+		storePartitionWalkMaxPages,
+	)
 	if err != nil {
 		if theoryErrors.IsNotFound(err) {
 			return []*models.HostedGenesisMicroVMExecution{}, nil
