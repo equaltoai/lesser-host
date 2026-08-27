@@ -262,7 +262,6 @@ type mintConversationSession struct {
 	existingMessages []soulMintConversationMessage
 	existingUsage    models.AIUsage
 	isNew            bool
-	createdAt        time.Time // stored CreatedAt of the existing conversation, or the create timestamp for a new one
 }
 
 type mintConversationRegistrationContext struct {
@@ -429,40 +428,31 @@ const soulMintConversationListDefaultLimit = 20
 // conversation list route (GET /api/v1/soul/agents/{agentId}/mint-conversations).
 const soulMintConversationListMaxLimit = 100
 
-// listSoulAgentMintConversations returns the agent's mint conversations,
-// newest first.
+// listSoulAgentMintConversations returns the agent's mint conversations.
 //
-// The read is a single bounded page against the gsi4 agent-scoped time-ordered
-// index (issue #1067, part C2 of #1061): Index(gsi4) + Where(gsi4PK =
-// SOUL#AGENT#<agentId>) + OrderBy(gsi4SK DESC) + Limit(limit). The base SK is a
-// crypto/rand token with no recency meaning, so an SK-ordered base-table query
-// silently selected an arbitrary page beyond the limit; the GSI sorts by the
-// createdAt-encoded gsi4SK instead. Every DynamoDB read is key-bounded and
-// capped, and the response is defensively capped at the same bound. The
-// consumer fails closed while the index is absent (query error) or the backfill
-// marker is missing (explicit error before any read), never a silent partial
-// set. The in-memory sort below is a defensive no-op kept for the response
-// contract.
+// The read is bounded end-to-end: the query applies Limit(limit) so DynamoDB
+// evaluates at most limit items, and the response is defensively capped at the
+// same bound. Within the returned page, items are sorted by created_at
+// descending (existing contract; SK ordering is used only to select the page).
 func (s *Server) listSoulAgentMintConversations(ctx context.Context, agentIDHex string, limit int) ([]*models.SoulAgentMintConversation, *apptheory.AppTheoryError) {
 	if s == nil || s.store == nil || s.store.DB == nil {
 		return nil, newAppTheoryError("app.internal", "internal error")
-	}
-	// Fail closed until the operator has completed the gsi4 backfill for this
-	// model in this table/stage (see scripts/soul-agent-identity-gsi3-backfill).
-	if err := s.store.RequireSoulAgentMintConversationGSI4BackfillComplete(ctx); err != nil {
-		return nil, newAppTheoryError("app.internal", err.Error())
 	}
 	if limit <= 0 {
 		limit = soulMintConversationListDefaultLimit
 	}
 
-	items, err := s.store.ListSoulAgentMintConversationsByAgent(ctx, agentIDHex, limit)
-	if err != nil {
+	var items []*models.SoulAgentMintConversation
+	if err := s.store.DB.WithContext(ctx).
+		Model(&models.SoulAgentMintConversation{}).
+		Where("PK", "=", fmt.Sprintf("SOUL#AGENT#%s", agentIDHex)).
+		Where("SK", "BEGINS_WITH", "MINT_CONVERSATION#").
+		OrderBy("SK", "DESC").
+		Limit(limit).
+		All(&items); err != nil && !theoryErrors.IsNotFound(err) {
 		return nil, newAppTheoryError("app.internal", "failed to list mint conversations")
 	}
 
-	// gsi4 returns items ordered by createdAt descending already; this sort is a
-	// defensive no-op that keeps the response contract stable.
 	sort.Slice(items, func(i, j int) bool {
 		left := items[i]
 		right := items[j]
@@ -828,7 +818,7 @@ func (s *Server) handleSoulMintConversationForRegistration(ctx *apptheory.Contex
 	now := time.Now().UTC()
 
 	// Load or create conversation record.
-	session, appErr := s.loadMintConversationSession(ctx.Context(), regCtx.agentIDHex, req.ConversationID, req.Model, now)
+	session, appErr := s.loadMintConversationSession(ctx.Context(), regCtx.agentIDHex, req.ConversationID, req.Model)
 	if appErr != nil {
 		return nil, appErr
 	}
@@ -880,7 +870,6 @@ func (s *Server) handleSoulMintConversationForRegistration(ctx *apptheory.Contex
 		existingUsage:    session.existingUsage,
 		agentIDHex:       regCtx.agentIDHex,
 		conversationID:   session.conversationID,
-		createdAt:        session.createdAt,
 	})
 
 	return apptheory.SSEStreamResponse(ctx.Context(), http.StatusOK, eventCh)
@@ -901,7 +890,7 @@ func (s *Server) handleSoulAgentMintConversation(ctx *apptheory.Context) (*appth
 	}
 
 	now := time.Now().UTC()
-	session, appErr := s.loadMintConversationSession(ctx.Context(), agentCtx.agentIDHex, req.ConversationID, req.Model, now)
+	session, appErr := s.loadMintConversationSession(ctx.Context(), agentCtx.agentIDHex, req.ConversationID, req.Model)
 	if appErr != nil {
 		return nil, appErr
 	}
@@ -947,13 +936,12 @@ func (s *Server) handleSoulAgentMintConversation(ctx *apptheory.Context) (*appth
 		existingUsage:    session.existingUsage,
 		agentIDHex:       agentCtx.agentIDHex,
 		conversationID:   session.conversationID,
-		createdAt:        session.createdAt,
 	})
 
 	return apptheory.SSEStreamResponse(ctx.Context(), http.StatusOK, eventCh)
 }
 
-func (s *Server) loadMintConversationSession(ctx context.Context, agentIDHex string, requestedConversationID string, requestedModel string, now time.Time) (mintConversationSession, *apptheory.AppTheoryError) {
+func (s *Server) loadMintConversationSession(ctx context.Context, agentIDHex string, requestedConversationID string, requestedModel string) (mintConversationSession, *apptheory.AppTheoryError) {
 	session := mintConversationSession{
 		conversationID: strings.TrimSpace(requestedConversationID),
 		modelSet:       strings.TrimSpace(requestedModel),
@@ -968,7 +956,6 @@ func (s *Server) loadMintConversationSession(ctx context.Context, agentIDHex str
 		}
 		session.conversationID = token
 		session.isNew = true
-		session.createdAt = now
 		return session, nil
 	}
 
@@ -981,7 +968,6 @@ func (s *Server) loadMintConversationSession(ctx context.Context, agentIDHex str
 		return mintConversationSession{}, newAppTheoryError("app.conflict", "conversation is not in progress")
 	}
 
-	session.createdAt = conv.CreatedAt
 	storedModel := strings.TrimSpace(conv.Model)
 	if storedModel != "" {
 		if session.modelSet != "" && !strings.EqualFold(storedModel, session.modelSet) {
@@ -1015,16 +1001,10 @@ func (s *Server) debitMintConversationStreamCredits(ctx context.Context, inst *m
 		update := &models.SoulAgentMintConversation{
 			AgentID:        agentIDHex,
 			ConversationID: session.conversationID,
-			CreatedAt:      session.createdAt,
 		}
 		_ = update.UpdateKeys()
 		tx.UpdateWithBuilder(update, func(ub core.UpdateBuilder) error {
 			ub.Add("ChargedCredits", creditsRequested)
-			// gsi4 keys are immutable (agentId + createdAt); re-write them on
-			// every conversation write so healed/backfilled items can never
-			// silently drop out of the index (guarded: a legacy item without a
-			// stored CreatedAt keeps its existing index keys).
-			setSoulMintConversationGSI4Keys(ub, update)
 			return nil
 		}, tabletheory.IfExists())
 		return nil
@@ -1053,7 +1033,6 @@ type streamMintConversationParams struct {
 	existingUsage    models.AIUsage
 	agentIDHex       string
 	conversationID   string
-	createdAt        time.Time // stored CreatedAt, so turn/status updates can maintain the gsi4 keys
 }
 
 const mintConversationRunTimeout = 2 * time.Minute
@@ -1137,13 +1116,13 @@ func (s *Server) streamMintConversation(ctx context.Context, eventCh chan<- appt
 			},
 		})
 		// Update conversation status to failed.
-		s.updateMintConversationStatus(runCtx, p.agentIDHex, p.conversationID, p.createdAt, models.SoulMintConversationStatusFailed, p.existingMessages, "")
+		s.updateMintConversationStatus(runCtx, p.agentIDHex, p.conversationID, models.SoulMintConversationStatusFailed, p.existingMessages, "")
 		return
 	}
 
 	// Append assistant response to messages and persist.
 	updatedMessages := append(p.existingMessages, soulMintConversationMessage{Role: "assistant", Content: fullResponse})
-	s.updateMintConversationTurn(runCtx, p.agentIDHex, p.conversationID, p.createdAt, updatedMessages, addAIUsage(p.existingUsage, llmUsage))
+	s.updateMintConversationTurn(runCtx, p.agentIDHex, p.conversationID, updatedMessages, addAIUsage(p.existingUsage, llmUsage))
 
 	// Emit done event.
 	emitMintConversationEvent(ctx, eventCh, apptheory.SSEEvent{
@@ -1165,7 +1144,7 @@ func (s *Server) startMintConversationStream(ctx context.Context, eventCh chan<-
 	go streamer(ctx, eventCh, p)
 }
 
-func (s *Server) updateMintConversationMessages(ctx context.Context, agentIDHex string, conversationID string, createdAt time.Time, messages []soulMintConversationMessage) {
+func (s *Server) updateMintConversationMessages(ctx context.Context, agentIDHex string, conversationID string, messages []soulMintConversationMessage) {
 	if s == nil || s.store == nil || s.store.DB == nil {
 		return
 	}
@@ -1176,12 +1155,11 @@ func (s *Server) updateMintConversationMessages(ctx context.Context, agentIDHex 
 	conv := &models.SoulAgentMintConversation{
 		AgentID:        agentIDHex,
 		ConversationID: conversationID,
-		CreatedAt:      createdAt,
 		Messages:       encodeMintConversationBlob(string(messagesJSON)),
 		Status:         models.SoulMintConversationStatusInProgress,
 	}
 	_ = conv.UpdateKeys()
-	if err := s.store.DB.WithContext(ctx).Model(conv).IfExists().Update("Messages", "GSI4PK", "GSI4SK"); err != nil {
+	if err := s.store.DB.WithContext(ctx).Model(conv).IfExists().Update("Messages"); err != nil {
 		log.Printf("controlplane: update mint conversation messages failed: agent_hash=%s conversation_hash=%s err=%v", soulMintInstanceReadAuditHash(conv.AgentID), soulMintInstanceReadAuditHash(conv.ConversationID), err)
 	}
 }
@@ -1211,7 +1189,7 @@ func addAIUsage(existing models.AIUsage, delta models.AIUsage) models.AIUsage {
 	return out
 }
 
-func (s *Server) updateMintConversationTurn(ctx context.Context, agentIDHex string, conversationID string, createdAt time.Time, messages []soulMintConversationMessage, usage models.AIUsage) {
+func (s *Server) updateMintConversationTurn(ctx context.Context, agentIDHex string, conversationID string, messages []soulMintConversationMessage, usage models.AIUsage) {
 	if s == nil || s.store == nil || s.store.DB == nil {
 		return
 	}
@@ -1222,18 +1200,17 @@ func (s *Server) updateMintConversationTurn(ctx context.Context, agentIDHex stri
 	conv := &models.SoulAgentMintConversation{
 		AgentID:        agentIDHex,
 		ConversationID: conversationID,
-		CreatedAt:      createdAt,
 		Messages:       encodeMintConversationBlob(string(messagesJSON)),
 		Usage:          usage,
 		Status:         models.SoulMintConversationStatusInProgress,
 	}
 	_ = conv.UpdateKeys()
-	if err := s.store.DB.WithContext(ctx).Model(conv).IfExists().Update("Messages", "Usage", "GSI4PK", "GSI4SK"); err != nil {
+	if err := s.store.DB.WithContext(ctx).Model(conv).IfExists().Update("Messages", "Usage"); err != nil {
 		log.Printf("controlplane: update mint conversation turn failed: agent_hash=%s conversation_hash=%s err=%v", soulMintInstanceReadAuditHash(conv.AgentID), soulMintInstanceReadAuditHash(conv.ConversationID), err)
 	}
 }
 
-func (s *Server) updateMintConversationStatus(ctx context.Context, agentIDHex string, conversationID string, createdAt time.Time, status string, messages []soulMintConversationMessage, declarations string) {
+func (s *Server) updateMintConversationStatus(ctx context.Context, agentIDHex string, conversationID string, status string, messages []soulMintConversationMessage, declarations string) {
 	if s == nil || s.store == nil || s.store.DB == nil {
 		return
 	}
@@ -1242,14 +1219,13 @@ func (s *Server) updateMintConversationStatus(ctx context.Context, agentIDHex st
 	conv := &models.SoulAgentMintConversation{
 		AgentID:              agentIDHex,
 		ConversationID:       conversationID,
-		CreatedAt:            createdAt,
 		Messages:             encodeMintConversationBlob(string(messagesJSON)),
 		ProducedDeclarations: encodeMintConversationBlob(declarations),
 		Status:               status,
 		CompletedAt:          now,
 	}
 	_ = conv.UpdateKeys()
-	if err := s.store.DB.WithContext(ctx).Model(conv).IfExists().Update("Messages", "ProducedDeclarations", "Status", "CompletedAt", "GSI4PK", "GSI4SK"); err != nil {
+	if err := s.store.DB.WithContext(ctx).Model(conv).IfExists().Update("Messages", "ProducedDeclarations", "Status", "CompletedAt"); err != nil {
 		log.Printf("controlplane: update mint conversation status failed: agent_hash=%s conversation_hash=%s status=%s err=%v", soulMintInstanceReadAuditHash(conv.AgentID), soulMintInstanceReadAuditHash(conv.ConversationID), conv.Status, err)
 	}
 }

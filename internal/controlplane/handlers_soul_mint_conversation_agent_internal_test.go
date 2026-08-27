@@ -11,7 +11,6 @@ import (
 	"github.com/stretchr/testify/mock"
 	apptheory "github.com/theory-cloud/apptheory/v4/runtime"
 	theoryErrors "github.com/theory-cloud/tabletheory/v3/pkg/errors"
-	ttmocks "github.com/theory-cloud/tabletheory/v3/pkg/mocks"
 
 	"github.com/equaltoai/lesser-host/internal/store/models"
 	"github.com/equaltoai/lesser-host/internal/testutil"
@@ -30,74 +29,6 @@ const (
 	mintConversationInstanceReadValueTrue        = "true"
 )
 
-// requireMintConversationListQueryShape asserts the list query ran against the
-// gsi4 agent-scoped time-ordered index with a gsi4PK partition, gsi4SK DESC
-// ordering, and a bounded Limit. Any of these regressing to the old
-// SK-ordered base-table query fails the test (issue #1067 part C2).
-func requireMintConversationListQueryShape(t *testing.T, captured mintConversationListQueryCapture, wantAgentID string, wantLimit int) {
-	t.Helper()
-	if !captured.hasIndex || captured.index != "gsi4" {
-		t.Fatalf("expected query Index(gsi4), got index=%q hasIndex=%v", captured.index, captured.hasIndex)
-	}
-	if captured.wherePK != "SOUL#AGENT#"+wantAgentID {
-		t.Fatalf("expected Where(gsi4PK = SOUL#AGENT#%s), got %q", wantAgentID, captured.wherePK)
-	}
-	if captured.orderBy != "gsi4SK" || captured.order != soulMintConversationGSI4DescOrder {
-		t.Fatalf("expected OrderBy(gsi4SK, %s), got OrderBy(%q, %q)", soulMintConversationGSI4DescOrder, captured.orderBy, captured.order)
-	}
-	if captured.limit != wantLimit {
-		t.Fatalf("expected Limit(%d), got Limit(%d)", wantLimit, captured.limit)
-	}
-}
-
-type mintConversationListQueryCapture struct {
-	index    string
-	wherePK  string
-	orderBy  string
-	order    string
-	limit    int
-	hasIndex bool
-}
-
-// captureMintConversationListQueryShape wires capture stubs for the list query
-// builder so the test can assert the exact query shape the operator list runs.
-func captureMintConversationListQueryShape(t *testing.T, q *ttmocks.MockQuery) *mintConversationListQueryCapture {
-	t.Helper()
-	captured := &mintConversationListQueryCapture{limit: -1}
-	filterMockQueryCalls(q, "Index")
-	filterMockQueryCalls(q, "Where")
-	filterMockQueryCalls(q, "OrderBy")
-	filterMockQueryCalls(q, "Limit")
-	q.On("Index", mock.Anything).Return(q).Run(func(args mock.Arguments) {
-		captured.index = testutil.RequireMockArg[string](t, args, 0)
-		captured.hasIndex = true
-	}).Maybe()
-	q.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(q).Run(func(args mock.Arguments) {
-		field := testutil.RequireMockArg[string](t, args, 0)
-		if field == "gsi4PK" {
-			captured.wherePK = testutil.RequireMockArg[string](t, args, 2)
-		}
-	}).Maybe()
-	q.On("OrderBy", mock.Anything, mock.Anything).Return(q).Run(func(args mock.Arguments) {
-		captured.orderBy = testutil.RequireMockArg[string](t, args, 0)
-		captured.order = testutil.RequireMockArg[string](t, args, 1)
-	}).Maybe()
-	q.On("Limit", mock.Anything).Return(q).Run(func(args mock.Arguments) {
-		captured.limit = testutil.RequireMockArg[int](t, args, 0)
-	}).Maybe()
-	return captured
-}
-
-// TestHandleSoulAgentListMintConversations_SortsNewestFirst pins the selection
-// semantics of the operator mint-conversation list (issue #1067, part C2 of
-// #1061). The base SK is a crypto/rand token with no recency meaning, so the
-// list must answer from the gsi4 agent-scoped time-ordered index: a regression
-// that selects a page by SK order (an arbitrary subset beyond the limit) must
-// fail this test. The query shape is asserted (Index gsi4, gsi4PK partition,
-// OrderBy gsi4SK DESC, Limit) AND the seeded page is ordered by SK token in
-// the OPPOSITE direction of recency, so the response can only contain the
-// genuinely newest conversations when the query actually went through the
-// index.
 func TestHandleSoulAgentListMintConversations_SortsNewestFirst(t *testing.T) {
 	t.Parallel()
 
@@ -108,33 +39,31 @@ func TestHandleSoulAgentListMintConversations_SortsNewestFirst(t *testing.T) {
 	stubMintConversationIdentity(t, tdb, identity, nil)
 	stubMintConversationDomainAccess(t, tdb, identity.Domain)
 
-	captured := captureMintConversationListQueryShape(t, tdb.qConv)
-
-	// Five conversations. The SK token ("zz".."aa") is deliberately reversed
-	// against recency, so an SK-ordered page would select the OLDEST
-	// conversations first; only the gsi4 recency-ordered page yields the newest.
-	base := time.Date(2026, 3, 7, 11, 0, 0, 0, time.UTC)
-	seeded := []*models.SoulAgentMintConversation{
-		{AgentID: identity.AgentID, ConversationID: "zz-oldest", Status: models.SoulMintConversationStatusInProgress, CreatedAt: base},                   // t0
-		{AgentID: identity.AgentID, ConversationID: "yy", Status: models.SoulMintConversationStatusInProgress, CreatedAt: base.Add(time.Hour)},           // t1
-		{AgentID: identity.AgentID, ConversationID: "xx", Status: models.SoulMintConversationStatusInProgress, CreatedAt: base.Add(2 * time.Hour)},       // t2
-		{AgentID: identity.AgentID, ConversationID: "bb", Status: models.SoulMintConversationStatusCompleted, CreatedAt: base.Add(3 * time.Hour)},        // t3
-		{AgentID: identity.AgentID, ConversationID: "aa-newest", Status: models.SoulMintConversationStatusCompleted, CreatedAt: base.Add(4 * time.Hour)}, // t4
-	}
 	tdb.qConv.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
 		dest, ok := args.Get(0).(*[]*models.SoulAgentMintConversation)
 		if !ok || dest == nil {
 			t.Fatalf("expected *[]*models.SoulAgentMintConversation, got %#v", args.Get(0))
 		}
-		// The gsi4 index returns the page ordered by gsi4SK DESC (createdAt
-		// DESC): the newest two conversations for limit=2.
-		*dest = []*models.SoulAgentMintConversation{seeded[4], seeded[3]}
+		*dest = []*models.SoulAgentMintConversation{
+			{
+				AgentID:        identity.AgentID,
+				ConversationID: "conv-old",
+				Status:         models.SoulMintConversationStatusInProgress,
+				CreatedAt:      time.Date(2026, 3, 7, 11, 0, 0, 0, time.UTC),
+			},
+			{
+				AgentID:        identity.AgentID,
+				ConversationID: "conv-new",
+				Status:         models.SoulMintConversationStatusCompleted,
+				CreatedAt:      time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC),
+			},
+		}
 	}).Once()
 
 	ctx := adminCtx()
 	ctx.AuthIdentity = testUsernameAlice
 	ctx.Params = map[string]string{"agentId": identity.AgentID}
-	ctx.Request.Query = map[string][]string{"limit": {"2"}}
+	ctx.Request.Query = map[string][]string{"limit": {"10"}}
 
 	resp, err := s.handleSoulAgentListMintConversations(ctx)
 	if err != nil {
@@ -144,86 +73,15 @@ func TestHandleSoulAgentListMintConversations_SortsNewestFirst(t *testing.T) {
 		t.Fatalf("expected 200, got %d", resp.Status)
 	}
 
-	requireMintConversationListQueryShape(t, *captured, identity.AgentID, 2)
-
 	var out soulAgentMintConversationsResponse
 	if err := json.Unmarshal(resp.Body, &out); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	if out.Count != 2 || len(out.Conversations) != 2 {
-		t.Fatalf("expected bounded page of 2 conversations, got %#v", out)
+		t.Fatalf("unexpected count: %#v", out)
 	}
-	// Selection semantics: the response must contain the genuinely newest
-	// conversations, not whatever the SK order happened to pick.
-	if out.Conversations[0].ConversationID != "aa-newest" || out.Conversations[1].ConversationID != "bb" {
-		t.Fatalf("expected newest conversations selected first, got %#v", out.Conversations)
-	}
-}
-
-// TestHandleSoulAgentListMintConversations_FailsClosedWhenBackfillIncomplete
-// pins the fail-closed gate (issue #1067, part C2 of #1061): until the operator
-// has completed the gsi4 backfill for SoulAgentMintConversation, the list must
-// fail explicitly instead of silently returning a partial conversation set.
-func TestHandleSoulAgentListMintConversations_FailsClosedWhenBackfillIncomplete(t *testing.T) {
-	t.Parallel()
-
-	tdb := newMintConversationTestDB()
-	s := newMintConversationServer(tdb)
-	identity := testMintConversationIdentity()
-
-	stubMintConversationIdentity(t, tdb, identity, nil)
-	stubMintConversationDomainAccess(t, tdb, identity.Domain)
-
-	// Simulate a pre-backfill table: the gsi4 completeness marker is absent.
-	tdb.qMarker.ExpectedCalls = nil
-	tdb.qMarker.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(tdb.qMarker).Maybe()
-	tdb.qMarker.On("First", mock.AnythingOfType("*models.SoulAgentMintConversationGSI4BackfillMarker")).Return(theoryErrors.ErrItemNotFound).Once()
-
-	ctx := adminCtx()
-	ctx.AuthIdentity = testUsernameAlice
-	ctx.Params = map[string]string{"agentId": identity.AgentID}
-	ctx.Request.Query = map[string][]string{"limit": {"10"}}
-
-	_, err := s.handleSoulAgentListMintConversations(ctx)
-	appErr := requireAppTheoryError(t, err)
-	if appErr.StatusCode != http.StatusInternalServerError {
-		t.Fatalf("expected 500 fail-closed, got %#v", appErr)
-	}
-	if !strings.Contains(appErr.Message, "backfill not complete") {
-		t.Fatalf("expected explicit backfill error, got %q", appErr.Message)
-	}
-	// The list query must never run when the gate is closed.
-	tdb.qConv.AssertNotCalled(t, "All")
-}
-
-// TestHandleSoulAgentListMintConversations_FailsClosedWhenGSIQueryFails pins
-// the index-absent failure shape: a gsi4 query error (for example the index has
-// not been created by the stack update yet) propagates as an explicit failure,
-// never a silent empty/partial page.
-func TestHandleSoulAgentListMintConversations_FailsClosedWhenGSIQueryFails(t *testing.T) {
-	t.Parallel()
-
-	tdb := newMintConversationTestDB()
-	s := newMintConversationServer(tdb)
-	identity := testMintConversationIdentity()
-
-	stubMintConversationIdentity(t, tdb, identity, nil)
-	stubMintConversationDomainAccess(t, tdb, identity.Domain)
-
-	tdb.qConv.On("All", mock.Anything).Return(errors.New("gsi4 boom")).Once()
-
-	ctx := adminCtx()
-	ctx.AuthIdentity = testUsernameAlice
-	ctx.Params = map[string]string{"agentId": identity.AgentID}
-	ctx.Request.Query = map[string][]string{"limit": {"10"}}
-
-	_, err := s.handleSoulAgentListMintConversations(ctx)
-	appErr := requireAppTheoryError(t, err)
-	if appErr.StatusCode != http.StatusInternalServerError {
-		t.Fatalf("expected 500 fail-closed, got %#v", appErr)
-	}
-	if !strings.Contains(appErr.Message, "failed to list mint conversations") {
-		t.Fatalf("expected explicit list failure, got %q", appErr.Message)
+	if out.Conversations[0].ConversationID != "conv-new" {
+		t.Fatalf("expected newest conversation first, got %#v", out.Conversations)
 	}
 }
 

@@ -1,6 +1,3 @@
-// TableTheory types/constants that share the report shape; keep them side by side.
-//
-//nolint:dupl // C1/C2 backfill marker models are intentionally parallel: distinct
 package models
 
 import (

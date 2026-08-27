@@ -1851,17 +1851,6 @@ func stubSoulInstanceBootstrapDomainAndInstance(t *testing.T, tdb *mintConversat
 	}).Once()
 }
 
-// requireMintConversationCreateGSI4 asserts a newly created conversation
-// carries the gsi4 agent-scoped time-ordered keys (computed by UpdateKeys from
-// the immutable agentId + createdAt); a create site that drops the key
-// maintenance would silently miss the recency-ordered index.
-func requireMintConversationCreateGSI4(t *testing.T, conv *models.SoulAgentMintConversation, agentID string) {
-	t.Helper()
-	if conv.GSI4PK != "SOUL#AGENT#"+agentID || conv.GSI4SK != models.SoulMintConversationGSI4SK(conv.CreatedAt, conv.ConversationID) {
-		t.Fatalf("durable conversation create missing gsi4 keys: %#v", conv)
-	}
-}
-
 func expectSoulInstanceMintConversationDebit(t *testing.T, tdb *mintConversationTestDB, agentID string, expectCreate bool) {
 	t.Helper()
 
@@ -1900,7 +1889,6 @@ func expectSoulInstanceMintConversationDebit(t *testing.T, tdb *mintConversation
 			if conv.AgentID != agentID || conv.ConversationID == "" || conv.Model == "" || conv.Status != models.SoulMintConversationStatusInProgress || conv.ChargedCredits != soulMintConversationStreamBaseCredits {
 				t.Fatalf("unexpected durable conversation create: %#v", conv)
 			}
-			requireMintConversationCreateGSI4(t, conv, agentID)
 		})
 	} else {
 		tb.On("UpdateWithBuilder", mock.AnythingOfType("*models.SoulAgentMintConversation"), mock.Anything, mock.Anything).Return(tb).Once()

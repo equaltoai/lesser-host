@@ -1,19 +1,15 @@
-// Command soul-agent-identity-gsi3-backfill is the operator tool for the soul
-// GSI backfills (issue #1061): the SoulAgentIdentity gsi3 status enumeration
-// index (part C1) and the SoulAgentMintConversation gsi4 agent-scoped
-// time-ordered index (part C2, #1067).
+// Command soul-agent-identity-gsi3-backfill is the operator tool for the
+// SoulAgentIdentity gsi3 status enumeration index (issue #1061 part C1).
 //
-// The stack updates that create the indexes deploy as their own stack updates
-// (DynamoDB creates one GSI per UpdateTable). After the operator deploys them,
-// this tool backfills gsi3PK/gsi3SK (identity) and gsi4PK/gsi4SK (mint
-// conversations) onto the existing items that predate the indexes, covering
-// both models in one bounded scan. It is dry-run by default; pass --apply to
-// write. It never clobbers concurrent live writes (conditional updates only),
-// throttles between pages, persists a LastEvaluatedKey checkpoint so
-// interrupted runs resume, refuses to run until both indexes exist and are
-// ACTIVE, and writes a per-model completeness marker only after a complete
-// error-free apply pass for THAT model — the request-path consumers fail
-// closed until their model's marker exists.
+// The stack update that creates gsi3 deploys as its own stack update (DynamoDB
+// creates one GSI per UpdateTable). After the operator deploys it, this tool
+// backfills gsi3PK/gsi3SK onto the existing identity items that predate the
+// index. It is dry-run by default; pass --apply to write. It never clobbers
+// concurrent live writes (conditional updates only), throttles between pages,
+// persists a LastEvaluatedKey checkpoint so interrupted runs resume, refuses to
+// run until gsi3 exists and is ACTIVE, and writes a completeness marker only
+// after a complete error-free apply pass — the request-path identity
+// enumerations fail closed until that marker exists.
 //
 // Usage:
 //
@@ -22,8 +18,9 @@
 // AWS_PROFILE is honored when --profile is omitted. The table resolves to
 // lesser-host-<stage>-state unless overridden with --table.
 //
-// The name is kept from part C1 so the #1069 deploy-notes invocation keeps
-// working; see the README for the dual-model semantics.
+// Part C2 (issue #1067) extends this tool to the SoulAgentMintConversation gsi3
+// backfill by adding a second modelPlan; the scan/checkpoint/throttle machinery
+// is model-agnostic.
 package main
 
 import (
