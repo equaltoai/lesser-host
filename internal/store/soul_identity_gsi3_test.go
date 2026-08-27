@@ -1,3 +1,6 @@
+// parallel (distinct marker model types); keep them side by side.
+//
+//nolint:dupl // The C1 gsi3 and C2 gsi4 backfill-gate tests are intentionally
 package store
 
 import (
