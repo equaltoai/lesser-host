@@ -12,6 +12,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	apptheory "github.com/theory-cloud/apptheory/v4/runtime"
+	"github.com/theory-cloud/tabletheory/v3/pkg/core"
 	theoryErrors "github.com/theory-cloud/tabletheory/v3/pkg/errors"
 	ttmocks "github.com/theory-cloud/tabletheory/v3/pkg/mocks"
 
@@ -344,18 +345,53 @@ func newRecomputeFixture(t *testing.T) recomputeFixture {
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentBoundary")).Return(qBoundary).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentPeerEndorsement")).Return(qV1Endorse).Maybe()
 
+	qMarker := new(ttmocks.MockQuery)
+	db.On("Model", mock.AnythingOfType("*models.SoulAgentIdentityGSI3BackfillMarker")).Return(qMarker).Maybe()
+	qMarker.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(qMarker).Maybe()
+	qMarker.On("First", mock.AnythingOfType("*models.SoulAgentIdentityGSI3BackfillMarker")).Return(nil).Maybe()
+
+	// Identity enumeration now walks the gsi3 status index: one bounded
+	// AllPaginated page per lifecycle status, in SoulAgentIdentityStatuses
+	// order (pending, active, suspended, self_suspended, archived, succeeded,
+	// burned). The first three statuses carry the fixture's three identities;
+	// the remaining four return empty pages.
+	qIdentity.On("Index", mock.Anything).Return(qIdentity).Maybe()
 	qIdentity.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(qIdentity).Maybe()
-	qIdentity.On("All", mock.Anything).Run(func(args mock.Arguments) {
+	qIdentity.On("Limit", mock.Anything).Return(qIdentity).Maybe()
+	qIdentity.On("AllPaginated", mock.Anything).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest, ok := args.Get(0).(*[]*models.SoulAgentIdentity)
 		if !ok {
 			t.Fatalf("expected *[]*models.SoulAgentIdentity, got %T", args.Get(0))
 		}
 		*dest = []*models.SoulAgentIdentity{
 			{AgentID: agentC, Status: models.SoulAgentStatusPending},
-			{AgentID: agentB, Status: models.SoulAgentStatusSuspended},
+		}
+	}).Once()
+	qIdentity.On("AllPaginated", mock.Anything).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
+		dest, ok := args.Get(0).(*[]*models.SoulAgentIdentity)
+		if !ok {
+			t.Fatalf("expected *[]*models.SoulAgentIdentity, got %T", args.Get(0))
+		}
+		*dest = []*models.SoulAgentIdentity{
 			{AgentID: agentA, Status: models.SoulAgentStatusActive},
 		}
-	}).Return(nil).Once()
+	}).Once()
+	qIdentity.On("AllPaginated", mock.Anything).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
+		dest, ok := args.Get(0).(*[]*models.SoulAgentIdentity)
+		if !ok {
+			t.Fatalf("expected *[]*models.SoulAgentIdentity, got %T", args.Get(0))
+		}
+		*dest = []*models.SoulAgentIdentity{
+			{AgentID: agentB, Status: models.SoulAgentStatusSuspended},
+		}
+	}).Once()
+	qIdentity.On("AllPaginated", mock.Anything).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
+		dest, ok := args.Get(0).(*[]*models.SoulAgentIdentity)
+		if !ok {
+			t.Fatalf("expected *[]*models.SoulAgentIdentity, got %T", args.Get(0))
+		}
+		*dest = nil
+	}).Times(4)
 
 	qRep.On("WithConditionExpression", mock.Anything, mock.Anything).Return(qRep).Maybe()
 	qRep.On("Update", mock.Anything).Return(nil).Times(3)
