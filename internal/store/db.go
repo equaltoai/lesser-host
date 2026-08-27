@@ -63,7 +63,6 @@ func registeredModels() []any {
 		&models.SoulAgentContactPreferences{},
 		&models.SoulAgentChannel{},
 		&models.SoulAgentIdentity{},
-		&models.SoulAgentIdentityGSI3BackfillMarker{},
 		&models.SoulAgentPeerEndorsement{},
 		&models.SoulWalletRotationRequest{},
 		&models.SoulAgentVersion{},

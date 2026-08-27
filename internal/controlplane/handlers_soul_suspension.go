@@ -51,7 +51,7 @@ func (s *Server) handleSuspendSoulAgent(ctx *apptheory.Context) (*apptheory.Resp
 		identity.LifecycleReason = strings.TrimSpace(req.Reason)
 		identity.UpdatedAt = now
 		_ = identity.UpdateKeys()
-		if err := s.store.DB.WithContext(ctx.Context()).Model(identity).IfExists().Update("Status", "LifecycleStatus", "LifecycleReason", "GSI3PK", "GSI3SK", "UpdatedAt"); err != nil {
+		if err := s.store.DB.WithContext(ctx.Context()).Model(identity).IfExists().Update("Status", "LifecycleStatus", "LifecycleReason", "UpdatedAt"); err != nil {
 			return nil, newAppTheoryError("app.internal", "failed to suspend agent")
 		}
 	}
@@ -102,7 +102,7 @@ func (s *Server) handleReinstateSoulAgent(ctx *apptheory.Context) (*apptheory.Re
 	identity.LifecycleReason = ""
 	identity.UpdatedAt = now
 	_ = identity.UpdateKeys()
-	if err := s.store.DB.WithContext(ctx.Context()).Model(identity).IfExists().Update("Status", "LifecycleStatus", "LifecycleReason", "GSI3PK", "GSI3SK", "UpdatedAt"); err != nil {
+	if err := s.store.DB.WithContext(ctx.Context()).Model(identity).IfExists().Update("Status", "LifecycleStatus", "LifecycleReason", "UpdatedAt"); err != nil {
 		return nil, newAppTheoryError("app.internal", "failed to reinstate agent")
 	}
 

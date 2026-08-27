@@ -504,21 +504,12 @@ func (s *Server) listAgentIdentities(ctx context.Context) ([]*models.SoulAgentId
 		return nil, errors.New("store not initialized")
 	}
 
-	// gsi3 status index (issue #1061 part C1): fail closed until the operator
-	// backfilled the index, then enumerate every status partition with bounded
-	// paginated reads instead of the former SK=IDENTITY full-table scan. The
-	// status set comes from the model constants so a new status can never
-	// silently vanish from the enumeration.
-	if err := s.store.RequireSoulAgentIdentityGSI3BackfillComplete(ctx); err != nil {
-		return nil, err
-	}
 	var items []*models.SoulAgentIdentity
-	for _, status := range models.SoulAgentIdentityStatuses() {
-		page, err := s.store.ListSoulAgentIdentitiesByStatus(ctx, status, 0)
-		if err != nil {
-			return nil, err
-		}
-		items = append(items, page...)
+	if err := s.store.DB.WithContext(ctx).
+		Model(&models.SoulAgentIdentity{}).
+		Where("SK", "=", "IDENTITY").
+		All(&items); err != nil {
+		return nil, err
 	}
 	return items, nil
 }

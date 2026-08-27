@@ -113,19 +113,6 @@ export class LesserHostStack extends cdk.Stack {
       sortKey: { name: "gsi2SK", type: dynamodb.AttributeType.STRING },
       projectionType: dynamodb.ProjectionType.ALL,
     });
-    // gsi3: SoulAgentIdentity status enumeration index (issue #1061 part C1).
-    // PK is IDENTITY#<status>, SK is <agentId>. Exactly one GSI is created per
-    // deploy (DynamoDB allows one GlobalSecondaryIndex creation per UpdateTable),
-    // so this index deploys in its own stack update and the operator backfills
-    // existing items with scripts/soul-agent-identity-gsi3-backfill before the
-    // consumers trust it. The soul mint-conversation GSI is part C2 (#1067) and
-    // will be gsi4 in a separate deploy.
-    stateTable.addGlobalSecondaryIndex({
-      indexName: "gsi3",
-      partitionKey: { name: "gsi3PK", type: dynamodb.AttributeType.STRING },
-      sortKey: { name: "gsi3SK", type: dynamodb.AttributeType.STRING },
-      projectionType: dynamodb.ProjectionType.ALL,
-    });
 
     const artifactsBucket = new s3.Bucket(this, "ArtifactsBucket", {
       bucketName: `${namePrefix}-${cdk.Aws.ACCOUNT_ID}-${cdk.Aws.REGION}-artifacts`,

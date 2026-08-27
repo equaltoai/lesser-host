@@ -3,7 +3,6 @@ package controlplane
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"strings"
 	"testing"
@@ -12,8 +11,6 @@ import (
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/ethereum/go-ethereum/common"
 	apptheory "github.com/theory-cloud/apptheory/v4/runtime"
-	"github.com/theory-cloud/tabletheory/v3/pkg/core"
-	theoryErrors "github.com/theory-cloud/tabletheory/v3/pkg/errors"
 	ttmocks "github.com/theory-cloud/tabletheory/v3/pkg/mocks"
 
 	"github.com/stretchr/testify/mock"
@@ -47,12 +44,11 @@ func (f *fakeSoulPackStoreForPublish) GetObject(ctx context.Context, key string,
 }
 
 type soulPublishTestDB struct {
-	db      *ttmocks.MockExtendedDB
-	qID     *ttmocks.MockQuery
-	qMarker *ttmocks.MockQuery
-	qRep    *ttmocks.MockQuery
-	qOp     *ttmocks.MockQuery
-	qAudit  *ttmocks.MockQuery
+	db     *ttmocks.MockExtendedDB
+	qID    *ttmocks.MockQuery
+	qRep   *ttmocks.MockQuery
+	qOp    *ttmocks.MockQuery
+	qAudit *ttmocks.MockQuery
 }
 
 func newSoulPublishTestDB(t *testing.T) soulPublishTestDB {
@@ -60,28 +56,23 @@ func newSoulPublishTestDB(t *testing.T) soulPublishTestDB {
 
 	db := ttmocks.NewMockExtendedDB()
 	qID := new(ttmocks.MockQuery)
-	qMarker := new(ttmocks.MockQuery)
 	qRep := new(ttmocks.MockQuery)
 	qOp := new(ttmocks.MockQuery)
 	qAudit := new(ttmocks.MockQuery)
 
 	db.On("WithContext", mock.Anything).Return(db).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(qID).Maybe()
-	db.On("Model", mock.AnythingOfType("*models.SoulAgentIdentityGSI3BackfillMarker")).Return(qMarker).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentReputation")).Return(qRep).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulOperation")).Return(qOp).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.AuditLogEntry")).Return(qAudit).Maybe()
 
-	for _, q := range []*ttmocks.MockQuery{qID, qMarker, qRep, qOp, qAudit} {
+	for _, q := range []*ttmocks.MockQuery{qID, qRep, qOp, qAudit} {
 		q.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(q).Maybe()
 		q.On("IfNotExists").Return(q).Maybe()
 		q.On("Create").Return(nil).Maybe()
 	}
-	// The gsi3 backfill gate reads the completeness marker first; default to
-	// found so the enumeration tests exercise the index path.
-	qMarker.On("First", mock.AnythingOfType("*models.SoulAgentIdentityGSI3BackfillMarker")).Return(nil).Maybe()
 
-	return soulPublishTestDB{db: db, qID: qID, qMarker: qMarker, qRep: qRep, qOp: qOp, qAudit: qAudit}
+	return soulPublishTestDB{db: db, qID: qID, qRep: qRep, qOp: qOp, qAudit: qAudit}
 }
 
 func TestHandleSoulPublishReputationRoot_CreatesArtifactsAndProofs(t *testing.T) {
@@ -143,15 +134,13 @@ func setupSoulPublishServer(t *testing.T, agentA string, agentB string, makeRep 
 
 	tdb := newSoulPublishTestDB(t)
 
-	tdb.qID.On("Index", mock.Anything).Return(tdb.qID).Maybe()
-	tdb.qID.On("Limit", mock.Anything).Return(tdb.qID).Maybe()
-	tdb.qID.On("AllPaginated", mock.AnythingOfType("*[]*models.SoulAgentIdentity")).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
+	tdb.qID.On("All", mock.Anything).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.SoulAgentIdentity](t, args, 0)
 		*dest = []*models.SoulAgentIdentity{
 			{AgentID: agentA, Status: models.SoulAgentStatusActive},
 			{AgentID: agentB, Status: models.SoulAgentStatusActive},
 		}
-	}).Once()
+	}).Return(nil).Once()
 
 	repCalls := 0
 	tdb.qRep.On("First", mock.AnythingOfType("*models.SoulAgentReputation")).Run(func(args mock.Arguments) {
@@ -260,79 +249,5 @@ func assertPublishRootProofsVerify(t *testing.T, packs *fakeSoulPackStoreForPubl
 		if !merkle.Verify(leaf, p.Index, sibs, root) {
 			t.Fatalf("expected proof to verify: %#v", p)
 		}
-	}
-}
-
-func TestHandleSoulPublishReputationRoot_FailsClosedWhenBackfillIncomplete(t *testing.T) {
-	t.Parallel()
-
-	agentA := "0x00000000000000000000000000000000000000000000000000000000000000aa"
-	tdb := newSoulPublishTestDB(t)
-
-	// The gsi3 backfill gate reads the completeness marker; simulate a
-	// pre-backfill table where the marker does not exist yet.
-	tdb.qMarker.ExpectedCalls = nil
-	tdb.qMarker.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(tdb.qMarker).Maybe()
-	tdb.qMarker.On("First", mock.AnythingOfType("*models.SoulAgentIdentityGSI3BackfillMarker")).Return(theoryErrors.ErrItemNotFound).Once()
-
-	s, _ := setupSoulPublishServerWithDB(t, tdb, agentA)
-
-	ctx := &apptheory.Context{RequestID: "r1", AuthIdentity: "op"}
-	ctx.Set(ctxKeyOperatorRole, models.RoleAdmin)
-
-	_, err := s.handleSoulPublishReputationRoot(ctx)
-	requireSoulPublishFailClosed(t, err, http.StatusInternalServerError, "backfill not complete")
-}
-
-func TestHandleSoulPublishReputationRoot_FailsClosedWhenGSIQueryFails(t *testing.T) {
-	t.Parallel()
-
-	agentA := "0x00000000000000000000000000000000000000000000000000000000000000aa"
-	tdb := newSoulPublishTestDB(t)
-
-	tdb.qID.On("Index", mock.Anything).Return(tdb.qID).Maybe()
-	tdb.qID.On("Limit", mock.Anything).Return(tdb.qID).Maybe()
-	tdb.qID.On("AllPaginated", mock.AnythingOfType("*[]*models.SoulAgentIdentity")).Return((*core.PaginatedResult)(nil), errors.New("gsi3 boom")).Once()
-
-	s, _ := setupSoulPublishServerWithDB(t, tdb, agentA)
-
-	ctx := &apptheory.Context{RequestID: "r1", AuthIdentity: "op"}
-	ctx.Set(ctxKeyOperatorRole, models.RoleAdmin)
-
-	_, err := s.handleSoulPublishReputationRoot(ctx)
-	requireSoulPublishFailClosed(t, err, http.StatusInternalServerError, "failed to list agents")
-}
-
-// setupSoulPublishServerWithDB builds a publish server over a caller-prepared
-// test DB (used by the fail-closed tests).
-func setupSoulPublishServerWithDB(t *testing.T, tdb soulPublishTestDB, agentA string) (*Server, *fakeSoulPackStoreForPublish) {
-	t.Helper()
-
-	packs := &fakeSoulPackStoreForPublish{}
-	s := &Server{
-		store: store.New(tdb.db),
-		cfg: config.Config{
-			SoulEnabled:                              true,
-			SoulChainID:                              8453,
-			SoulRegistryContractAddress:              "0x0000000000000000000000000000000000000001",
-			SoulReputationAttestationContractAddress: "0x0000000000000000000000000000000000000002",
-			SoulValidationAttestationContractAddress: "0x0000000000000000000000000000000000000003",
-			SoulAdminSafeAddress:                     "0x0000000000000000000000000000000000000004",
-			SoulTxMode:                               "safe",
-		},
-		soulPacks: packs,
-	}
-
-	return s, packs
-}
-
-func requireSoulPublishFailClosed(t *testing.T, err error, wantStatus int, wantSubstring string) {
-	t.Helper()
-	appErr := requireAppError(t, err)
-	if appErr.StatusCode != wantStatus {
-		t.Fatalf("expected status %d, got %d (message=%q)", wantStatus, appErr.StatusCode, appErr.Message)
-	}
-	if !strings.Contains(appErr.Message, wantSubstring) {
-		t.Fatalf("expected message containing %q, got %q", wantSubstring, appErr.Message)
 	}
 }

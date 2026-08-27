@@ -97,41 +97,6 @@ test("state table exposes the active update recovery index", () => {
   );
 });
 
-test("state table exposes the soul agent identity status enumeration index", () => {
-  const template = synthTemplate();
-  const tables = findResources(template, "AWS::DynamoDB::Table");
-  const matchingTable = tables.find((table) => {
-    const indexes = Array.isArray(table.GlobalSecondaryIndexes)
-      ? table.GlobalSecondaryIndexes
-      : [];
-    return indexes.some((index) => {
-      if (!index || typeof index !== "object") {
-        return false;
-      }
-      const name = (index as { IndexName?: unknown }).IndexName;
-      const keySchema = Array.isArray(
-        (index as { KeySchema?: unknown }).KeySchema,
-      )
-        ? (index as { KeySchema: Array<Record<string, unknown>> }).KeySchema
-        : [];
-      return (
-        name === "gsi3" &&
-        keySchema.some(
-          (key) => key.AttributeName === "gsi3PK" && key.KeyType === "HASH",
-        ) &&
-        keySchema.some(
-          (key) => key.AttributeName === "gsi3SK" && key.KeyType === "RANGE",
-        )
-      );
-    });
-  });
-
-  assert.ok(
-    matchingTable,
-    "expected state table gsi3 for soul agent identity status enumeration",
-  );
-});
-
 test("stack schedules the managed update sweep every five minutes", () => {
   const template = synthTemplate();
   const rules = findResources(template, "AWS::Events::Rule");

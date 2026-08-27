@@ -280,10 +280,7 @@ func (s *Server) finalizeSoulAgentRegistrationV2Identity(ctx context.Context, id
 
 	if len(updates) > 0 {
 		identity.UpdatedAt = now.UTC()
-		// Recompute the gsi3 status enumeration keys after the activation
-		// fields may have transitioned Status to active.
-		_ = identity.UpdateKeys()
-		updates = append(updates, "GSI3PK", "GSI3SK", "UpdatedAt")
+		updates = append(updates, "UpdatedAt")
 		if err := s.store.DB.WithContext(ctx).Model(identity).IfExists().Update(updates...); err != nil {
 			return newAppTheoryError("app.internal", "failed to update identity version")
 		}
@@ -305,7 +302,7 @@ func (s *Server) ensureSoulAgentRegistrationPublishedIdentityActive(ctx context.
 	}
 	identity.UpdatedAt = now.UTC()
 	_ = identity.UpdateKeys()
-	updates = append(updates, "GSI3PK", "GSI3SK", "UpdatedAt")
+	updates = append(updates, "UpdatedAt")
 	if err := s.store.DB.WithContext(ctx).Model(identity).IfExists().Update(updates...); err != nil {
 		return newAppTheoryError("app.internal", "failed to activate identity publication")
 	}
