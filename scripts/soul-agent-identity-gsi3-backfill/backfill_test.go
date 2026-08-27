@@ -259,6 +259,35 @@ func TestRun_DryRunPurity(t *testing.T) {
 	require.NotContains(t, out.String(), "warn")
 }
 
+func TestRun_ScanProjectionAliasesReservedStatus(t *testing.T) {
+	t.Parallel()
+	// REGRESSION (issue #1061 parts C1/C2): `status` is a DynamoDB reserved
+	// keyword. A projection that names it literally dies on the very first Scan
+	// with ValidationException, before any checkpoint or item work happens.
+	// The dual-model scan (both plans share one projection) must alias it as #s
+	// and carry that alias in ExpressionAttributeNames. The expected strings are
+	// pinned literally here — never derived from the production constant — so a
+	// reintroduced bare `status` projection fails this test.
+	ddb := &fakeDDB{
+		describeTable: func(_ context.Context, _ *dynamodb.DescribeTableInput) (*dynamodb.DescribeTableOutput, error) {
+			return activeTable(), nil
+		},
+		scan: func(_ context.Context, _ *dynamodb.ScanInput) (*dynamodb.ScanOutput, error) {
+			return &dynamodb.ScanOutput{}, nil
+		},
+	}
+	opt := defaultOpt()
+	opt.checkpoint = filepath.Join(t.TempDir(), "ckpt.json")
+
+	var out bytes.Buffer
+	_, err := run(context.Background(), opt, ddb, &out, noSleep)
+	require.NoError(t, err)
+	require.Len(t, ddb.scanCalls, 1, "empty table must produce exactly one scan call")
+	first := ddb.scanCalls[0]
+	require.Equal(t, "PK, SK, agentId, #s, gsi3PK, gsi3SK, conversationId, createdAt, gsi4PK, gsi4SK", aws.ToString(first.ProjectionExpression))
+	require.Equal(t, map[string]string{"#s": "status"}, first.ExpressionAttributeNames)
+}
+
 func TestRun_ApplyWritesAndMarkers(t *testing.T) {
 	t.Parallel()
 	agentA := "0x00000000000000000000000000000000000000000000000000000000000000aa"

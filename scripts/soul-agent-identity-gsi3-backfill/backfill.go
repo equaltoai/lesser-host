@@ -43,6 +43,13 @@ const (
 	identityItemSK      = "IDENTITY"
 	mintConversationSKP = "MINT_CONVERSATION#"
 
+	// identityScanProjection keeps reads key-only plus the attributes needed to
+	// compute and verify the gsi3 keys. No full item payloads are fetched.
+	// status is a DynamoDB reserved keyword and cannot appear literally in a
+	// ProjectionExpression; it is aliased as #s and the plan supplies that
+	// alias via ExpressionAttributeNames.
+	identityScanProjection = "PK, SK, agentId, #s, gsi3PK, gsi3SK"
+
 	attrGsi3PK = "gsi3PK"
 	attrGsi3SK = "gsi3SK"
 	attrGsi4PK = "gsi4PK"
@@ -50,9 +57,11 @@ const (
 
 	// scanProjection keeps reads key-only plus the attributes needed to compute
 	// and verify the index keys of every model. No full item payloads are
-	// fetched.
-	scanProjection = "PK, SK, agentId, status, conversationId, createdAt, " +
-		attrGsi3PK + ", " + attrGsi3SK + ", " + attrGsi4PK + ", " + attrGsi4SK
+	// fetched. It extends the identity projection (part C1) with the
+	// mint-conversation attributes (part C2); reserved keywords are named
+	// through the aliases the plans supply (modelPlan.names).
+	scanProjection = identityScanProjection + ", conversationId, createdAt, " +
+		attrGsi4PK + ", " + attrGsi4SK
 
 	// scanFilterExpression routes only identity and mint-conversation items into
 	// the pages; unrelated table models are skipped by the filter (the scan
@@ -112,6 +121,7 @@ type modelPlan struct {
 	markerSK  string
 	attrs     gsiAttrs
 	matches   func(item map[string]types.AttributeValue) bool
+	names     map[string]string // ExpressionAttributeNames for the scan (e.g. reserved-keyword aliases)
 	classify  func(item map[string]types.AttributeValue) (gsiPK string, gsiSK string, needsWrite bool, err error)
 }
 
@@ -131,6 +141,7 @@ func identityPlan() modelPlan {
 		markerSK:  models.SoulAgentIdentityGSI3BackfillMarkerSK,
 		attrs:     gsiAttrs{pkAttr: attrGsi3PK, skAttr: attrGsi3SK},
 		matches:   identityItemMatches,
+		names:     map[string]string{"#s": "status"}, // status is a reserved keyword, aliased in the scan
 		classify:  classifyIdentityItem,
 	}
 }
@@ -316,7 +327,7 @@ func run(ctx context.Context, opt options, ddb ddbAPI, out io.Writer, sleepFn fu
 		if err := ctx.Err(); err != nil {
 			return interruptedReport(opt, ckpt, r, err)
 		}
-		page, err := scanPage(ctx, opt, ckpt, ddb)
+		page, err := scanPage(ctx, opt, plans, ckpt, ddb)
 		if err != nil {
 			return nil, err
 		}
@@ -479,7 +490,7 @@ func interruptedReport(opt options, ckpt checkpoint, r *report, cause error) (*r
 
 // scanPage builds and executes one bounded scan page over every model's items,
 // resuming from the checkpoint's last evaluated key when present.
-func scanPage(ctx context.Context, opt options, ckpt checkpoint, ddb ddbAPI) (*dynamodb.ScanOutput, error) {
+func scanPage(ctx context.Context, opt options, plans []modelPlan, ckpt checkpoint, ddb ddbAPI) (*dynamodb.ScanOutput, error) {
 	pageSize := opt.pageSize
 	if pageSize <= 0 || pageSize > maxPageSize {
 		pageSize = defaultPageSize
@@ -493,6 +504,20 @@ func scanPage(ctx context.Context, opt options, ckpt checkpoint, ddb ddbAPI) (*d
 			":skIdentity": &types.AttributeValueMemberS{Value: identityItemSK},
 			":mintPrefix": &types.AttributeValueMemberS{Value: mintConversationSKP},
 		},
+	}
+	// Reserved-keyword aliases come from the plans (status is aliased as #s by
+	// the identity plan; see modelPlan.names). The shared scan applies the
+	// union so a reserved word is never named literally in the projection or
+	// filter.
+	for _, plan := range plans {
+		if len(plan.names) > 0 {
+			if in.ExpressionAttributeNames == nil {
+				in.ExpressionAttributeNames = make(map[string]string, len(plan.names))
+			}
+			for alias, attribute := range plan.names {
+				in.ExpressionAttributeNames[alias] = attribute
+			}
+		}
 	}
 	if ckpt.LastPK != "" || ckpt.LastSK != "" {
 		in.ExclusiveStartKey = map[string]types.AttributeValue{
