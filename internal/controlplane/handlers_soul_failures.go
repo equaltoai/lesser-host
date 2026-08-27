@@ -158,7 +158,10 @@ func (s *Server) handleSoulRecordRecovery(ctx *apptheory.Context) (*apptheory.Re
 		return nil, newAppTheoryError("app.bad_request", "recovery_ref is too long")
 	}
 
-	target := s.findSoulFailureByID(ctx, agentIDHex, failureID)
+	target, walkErr := s.findSoulFailureByID(ctx, agentIDHex, failureID)
+	if walkErr != nil {
+		return nil, walkErr
+	}
 	if target == nil {
 		return nil, newAppTheoryError("app.not_found", "failure not found")
 	}
@@ -186,20 +189,31 @@ func (s *Server) handleSoulRecordRecovery(ctx *apptheory.Context) (*apptheory.Re
 	return apptheory.JSON(http.StatusOK, target)
 }
 
-func (s *Server) findSoulFailureByID(ctx *apptheory.Context, agentIDHex string, failureID string) *models.SoulAgentFailure {
-	var failures []*models.SoulAgentFailure
-	_ = s.store.DB.WithContext(ctx.Context()).
-		Model(&models.SoulAgentFailure{}).
-		Where("PK", "=", fmt.Sprintf("SOUL#AGENT#%s", agentIDHex)).
-		Where("SK", "BEGINS_WITH", "FAILURE#").
-		All(&failures)
+func (s *Server) findSoulFailureByID(ctx *apptheory.Context, agentIDHex string, failureID string) (*models.SoulAgentFailure, *apptheory.AppTheoryError) {
+	// Bounded partition walk (issue #1061 part B): page-capped reads resumed
+	// via the opaque cursor instead of a no-Limit All; the failureId attribute
+	// lookup is evaluated over the bounded walk. A failureId-indexed SK would
+	// make this a point read — flagged needs-index in the issue #1061 part B
+	// report. Walk errors (cap exhaustion or a transient DynamoDB read) surface
+	// as app.internal rather than being swallowed into a misleading 404.
+	failures, err := collectPartitionAll[models.SoulAgentFailure](
+		s.store.DB.WithContext(ctx.Context()).
+			Model(&models.SoulAgentFailure{}).
+			Where("PK", "=", fmt.Sprintf("SOUL#AGENT#%s", agentIDHex)).
+			Where("SK", "BEGINS_WITH", "FAILURE#"),
+		partitionWalkPageSize,
+		partitionWalkMaxPages,
+	)
+	if err != nil {
+		return nil, newAppTheoryError(appTheoryCodeInternal, "failed to read failures")
+	}
 
 	for _, failure := range failures {
 		if failure != nil && strings.TrimSpace(failure.FailureID) == failureID {
-			return failure
+			return failure, nil
 		}
 	}
-	return nil
+	return nil, nil
 }
 
 // handleSoulPublicGetFailures returns paginated failure history for an agent.

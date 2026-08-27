@@ -417,17 +417,19 @@ func TestHandleSoulFailures_RecoveryBranches(t *testing.T) {
 	tdb := newSoulCommPortalTestDB()
 	seedSoulAgentPortalAccess(t, tdb, agentID, models.SoulAgentStatusActive)
 	s := newSoulPortalServer(tdb)
-	tdb.qFailure.On("All", mock.AnythingOfType("*[]*models.SoulAgentFailure")).Return(nil).Run(func(args mock.Arguments) {
+	tdb.qFailure.On("AllPaginated", mock.AnythingOfType("*[]*models.SoulAgentFailure")).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.SoulAgentFailure](t, args, 0)
 		*dest = []*models.SoulAgentFailure{}
 	}).Once()
 	if _, err := s.handleSoulRecordRecovery(ctx); err == nil {
-		t.Fatalf("expected not found")
+		t.Fatalf("expected not found after a clean walk")
+	} else if appErr, ok := apptheory.AsAppTheoryError(err); !ok || appErr.Code != appErrCodeNotFound {
+		t.Fatalf("expected not found after a clean walk, got %#v", err)
 	}
 
 	tdb2 := newSoulCommPortalTestDB()
 	seedSoulAgentPortalAccess(t, tdb2, agentID, models.SoulAgentStatusActive)
-	tdb2.qFailure.On("All", mock.AnythingOfType("*[]*models.SoulAgentFailure")).Return(nil).Run(func(args mock.Arguments) {
+	tdb2.qFailure.On("AllPaginated", mock.AnythingOfType("*[]*models.SoulAgentFailure")).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.SoulAgentFailure](t, args, 0)
 		*dest = []*models.SoulAgentFailure{{AgentID: agentID, FailureID: "f1", Status: "recovered"}}
 	}).Once()
@@ -438,7 +440,7 @@ func TestHandleSoulFailures_RecoveryBranches(t *testing.T) {
 
 	tdb3 := newSoulCommPortalTestDB()
 	seedSoulAgentPortalAccess(t, tdb3, agentID, models.SoulAgentStatusActive)
-	tdb3.qFailure.On("All", mock.AnythingOfType("*[]*models.SoulAgentFailure")).Return(nil).Run(func(args mock.Arguments) {
+	tdb3.qFailure.On("AllPaginated", mock.AnythingOfType("*[]*models.SoulAgentFailure")).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.SoulAgentFailure](t, args, 0)
 		*dest = []*models.SoulAgentFailure{{AgentID: agentID, FailureID: "f1", Status: "open"}}
 	}).Once()
@@ -447,6 +449,16 @@ func TestHandleSoulFailures_RecoveryBranches(t *testing.T) {
 	resp, err := s.handleSoulRecordRecovery(ctx)
 	if err != nil || resp.Status != http.StatusOK {
 		t.Fatalf("unexpected response: %#v %v", resp, err)
+	}
+
+	tdb4 := newSoulCommPortalTestDB()
+	seedSoulAgentPortalAccess(t, tdb4, agentID, models.SoulAgentStatusActive)
+	tdb4.qFailure.On("AllPaginated", mock.AnythingOfType("*[]*models.SoulAgentFailure")).Return(&core.PaginatedResult{}, errors.New("cap exceeded")).Once()
+	s = newSoulPortalServer(tdb4)
+	if _, err := s.handleSoulRecordRecovery(ctx); err == nil {
+		t.Fatalf("expected internal error from walk failure")
+	} else if appErr, ok := apptheory.AsAppTheoryError(err); !ok || appErr.Code != appErrCodeInternal {
+		t.Fatalf("expected internal error from walk failure, got %#v", err)
 	}
 }
 
@@ -488,4 +500,75 @@ func TestHandleSoulFailures_PublicList(t *testing.T) {
 	if out.Count != 1 || !out.HasMore || out.NextCursor != testSoulPaginationNextCursor {
 		t.Fatalf("unexpected failures response: %#v", out)
 	}
+}
+
+// TestFindSoulFailureByID_BoundedWalk verifies the failureId lookup (issue
+// #1061 part B, site 14) reads page-capped partitions with cursor resume and
+// never a Scan; the matching failure may be on a later page.
+func TestFindSoulFailureByID_BoundedWalk(t *testing.T) {
+	t.Parallel()
+
+	agentID := soulLifecycleTestAgentIDHex
+	tdb := newSoulCommPortalTestDB()
+	seedSoulAgentPortalAccess(t, tdb, agentID, models.SoulAgentStatusActive)
+	s := newSoulPortalServer(tdb)
+
+	appliedLimits := []int{}
+	filterMockQueryCalls(tdb.qFailure, "Limit")
+	filterMockQueryCalls(tdb.qFailure, "Cursor")
+	tdb.qFailure.On("Limit", 100).Return(tdb.qFailure).Times(2).Run(func(args mock.Arguments) {
+		appliedLimits = append(appliedLimits, testutil.RequireMockArg[int](t, args, 0))
+	})
+	tdb.qFailure.On("Cursor", "after-1").Return(tdb.qFailure).Once()
+	tdb.qFailure.On("AllPaginated", mock.AnythingOfType("*[]*models.SoulAgentFailure")).Return(&core.PaginatedResult{HasMore: true, NextCursor: "after-1"}, nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.SoulAgentFailure](t, args, 0)
+		*dest = []*models.SoulAgentFailure{{AgentID: agentID, FailureID: "other", Status: "open"}}
+	}).Once()
+	tdb.qFailure.On("AllPaginated", mock.AnythingOfType("*[]*models.SoulAgentFailure")).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.SoulAgentFailure](t, args, 0)
+		*dest = []*models.SoulAgentFailure{{AgentID: agentID, FailureID: "f1", Status: "open"}}
+	}).Once()
+
+	ctx := adminCtx()
+	ctx.Params = map[string]string{"agentId": agentID}
+	target, appErr := s.findSoulFailureByID(ctx, agentID, "f1")
+	if appErr != nil {
+		t.Fatalf("unexpected appErr: %v", appErr)
+	}
+	if target == nil || target.FailureID != "f1" {
+		t.Fatalf("expected failure f1 found on a later page, got %#v", target)
+	}
+	if len(appliedLimits) != 2 || appliedLimits[0] != 100 || appliedLimits[1] != 100 {
+		t.Fatalf("expected every page bounded to %d, got limits %v", 100, appliedLimits)
+	}
+	tdb.qFailure.AssertExpectations(t)
+	tdb.qFailure.AssertNotCalled(t, "Scan", mock.Anything)
+}
+
+// TestFindSoulFailureByID_WalkErrorSurfacesAsInternal verifies a bounded-walk
+// failure (cap exhaustion or a transient DynamoDB read) surfaces as app.internal
+// instead of the misleading not-found a swallowed error would produce.
+func TestFindSoulFailureByID_WalkErrorSurfacesAsInternal(t *testing.T) {
+	t.Parallel()
+
+	agentID := soulLifecycleTestAgentIDHex
+	tdb := newSoulCommPortalTestDB()
+	seedSoulAgentPortalAccess(t, tdb, agentID, models.SoulAgentStatusActive)
+	s := newSoulPortalServer(tdb)
+
+	filterMockQueryCalls(tdb.qFailure, "Limit")
+	filterMockQueryCalls(tdb.qFailure, "Cursor")
+	tdb.qFailure.On("Limit", 100).Return(tdb.qFailure).Once()
+	tdb.qFailure.On("AllPaginated", mock.AnythingOfType("*[]*models.SoulAgentFailure")).Return(&core.PaginatedResult{}, errors.New("cap exceeded")).Once()
+
+	ctx := adminCtx()
+	ctx.Params = map[string]string{"agentId": agentID}
+	target, appErr := s.findSoulFailureByID(ctx, agentID, "f1")
+	if appErr == nil || appErr.Code != appErrCodeInternal {
+		t.Fatalf("expected internal error from walk failure, got %#v", appErr)
+	}
+	if target != nil {
+		t.Fatalf("expected no target on walk failure, got %#v", target)
+	}
+	tdb.qFailure.AssertNotCalled(t, "Scan", mock.Anything)
 }

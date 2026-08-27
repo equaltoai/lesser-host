@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/mock"
+	core "github.com/theory-cloud/tabletheory/v3/pkg/core"
 	ttmocks "github.com/theory-cloud/tabletheory/v3/pkg/mocks"
 
 	"github.com/equaltoai/lesser-host/internal/config"
@@ -69,7 +70,8 @@ func TestNormalizeInstanceAttestationSubject_RequiresOwnedHTTPHosts(t *testing.T
 		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
 		*dest = models.Instance{Slug: testBudgetInstanceSlug, HostedBaseDomain: "inst.example"}
 	}).Once()
-	qDomain.On("All", mock.AnythingOfType("*[]*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
+	qDomain.On("Limit", mock.Anything).Return(qDomain).Once()
+	qDomain.On("AllPaginated", mock.AnythingOfType("*[]*models.Domain")).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.Domain](t, args, 0)
 		*dest = nil
 	}).Once()
@@ -127,4 +129,49 @@ func TestAttestationDomainActive(t *testing.T) {
 	if attestationDomainActive("pending") {
 		t.Fatalf("expected pending domain to be rejected")
 	}
+}
+
+// TestLoadAttestationSubjectDomainsBoundedWalk verifies the subject-domain
+// read (issue #1061 part B) issues no Scan, applies the bounded page limit on
+// every outgoing query, and resumes across pages via the opaque cursor.
+func TestLoadAttestationSubjectDomainsBoundedWalk(t *testing.T) {
+	t.Parallel()
+
+	db := ttmocks.NewMockExtendedDB()
+	qDomain := new(ttmocks.MockQuery)
+	db.On("WithContext", mock.Anything).Return(db).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.Domain")).Return(qDomain).Maybe()
+	for _, q := range []*ttmocks.MockQuery{qDomain} {
+		q.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(q).Maybe()
+		q.On("Index", mock.Anything).Return(q).Maybe()
+		q.On("ConsistentRead").Return(q).Maybe()
+	}
+
+	appliedLimits := []int{}
+	qDomain.On("Limit", 100).Return(qDomain).Times(2).Run(func(args mock.Arguments) {
+		appliedLimits = append(appliedLimits, testutil.RequireMockArg[int](t, args, 0))
+	})
+	qDomain.On("Cursor", "after-page-1").Return(qDomain).Once()
+	qDomain.On("AllPaginated", mock.AnythingOfType("*[]*models.Domain")).Return(&core.PaginatedResult{HasMore: true, NextCursor: "after-page-1"}, nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.Domain](t, args, 0)
+		*dest = []*models.Domain{{Domain: "one.example", InstanceSlug: "inst"}}
+	}).Once()
+	qDomain.On("AllPaginated", mock.AnythingOfType("*[]*models.Domain")).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.Domain](t, args, 0)
+		*dest = []*models.Domain{{Domain: "two.example", InstanceSlug: "inst"}, {Domain: "three.example", InstanceSlug: "inst"}}
+	}).Once()
+
+	s := NewServer(config.Config{Stage: "lab"}, store.New(db))
+	domains, appErr := s.loadAttestationSubjectDomains(t.Context(), "inst")
+	if appErr != nil {
+		t.Fatalf("unexpected appErr: %v", appErr)
+	}
+	if len(domains) != 3 {
+		t.Fatalf("expected 3 domains across pages, got %d", len(domains))
+	}
+	if len(appliedLimits) != 2 || appliedLimits[0] != 100 || appliedLimits[1] != 100 {
+		t.Fatalf("expected every page bounded to %d, got limits %v", 100, appliedLimits)
+	}
+	qDomain.AssertExpectations(t)
+	qDomain.AssertNotCalled(t, "Scan", mock.Anything)
 }

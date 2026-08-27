@@ -19,6 +19,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 	apptheory "github.com/theory-cloud/apptheory/v4/runtime"
+	core "github.com/theory-cloud/tabletheory/v3/pkg/core"
 	theoryErrors "github.com/theory-cloud/tabletheory/v3/pkg/errors"
 
 	"github.com/stretchr/testify/mock"
@@ -423,7 +424,7 @@ func TestUpdateSoulAgentRegistrationForInstance_V3_SyncsENSWithoutS3Key(t *testi
 	}).Once()
 	tdb.qWalletIdx.On("First", mock.AnythingOfType("*models.WalletIndex")).Return(theoryErrors.ErrItemNotFound).Once()
 	tdb.qVersion.On("First", mock.AnythingOfType("*models.SoulAgentVersion")).Return(theoryErrors.ErrItemNotFound).Once()
-	tdb.qVersion.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+	tdb.qVersion.On("AllPaginated", mock.Anything).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.SoulAgentVersion](t, args, 0)
 		*dest = nil
 	}).Once()
@@ -807,7 +808,7 @@ func TestPublishLegacySoulRegistration_RejectsClaimTransitionBeforeS3Write(t *te
 		Domain:  "example.com",
 		LocalID: "agent-alice",
 	}
-	tdb.qVersion.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+	tdb.qVersion.On("AllPaginated", mock.Anything).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.SoulAgentVersion](t, args, 0)
 		*dest = []*models.SoulAgentVersion{}
 	}).Once()

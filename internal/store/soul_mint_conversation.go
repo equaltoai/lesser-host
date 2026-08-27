@@ -88,16 +88,20 @@ func (s *Store) PutSoulAgentMintConversation(ctx context.Context, item *models.S
 // ListHostedGenesisSessionsByAgent queries all hosted-genesis sessions for an agent
 // within a managed instance using the agent-scoped GSI2 index. Results are ordered
 // by GSI2SK (createdAt) natively; callers sort by updatedAt in-memory if needed.
+// The read is bounded (issue #1061 part B): page-capped GSI2 queries resumed via
+// the opaque cursor, failing closed if the partition exceeds the page cap.
 func (s *Store) ListHostedGenesisSessionsByAgent(ctx context.Context, instanceSlug string, agentID string) ([]*models.HostedGenesisSession, error) {
 	if s == nil || s.DB == nil {
 		return nil, theoryErrors.ErrItemNotFound
 	}
-	var items []*models.HostedGenesisSession
-	err := s.DB.WithContext(ctx).
-		Model(&models.HostedGenesisSession{}).
-		Index("gsi2").
-		Where("gsi2PK", "=", models.HostedGenesisSessionAgentGSI2PK(instanceSlug, agentID)).
-		All(&items)
+	items, err := allPartitionItemsBounded[models.HostedGenesisSession](
+		s.DB.WithContext(ctx).
+			Model(&models.HostedGenesisSession{}).
+			Index("gsi2").
+			Where("gsi2PK", "=", models.HostedGenesisSessionAgentGSI2PK(instanceSlug, agentID)),
+		storePartitionWalkPageSize,
+		storePartitionWalkMaxPages,
+	)
 	if err != nil && !theoryErrors.IsNotFound(err) {
 		return nil, err
 	}

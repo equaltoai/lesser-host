@@ -17,6 +17,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 	apptheory "github.com/theory-cloud/apptheory/v4/runtime"
+	core "github.com/theory-cloud/tabletheory/v3/pkg/core"
 	theoryErrors "github.com/theory-cloud/tabletheory/v3/pkg/errors"
 
 	"github.com/stretchr/testify/mock"
@@ -79,7 +80,7 @@ func TestHandleSoulAgentUpdateRegistration_V2_FirstVersion_AllowsNullPreviousVer
 		*dest = identity
 	}).Once()
 	tdb.qVersion.On("First", mock.AnythingOfType("*models.SoulAgentVersion")).Return(theoryErrors.ErrItemNotFound).Once()
-	tdb.qVersion.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+	tdb.qVersion.On("AllPaginated", mock.Anything).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.SoulAgentVersion](t, args, 0)
 		*dest = nil
 	}).Once()
@@ -259,7 +260,7 @@ func TestHandleSoulAgentUpdateRegistration_V3_FirstVersion_AllowsNullPreviousVer
 		*dest = identity
 	}).Once()
 	tdb.qVersion.On("First", mock.AnythingOfType("*models.SoulAgentVersion")).Return(theoryErrors.ErrItemNotFound).Once()
-	tdb.qVersion.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+	tdb.qVersion.On("AllPaginated", mock.Anything).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.SoulAgentVersion](t, args, 0)
 		*dest = nil
 	}).Once()
@@ -601,7 +602,7 @@ func TestGetNextSoulAgentVersion_IgnoresLexicographicSKOrder(t *testing.T) {
 	s := &Server{store: store.New(tdb.db)}
 
 	// Versions include 9 and 10; max should be 10 even if SK ordering would be wrong.
-	tdb.qVersion.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+	tdb.qVersion.On("AllPaginated", mock.Anything).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.SoulAgentVersion](t, args, 0)
 		*dest = []*models.SoulAgentVersion{
 			{AgentID: soulLifecycleTestAgentIDHex, VersionNumber: 9},
@@ -624,7 +625,7 @@ func TestEnsureNoSoulRegistrationVersionHistory_RejectsMissingPreviousURIWithExi
 
 	tdb := newSoulLifecycleTestDB()
 	s := &Server{store: store.New(tdb.db)}
-	tdb.qVersion.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+	tdb.qVersion.On("AllPaginated", mock.Anything).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.SoulAgentVersion](t, args, 0)
 		*dest = []*models.SoulAgentVersion{
 			{AgentID: soulLifecycleTestAgentIDHex, VersionNumber: 2},
@@ -646,7 +647,7 @@ func TestEnsureNoSoulRegistrationVersionHistory_RejectsSingleVersion1(t *testing
 	tdb := newSoulLifecycleTestDB()
 	s := &Server{store: store.New(tdb.db)}
 	// Version 1 exists → max=1, nextExisting=2. Must trigger rejection (2 > 1).
-	tdb.qVersion.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+	tdb.qVersion.On("AllPaginated", mock.Anything).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.SoulAgentVersion](t, args, 0)
 		*dest = []*models.SoulAgentVersion{
 			{AgentID: soulLifecycleTestAgentIDHex, VersionNumber: 1},
@@ -667,7 +668,7 @@ func TestEnsureNoSoulRegistrationVersionHistory_AllowsEmptyHistory(t *testing.T)
 	tdb := newSoulLifecycleTestDB()
 	s := &Server{store: store.New(tdb.db)}
 	// No versions exist → max=0, nextExisting=1. Must pass (1 is not > 1).
-	tdb.qVersion.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+	tdb.qVersion.On("AllPaginated", mock.Anything).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.SoulAgentVersion](t, args, 0)
 		*dest = []*models.SoulAgentVersion{}
 	}).Once()
@@ -711,4 +712,47 @@ func TestValidateCapabilityClaimLevelTransitions_RejectsDowngrade(t *testing.T) 
 	if appErr.Code != appErrCodeBadRequest {
 		t.Fatalf("expected bad_request, got %q", appErr.Code)
 	}
+}
+
+// TestGetNextSoulAgentVersion_BoundedWalk verifies the version-history read
+// (issue #1061 part B, site 9) issues page-capped reads with cursor resume and
+// never a Scan, even though the SK is not zero-padded (so a single Limit(1)
+// read cannot find the max).
+func TestGetNextSoulAgentVersion_BoundedWalk(t *testing.T) {
+	t.Parallel()
+
+	tdb := newSoulLifecycleTestDB()
+	s := &Server{store: store.New(tdb.db)}
+
+	appliedLimits := []int{}
+	filterMockQueryCalls(tdb.qVersion, "Limit")
+	filterMockQueryCalls(tdb.qVersion, "Cursor")
+	tdb.qVersion.On("Limit", 100).Return(tdb.qVersion).Times(2).Run(func(args mock.Arguments) {
+		appliedLimits = append(appliedLimits, testutil.RequireMockArg[int](t, args, 0))
+	})
+	tdb.qVersion.On("Cursor", "after-1").Return(tdb.qVersion).Once()
+	tdb.qVersion.On("AllPaginated", mock.AnythingOfType("*[]*models.SoulAgentVersion")).Return(&core.PaginatedResult{HasMore: true, NextCursor: "after-1"}, nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.SoulAgentVersion](t, args, 0)
+		*dest = []*models.SoulAgentVersion{{AgentID: soulLifecycleTestAgentIDHex, VersionNumber: 5}}
+	}).Once()
+	tdb.qVersion.On("AllPaginated", mock.AnythingOfType("*[]*models.SoulAgentVersion")).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.SoulAgentVersion](t, args, 0)
+		*dest = []*models.SoulAgentVersion{{AgentID: soulLifecycleTestAgentIDHex, VersionNumber: 9}}
+	}).Once()
+
+	next, prevSHA, appErr := s.getNextSoulAgentVersion(context.Background(), soulLifecycleTestAgentIDHex)
+	if appErr != nil {
+		t.Fatalf("unexpected appErr: %v", appErr)
+	}
+	if next != 10 {
+		t.Fatalf("expected next version 10, got %d", next)
+	}
+	if prevSHA != "" {
+		t.Fatalf("expected empty prev hash, got %q", prevSHA)
+	}
+	if len(appliedLimits) != 2 || appliedLimits[0] != 100 || appliedLimits[1] != 100 {
+		t.Fatalf("expected every page bounded to %d, got limits %v", 100, appliedLimits)
+	}
+	tdb.qVersion.AssertExpectations(t)
+	tdb.qVersion.AssertNotCalled(t, "Scan", mock.Anything)
 }

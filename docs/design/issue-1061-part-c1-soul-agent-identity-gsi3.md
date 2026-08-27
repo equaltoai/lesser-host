@@ -178,5 +178,7 @@ go run ./scripts/soul-agent-identity-gsi3-backfill --profile <aws-profile> --sta
 
 - `SoulAgentMintConversation` GSI, its write paths, and the operator mint-conversation
   list route — part C2 (#1067), separate PR and separate deploy (gsi4).
-- Part B (19 partition reads) — separate delegation.
+- Part B (21 no-Limit partition reads) — separate delegation; implemented with
+  `docs/design/issue-1061-part-b-partition-read-bounds.md` (no new indexes; every
+  site reads with a clamped Limit + cursor or a page-capped bounded walk).
 - No deploy/merge/cloud mutation by this PR.

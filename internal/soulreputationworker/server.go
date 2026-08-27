@@ -532,13 +532,20 @@ func (s *Server) listAgentValidationRecords(ctx context.Context, agentID string)
 		return nil, errors.New("agent id is required")
 	}
 
-	var items []*models.SoulAgentValidationRecord
-	if err := s.store.DB.WithContext(ctx).
-		Model(&models.SoulAgentValidationRecord{}).
-		Where("PK", "=", fmt.Sprintf("SOUL#AGENT#%s", agentID)).
-		Where("SK", "BEGINS_WITH", "VALIDATION#").
-		OrderBy("SK", "ASC").
-		All(&items); err != nil {
+	// Bounded partition walk (issue #1061 part B): page-capped reads resumed
+	// via the opaque cursor instead of a no-Limit All; fails the phase
+	// explicitly if the partition exceeds the page cap so a progressive score
+	// is never computed over a silently truncated validation history.
+	items, err := workerPartitionAll[models.SoulAgentValidationRecord](
+		s.store.DB.WithContext(ctx).
+			Model(&models.SoulAgentValidationRecord{}).
+			Where("PK", "=", fmt.Sprintf("SOUL#AGENT#%s", agentID)).
+			Where("SK", "BEGINS_WITH", "VALIDATION#").
+			OrderBy("SK", "ASC"),
+		workerPartitionWalkPageSize,
+		workerPartitionWalkMaxPages,
+	)
+	if err != nil {
 		return nil, err
 	}
 	return items, nil
@@ -806,12 +813,18 @@ func scoreCommunicationResult(result communicationResult, totalInbound int64) fl
 }
 
 func (s *Server) listSoulRelationships(ctx context.Context, agentID string) ([]*models.SoulAgentRelationship, error) {
-	var rels []*models.SoulAgentRelationship
-	if err := s.store.DB.WithContext(ctx).
-		Model(&models.SoulAgentRelationship{}).
-		Where("PK", "=", fmt.Sprintf("SOUL#AGENT#%s", agentID)).
-		Where("SK", "BEGINS_WITH", "RELATIONSHIP#").
-		All(&rels); err != nil {
+	// Bounded partition walk (issue #1061 part B): page-capped reads resumed
+	// via the opaque cursor instead of a no-Limit All; fails the phase
+	// explicitly if the partition exceeds the page cap.
+	rels, err := workerPartitionAll[models.SoulAgentRelationship](
+		s.store.DB.WithContext(ctx).
+			Model(&models.SoulAgentRelationship{}).
+			Where("PK", "=", fmt.Sprintf("SOUL#AGENT#%s", agentID)).
+			Where("SK", "BEGINS_WITH", "RELATIONSHIP#"),
+		workerPartitionWalkPageSize,
+		workerPartitionWalkMaxPages,
+	)
+	if err != nil {
 		return nil, err
 	}
 	return rels, nil
@@ -864,12 +877,18 @@ func recordEndorser(endorsers map[string]struct{}, agentID string, fromAgentID s
 }
 
 func (s *Server) listSoulAgentFailures(ctx context.Context, agentID string) ([]*models.SoulAgentFailure, error) {
-	var failures []*models.SoulAgentFailure
-	if err := s.store.DB.WithContext(ctx).
-		Model(&models.SoulAgentFailure{}).
-		Where("PK", "=", fmt.Sprintf("SOUL#AGENT#%s", agentID)).
-		Where("SK", "BEGINS_WITH", "FAILURE#").
-		All(&failures); err != nil {
+	// Bounded partition walk (issue #1061 part B): page-capped reads resumed
+	// via the opaque cursor instead of a no-Limit All; fails the phase
+	// explicitly if the partition exceeds the page cap.
+	failures, err := workerPartitionAll[models.SoulAgentFailure](
+		s.store.DB.WithContext(ctx).
+			Model(&models.SoulAgentFailure{}).
+			Where("PK", "=", fmt.Sprintf("SOUL#AGENT#%s", agentID)).
+			Where("SK", "BEGINS_WITH", "FAILURE#"),
+		workerPartitionWalkPageSize,
+		workerPartitionWalkMaxPages,
+	)
+	if err != nil {
 		return nil, err
 	}
 	return failures, nil
@@ -911,12 +930,18 @@ func countCommunicationBoundaryViolations(commActs []*models.SoulAgentCommActivi
 }
 
 func (s *Server) countDeclaredBoundaries(ctx context.Context, agentID string) (int64, error) {
-	var boundaries []*models.SoulAgentBoundary
-	if err := s.store.DB.WithContext(ctx).
-		Model(&models.SoulAgentBoundary{}).
-		Where("PK", "=", fmt.Sprintf("SOUL#AGENT#%s", agentID)).
-		Where("SK", "BEGINS_WITH", "BOUNDARY#").
-		All(&boundaries); err != nil {
+	// Bounded partition walk (issue #1061 part B): page-capped reads resumed
+	// via the opaque cursor instead of a no-Limit All; fails the phase
+	// explicitly if the partition exceeds the page cap.
+	boundaries, err := workerPartitionAll[models.SoulAgentBoundary](
+		s.store.DB.WithContext(ctx).
+			Model(&models.SoulAgentBoundary{}).
+			Where("PK", "=", fmt.Sprintf("SOUL#AGENT#%s", agentID)).
+			Where("SK", "BEGINS_WITH", "BOUNDARY#"),
+		workerPartitionWalkPageSize,
+		workerPartitionWalkMaxPages,
+	)
+	if err != nil {
 		return 0, err
 	}
 	var declared int64
@@ -929,12 +954,18 @@ func (s *Server) countDeclaredBoundaries(ctx context.Context, agentID string) (i
 }
 
 func (s *Server) addLegacyEndorsers(ctx context.Context, agentID string, endorsers map[string]struct{}) error {
-	var v1Endorsements []*models.SoulAgentPeerEndorsement
-	if err := s.store.DB.WithContext(ctx).
-		Model(&models.SoulAgentPeerEndorsement{}).
-		Where("PK", "=", fmt.Sprintf("SOUL#AGENT#%s", agentID)).
-		Where("SK", "BEGINS_WITH", "ENDORSEMENT#").
-		All(&v1Endorsements); err != nil {
+	// Bounded partition walk (issue #1061 part B): page-capped reads resumed
+	// via the opaque cursor instead of a no-Limit All; fails the phase
+	// explicitly if the partition exceeds the page cap.
+	v1Endorsements, err := workerPartitionAll[models.SoulAgentPeerEndorsement](
+		s.store.DB.WithContext(ctx).
+			Model(&models.SoulAgentPeerEndorsement{}).
+			Where("PK", "=", fmt.Sprintf("SOUL#AGENT#%s", agentID)).
+			Where("SK", "BEGINS_WITH", "ENDORSEMENT#"),
+		workerPartitionWalkPageSize,
+		workerPartitionWalkMaxPages,
+	)
+	if err != nil {
 		return err
 	}
 	for _, e := range v1Endorsements {

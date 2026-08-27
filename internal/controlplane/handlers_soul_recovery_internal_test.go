@@ -309,7 +309,7 @@ func TestHandleSoulInstanceRecoveryAgentsIsContentFree(t *testing.T) {
 		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
 		*dest = models.Instance{Slug: recoveryTestSlug, Status: models.InstanceStatusActive, HostedBaseDomain: recoveryTestDomain}
 	}).Once()
-	queries.domain.On("All", mock.AnythingOfType("*[]*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
+	queries.domain.On("AllPaginated", mock.AnythingOfType("*[]*models.Domain")).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.Domain](t, args, 0)
 		*dest = []*models.Domain{{Domain: recoveryTestDomain, InstanceSlug: recoveryTestSlug, Status: models.DomainStatusVerified}}
 	}).Once()
@@ -346,7 +346,7 @@ func TestHandleSoulInstanceRecoveryAgentsSkipsInactiveEntryAndContinues(t *testi
 		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
 		*dest = models.Instance{Slug: recoveryTestSlug, Status: models.InstanceStatusActive, HostedBaseDomain: recoveryTestDomain}
 	}).Once()
-	queries.domain.On("All", mock.AnythingOfType("*[]*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
+	queries.domain.On("AllPaginated", mock.AnythingOfType("*[]*models.Domain")).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.Domain](t, args, 0)
 		*dest = []*models.Domain{{Domain: recoveryTestDomain, InstanceSlug: recoveryTestSlug, Status: models.DomainStatusVerified}}
 	}).Once()
@@ -378,7 +378,7 @@ func TestHandleSoulInstanceRecoveryAgentsSkipsInactiveEntryAndContinues(t *testi
 		dest := testutil.RequireMockArg[*models.SoulAgentPromotion](t, args, 0)
 		*dest = *promotion
 	}).Once()
-	queries.hosted.On("All", mock.AnythingOfType("*[]*models.HostedGenesisSession")).Return(nil).Run(func(args mock.Arguments) {
+	queries.hosted.On("AllPaginated", mock.AnythingOfType("*[]*models.HostedGenesisSession")).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.HostedGenesisSession](t, args, 0)
 		*dest = []*models.HostedGenesisSession{session}
 	}).Once()
@@ -661,7 +661,7 @@ func TestSoulRecoveryStorageFailuresAreTyped(t *testing.T) {
 	t.Run("declaration store failure", func(t *testing.T) {
 		t.Parallel()
 		server, queries, identity, promotion, session, _ := newRecoveryTestServer(t, 1)
-		queries.hosted.On("All", mock.AnythingOfType("*[]*models.HostedGenesisSession")).Return(nil).Run(func(args mock.Arguments) {
+		queries.hosted.On("AllPaginated", mock.AnythingOfType("*[]*models.HostedGenesisSession")).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 			dest := testutil.RequireMockArg[*[]*models.HostedGenesisSession](t, args, 0)
 			*dest = []*models.HostedGenesisSession{session}
 		}).Once()
@@ -674,7 +674,7 @@ func TestSoulRecoveryStorageFailuresAreTyped(t *testing.T) {
 	t.Run("declaration source missing", func(t *testing.T) {
 		t.Parallel()
 		server, queries, identity, promotion, session, _ := newRecoveryTestServer(t, 1)
-		queries.hosted.On("All", mock.AnythingOfType("*[]*models.HostedGenesisSession")).Return(nil).Run(func(args mock.Arguments) {
+		queries.hosted.On("AllPaginated", mock.AnythingOfType("*[]*models.HostedGenesisSession")).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 			dest := testutil.RequireMockArg[*[]*models.HostedGenesisSession](t, args, 0)
 			*dest = []*models.HostedGenesisSession{session}
 		}).Once()
@@ -800,7 +800,7 @@ func stubRecoveryCommonReads(t *testing.T, q recoveryTestQueries, identity *mode
 		dest := testutil.RequireMockArg[*models.SoulAgentPromotion](t, args, 0)
 		*dest = *promotion
 	}).Once()
-	q.hosted.On("All", mock.AnythingOfType("*[]*models.HostedGenesisSession")).Return(nil).Run(func(args mock.Arguments) {
+	q.hosted.On("AllPaginated", mock.AnythingOfType("*[]*models.HostedGenesisSession")).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.HostedGenesisSession](t, args, 0)
 		*dest = []*models.HostedGenesisSession{session}
 	}).Once()
