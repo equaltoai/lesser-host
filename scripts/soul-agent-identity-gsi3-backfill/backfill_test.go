@@ -377,6 +377,288 @@ func TestRun_ResumeRequiresExistingCheckpoint(t *testing.T) {
 	require.Contains(t, err.Error(), "resume checkpoint")
 }
 
+func TestRun_ResumeRefusesCrossMode(t *testing.T) {
+	t.Parallel()
+	// An interrupted dry-run checkpoint must never be resumed with --apply:
+	// that would skip every pre-checkpoint item and could certify a partial
+	// backfill with the completeness marker (MAJOR-3).
+	ckptPath := filepath.Join(t.TempDir(), "ckpt.json")
+	require.NoError(t, saveCheckpoint(ckptPath, checkpoint{
+		Mode:    "dry-run",
+		Stage:   "lab",
+		Table:   "lesser-host-lab-state",
+		LastPK:  "SOUL#AGENT#0xaa",
+		LastSK:  "IDENTITY",
+		Scanned: 1,
+	}))
+
+	opt := defaultOpt()
+	opt.apply = true
+	opt.resume = true
+	opt.checkpoint = ckptPath
+	var out bytes.Buffer
+	_, err := run(context.Background(), opt, &fakeDDB{}, &out, noSleep)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "cross-mode")
+	require.Contains(t, err.Error(), "dry-run")
+	require.Contains(t, err.Error(), "apply")
+	require.Contains(t, err.Error(), "delete the checkpoint")
+	require.Empty(t, out.String(), "no resume progress should be printed before the refusal")
+}
+
+func TestRun_ResumeSameModeStillWorks(t *testing.T) {
+	t.Parallel()
+	// Same-mode resume must keep working: a dry-run checkpoint resumed as a
+	// dry run continues from the persisted key instead of restarting.
+	agentA := "0x00000000000000000000000000000000000000000000000000000000000000aa"
+	agentB := "0x00000000000000000000000000000000000000000000000000000000000000bb"
+	ckptPath := filepath.Join(t.TempDir(), "ckpt.json")
+	require.NoError(t, saveCheckpoint(ckptPath, checkpoint{
+		Mode:    "dry-run",
+		Stage:   "lab",
+		Table:   "lesser-host-lab-state",
+		LastPK:  "SOUL#AGENT#" + agentA,
+		LastSK:  "IDENTITY",
+		Scanned: 1,
+	}))
+
+	ddb := &fakeDDB{
+		describeTable: func(_ context.Context, _ *dynamodb.DescribeTableInput) (*dynamodb.DescribeTableOutput, error) {
+			return activeTable(), nil
+		},
+		scan: func(_ context.Context, in *dynamodb.ScanInput) (*dynamodb.ScanOutput, error) {
+			require.NotNil(t, in.ExclusiveStartKey, "resumed scan must continue from the persisted last key")
+			return &dynamodb.ScanOutput{
+				Items: []map[string]types.AttributeValue{
+					item("SOUL#AGENT#"+agentB, agentB, "active", "", ""),
+				},
+			}, nil
+		},
+	}
+	opt := defaultOpt()
+	opt.resume = true
+	opt.checkpoint = ckptPath
+	var out bytes.Buffer
+	rep, err := run(context.Background(), opt, ddb, &out, noSleep)
+	require.NoError(t, err)
+	require.Equal(t, int64(2), rep.Scanned, "scanned count must carry over from the checkpoint")
+	require.Equal(t, "would-write", rep.Marker)
+}
+
+func TestRun_ResumeRefusesStageTableMismatch(t *testing.T) {
+	t.Parallel()
+
+	t.Run("stage mismatch", func(t *testing.T) {
+		t.Parallel()
+		ckptPath := filepath.Join(t.TempDir(), "ckpt.json")
+		require.NoError(t, saveCheckpoint(ckptPath, checkpoint{
+			Mode:  "dry-run",
+			Stage: "live",
+			Table: "lesser-host-live-state",
+		}))
+		opt := defaultOpt() // stage lab
+		opt.resume = true
+		opt.checkpoint = ckptPath
+		var out bytes.Buffer
+		_, err := run(context.Background(), opt, &fakeDDB{}, &out, noSleep)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "stage")
+		require.Contains(t, err.Error(), "delete the checkpoint")
+	})
+
+	t.Run("table mismatch", func(t *testing.T) {
+		t.Parallel()
+		ckptPath := filepath.Join(t.TempDir(), "ckpt.json")
+		require.NoError(t, saveCheckpoint(ckptPath, checkpoint{
+			Mode:  "dry-run",
+			Stage: "lab",
+			Table: "some-other-table",
+		}))
+		opt := defaultOpt() // table lesser-host-lab-state
+		opt.resume = true
+		opt.checkpoint = ckptPath
+		var out bytes.Buffer
+		_, err := run(context.Background(), opt, &fakeDDB{}, &out, noSleep)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "table")
+		require.Contains(t, err.Error(), "delete the checkpoint")
+	})
+}
+
+func TestRun_ApplyRepairsStaleKeys(t *testing.T) {
+	t.Parallel()
+	// MAJOR-2: an item whose gsi3 attributes are present but stale (e.g. the
+	// pre-fix lifecycle writers left gsi3PK on the old status partition) must be
+	// REPAIRED with a write bound to the observed stale values — never counted
+	// already-correct via the attribute_not_exists conditional.
+	agentA := "0x00000000000000000000000000000000000000000000000000000000000000aa"
+	ddb := &fakeDDB{
+		describeTable: func(_ context.Context, _ *dynamodb.DescribeTableInput) (*dynamodb.DescribeTableOutput, error) {
+			return activeTable(), nil
+		},
+		scan: func(_ context.Context, _ *dynamodb.ScanInput) (*dynamodb.ScanOutput, error) {
+			return &dynamodb.ScanOutput{
+				Items: []map[string]types.AttributeValue{
+					// status=active but gsi3PK still says IDENTITY#pending: stale.
+					item("SOUL#AGENT#"+agentA, agentA, "active", "IDENTITY#pending", agentA),
+				},
+			}, nil
+		},
+		updateItem: func(_ context.Context, in *dynamodb.UpdateItemInput) (*dynamodb.UpdateItemOutput, error) {
+			cond := aws.ToString(in.ConditionExpression)
+			require.NotContains(t, cond, "attribute_not_exists", "stale-key repair must not use the absent-keys conditional")
+			require.Contains(t, cond, "gsi3PK = :obsGsi3pk")
+			require.Contains(t, cond, "gsi3SK = :obsGsi3sk")
+			require.Equal(t, "IDENTITY#pending", avString(in.ExpressionAttributeValues[":obsGsi3pk"]), "repair must bind to the observed stale gsi3PK")
+			require.Equal(t, agentA, avString(in.ExpressionAttributeValues[":obsGsi3sk"]), "repair must bind to the observed stale gsi3SK")
+			require.Equal(t, "IDENTITY#active", avString(in.ExpressionAttributeValues[":gsi3pk"]))
+			return &dynamodb.UpdateItemOutput{}, nil
+		},
+		putItem: func(_ context.Context, _ *dynamodb.PutItemInput) (*dynamodb.PutItemOutput, error) {
+			return &dynamodb.PutItemOutput{}, nil
+		},
+	}
+	opt := defaultOpt()
+	opt.apply = true
+	opt.checkpoint = filepath.Join(t.TempDir(), "ckpt.json")
+
+	var out bytes.Buffer
+	rep, err := run(context.Background(), opt, ddb, &out, noSleep)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), rep.Scanned)
+	require.Equal(t, int64(0), rep.Updated)
+	require.Equal(t, int64(1), rep.Repaired)
+	require.Equal(t, int64(0), rep.AlreadyCorrect, "stale item must never be counted already-correct")
+	require.Equal(t, int64(0), rep.Errors)
+	require.Equal(t, "written", rep.Marker)
+	require.Len(t, ddb.updateCalls, 1)
+	require.Len(t, ddb.putCalls, 1)
+	require.Equal(t, "1", avN(ddb.putCalls[0].Item["repaired"]))
+}
+
+func TestRun_ApplyRepairConditionalFailureBlocksMarker(t *testing.T) {
+	t.Parallel()
+	// MAJOR-2: if the repair write fails its condition (a concurrent writer
+	// changed the keys between scan and repair), the item cannot be certified —
+	// count an error and withhold the marker.
+	agentA := "0x00000000000000000000000000000000000000000000000000000000000000aa"
+	ddb := &fakeDDB{
+		describeTable: func(_ context.Context, _ *dynamodb.DescribeTableInput) (*dynamodb.DescribeTableOutput, error) {
+			return activeTable(), nil
+		},
+		scan: func(_ context.Context, _ *dynamodb.ScanInput) (*dynamodb.ScanOutput, error) {
+			return &dynamodb.ScanOutput{
+				Items: []map[string]types.AttributeValue{
+					item("SOUL#AGENT#"+agentA, agentA, "active", "IDENTITY#pending", agentA),
+				},
+			}, nil
+		},
+		updateItem: func(_ context.Context, _ *dynamodb.UpdateItemInput) (*dynamodb.UpdateItemOutput, error) {
+			return nil, &types.ConditionalCheckFailedException{Message: aws.String("conditional request failed")}
+		},
+		putItem: func(_ context.Context, _ *dynamodb.PutItemInput) (*dynamodb.PutItemOutput, error) {
+			return &dynamodb.PutItemOutput{}, nil
+		},
+	}
+	opt := defaultOpt()
+	opt.apply = true
+	opt.checkpoint = filepath.Join(t.TempDir(), "ckpt.json")
+
+	var out bytes.Buffer
+	rep, err := run(context.Background(), opt, ddb, &out, noSleep)
+	require.NoError(t, err)
+	require.Equal(t, int64(0), rep.Repaired)
+	require.Equal(t, int64(1), rep.Errors)
+	require.Equal(t, "not-written", rep.Marker)
+	require.Empty(t, ddb.putCalls, "marker must not be written while repair errors remain")
+	require.Contains(t, out.String(), "gsi3 repair failed")
+	require.Contains(t, out.String(), "marker NOT written")
+}
+
+func TestRun_ApplyAlreadyCorrectOnlyForCorrectItems(t *testing.T) {
+	t.Parallel()
+	// already_correct must be reserved for truly-correct items (both gsi3
+	// attributes already match the status-derived keys) — never for stale ones.
+	agentA := "0x00000000000000000000000000000000000000000000000000000000000000aa"
+	ddb := &fakeDDB{
+		describeTable: func(_ context.Context, _ *dynamodb.DescribeTableInput) (*dynamodb.DescribeTableOutput, error) {
+			return activeTable(), nil
+		},
+		scan: func(_ context.Context, _ *dynamodb.ScanInput) (*dynamodb.ScanOutput, error) {
+			return &dynamodb.ScanOutput{
+				Items: []map[string]types.AttributeValue{
+					item("SOUL#AGENT#"+agentA, agentA, "active", "IDENTITY#active", agentA),
+				},
+			}, nil
+		},
+		updateItem: func(_ context.Context, _ *dynamodb.UpdateItemInput) (*dynamodb.UpdateItemOutput, error) {
+			return &dynamodb.UpdateItemOutput{}, nil
+		},
+		putItem: func(_ context.Context, _ *dynamodb.PutItemInput) (*dynamodb.PutItemOutput, error) {
+			return &dynamodb.PutItemOutput{}, nil
+		},
+	}
+	opt := defaultOpt()
+	opt.apply = true
+	opt.checkpoint = filepath.Join(t.TempDir(), "ckpt.json")
+
+	var out bytes.Buffer
+	rep, err := run(context.Background(), opt, ddb, &out, noSleep)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), rep.AlreadyCorrect)
+	require.Equal(t, int64(0), rep.Updated)
+	require.Equal(t, int64(0), rep.Repaired)
+	require.Equal(t, int64(0), rep.Errors)
+	require.Equal(t, "written", rep.Marker)
+	require.Empty(t, ddb.updateCalls, "a truly-correct item must not trigger any write")
+}
+
+func TestRun_ThrottleSleepInvokedBetweenPages(t *testing.T) {
+	t.Parallel()
+	// MINOR-2 regression: the inter-page throttle sleep must actually be
+	// invoked; removing it would silently remove scan throttling. The spy fails
+	// the test if run() stops calling sleep between pages.
+	agentA := "0x00000000000000000000000000000000000000000000000000000000000000aa"
+	agentB := "0x00000000000000000000000000000000000000000000000000000000000000bb"
+	page1Key := map[string]types.AttributeValue{
+		"PK": &types.AttributeValueMemberS{Value: "SOUL#AGENT#" + agentA},
+		"SK": &types.AttributeValueMemberS{Value: "IDENTITY"},
+	}
+	pageNum := 0
+	ddb := &fakeDDB{
+		describeTable: func(_ context.Context, _ *dynamodb.DescribeTableInput) (*dynamodb.DescribeTableOutput, error) {
+			return activeTable(), nil
+		},
+		scan: func(_ context.Context, _ *dynamodb.ScanInput) (*dynamodb.ScanOutput, error) {
+			pageNum++
+			if pageNum == 1 {
+				return &dynamodb.ScanOutput{
+					Items: []map[string]types.AttributeValue{
+						item("SOUL#AGENT#"+agentA, agentA, "active", "", ""),
+					},
+					LastEvaluatedKey: page1Key,
+				}, nil
+			}
+			return &dynamodb.ScanOutput{
+				Items: []map[string]types.AttributeValue{
+					item("SOUL#AGENT#"+agentB, agentB, "active", "", ""),
+				},
+			}, nil
+		},
+	}
+	opt := defaultOpt()
+	opt.checkpoint = filepath.Join(t.TempDir(), "ckpt.json")
+
+	var slept []time.Duration
+	sleepSpy := func(d time.Duration) { slept = append(slept, d) }
+
+	var out bytes.Buffer
+	rep, err := run(context.Background(), opt, ddb, &out, sleepSpy)
+	require.NoError(t, err)
+	require.Equal(t, int64(2), rep.Scanned)
+	require.NotEmpty(t, slept, "inter-page throttle sleep must be invoked between scan pages")
+}
+
 func TestClassifyIdentityItem(t *testing.T) {
 	t.Parallel()
 	agentA := "0x00000000000000000000000000000000000000000000000000000000000000aa"
@@ -477,9 +759,9 @@ func avN(v types.AttributeValue) string {
 
 func TestReportString(t *testing.T) {
 	t.Parallel()
-	rep := report{Scanned: 5, Updated: 3, AlreadyCorrect: 1, Errors: 1, Marker: "not-written"}
+	rep := report{Scanned: 5, Updated: 3, Repaired: 1, AlreadyCorrect: 1, Errors: 1, Marker: "not-written"}
 	s := rep.String()
-	for _, want := range []string{"scanned=5", "updated=3", "already_correct=1", "errors=1", "marker=not-written"} {
+	for _, want := range []string{"scanned=5", "updated=3", "repaired=1", "already_correct=1", "errors=1", "marker=not-written"} {
 		require.Contains(t, s, want)
 	}
 	require.NotContains(t, s, "completed_at")

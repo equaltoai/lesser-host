@@ -72,7 +72,7 @@ func TestSoulAgentIdentityStatuses_CompleteSet(t *testing.T) {
 func TestSoulAgentIdentityGSI3BackfillMarker_UpdateKeys(t *testing.T) {
 	t.Parallel()
 
-	m := &SoulAgentIdentityGSI3BackfillMarker{Scanned: 10, Updated: 8, AlreadyCorrect: 1, Errors: 1}
+	m := &SoulAgentIdentityGSI3BackfillMarker{Scanned: 10, Updated: 8, Repaired: 2, AlreadyCorrect: 1, Errors: 1}
 	require.NoError(t, m.UpdateKeys())
 	require.Equal(t, SoulAgentIdentityGSI3BackfillMarkerPK, m.PK)
 	require.Equal(t, SoulAgentIdentityGSI3BackfillMarkerSK, m.SK)
@@ -80,6 +80,7 @@ func TestSoulAgentIdentityGSI3BackfillMarker_UpdateKeys(t *testing.T) {
 	s := m.String()
 	require.Contains(t, s, "scanned=10")
 	require.Contains(t, s, "updated=8")
+	require.Contains(t, s, "repaired=2")
 	require.Contains(t, s, "already_correct=1")
 	require.Contains(t, s, "errors=1")
 }

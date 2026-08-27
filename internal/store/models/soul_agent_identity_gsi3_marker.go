@@ -36,6 +36,7 @@ type SoulAgentIdentityGSI3BackfillMarker struct {
 
 	Scanned        int64     `theorydb:"attr:scanned" json:"scanned"`
 	Updated        int64     `theorydb:"attr:updated" json:"updated"`
+	Repaired       int64     `theorydb:"attr:repaired" json:"repaired"`
 	AlreadyCorrect int64     `theorydb:"attr:alreadyCorrect" json:"already_correct"`
 	Errors         int64     `theorydb:"attr:errors" json:"errors"`
 	CompletedAt    time.Time `theorydb:"attr:completedAt" json:"completed_at"`
@@ -63,8 +64,8 @@ func (m *SoulAgentIdentityGSI3BackfillMarker) String() string {
 		return "nil"
 	}
 	return fmt.Sprintf(
-		"scanned=%d updated=%d already_correct=%d errors=%d completed_at=%s",
-		m.Scanned, m.Updated, m.AlreadyCorrect, m.Errors,
+		"scanned=%d updated=%d repaired=%d already_correct=%d errors=%d completed_at=%s",
+		m.Scanned, m.Updated, m.Repaired, m.AlreadyCorrect, m.Errors,
 		strings.TrimSpace(m.CompletedAt.Format(time.RFC3339)),
 	)
 }

@@ -117,34 +117,41 @@ func classifyIdentityItem(item map[string]types.AttributeValue) (string, string,
 	return expectedPK, expectedSK, needsWrite, nil
 }
 
-// checkpoint is the persisted resume state. It stores the last evaluated key of
-// the base-table scan plus cumulative counts, so a re-run with --resume
-// continues where the interrupted run stopped instead of restarting.
+// checkpoint is the persisted resume state. It stores the run mode, the
+// stage/table it is bound to, the last evaluated key of the base-table scan,
+// and cumulative counts, so a re-run with --resume continues where the
+// interrupted run stopped instead of restarting. The mode and table/stage
+// binding are validated on resume (initCheckpoint) so a dry-run checkpoint can
+// never be resumed as --apply and certify a partial backfill.
 type checkpoint struct {
+	Mode           string `json:"mode"`
 	Stage          string `json:"stage"`
+	Table          string `json:"table,omitempty"`
 	LastPK         string `json:"lastPk,omitempty"`
 	LastSK         string `json:"lastSk,omitempty"`
 	Scanned        int64  `json:"scanned"`
 	Updated        int64  `json:"updated"`
+	Repaired       int64  `json:"repaired,omitempty"`
 	AlreadyCorrect int64  `json:"alreadyCorrect"`
 	Errors         int64  `json:"errors"`
 }
 
 // report is the final count report — the operator's proof the backfill ran.
 type report struct {
-	Scanned        int64
-	Updated        int64
-	AlreadyCorrect int64
-	Errors         int64
-	Marker         string // written | would-write (dry-run) | not-written (errors)
-	CompletedAt    string
-	Interrupted    bool
+	Scanned        int64  `json:"scanned"`
+	Updated        int64  `json:"updated"`
+	Repaired       int64  `json:"repaired,omitempty"`
+	AlreadyCorrect int64  `json:"already_correct"`
+	Errors         int64  `json:"errors"`
+	Marker         string `json:"marker"` // written | would-write (dry-run) | not-written (errors)
+	CompletedAt    string `json:"completed_at,omitempty"`
+	Interrupted    bool   `json:"interrupted,omitempty"`
 }
 
 func (r report) String() string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "scanned=%d updated=%d already_correct=%d errors=%d marker=%s",
-		r.Scanned, r.Updated, r.AlreadyCorrect, r.Errors, r.Marker)
+	fmt.Fprintf(&b, "scanned=%d updated=%d repaired=%d already_correct=%d errors=%d marker=%s",
+		r.Scanned, r.Updated, r.Repaired, r.AlreadyCorrect, r.Errors, r.Marker)
 	if r.CompletedAt != "" {
 		fmt.Fprintf(&b, " completed_at=%s", r.CompletedAt)
 	}
@@ -195,13 +202,14 @@ func run(ctx context.Context, opt options, ddb ddbAPI, out io.Writer, sleepFn fu
 		if saveErr := saveCheckpoint(opt.checkpoint, ckpt); saveErr != nil {
 			return nil, fmt.Errorf("save checkpoint: %w", saveErr)
 		}
-		writef(out, "page done scanned=%d updated=%d already_correct=%d errors=%d\n",
-			ckpt.Scanned, ckpt.Updated, ckpt.AlreadyCorrect, ckpt.Errors)
+		writef(out, "page done scanned=%d updated=%d repaired=%d already_correct=%d errors=%d\n",
+			ckpt.Scanned, ckpt.Updated, ckpt.Repaired, ckpt.AlreadyCorrect, ckpt.Errors)
 		sleep(throttleDuration(opt.sleepMS))
 	}
 
 	r.Scanned = ckpt.Scanned
 	r.Updated = ckpt.Updated
+	r.Repaired = ckpt.Repaired
 	r.AlreadyCorrect = ckpt.AlreadyCorrect
 	r.Errors = ckpt.Errors
 	if err := finalizeBackfill(ctx, opt, plan, ddb, r, out); err != nil {
@@ -210,17 +218,31 @@ func run(ctx context.Context, opt options, ddb ddbAPI, out io.Writer, sleepFn fu
 	return r, nil
 }
 
+// runMode returns the checkpoint/report mode label for the resolved options.
+func runMode(opt options) string {
+	if opt.apply {
+		return "apply"
+	}
+	return "dry-run"
+}
+
 // initCheckpoint loads the resume checkpoint (with --resume) or starts fresh,
-// printing a warning when a stale checkpoint would be overwritten.
+// printing a warning when a stale checkpoint would be overwritten. Fresh
+// checkpoints are stamped with the run mode, stage, and table so a resume can
+// refuse a mismatched run (see validateCheckpointBinding).
 func initCheckpoint(opt options, out io.Writer) (checkpoint, error) {
-	ckpt := checkpoint{Stage: opt.stage}
+	mode := runMode(opt)
+	ckpt := checkpoint{Mode: mode, Stage: opt.stage, Table: opt.table}
 	if opt.resume {
 		loaded, err := loadCheckpoint(opt.checkpoint)
 		if err != nil {
 			return ckpt, fmt.Errorf("resume checkpoint: %w", err)
 		}
+		if err := validateCheckpointBinding(*loaded, opt); err != nil {
+			return ckpt, err
+		}
 		ckpt = *loaded
-		writef(out, "resuming from checkpoint %s (stage=%s)\n", opt.checkpoint, ckpt.Stage)
+		writef(out, "resuming from checkpoint %s (mode=%s stage=%s table=%s)\n", opt.checkpoint, ckpt.Mode, ckpt.Stage, ckpt.Table)
 		return ckpt, nil
 	}
 	if _, err := statPath(opt.checkpoint); err == nil {
@@ -229,11 +251,48 @@ func initCheckpoint(opt options, out io.Writer) (checkpoint, error) {
 	return ckpt, nil
 }
 
+// validateCheckpointBinding refuses to resume a checkpoint whose run mode,
+// stage, or table differs from the current run. A dry-run checkpoint resumed
+// with --apply would skip every pre-checkpoint item and could certify a partial
+// backfill with the completeness marker; a checkpoint from another stage/table
+// is simply the wrong data. In both cases the operator must restart without
+// --resume or delete the checkpoint.
+func validateCheckpointBinding(loaded checkpoint, opt options) error {
+	mode := runMode(opt)
+	if loaded.Mode != mode {
+		return fmt.Errorf(
+			"checkpoint %s was created by a %s run but this run is %s; refusing cross-mode resume (restart without --resume, or delete the checkpoint)",
+			opt.checkpoint, orMode(loaded.Mode), mode,
+		)
+	}
+	if loaded.Stage != "" && loaded.Stage != opt.stage {
+		return fmt.Errorf(
+			"checkpoint %s is bound to stage %q but this run resolved stage %q; refusing resume (restart without --resume, or delete the checkpoint)",
+			opt.checkpoint, loaded.Stage, opt.stage,
+		)
+	}
+	if loaded.Table != "" && loaded.Table != opt.table {
+		return fmt.Errorf(
+			"checkpoint %s is bound to table %q but this run resolved table %q; refusing resume (restart without --resume, or delete the checkpoint)",
+			opt.checkpoint, loaded.Table, opt.table,
+		)
+	}
+	return nil
+}
+
+func orMode(m string) string {
+	if strings.TrimSpace(m) == "" {
+		return "unknown"
+	}
+	return m
+}
+
 // interruptedReport snapshots the checkpoint into the report, persists it for
 // resume, and returns the interruption error.
 func interruptedReport(opt options, ckpt checkpoint, r *report, cause error) (*report, error) {
 	r.Scanned = ckpt.Scanned
 	r.Updated = ckpt.Updated
+	r.Repaired = ckpt.Repaired
 	r.AlreadyCorrect = ckpt.AlreadyCorrect
 	r.Errors = ckpt.Errors
 	r.Interrupted = true
@@ -271,7 +330,8 @@ func scanIdentityPage(ctx context.Context, opt options, plan modelPlan, ckpt che
 }
 
 // processIdentityItems classifies each item and records the outcome: no write
-// needed (already correct), dry-run would-update, conditional apply, or error.
+// needed (already correct), dry-run would-update, conditional apply (absent
+// keys), stale-key repair, or error.
 func processIdentityItems(ctx context.Context, opt options, plan modelPlan, ddb ddbAPI, items []map[string]types.AttributeValue, ckpt *checkpoint, dryRunSample *int, out io.Writer) {
 	for _, item := range items {
 		ckpt.Scanned++
@@ -282,6 +342,8 @@ func processIdentityItems(ctx context.Context, opt options, plan modelPlan, ddb 
 			continue
 		}
 		if !needsWrite {
+			// Truly correct: both gsi3 attributes already match the current
+			// status-derived keys. Only this case counts as already-correct.
 			ckpt.AlreadyCorrect++
 			continue
 		}
@@ -293,19 +355,41 @@ func processIdentityItems(ctx context.Context, opt options, plan modelPlan, ddb 
 			ckpt.Updated++
 			continue
 		}
-		if err := applyItemGSI3(ctx, ddb, opt.table, item, expectedPK, expectedSK); err != nil {
+		applyOrRepairIdentityItem(ctx, ddb, opt.table, item, expectedPK, expectedSK, ckpt, out)
+	}
+}
+
+// applyOrRepairIdentityItem writes the two gsi3 attributes on an item that needs
+// a write, choosing the absent-keys conditional create or the observed-values
+// repair, and records the outcome in the checkpoint counters.
+func applyOrRepairIdentityItem(ctx context.Context, ddb ddbAPI, table string, item map[string]types.AttributeValue, expectedPK, expectedSK string, ckpt *checkpoint, out io.Writer) {
+	if gsi3KeysAbsent(item) {
+		// Absent keys: conditional create guarded by attribute_not_exists,
+		// so a concurrent live write is never clobbered.
+		if err := applyItemGSI3(ctx, ddb, table, item, expectedPK, expectedSK); err != nil {
 			if errors.Is(err, errConditionallyCovered) {
 				// A concurrent live write set the gsi3 attributes between our
 				// read and this update; the item is covered.
 				ckpt.AlreadyCorrect++
-				continue
+				return
 			}
 			ckpt.Errors++
-			writef(out, "warn gsi3 update failed %s agent=%s err=%v\n", plan.name, expectedSK, err)
-			continue
+			writef(out, "warn gsi3 update failed agent=%s err=%v\n", expectedSK, err)
+			return
 		}
 		ckpt.Updated++
+		return
 	}
+	// Present-but-wrong keys (stale, e.g. the pre-fix lifecycle writers):
+	// repair write bound to the observed stale values. A conditional failure
+	// means a concurrent writer changed the keys and we cannot certify the
+	// item — counted as an error so the marker is withheld (fail closed).
+	if err := repairItemGSI3(ctx, ddb, table, item, expectedPK, expectedSK); err != nil {
+		ckpt.Errors++
+		writef(out, "warn gsi3 repair failed agent=%s err=%v\n", expectedSK, err)
+		return
+	}
+	ckpt.Repaired++
 }
 
 // finalizeBackfill decides the marker outcome: dry-run reports would-write;
@@ -356,10 +440,20 @@ func preflight(ctx context.Context, ddb ddbAPI, table string) error {
 	return fmt.Errorf("preflight refused: gsi3 does not exist on %s; deploy the stack update first (one GSI per deploy), then rerun", table)
 }
 
+// gsi3KeysAbsent reports whether the item carries neither gsi3 attribute.
+// Items with at least one present-but-wrong key are stale and need a repair
+// write bound to the observed values, not the absent-keys conditional create.
+func gsi3KeysAbsent(item map[string]types.AttributeValue) bool {
+	_, havePK := item[attrGsi3PK]
+	_, haveSK := item[attrGsi3SK]
+	return !havePK && !haveSK
+}
+
 // applyItemGSI3 sets the two gsi3 attributes with a conditional update that
 // only writes when both attributes are still absent, so a concurrent live write
 // is never clobbered. A conditional failure means a live write already covered
-// the item — the caller counts it as already-correct.
+// the item — the caller counts it as already-correct. This is the backfill
+// (absent-keys) path only; stale keys go through repairItemGSI3.
 func applyItemGSI3(ctx context.Context, ddb ddbAPI, table string, item map[string]types.AttributeValue, expectedPK, expectedSK string) error {
 	in := &dynamodb.UpdateItemInput{
 		TableName: aws.String(table),
@@ -387,6 +481,38 @@ func applyItemGSI3(ctx context.Context, ddb ddbAPI, table string, item map[strin
 	return err
 }
 
+// repairItemGSI3 fixes an item whose gsi3 attributes are present but stale
+// (they differ from the status-derived keys the scan computed). The conditional
+// write is bound to the OBSERVED stale values, so it only succeeds when no
+// concurrent live writer changed the attributes between our scan and this
+// update — a repair can never clobber a fresh write. Any failure (including a
+// conditional failure, i.e. a concurrent writer) is counted as an error by the
+// caller and withholds the completeness marker: the tool cannot certify an item
+// it did not repair or verify.
+func repairItemGSI3(ctx context.Context, ddb ddbAPI, table string, item map[string]types.AttributeValue, expectedPK, expectedSK string) error {
+	observedPK := avString(item[attrGsi3PK])
+	observedSK := avString(item[attrGsi3SK])
+	in := &dynamodb.UpdateItemInput{
+		TableName: aws.String(table),
+		Key: map[string]types.AttributeValue{
+			"PK": &types.AttributeValueMemberS{Value: avString(item["PK"])},
+			"SK": &types.AttributeValueMemberS{Value: avString(item["SK"])},
+		},
+		UpdateExpression: aws.String("SET " + attrGsi3PK + " = :gsi3pk, " + attrGsi3SK + " = :gsi3sk"),
+		ConditionExpression: aws.String(
+			attrGsi3PK + " = :obsGsi3pk AND " + attrGsi3SK + " = :obsGsi3sk",
+		),
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":gsi3pk":    &types.AttributeValueMemberS{Value: expectedPK},
+			":gsi3sk":    &types.AttributeValueMemberS{Value: expectedSK},
+			":obsGsi3pk": &types.AttributeValueMemberS{Value: observedPK},
+			":obsGsi3sk": &types.AttributeValueMemberS{Value: observedSK},
+		},
+	}
+	_, err := ddb.UpdateItem(ctx, in)
+	return err
+}
+
 var errConditionallyCovered = errors.New("gsi3 attributes already present (concurrent write)")
 
 // writeMarker persists the backfill completeness marker consumed by the
@@ -400,6 +526,7 @@ func writeMarker(ctx context.Context, ddb ddbAPI, table string, plan modelPlan, 
 			"SK":             &types.AttributeValueMemberS{Value: plan.markerSK},
 			"scanned":        &types.AttributeValueMemberN{Value: fmt.Sprintf("%d", r.Scanned)},
 			"updated":        &types.AttributeValueMemberN{Value: fmt.Sprintf("%d", r.Updated)},
+			"repaired":       &types.AttributeValueMemberN{Value: fmt.Sprintf("%d", r.Repaired)},
 			"alreadyCorrect": &types.AttributeValueMemberN{Value: fmt.Sprintf("%d", r.AlreadyCorrect)},
 			"errors":         &types.AttributeValueMemberN{Value: fmt.Sprintf("%d", r.Errors)},
 			"completedAt":    &types.AttributeValueMemberS{Value: r.CompletedAt},
