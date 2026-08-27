@@ -426,7 +426,7 @@ func TestListSoulRosterCandidatesForDomains_BoundedWalk(t *testing.T) {
 
 	appliedLimits := []int{}
 	filterMockQueryCalls(tdb.qIdx, "Limit")
-	tdb.qIdx.On("Limit", mock.Anything).Return(tdb.qIdx).Times(2).Run(func(args mock.Arguments) {
+	tdb.qIdx.On("Limit", 100).Return(tdb.qIdx).Times(2).Run(func(args mock.Arguments) {
 		appliedLimits = append(appliedLimits, testutil.RequireMockArg[int](t, args, 0))
 	})
 	tdb.qIdx.On("Cursor", "after-1").Return(tdb.qIdx).Once()
@@ -444,8 +444,9 @@ func TestListSoulRosterCandidatesForDomains_BoundedWalk(t *testing.T) {
 	})
 	require.Nil(t, appErr)
 	require.Len(t, candidates, 2)
-	if len(appliedLimits) != 2 || appliedLimits[0] != partitionWalkPageSize || appliedLimits[1] != partitionWalkPageSize {
-		t.Fatalf("expected every page bounded to %d, got limits %v", partitionWalkPageSize, appliedLimits)
+	if len(appliedLimits) != 2 || appliedLimits[0] != 100 || appliedLimits[1] != 100 {
+		t.Fatalf("expected every page bounded to %d, got limits %v", 100, appliedLimits)
 	}
+	tdb.qIdx.AssertExpectations(t)
 	tdb.qIdx.AssertNotCalled(t, "Scan", mock.Anything)
 }

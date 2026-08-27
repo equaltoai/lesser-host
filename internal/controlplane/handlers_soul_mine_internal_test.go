@@ -260,7 +260,7 @@ func TestListOwnedInstances_BoundedWalk(t *testing.T) {
 
 	appliedLimits := []int{}
 	filterMockQueryCalls(tdb.qInst, "Limit")
-	tdb.qInst.On("Limit", mock.Anything).Return(tdb.qInst).Times(2).Run(func(args mock.Arguments) {
+	tdb.qInst.On("Limit", 100).Return(tdb.qInst).Times(2).Run(func(args mock.Arguments) {
 		appliedLimits = append(appliedLimits, testutil.RequireMockArg[int](t, args, 0))
 	})
 	tdb.qInst.On("Cursor", "after-1").Return(tdb.qInst).Once()
@@ -280,9 +280,10 @@ func TestListOwnedInstances_BoundedWalk(t *testing.T) {
 	if len(insts) != 2 {
 		t.Fatalf("expected 2 instances across pages, got %d", len(insts))
 	}
-	if len(appliedLimits) != 2 || appliedLimits[0] != partitionWalkPageSize || appliedLimits[1] != partitionWalkPageSize {
-		t.Fatalf("expected every page bounded to %d, got limits %v", partitionWalkPageSize, appliedLimits)
+	if len(appliedLimits) != 2 || appliedLimits[0] != 100 || appliedLimits[1] != 100 {
+		t.Fatalf("expected every page bounded to %d, got limits %v", 100, appliedLimits)
 	}
+	tdb.qInst.AssertExpectations(t)
 	tdb.qInst.AssertNotCalled(t, "Scan", mock.Anything)
 }
 
@@ -297,7 +298,7 @@ func TestListVerifiedDomainsForInstance_BoundedWalk(t *testing.T) {
 
 	appliedLimits := []int{}
 	filterMockQueryCalls(tdb.qDomain, "Limit")
-	tdb.qDomain.On("Limit", mock.Anything).Return(tdb.qDomain).Times(2).Run(func(args mock.Arguments) {
+	tdb.qDomain.On("Limit", 100).Return(tdb.qDomain).Times(2).Run(func(args mock.Arguments) {
 		appliedLimits = append(appliedLimits, testutil.RequireMockArg[int](t, args, 0))
 	})
 	tdb.qDomain.On("Cursor", "after-1").Return(tdb.qDomain).Once()
@@ -317,9 +318,10 @@ func TestListVerifiedDomainsForInstance_BoundedWalk(t *testing.T) {
 	if len(domains) != 2 {
 		t.Fatalf("expected 2 domains across pages, got %d", len(domains))
 	}
-	if len(appliedLimits) != 2 || appliedLimits[0] != partitionWalkPageSize || appliedLimits[1] != partitionWalkPageSize {
-		t.Fatalf("expected every page bounded to %d, got limits %v", partitionWalkPageSize, appliedLimits)
+	if len(appliedLimits) != 2 || appliedLimits[0] != 100 || appliedLimits[1] != 100 {
+		t.Fatalf("expected every page bounded to %d, got limits %v", 100, appliedLimits)
 	}
+	tdb.qDomain.AssertExpectations(t)
 	tdb.qDomain.AssertNotCalled(t, "Scan", mock.Anything)
 }
 
@@ -334,7 +336,7 @@ func TestListAgentIDsForDomains_BoundedWalk(t *testing.T) {
 
 	appliedLimits := []int{}
 	filterMockQueryCalls(tdb.qIdx, "Limit")
-	tdb.qIdx.On("Limit", mock.Anything).Return(tdb.qIdx).Times(2).Run(func(args mock.Arguments) {
+	tdb.qIdx.On("Limit", 100).Return(tdb.qIdx).Times(2).Run(func(args mock.Arguments) {
 		appliedLimits = append(appliedLimits, testutil.RequireMockArg[int](t, args, 0))
 	})
 	tdb.qIdx.On("Cursor", "after-1").Return(tdb.qIdx).Once()
@@ -354,8 +356,9 @@ func TestListAgentIDsForDomains_BoundedWalk(t *testing.T) {
 	if len(agentIDs) != 2 {
 		t.Fatalf("expected 2 agent ids across pages, got %d", len(agentIDs))
 	}
-	if len(appliedLimits) != 2 || appliedLimits[0] != partitionWalkPageSize || appliedLimits[1] != partitionWalkPageSize {
-		t.Fatalf("expected every page bounded to %d, got limits %v", partitionWalkPageSize, appliedLimits)
+	if len(appliedLimits) != 2 || appliedLimits[0] != 100 || appliedLimits[1] != 100 {
+		t.Fatalf("expected every page bounded to %d, got limits %v", 100, appliedLimits)
 	}
+	tdb.qIdx.AssertExpectations(t)
 	tdb.qIdx.AssertNotCalled(t, "Scan", mock.Anything)
 }

@@ -726,7 +726,8 @@ func TestGetNextSoulAgentVersion_BoundedWalk(t *testing.T) {
 
 	appliedLimits := []int{}
 	filterMockQueryCalls(tdb.qVersion, "Limit")
-	tdb.qVersion.On("Limit", mock.Anything).Return(tdb.qVersion).Times(2).Run(func(args mock.Arguments) {
+	filterMockQueryCalls(tdb.qVersion, "Cursor")
+	tdb.qVersion.On("Limit", 100).Return(tdb.qVersion).Times(2).Run(func(args mock.Arguments) {
 		appliedLimits = append(appliedLimits, testutil.RequireMockArg[int](t, args, 0))
 	})
 	tdb.qVersion.On("Cursor", "after-1").Return(tdb.qVersion).Once()
@@ -749,8 +750,9 @@ func TestGetNextSoulAgentVersion_BoundedWalk(t *testing.T) {
 	if prevSHA != "" {
 		t.Fatalf("expected empty prev hash, got %q", prevSHA)
 	}
-	if len(appliedLimits) != 2 || appliedLimits[0] != partitionWalkPageSize || appliedLimits[1] != partitionWalkPageSize {
-		t.Fatalf("expected every page bounded to %d, got limits %v", partitionWalkPageSize, appliedLimits)
+	if len(appliedLimits) != 2 || appliedLimits[0] != 100 || appliedLimits[1] != 100 {
+		t.Fatalf("expected every page bounded to %d, got limits %v", 100, appliedLimits)
 	}
+	tdb.qVersion.AssertExpectations(t)
 	tdb.qVersion.AssertNotCalled(t, "Scan", mock.Anything)
 }

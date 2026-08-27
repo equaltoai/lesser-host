@@ -148,7 +148,7 @@ func TestLoadAttestationSubjectDomainsBoundedWalk(t *testing.T) {
 	}
 
 	appliedLimits := []int{}
-	qDomain.On("Limit", mock.Anything).Return(qDomain).Times(2).Run(func(args mock.Arguments) {
+	qDomain.On("Limit", 100).Return(qDomain).Times(2).Run(func(args mock.Arguments) {
 		appliedLimits = append(appliedLimits, testutil.RequireMockArg[int](t, args, 0))
 	})
 	qDomain.On("Cursor", "after-page-1").Return(qDomain).Once()
@@ -169,8 +169,9 @@ func TestLoadAttestationSubjectDomainsBoundedWalk(t *testing.T) {
 	if len(domains) != 3 {
 		t.Fatalf("expected 3 domains across pages, got %d", len(domains))
 	}
-	if len(appliedLimits) != 2 || appliedLimits[0] != trustPartitionWalkPageSize || appliedLimits[1] != trustPartitionWalkPageSize {
-		t.Fatalf("expected every page bounded to %d, got limits %v", trustPartitionWalkPageSize, appliedLimits)
+	if len(appliedLimits) != 2 || appliedLimits[0] != 100 || appliedLimits[1] != 100 {
+		t.Fatalf("expected every page bounded to %d, got limits %v", 100, appliedLimits)
 	}
+	qDomain.AssertExpectations(t)
 	qDomain.AssertNotCalled(t, "Scan", mock.Anything)
 }

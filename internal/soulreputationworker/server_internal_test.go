@@ -591,7 +591,7 @@ func newWorkerWalkQuery(t *testing.T, db *ttmocks.MockExtendedDB, modelType stri
 	q.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(q).Maybe()
 	q.On("OrderBy", mock.Anything, mock.Anything).Return(q).Maybe()
 	appliedLimits := []int{}
-	q.On("Limit", mock.Anything).Return(q).Times(2).Run(func(args mock.Arguments) {
+	q.On("Limit", 100).Return(q).Times(2).Run(func(args mock.Arguments) {
 		if n, ok := args.Get(0).(int); ok {
 			appliedLimits = append(appliedLimits, n)
 		}
@@ -714,7 +714,8 @@ func TestWorkerPartitionReads_BoundedPerIdentity(t *testing.T) {
 			count, err := tc.call(srv)
 			require.NoError(t, err)
 			require.Equal(t, 2, count)
-			require.Equal(t, []int{workerPartitionWalkPageSize, workerPartitionWalkPageSize}, *appliedLimits)
+			require.Equal(t, []int{100, 100}, *appliedLimits)
+			q.AssertExpectations(t)
 			q.AssertNotCalled(t, "Scan", mock.Anything)
 		})
 	}

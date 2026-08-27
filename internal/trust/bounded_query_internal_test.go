@@ -18,13 +18,18 @@ import (
 func TestTrustPartitionAll_ExceedsPageCapFailsClosed(t *testing.T) {
 	t.Parallel()
 
+	// The cap check is `page >= maxPages`: with maxPages=2 the walk reads
+	// exactly two pages (Limit x2, Cursor x1, AllPaginated x2) and then errors,
+	// never a third page. Pinning the fixed call counts makes the off-by-one
+	// mutation (`page > maxPages`) fail: it would issue a third read.
 	q := new(ttmocks.MockQuery)
-	q.On("Limit", mock.Anything).Return(q).Maybe()
-	q.On("Cursor", mock.Anything).Return(q).Maybe()
-	q.On("AllPaginated", mock.AnythingOfType("*[]*models.Domain")).Return(&core.PaginatedResult{HasMore: true, NextCursor: "keep-going"}, nil).Maybe()
+	q.On("Limit", mock.Anything).Return(q).Times(2)
+	q.On("Cursor", mock.Anything).Return(q).Times(1)
+	q.On("AllPaginated", mock.AnythingOfType("*[]*models.Domain")).Return(&core.PaginatedResult{HasMore: true, NextCursor: "keep-going"}, nil).Times(2)
 
 	_, err := trustPartitionAll[models.Domain](q, trustPartitionWalkPageSize, 2)
 	require.Error(t, err)
 	require.True(t, strings.Contains(err.Error(), "exceeded 2 pages"), "expected page-cap error, got %v", err)
+	q.AssertExpectations(t)
 	q.AssertNotCalled(t, "Scan", mock.Anything)
 }
