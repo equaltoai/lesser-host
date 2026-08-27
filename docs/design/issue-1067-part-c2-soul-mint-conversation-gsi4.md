@@ -66,39 +66,44 @@ index. The full writer enumeration (15 sites):
 
 **Creates (whole-item marshal, carry CreatedAt → `UpdateKeys` writes gsi4):**
 
-1. `handlers_soul_mint_conversation.go:988-997` — `tx.Create(conv)` (SSE lane, new conversation).
-2. `handlers_soul_mint_conversation_async.go:918-935` — `tx.Create(conv)` (async lane, new conversation).
-3. `internal/store/soul_mint_conversation.go:81` — `PutSoulAgentMintConversation` `CreateOrUpdate`,
-   called from `internal/aiworker/hosted_genesis.go:317` (loaded conversation → `UpdateKeys`).
+1. `handlers_soul_mint_conversation.go` → `debitMintConversationStreamCredits` (extraWrites create
+   branch, `tx.Create(conv)`, ~lines 1002-1013) — SSE lane, new conversation.
+2. `handlers_soul_mint_conversation_async.go` → `persistHostedGenesisAcceptedTurn` (create branch,
+   `tx.Create(conv)`, ~lines 924-943) — async lane, new conversation.
+3. `internal/store/soul_mint_conversation.go` → `PutSoulAgentMintConversation` (`CreateOrUpdate`,
+   ~line 83), called from `internal/aiworker/hosted_genesis.go:317` (loaded conversation →
+   `UpdateKeys`).
 
 **Field-scoped updates (`Update(fields...)` / `tx.UpdateWithBuilder` write only the named fields,
 so the gsi4 attributes are named on every one, threaded with the stored CreatedAt):**
 
-4. `handlers_soul_mint_conversation.go:1006-1016` — `tx.UpdateWithBuilder` `ChargedCredits` +
-   `GSI4PK`/`GSI4SK` (SSE lane existing conversation; `mintConversationSession.createdAt` carries
-   the loaded/stored CreatedAt).
-5. `handlers_soul_mint_conversation.go:1162` — `.Update("Messages", "GSI4PK", "GSI4SK")`
-   (`updateMintConversationMessages`; test-only caller).
-6. `handlers_soul_mint_conversation.go:1208` — `.Update("Messages", "Usage", "GSI4PK", "GSI4SK")`
-   (`updateMintConversationTurn`, SSE lane).
-7. `handlers_soul_mint_conversation.go:1228` — `.Update("Messages", "ProducedDeclarations",
-   "Status", "CompletedAt", "GSI4PK", "GSI4SK")` (`updateMintConversationStatus`, SSE lane).
-8. `handlers_soul_mint_conversation_async.go:312-332` — `tx.UpdateWithBuilder` progression write
-   (`persistHostedGenesisProgression`), `CreatedAt: conv.CreatedAt` + guarded `GSI4PK`/`GSI4SK`.
-9. `handlers_soul_mint_conversation_async.go:944-968` — `tx.UpdateWithBuilder` accepted-turn write
-   (`persistHostedGenesisAcceptedTurn`), `CreatedAt` from the hydrated `session.conv`.
-10. `handlers_soul_mint_conversation_recover.go:640-658` — `tx.UpdateWithBuilder`
-    (`persistHostedGenesisFailedRetryPending`).
-11. `handlers_soul_mint_conversation_recover.go:676-694` — `tx.UpdateWithBuilder`
-    (`persistHostedGenesisPendingAssistantRetryTransition`).
-12. `handlers_soul_mint_conversation_recover.go:738-756` — `tx.UpdateWithBuilder`
-    (`persistHostedGenesisRetryDispatchFailure`).
-13. `handlers_soul_mint_conversation_recover.go:1050-1067` — `tx.UpdateWithBuilder`
-    (`persistHostedGenesisMicroVMRecoveryFailure`).
-14. `internal/store/hosted_genesis_sessions.go:261-283` — `tx.UpdateWithBuilder`
-    (`FailHostedGenesisSessionAndConversation`; `conversation.BeforeUpdate()` recomputes keys).
-15. `internal/store/hosted_genesis_sessions.go:410-428` — `tx.UpdateWithBuilder`
-    (`PublishHostedGenesisSessionAndConversation`; same).
+4. `handlers_soul_mint_conversation.go` → `debitMintConversationStreamCredits` (update branch,
+   `tx.UpdateWithBuilder` `ChargedCredits` + `GSI4PK`/`GSI4SK`, ~lines 1015-1030; SSE lane existing
+   conversation; `mintConversationSession.createdAt` carries the loaded/stored CreatedAt).
+5. `handlers_soul_mint_conversation.go` → `updateMintConversationMessages`
+   (`.Update("Messages", "GSI4PK", "GSI4SK")`, ~line 1184; test-only caller).
+6. `handlers_soul_mint_conversation.go` → `updateMintConversationTurn`
+   (`.Update("Messages", "Usage", "GSI4PK", "GSI4SK")`, ~line 1231; SSE lane).
+7. `handlers_soul_mint_conversation.go` → `updateMintConversationStatus`
+   (`.Update("Messages", "ProducedDeclarations", "Status", "CompletedAt", "GSI4PK", "GSI4SK")`,
+   ~line 1252; SSE lane).
+8. `handlers_soul_mint_conversation_async.go` → `persistHostedGenesisProgression`
+   (`tx.UpdateWithBuilder`, ~lines 301-329), `CreatedAt: conv.CreatedAt` + guarded `GSI4PK`/`GSI4SK`.
+9. `handlers_soul_mint_conversation_async.go` → `persistHostedGenesisAcceptedTurn` (accepted-turn
+   update branch, `tx.UpdateWithBuilder`, ~lines 945-973), `CreatedAt` from the hydrated
+   `session.conv`.
+10. `handlers_soul_mint_conversation_recover.go` → `persistHostedGenesisFailedRetryPending`
+    (`tx.UpdateWithBuilder`, ~lines 641-654).
+11. `handlers_soul_mint_conversation_recover.go` → `persistHostedGenesisPendingAssistantRetryTransition`
+    (`tx.UpdateWithBuilder`, ~lines 683-696).
+12. `handlers_soul_mint_conversation_recover.go` → `persistHostedGenesisRetryDispatchFailure`
+    (`tx.UpdateWithBuilder`, ~lines 751-764).
+13. `handlers_soul_mint_conversation_recover.go` → `persistHostedGenesisMicroVMRecoveryFailure`
+    (`tx.UpdateWithBuilder`, ~lines 1069-1081).
+14. `internal/store/hosted_genesis_sessions.go` → `FailHostedGenesisSessionAndConversation`
+    (`tx.UpdateWithBuilder`, ~lines 261-283; `conversation.BeforeUpdate()` recomputes keys).
+15. `internal/store/hosted_genesis_sessions.go` → `PublishHostedGenesisSessionAndConversation`
+    (`tx.UpdateWithBuilder`, ~lines 418-434; same).
 
 Every `UpdateWithBuilder` site guards the gsi4 `Set`s on non-empty computed keys
 (`if GSI4PK != "" && GSI4SK != ""`): a legacy item without a stored `CreatedAt` keeps its existing
