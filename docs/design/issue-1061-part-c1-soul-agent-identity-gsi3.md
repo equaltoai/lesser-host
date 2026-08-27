@@ -68,16 +68,22 @@ explicitly; the GSI attributes are written on **every** identity write:
   `ensureSoulHostedInstanceTrustIdentity` (`handlers_soul_registry.go`) already call
   `UpdateKeys()` before `Create()`.
 - **Updates** (`Update(fields...)` writes only the named fields, so the GSI fields are
-  added to every field list):
-  - `handlers_soul_suspension.go` (suspend, reinstate)
-  - `handlers_soul_sovereignty.go` (self-suspend, self-reinstate)
-  - `handlers_soul_operations.go` (mint receipt, wallet rotation side effect, burn side effect)
-  - `soul_policy.go` (policy persistence — now carries the current status into the partial
+  added to every field list — 15 field-scoped `Update` calls in total; an earlier
+  draft undercounted this as 11 and missed the lifecycle transitions, which the
+  rework fixed):
+  - `handlers_soul_suspension.go:54,105` (suspend, reinstate)
+  - `handlers_soul_sovereignty.go:89,144` (self-suspend, self-reinstate)
+  - `handlers_soul_operations.go:524,572,640` (mint receipt, wallet rotation side effect, burn side effect)
+  - `soul_policy.go:219` (policy persistence — now carries the current status into the partial
     update model)
-  - `handlers_soul_registry.go` (pending-principal reconciliation — carries current status)
-  - `soul_registration_publish_v2.go` (registration activation — recomputes keys after the
-    status transition)
-  - `handlers_soul_update_registration.go` (capability update)
+  - `handlers_soul_registry.go:1413` (pending-principal reconciliation — carries current status)
+  - `soul_registration_publish_v2.go:287,309` (registration activation — recomputes keys after the
+    status transition; two call sites)
+  - `handlers_soul_update_registration.go:1609` (capability update)
+  - `handlers_soul_lifecycle.go:209,361,362` (archive; designate-successor predecessor; designate-successor
+    successor — added in the rework; both terminal transitions previously left `gsi3PK` on the
+    old status partition, and the successor write is included so the "every identity write
+    writes the index keys" invariant holds literally everywhere)
 - **Deletes**: no code path hard-deletes a `SoulAgentIdentity` (lifecycle is status
   transitions through the audited update sites). If a hard delete is ever introduced,
   DynamoDB removes the item from all GSIs automatically; no tombstone is needed.
@@ -134,16 +140,27 @@ go run ./scripts/soul-agent-identity-gsi3-backfill --profile <aws-profile> --sta
 - **Dry-run by default**; mutations only under `--apply`.
 - Bounded paginated key-only scans (`Limit` + `ProjectionExpression` + `ExclusiveStartKey`),
   base sleep + jitter between pages (`--sleep-ms`, never saturate).
-- Conditional `UpdateItem` (`attribute_not_exists(gsi3PK) AND attribute_not_exists(gsi3SK)`)
-  that only sets the two GSI attributes and never clobbers concurrent live writes
-  (condition failure ⇒ a live write covered the item ⇒ counted already-correct).
+- Conditional `UpdateItem` that only sets the two GSI attributes and never clobbers
+  concurrent live writes, with two distinct paths:
+  - **Absent keys** (backfill of items predating the index):
+    `attribute_not_exists(gsi3PK) AND attribute_not_exists(gsi3SK)` — condition failure
+    means a live write covered the item ⇒ counted `already-correct`.
+  - **Present-but-wrong keys** (stale, e.g. items written before the lifecycle fix):
+    a repair write conditioned on the OBSERVED stale values
+    (`gsi3PK = :observedPk AND gsi3SK = :observedSk`) ⇒ counted `repaired`; ANY repair
+    failure (including a conditional failure, i.e. a concurrent writer changed the keys)
+    is counted as an `error` so the completeness marker is withheld — the tool never
+    certifies an item it did not repair or verify.
 - **Resumable**: persists a `LastEvaluatedKey` checkpoint (default
-  `soul-agent-identity-gsi3-backfill.<stage>.checkpoint.json`); an interrupted run resumes
-  with `--resume` instead of restarting.
+  `soul-agent-identity-gsi3-backfill.<stage>.checkpoint.json`) stamped with the run
+  **mode** (`dry-run`/`apply`), stage, and table. `initCheckpoint` refuses to resume a
+  checkpoint whose mode, stage, or table differs from the current run (an interrupted
+  dry-run checkpoint must never be resumed with `--apply`, which would skip every
+  pre-checkpoint item and could certify a partial backfill).
 - **Preflight**: `DescribeTable` — refuses unless gsi3 exists and is `ACTIVE`.
-- Final count report (`scanned/updated/already_correct/errors/marker`) — the operator's
-  proof. No credentials or table data in logs (agent IDs appear only in dry-run samples
-  and error lines for remediation).
+- Final count report (`scanned/updated/repaired/already_correct/errors/marker`) — the
+  operator's proof. No credentials or table data in logs (agent IDs appear only in
+  dry-run samples and error lines for remediation).
 - Part C2 extends this same tool to `SoulAgentMintConversation` by adding a second
   `modelPlan`; the scan/checkpoint/throttle machinery is model-agnostic. Nothing for the
   second model is built in this PR.
