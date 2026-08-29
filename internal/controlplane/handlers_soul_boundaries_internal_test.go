@@ -11,6 +11,7 @@ import (
 	"github.com/ethereum/go-ethereum/accounts"
 	"github.com/ethereum/go-ethereum/crypto"
 	apptheory "github.com/theory-cloud/apptheory/v4/runtime"
+	core "github.com/theory-cloud/tabletheory/v3/pkg/core"
 	theoryErrors "github.com/theory-cloud/tabletheory/v3/pkg/errors"
 
 	"github.com/stretchr/testify/mock"
@@ -93,7 +94,7 @@ func newBoundaryAppendPublishFixture(t *testing.T) *boundaryAppendPublishFixture
 		}
 	}).Twice()
 	tdb.qBoundary.On("First", mock.AnythingOfType("*models.SoulAgentBoundary")).Return(theoryErrors.ErrItemNotFound).Once()
-	tdb.qBoundary.On("All", mock.AnythingOfType("*[]*models.SoulAgentBoundary")).Return(nil).Run(func(args mock.Arguments) {
+	tdb.qBoundary.On("AllPaginated", mock.AnythingOfType("*[]*models.SoulAgentBoundary")).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.SoulAgentBoundary](t, args, 0)
 		*dest = []*models.SoulAgentBoundary{}
 	}).Twice()

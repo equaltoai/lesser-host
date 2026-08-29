@@ -155,11 +155,16 @@ func (s *Server) listSoulRosterCandidatesForDomains(ctx *apptheory.Context, doma
 	candidates := make([]portalSoulDomainCandidate, 0)
 	seenAgents := map[string]struct{}{}
 	for _, domain := range domains {
-		var idxItems []*models.SoulDomainAgentIndex
-		err := s.store.DB.WithContext(ctx.Context()).
-			Model(&models.SoulDomainAgentIndex{}).
-			Where("PK", "=", fmt.Sprintf("SOUL#DOMAIN#%s", domain)).
-			All(&idxItems)
+		// Bounded per-domain partition walk (issue #1061 part B): page-capped
+		// reads resumed via the opaque cursor instead of a no-Limit All; fails
+		// closed on page-cap exhaustion.
+		idxItems, err := collectPartitionAll[models.SoulDomainAgentIndex](
+			s.store.DB.WithContext(ctx.Context()).
+				Model(&models.SoulDomainAgentIndex{}).
+				Where("PK", "=", fmt.Sprintf("SOUL#DOMAIN#%s", domain)),
+			partitionWalkPageSize,
+			partitionWalkMaxPages,
+		)
 		if err != nil && !theoryErrors.IsNotFound(err) {
 			return nil, newAppTheoryError("app.internal", "failed to list agents")
 		}

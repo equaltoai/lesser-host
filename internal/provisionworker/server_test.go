@@ -14,6 +14,7 @@ import (
 	cbtypes "github.com/aws/aws-sdk-go-v2/service/codebuild/types"
 	apptheory "github.com/theory-cloud/apptheory/v4/runtime"
 	"github.com/theory-cloud/apptheory/v4/testkit"
+	core "github.com/theory-cloud/tabletheory/v3/pkg/core"
 	ttmocks "github.com/theory-cloud/tabletheory/v3/pkg/mocks"
 
 	"github.com/stretchr/testify/mock"
@@ -320,10 +321,10 @@ func TestProcessActiveProvisionSweep_RequeuesOnlyStaleUnleasedJobs(t *testing.T)
 	db.On("WithContext", mock.Anything).Return(db).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.ProvisionJob")).Return(qJob).Maybe()
 	qJob.On("Where", "SK", "=", models.SKJob).Return(qJob).Once()
-	qJob.On("Limit", provisionSweepLimit).Return(qJob).Once()
+	qJob.On("Limit", 100).Return(qJob).Once()
 
 	now := time.Unix(1_000, 0).UTC()
-	qJob.On("All", mock.AnythingOfType("*[]*models.ProvisionJob")).Return(nil).Run(func(args mock.Arguments) {
+	qJob.On("AllPaginated", mock.AnythingOfType("*[]*models.ProvisionJob")).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.ProvisionJob](t, args, 0)
 		*dest = []*models.ProvisionJob{
 			testProvisionSweepJob(&models.ProvisionJob{
@@ -369,7 +370,7 @@ func TestProcessActiveProvisionSweep_FailsExpiredJobs(t *testing.T) {
 	db.On("WithContext", mock.Anything).Return(db).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.ProvisionJob")).Return(qJob).Maybe()
 	qJob.On("Where", "SK", "=", models.SKJob).Return(qJob).Once()
-	qJob.On("Limit", provisionSweepLimit).Return(qJob).Once()
+	qJob.On("Limit", 100).Return(qJob).Once()
 
 	now := time.Unix(1_000, 0).UTC()
 	expired := &models.ProvisionJob{
@@ -380,7 +381,7 @@ func TestProcessActiveProvisionSweep_FailsExpiredJobs(t *testing.T) {
 		ExpiresAt:    now.Add(-time.Minute),
 	}
 	expired = testProvisionSweepJob(expired)
-	qJob.On("All", mock.AnythingOfType("*[]*models.ProvisionJob")).Return(nil).Run(func(args mock.Arguments) {
+	qJob.On("AllPaginated", mock.AnythingOfType("*[]*models.ProvisionJob")).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.ProvisionJob](t, args, 0)
 		*dest = []*models.ProvisionJob{expired}
 	}).Once()
@@ -417,8 +418,8 @@ func TestProcessActiveProvisionSweep_ValidationAndErrorAccounting(t *testing.T) 
 	dbListErr.On("WithContext", mock.Anything).Return(dbListErr).Once()
 	dbListErr.On("Model", mock.AnythingOfType("*models.ProvisionJob")).Return(qListErr).Once()
 	qListErr.On("Where", "SK", "=", models.SKJob).Return(qListErr).Once()
-	qListErr.On("Limit", provisionSweepLimit).Return(qListErr).Once()
-	qListErr.On("All", mock.AnythingOfType("*[]*models.ProvisionJob")).Return(fmt.Errorf("db down")).Once()
+	qListErr.On("Limit", 100).Return(qListErr).Once()
+	qListErr.On("AllPaginated", mock.AnythingOfType("*[]*models.ProvisionJob")).Return((*core.PaginatedResult)(nil), fmt.Errorf("db down")).Once()
 
 	_, err = (&Server{store: store.New(dbListErr), sqs: &fakeSQS{}}).processActiveProvisionSweep(context.Background(), "req", now)
 	require.ErrorContains(t, err, "db down")
@@ -428,8 +429,8 @@ func TestProcessActiveProvisionSweep_ValidationAndErrorAccounting(t *testing.T) 
 	dbProcessErr.On("WithContext", mock.Anything).Return(dbProcessErr).Once()
 	dbProcessErr.On("Model", mock.AnythingOfType("*models.ProvisionJob")).Return(qProcessErr).Once()
 	qProcessErr.On("Where", "SK", "=", models.SKJob).Return(qProcessErr).Once()
-	qProcessErr.On("Limit", provisionSweepLimit).Return(qProcessErr).Once()
-	qProcessErr.On("All", mock.AnythingOfType("*[]*models.ProvisionJob")).Return(nil).Run(func(args mock.Arguments) {
+	qProcessErr.On("Limit", 100).Return(qProcessErr).Once()
+	qProcessErr.On("AllPaginated", mock.AnythingOfType("*[]*models.ProvisionJob")).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.ProvisionJob](t, args, 0)
 		*dest = []*models.ProvisionJob{
 			nil,
@@ -459,4 +460,159 @@ func testProvisionSweepJob(job *models.ProvisionJob) *models.ProvisionJob {
 	}
 	_ = job.UpdateKeys()
 	return job
+}
+
+func TestListProvisionSweepJobs_MultiPageCursorChain(t *testing.T) {
+	t.Parallel()
+
+	db := ttmocks.NewMockExtendedDB()
+	qJob := new(ttmocks.MockQuery)
+	db.On("WithContext", mock.Anything).Return(db).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.ProvisionJob")).Return(qJob).Maybe()
+	qJob.On("Where", "SK", "=", models.SKJob).Return(qJob).Once()
+	// Literal pins: page size 100, resume cursor "sweep-ct-1".
+	qJob.On("Limit", 100).Return(qJob).Times(2)
+	qJob.On("Cursor", "sweep-ct-1").Return(qJob).Once()
+	qJob.On("AllPaginated", mock.AnythingOfType("*[]*models.ProvisionJob")).Return(&core.PaginatedResult{HasMore: true, NextCursor: "sweep-ct-1"}, nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.ProvisionJob](t, args, 0)
+		*dest = []*models.ProvisionJob{testProvisionSweepJob(&models.ProvisionJob{ID: "j1", Status: models.ProvisionJobStatusQueued})}
+	}).Once()
+	qJob.On("AllPaginated", mock.AnythingOfType("*[]*models.ProvisionJob")).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.ProvisionJob](t, args, 0)
+		*dest = []*models.ProvisionJob{
+			testProvisionSweepJob(&models.ProvisionJob{ID: "j2", Status: models.ProvisionJobStatusQueued}),
+			testProvisionSweepJob(&models.ProvisionJob{ID: "j3", Status: models.ProvisionJobStatusQueued}),
+		}
+	}).Once()
+
+	srv := &Server{store: store.New(db)}
+	items, err := srv.listProvisionSweepJobs(context.Background())
+	require.NoError(t, err)
+	require.Len(t, items, 3)
+	require.Equal(t, "j1", items[0].ID)
+	require.Equal(t, "j2", items[1].ID)
+	require.Equal(t, "j3", items[2].ID)
+	qJob.AssertExpectations(t)
+	qJob.AssertNotCalled(t, "Scan", mock.Anything)
+}
+
+func TestListProvisionSweepJobs_ExactPageSizeMultiple(t *testing.T) {
+	t.Parallel()
+
+	db := ttmocks.NewMockExtendedDB()
+	qJob := new(ttmocks.MockQuery)
+	db.On("WithContext", mock.Anything).Return(db).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.ProvisionJob")).Return(qJob).Maybe()
+	qJob.On("Where", "SK", "=", models.SKJob).Return(qJob).Once()
+	qJob.On("Limit", 100).Return(qJob).Times(2)
+	qJob.On("Cursor", "sweep-ct-2").Return(qJob).Once()
+	qJob.On("AllPaginated", mock.AnythingOfType("*[]*models.ProvisionJob")).Return(&core.PaginatedResult{HasMore: true, NextCursor: "sweep-ct-2"}, nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.ProvisionJob](t, args, 0)
+		page := make([]*models.ProvisionJob, 0, 100)
+		for i := 0; i < 100; i++ {
+			page = append(page, testProvisionSweepJob(&models.ProvisionJob{ID: fmt.Sprintf("sweep-job-%03d", i), Status: models.ProvisionJobStatusQueued}))
+		}
+		*dest = page
+	}).Once()
+	qJob.On("AllPaginated", mock.AnythingOfType("*[]*models.ProvisionJob")).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.ProvisionJob](t, args, 0)
+		page := make([]*models.ProvisionJob, 0, 100)
+		for i := 100; i < 200; i++ {
+			page = append(page, testProvisionSweepJob(&models.ProvisionJob{ID: fmt.Sprintf("sweep-job-%03d", i), Status: models.ProvisionJobStatusQueued}))
+		}
+		*dest = page
+	}).Once()
+
+	srv := &Server{store: store.New(db)}
+	items, err := srv.listProvisionSweepJobs(context.Background())
+	require.NoError(t, err)
+	require.Len(t, items, 200)
+	qJob.AssertExpectations(t)
+}
+
+func TestListProvisionSweepJobs_EmptyTable(t *testing.T) {
+	t.Parallel()
+
+	db := ttmocks.NewMockExtendedDB()
+	qJob := new(ttmocks.MockQuery)
+	db.On("WithContext", mock.Anything).Return(db).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.ProvisionJob")).Return(qJob).Maybe()
+	qJob.On("Where", "SK", "=", models.SKJob).Return(qJob).Once()
+	qJob.On("Limit", 100).Return(qJob).Once()
+	qJob.On("AllPaginated", mock.AnythingOfType("*[]*models.ProvisionJob")).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.ProvisionJob](t, args, 0)
+		*dest = nil
+	}).Once()
+
+	srv := &Server{store: store.New(db)}
+	items, err := srv.listProvisionSweepJobs(context.Background())
+	require.NoError(t, err)
+	require.Empty(t, items)
+	qJob.AssertExpectations(t)
+}
+
+func TestListProvisionSweepJobs_CapExhaustionFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	// The sweep walk's cap is 20 pages (page >= 20): exactly twenty pages are
+	// read then the sweep fails closed — never a silently truncated sweep.
+	// Exact call counts kill the cap-removed and off-by-one mutations.
+	db := ttmocks.NewMockExtendedDB()
+	qJob := new(ttmocks.MockQuery)
+	db.On("WithContext", mock.Anything).Return(db).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.ProvisionJob")).Return(qJob).Maybe()
+	qJob.On("Where", "SK", "=", models.SKJob).Return(qJob).Once()
+	qJob.On("Limit", 100).Return(qJob).Times(20)
+	qJob.On("Cursor", mock.Anything).Return(qJob).Times(19)
+	qJob.On("AllPaginated", mock.AnythingOfType("*[]*models.ProvisionJob")).Return(&core.PaginatedResult{HasMore: true, NextCursor: "keep-going"}, nil).Times(20)
+
+	srv := &Server{store: store.New(db)}
+	items, err := srv.listProvisionSweepJobs(context.Background())
+	require.Nil(t, items)
+	require.ErrorContains(t, err, "exceeded 20 pages")
+	qJob.AssertExpectations(t)
+	qJob.AssertNotCalled(t, "Scan", mock.Anything)
+}
+
+func TestProcessActiveProvisionSweep_MultiPageCursorChain(t *testing.T) {
+	t.Parallel()
+
+	db := ttmocks.NewMockExtendedDB()
+	qJob := new(ttmocks.MockQuery)
+	db.On("WithContext", mock.Anything).Return(db).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.ProvisionJob")).Return(qJob).Maybe()
+	qJob.On("Where", "SK", "=", models.SKJob).Return(qJob).Once()
+	qJob.On("Limit", 100).Return(qJob).Times(2)
+	qJob.On("Cursor", "sweep-ct-3").Return(qJob).Once()
+
+	now := time.Unix(3_000, 0).UTC()
+	qJob.On("AllPaginated", mock.AnythingOfType("*[]*models.ProvisionJob")).Return(&core.PaginatedResult{HasMore: true, NextCursor: "sweep-ct-3"}, nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.ProvisionJob](t, args, 0)
+		*dest = []*models.ProvisionJob{testProvisionSweepJob(&models.ProvisionJob{
+			ID: "m1", Status: models.ProvisionJobStatusQueued,
+			UpdatedAt: now.Add(-provisionSweepStaleAfter - time.Second), ExpiresAt: now.Add(time.Hour),
+		})}
+	}).Once()
+	qJob.On("AllPaginated", mock.AnythingOfType("*[]*models.ProvisionJob")).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.ProvisionJob](t, args, 0)
+		*dest = []*models.ProvisionJob{testProvisionSweepJob(&models.ProvisionJob{
+			ID: "m2", Status: models.ProvisionJobStatusQueued,
+			UpdatedAt: now.Add(-provisionSweepStaleAfter - time.Second), ExpiresAt: now.Add(time.Hour),
+		})}
+	}).Once()
+
+	sqsClient := &fakeSQS{}
+	srv := &Server{
+		cfg:   config.Config{ProvisionQueueURL: "https://sqs.us-east-1.amazonaws.com/123/provision"},
+		store: store.New(db),
+		sqs:   sqsClient,
+	}
+
+	out, err := srv.processActiveProvisionSweep(context.Background(), "req-sweep-multi", now)
+	require.NoError(t, err)
+	require.EqualValues(t, 2, out["active_jobs"])
+	require.EqualValues(t, 2, out["processed"])
+	require.EqualValues(t, 0, out["errors"])
+	require.Len(t, sqsClient.inputs, 2)
+	qJob.AssertExpectations(t)
 }

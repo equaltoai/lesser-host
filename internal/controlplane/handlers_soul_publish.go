@@ -176,7 +176,7 @@ func (s *Server) handleSoulPublishValidationRoot(ctx *apptheory.Context) (*appth
 func (s *Server) requireSoulActiveAgents(ctx context.Context) ([]*models.SoulAgentIdentity, *apptheory.AppTheoryError) {
 	active, err := s.listSoulActiveAgentIdentities(ctx)
 	if err != nil {
-		return nil, newAppTheoryError("app.internal", "failed to list agents")
+		return nil, newAppTheoryError("app.internal", "failed to list agents: "+err.Error())
 	}
 	if len(active) == 0 {
 		return nil, newAppTheoryError("app.conflict", "no active agents")
@@ -465,11 +465,14 @@ func (s *Server) listSoulActiveAgentIdentities(ctx context.Context) ([]*models.S
 	if s == nil || s.store == nil || s.store.DB == nil {
 		return nil, fmt.Errorf("store not configured")
 	}
-	var items []*models.SoulAgentIdentity
-	if err := s.store.DB.WithContext(ctx).
-		Model(&models.SoulAgentIdentity{}).
-		Where("SK", "=", "IDENTITY").
-		All(&items); err != nil {
+	// gsi3 status index (issue #1061 part C1): fail closed until the operator
+	// backfilled the index, then enumerate the active partition with bounded
+	// paginated reads instead of the former SK=IDENTITY full-table scan.
+	if err := s.store.RequireSoulAgentIdentityGSI3BackfillComplete(ctx); err != nil {
+		return nil, err
+	}
+	items, err := s.store.ListSoulAgentIdentitiesByStatus(ctx, models.SoulAgentStatusActive, 0)
+	if err != nil {
 		return nil, err
 	}
 	out := make([]*models.SoulAgentIdentity, 0, len(items))

@@ -14,6 +14,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	apptheory "github.com/theory-cloud/apptheory/v4/runtime"
+	core "github.com/theory-cloud/tabletheory/v3/pkg/core"
 	theoryErrors "github.com/theory-cloud/tabletheory/v3/pkg/errors"
 	ttmocks "github.com/theory-cloud/tabletheory/v3/pkg/mocks"
 
@@ -231,7 +232,7 @@ func TestTipRegistryAdminEndpoints_ListAndGet(t *testing.T) {
 	ctx := &apptheory.Context{AuthIdentity: "alice"}
 	ctx.Set(ctxKeyOperatorRole, models.RoleAdmin)
 
-	tdb.qOp.On("All", mock.AnythingOfType("*[]*models.TipRegistryOperation")).Return(nil).Run(func(args mock.Arguments) {
+	tdb.qOp.On("AllPaginated", mock.AnythingOfType("*[]*models.TipRegistryOperation")).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.TipRegistryOperation](t, args, 0)
 		*dest = []*models.TipRegistryOperation{
 			nil,
@@ -251,6 +252,51 @@ func TestTipRegistryAdminEndpoints_ListAndGet(t *testing.T) {
 	if _, err := s.handleGetTipRegistryOperation(getCtx); err == nil {
 		t.Fatalf("expected not_found")
 	}
+}
+
+// TestHandleListTipRegistryOperations_BoundedPagination verifies the tip
+// registry operations list (issue #1061 part B) applies the clamped Limit,
+// forwards the opaque cursor, echoes next_cursor, and never issues a Scan.
+func TestHandleListTipRegistryOperations_BoundedPagination(t *testing.T) {
+	t.Parallel()
+
+	tdb := newTipRegistryTestDB()
+	s := &Server{store: store.New(tdb.db)}
+
+	appliedLimit := 0
+	filterMockQueryCalls(tdb.qOp, "Limit")
+	tdb.qOp.On("Limit", mock.Anything).Return(tdb.qOp).Run(func(args mock.Arguments) {
+		appliedLimit = testutil.RequireMockArg[int](t, args, 0)
+	})
+	appliedCursor := ""
+	tdb.qOp.On("Cursor", mock.Anything).Return(tdb.qOp).Run(func(args mock.Arguments) {
+		appliedCursor = testutil.RequireMockArg[string](t, args, 0)
+	})
+	tdb.qOp.On("AllPaginated", mock.AnythingOfType("*[]*models.TipRegistryOperation")).Return(&core.PaginatedResult{HasMore: true, NextCursor: " tip-next "}, nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.TipRegistryOperation](t, args, 0)
+		*dest = []*models.TipRegistryOperation{{ID: "op1", Status: models.TipRegistryOperationStatusPending}}
+	}).Once()
+
+	ctx := &apptheory.Context{AuthIdentity: "alice", Request: apptheory.Request{Query: map[string][]string{"limit": {"4"}, "cursor": {"tok-4"}}}}
+	ctx.Set(ctxKeyOperatorRole, models.RoleAdmin)
+	resp, err := s.handleListTipRegistryOperations(ctx)
+	if err != nil || resp.Status != 200 {
+		t.Fatalf("unexpected: resp=%#v err=%v", resp, err)
+	}
+	var out listTipRegistryOperationsResponse
+	if err := json.Unmarshal(resp.Body, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if appliedLimit != 4 {
+		t.Fatalf("expected query Limit(4), got Limit(%d)", appliedLimit)
+	}
+	if appliedCursor != "tok-4" {
+		t.Fatalf("expected cursor tok-4 passed through, got %q", appliedCursor)
+	}
+	if out.Count != 1 || len(out.Operations) != 1 || out.Limit != 4 || out.NextCursor != "tip-next" {
+		t.Fatalf("unexpected response: %#v", out)
+	}
+	tdb.qOp.AssertNotCalled(t, "Scan", mock.Anything)
 }
 
 func TestTipRegistryAdminMutationsRequireAdmin(t *testing.T) {

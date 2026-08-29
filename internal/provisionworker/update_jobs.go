@@ -44,10 +44,66 @@ const (
 
 	updateMaxTransitionsPerRun   = 6
 	updateRunnerStartClaimMaxAge = 2 * time.Minute
-	updateProcessingLeaseTTL     = 90 * time.Second
-	updateRunnerMissingMaxAge    = 10 * time.Minute
-	updateSweepLimit             = 100
-	updateVerifyInternalError    = "internal error"
+	// updateProcessingLeaseTTL must exceed the ProvisionWorker function
+	// timeout (120s, cdk/lib/lesser-host-stack.ts): the lease is acquired once
+	// per invocation (processUpdateJob) and never renewed, so an invocation
+	// must never hold an expired lease while still running, or the sweep could
+	// re-lease the job mid-step. Envelope ordering:
+	// provision queue visibility (6m) > lease TTL (150s) > fn timeout (120s).
+	updateProcessingLeaseTTL  = 150 * time.Second
+	updateRunnerMissingMaxAge = 10 * time.Minute
+	updateSweepLimit          = 100
+	updateVerifyInternalError = "internal error"
+
+	// updateVerifyHTTPTimeout bounds each individual outbound call in the
+	// managed-update verification lane. Live instance endpoints are inherently
+	// slow (measured ~6.7s cold for /api/v2/instance), so the per-call bound
+	// must clear that comfortably; a hung endpoint must fail its own call with
+	// a clear error instead of consuming the whole worker invocation budget
+	// (ProvisionWorker runs at 120s). advanceUpdateVerify applies it both as
+	// the request-context deadline and, via outboundhttp.WithTimeout, as the
+	// SSRF-protected client's Timeout, so it is the operative bound in
+	// production (net/http takes the earlier of Client.Timeout and the context
+	// deadline; Server.httpClient alone would cap the lane at 10s).
+	//
+	// The shared instance-config fetch retries inside updateVerifyTransientWindow
+	// before any lane gives up on a just-replaced endpoint (see
+	// fetchInstanceConfigV2WithRetry), and the verification phase refuses to
+	// start without updateVerifyBudgetRequirement of remaining worker-lambda
+	// budget, so the worst case stays inside the 120s invocation: the retry
+	// window plus at most two lane probes (~updateVerifyTransientWindow +
+	// 2*updateVerifyHTTPTimeout).
+	updateVerifyHTTPTimeout = 15 * time.Second
+
+	// updateVerifyTransientWindow bounds how long the shared instance-config
+	// fetch retries across a just-replaced endpoint before the verification
+	// lanes give up. Post-deploy warmup on live theory is measured at roughly
+	// 30-60s (issue #1060: a healthy instance answered ~2s TTFB minutes after
+	// the deploy build ended, but the first probe at +5s timed out), so the
+	// window sits in the 60-90s band while still fitting the 120s invocation.
+	updateVerifyTransientWindow = 75 * time.Second
+
+	// updateVerifyRetryBaseDelay / updateVerifyRetryMaxDelay shape the
+	// in-window backoff between fetch attempts via the worker's standard
+	// jitteredBackoff (the same machinery the rest of the worker uses with
+	// provisionDefaultShortRetryDelay). The floor is small because each
+	// attempt is itself bounded at updateVerifyHTTPTimeout; the cap keeps a
+	// persistent miss failing inside the invocation budget.
+	updateVerifyRetryBaseDelay = 2 * time.Second
+	updateVerifyRetryMaxDelay  = 15 * time.Second
+
+	// updateVerifyBudgetRequirement is the minimum remaining worker-lambda
+	// budget required before the verification phase starts. Below it the step
+	// requeues for a fresh invocation instead of entering verify half-dead
+	// (2026-08-25: trust/ai lanes failed with "lambda timeout imminent: only
+	// ~1s remaining" because verify started with no budget to finish).
+	updateVerifyBudgetRequirement = 60 * time.Second
+
+	// updateVerifyMinBudgetToRetry is the floor the in-window fetch retry loop
+	// applies before launching another attempt: below it a further attempt
+	// cannot complete inside the invocation, so the loop stops and the step
+	// requeues for a fresh invocation.
+	updateVerifyMinBudgetToRetry = 20 * time.Second
 )
 
 const (
@@ -1498,7 +1554,7 @@ func (s *Server) advanceUpdateLoadedDeployReceipt(
 	job.Step = updateStepVerify
 	job.Note = noteVerifyingDeployment
 	setUpdateJobActivePhase(job, updatePhaseVerify)
-	if err := s.persistUpdateJobAndInstance(ctx, job, requestID, now, updateSoulBindingIntegrationInstanceUpdate(job)); err != nil {
+	if err := s.persistUpdateJobAndInstance(ctx, job, requestID, now, updateDeployReceiptInstanceUpdate(job)); err != nil {
 		return 0, false, err
 	}
 	return s.advanceUpdateVerify(ctx, job, requestID, now)
@@ -1561,7 +1617,7 @@ func (s *Server) advanceUpdateReceiptIngest(ctx context.Context, job *models.Upd
 	job.Step = updateStepVerify
 	job.Note = noteVerifyingDeployment
 	setUpdateJobActivePhase(job, updatePhaseVerify)
-	if err := s.persistUpdateJobAndInstance(ctx, job, requestID, now, updateSoulBindingIntegrationInstanceUpdate(job)); err != nil {
+	if err := s.persistUpdateJobAndInstance(ctx, job, requestID, now, updateDeployReceiptInstanceUpdate(job)); err != nil {
 		return 0, false, err
 	}
 	return 0, false, nil
@@ -1984,7 +2040,9 @@ func fetchInstanceConfigV2(ctx context.Context, client *http.Client, baseDomain 
 	}
 
 	u := fmt.Sprintf("https://%s/api/v2/instance", host)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	callCtx, cancel := context.WithTimeout(ctx, updateVerifyHTTPTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(callCtx, http.MethodGet, u, nil)
 	if err != nil {
 		return parsed, err
 	}
@@ -2000,7 +2058,7 @@ func fetchInstanceConfigV2(ctx context.Context, client *http.Client, baseDomain 
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return parsed, fmt.Errorf("instance config request failed (HTTP %d)", resp.StatusCode)
+		return parsed, &instanceConfigHTTPStatusError{StatusCode: resp.StatusCode}
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
@@ -2023,7 +2081,9 @@ func requireInstanceEndpoint2xx(ctx context.Context, client *http.Client, baseDo
 	}
 
 	u := fmt.Sprintf("https://%s%s", host, path)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	callCtx, cancel := context.WithTimeout(ctx, updateVerifyHTTPTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(callCtx, http.MethodGet, u, nil)
 	if err != nil {
 		return err
 	}
@@ -2272,10 +2332,35 @@ func (s *Server) advanceUpdateVerify(ctx context.Context, job *models.UpdateJob,
 		return 0, true, nil
 	}
 
-	verifyDomain := updateVerifyDomain(job.BaseDomain, s.cfg.Stage)
-	client := outboundhttp.NewSSRFProtectedClient(s.httpClient)
+	// Budget guard: never start the verification lanes without enough remaining
+	// worker-lambda budget to finish them. A nearly-dead invocation would die
+	// mid-verify with "lambda timeout imminent" (2026-08-25 failure mode)
+	// instead of completing; requeue for a fresh invocation instead.
+	if remaining, ok := verifyInvocationBudgetRemaining(ctx); ok && remaining < updateVerifyBudgetRequirement {
+		return s.deferUpdateVerifyForBudget(ctx, job, requestID, now)
+	}
 
-	cfg, cfgErr := fetchInstanceConfigV2(ctx, client, verifyDomain)
+	verifyDomain := updateVerifyDomain(job.BaseDomain, s.cfg.Stage)
+	// The SSRF wrapper propagates base.Timeout (Server.httpClient is 10s), and
+	// net/http applies the earlier of Client.Timeout and the request-context
+	// deadline — so without the override the 10s base would win and the 15s
+	// lane bound would never bind in production. WithTimeout makes the lane
+	// bound the operative one: Client.Timeout and the per-call context
+	// deadline both sit at updateVerifyHTTPTimeout.
+	client := outboundhttp.NewSSRFProtectedClient(s.httpClient, outboundhttp.WithTimeout(updateVerifyHTTPTimeout))
+
+	// The shared instance-config fetch feeds every instance-side lane. A
+	// just-replaced endpoint routinely misses the very first post-deploy probe
+	// while it warms, so the fetch retries inside a bounded window instead of
+	// hard-failing the job on the first miss (issue #1060). If the worker
+	// invocation itself is about to run out of budget, the loop stops and the
+	// step requeues for a fresh invocation rather than failing the job.
+	fetchResult := s.fetchInstanceConfigV2WithRetry(ctx, client, verifyDomain)
+	if fetchResult.outcome == verifyFetchBudgetExhausted {
+		return s.deferUpdateVerifyForBudget(ctx, job, requestID, now)
+	}
+	cfg, cfgErr := fetchResult.cfg, fetchResult.err
+
 	transOK, transErr := verifyUpdateTranslation(ctx, client, verifyDomain, cfg, cfgErr, job.TranslationEnabled)
 	expectedTrustBaseURL := resolveExpectedTrustBaseURL(job, s.publicBaseURL())
 	trustOK, trustErr := verifyUpdateTrust(ctx, client, verifyDomain, cfg, cfgErr, expectedTrustBaseURL)
@@ -2303,6 +2388,9 @@ func (s *Server) advanceUpdateVerify(ctx context.Context, job *models.UpdateJob,
 	job.Step = updateStepDone
 	job.Status = models.UpdateJobStatusOK
 	job.Note = "updated"
+	if fetchResult.attempts > 1 {
+		job.Note = fmt.Sprintf("updated (endpoint answered after %d verification attempts)", fetchResult.attempts)
+	}
 	job.ErrorCode = ""
 	job.ErrorMessage = ""
 

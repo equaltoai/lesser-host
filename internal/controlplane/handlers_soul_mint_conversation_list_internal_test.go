@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/mock"
 
 	apptheory "github.com/theory-cloud/apptheory/v4/runtime"
+	core "github.com/theory-cloud/tabletheory/v3/pkg/core"
 	theoryErrors "github.com/theory-cloud/tabletheory/v3/pkg/errors"
 	ttmocks "github.com/theory-cloud/tabletheory/v3/pkg/mocks"
 
@@ -23,18 +24,25 @@ import (
 // test files in this package.
 const constTestListRegPrefix = "list-reg"
 
-// mockMethodAll is the testify mock method name for DynamoDB All(). Centralized
+// filterMockAllCalls is testify mock method name for DynamoDB All(). Centralized
 // to avoid goconst duplicate-string findings across the filter helpers below.
 const mockMethodAll = "All"
 
-func filterMockAllCalls(q *ttmocks.MockQuery) {
+// filterMockQueryCalls removes previously registered expectations for the given
+// method so a test can replace the standard Maybe stub (for example to capture
+// the exact limit argument passed to the query builder).
+func filterMockQueryCalls(q *ttmocks.MockQuery, method string) {
 	var filtered []*mock.Call
 	for _, call := range q.ExpectedCalls {
-		if call.Method != mockMethodAll {
+		if call.Method != method {
 			filtered = append(filtered, call)
 		}
 	}
 	q.ExpectedCalls = filtered
+}
+
+func filterMockAllCalls(q *ttmocks.MockQuery) {
+	filterMockQueryCalls(q, mockMethodAll)
 }
 
 func TestSoulInstanceListMintConversationSummaries_ReturnsConversationsForAgent(t *testing.T) {
@@ -361,9 +369,12 @@ func TestSoulInstanceListMintConversationSummaries_StoreErrorReturns500(t *testi
 	stubMintConversationIdentity(t, tdb, identity, nil)
 	stubMintConversationInstanceDomain(t, tdb, identity.Domain, "inst1")
 
-	// Remove default Maybe All mock and replace with error return.
+	// Remove default Maybe All/Limit mocks and replace with error return.
 	filterMockAllCalls(tdb.qHosted)
-	tdb.qHosted.On(mockMethodAll, mock.Anything).Return(fmt.Errorf("dynamodb unavailable")).Once()
+	filterMockQueryCalls(tdb.qHosted, "Limit")
+	filterMockQueryCalls(tdb.qHosted, "AllPaginated")
+	tdb.qHosted.On("Limit", mock.Anything).Return(tdb.qHosted).Once()
+	tdb.qHosted.On("AllPaginated", mock.Anything).Return(&core.PaginatedResult{}, fmt.Errorf("dynamodb unavailable")).Once()
 
 	ctx := newMintConversationInstanceReadContext(identity.AgentID, "", nil)
 
@@ -387,7 +398,10 @@ func TestSoulInstanceListMintConversationSummaries_NotFoundReturnsEmptyList(t *t
 
 	// NotFound from DynamoDB should be treated as empty list, not error.
 	filterMockAllCalls(tdb.qHosted)
-	tdb.qHosted.On(mockMethodAll, mock.Anything).Return(theoryErrors.ErrItemNotFound).Once()
+	filterMockQueryCalls(tdb.qHosted, "Limit")
+	filterMockQueryCalls(tdb.qHosted, "AllPaginated")
+	tdb.qHosted.On("Limit", mock.Anything).Return(tdb.qHosted).Once()
+	tdb.qHosted.On("AllPaginated", mock.Anything).Return(&core.PaginatedResult{}, theoryErrors.ErrItemNotFound).Once()
 
 	ctx := newMintConversationInstanceReadContext(identity.AgentID, "", nil)
 
@@ -443,11 +457,14 @@ func stubHostedGenesisSessionList(t *testing.T, tdb *mintConversationTestDB, ses
 	// Append a nil entry to verify the handler skips nil sessions safely.
 	items = append(items, nil)
 
-	// Remove the default Maybe All mock from qHosted so the specific
-	// Once mock below is the one testify matches.
+	// Remove the default Maybe All/Limit mocks from qHosted so the specific
+	// Once mocks below are the ones testify matches.
 	filterMockAllCalls(tdb.qHosted)
+	filterMockQueryCalls(tdb.qHosted, "Limit")
+	filterMockQueryCalls(tdb.qHosted, "AllPaginated")
 
-	tdb.qHosted.On(mockMethodAll, mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+	tdb.qHosted.On("Limit", mock.Anything).Return(tdb.qHosted).Once()
+	tdb.qHosted.On("AllPaginated", mock.Anything).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.HostedGenesisSession](t, args, 0)
 		*dest = items
 	}).Once()

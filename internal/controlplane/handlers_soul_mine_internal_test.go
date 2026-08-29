@@ -1,12 +1,14 @@
 package controlplane
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"testing"
 	"time"
 
 	apptheory "github.com/theory-cloud/apptheory/v4/runtime"
+	core "github.com/theory-cloud/tabletheory/v3/pkg/core"
 	theoryErrors "github.com/theory-cloud/tabletheory/v3/pkg/errors"
 	ttmocks "github.com/theory-cloud/tabletheory/v3/pkg/mocks"
 
@@ -45,6 +47,7 @@ func newSoulMineTestDB() soulMineTestDB {
 	for _, q := range []*ttmocks.MockQuery{qInst, qDomain, qIdx, qIdentity, qRep} {
 		q.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(q).Maybe()
 		q.On("Index", mock.Anything).Return(q).Maybe()
+		q.On("Limit", mock.Anything).Return(q).Maybe()
 	}
 
 	return soulMineTestDB{db: db, qInst: qInst, qDomain: qDomain, qIdx: qIdx, qIdentity: qIdentity, qRep: qRep}
@@ -66,17 +69,17 @@ func TestHandleSoulListMyAgents_ReturnsOwnedAgents(t *testing.T) {
 	agentA := "0x00000000000000000000000000000000000000000000000000000000000000aa"
 	agentB := "0x00000000000000000000000000000000000000000000000000000000000000bb"
 
-	tdb.qInst.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+	tdb.qInst.On("AllPaginated", mock.Anything).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.Instance](t, args, 0)
 		*dest = []*models.Instance{{Slug: "inst1"}}
 	}).Once()
 
-	tdb.qDomain.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+	tdb.qDomain.On("AllPaginated", mock.Anything).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.Domain](t, args, 0)
 		*dest = []*models.Domain{{Domain: "example.com", InstanceSlug: "inst1", Status: models.DomainStatusVerified}}
 	}).Once()
 
-	tdb.qIdx.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+	tdb.qIdx.On("AllPaginated", mock.Anything).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.SoulDomainAgentIndex](t, args, 0)
 		*dest = []*models.SoulDomainAgentIndex{
 			{Domain: "example.com", LocalID: "agent-a", AgentID: agentA},
@@ -150,17 +153,17 @@ func TestHandleSoulListMyAgents_IncludesManagedStageDomainAgents(t *testing.T) {
 
 	agentID := "0xaf87d423717e3aecbb2fc829d6224ea2acb66e7475f88c920d1a53e0789f313d"
 
-	tdb.qInst.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+	tdb.qInst.On("AllPaginated", mock.Anything).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.Instance](t, args, 0)
 		*dest = []*models.Instance{{Slug: "simulacrum", HostedBaseDomain: "simulacrum.greater.website"}}
 	}).Once()
 
-	tdb.qDomain.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+	tdb.qDomain.On("AllPaginated", mock.Anything).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.Domain](t, args, 0)
 		*dest = []*models.Domain{{Domain: "simulacrum.greater.website", InstanceSlug: "simulacrum", Status: models.DomainStatusVerified}}
 	}).Once()
 
-	tdb.qIdx.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+	tdb.qIdx.On("AllPaginated", mock.Anything).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.SoulDomainAgentIndex](t, args, 0)
 		*dest = []*models.SoulDomainAgentIndex{{
 			Domain:  "dev.simulacrum.greater.website",
@@ -221,11 +224,11 @@ func TestHandleSoulListMyAgents_SkipsUnverifiedVanityDomains(t *testing.T) {
 		},
 	}
 
-	tdb.qInst.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+	tdb.qInst.On("AllPaginated", mock.Anything).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.Instance](t, args, 0)
 		*dest = []*models.Instance{{Slug: "inst1"}}
 	}).Once()
-	tdb.qDomain.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+	tdb.qDomain.On("AllPaginated", mock.Anything).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.Domain](t, args, 0)
 		*dest = []*models.Domain{{Domain: "victim.example", InstanceSlug: "inst1", Status: models.DomainStatusPending}}
 	}).Once()
@@ -244,4 +247,118 @@ func TestHandleSoulListMyAgents_SkipsUnverifiedVanityDomains(t *testing.T) {
 	if out.Count != 0 || len(out.Agents) != 0 {
 		t.Fatalf("expected pending vanity domain to be ignored, got %#v", out)
 	}
+}
+
+// TestListOwnedInstances_BoundedWalk verifies the owner-instance read (issue
+// #1061 part B, site 6) issues page-capped reads with cursor resume and never
+// a Scan.
+func TestListOwnedInstances_BoundedWalk(t *testing.T) {
+	t.Parallel()
+
+	tdb := newSoulMineTestDB()
+	s := &Server{store: store.New(tdb.db)}
+
+	appliedLimits := []int{}
+	filterMockQueryCalls(tdb.qInst, "Limit")
+	tdb.qInst.On("Limit", 100).Return(tdb.qInst).Times(2).Run(func(args mock.Arguments) {
+		appliedLimits = append(appliedLimits, testutil.RequireMockArg[int](t, args, 0))
+	})
+	tdb.qInst.On("Cursor", "after-1").Return(tdb.qInst).Once()
+	tdb.qInst.On("AllPaginated", mock.AnythingOfType("*[]*models.Instance")).Return(&core.PaginatedResult{HasMore: true, NextCursor: "after-1"}, nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.Instance](t, args, 0)
+		*dest = []*models.Instance{{Slug: "inst1", Owner: "alice"}}
+	}).Once()
+	tdb.qInst.On("AllPaginated", mock.AnythingOfType("*[]*models.Instance")).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.Instance](t, args, 0)
+		*dest = []*models.Instance{{Slug: "inst2", Owner: "alice"}}
+	}).Once()
+
+	insts, appErr := s.listOwnedInstances(context.Background(), "alice")
+	if appErr != nil {
+		t.Fatalf("unexpected appErr: %v", appErr)
+	}
+	if len(insts) != 2 {
+		t.Fatalf("expected 2 instances across pages, got %d", len(insts))
+	}
+	if len(appliedLimits) != 2 || appliedLimits[0] != 100 || appliedLimits[1] != 100 {
+		t.Fatalf("expected every page bounded to %d, got limits %v", 100, appliedLimits)
+	}
+	tdb.qInst.AssertExpectations(t)
+	tdb.qInst.AssertNotCalled(t, "Scan", mock.Anything)
+}
+
+// TestListVerifiedDomainsForInstance_BoundedWalk verifies the per-instance
+// domain read (issue #1061 part B, site 7) issues page-capped reads with
+// cursor resume and never a Scan.
+func TestListVerifiedDomainsForInstance_BoundedWalk(t *testing.T) {
+	t.Parallel()
+
+	tdb := newSoulMineTestDB()
+	s := &Server{store: store.New(tdb.db)}
+
+	appliedLimits := []int{}
+	filterMockQueryCalls(tdb.qDomain, "Limit")
+	tdb.qDomain.On("Limit", 100).Return(tdb.qDomain).Times(2).Run(func(args mock.Arguments) {
+		appliedLimits = append(appliedLimits, testutil.RequireMockArg[int](t, args, 0))
+	})
+	tdb.qDomain.On("Cursor", "after-1").Return(tdb.qDomain).Once()
+	tdb.qDomain.On("AllPaginated", mock.AnythingOfType("*[]*models.Domain")).Return(&core.PaginatedResult{HasMore: true, NextCursor: "after-1"}, nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.Domain](t, args, 0)
+		*dest = []*models.Domain{{Domain: "one.example", InstanceSlug: "inst1", Status: models.DomainStatusVerified}}
+	}).Once()
+	tdb.qDomain.On("AllPaginated", mock.AnythingOfType("*[]*models.Domain")).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.Domain](t, args, 0)
+		*dest = []*models.Domain{{Domain: "two.example", InstanceSlug: "inst1", Status: models.DomainStatusVerified}}
+	}).Once()
+
+	domains, appErr := s.listVerifiedDomainsForInstance(context.Background(), &models.Instance{Slug: "inst1"})
+	if appErr != nil {
+		t.Fatalf("unexpected appErr: %v", appErr)
+	}
+	if len(domains) != 2 {
+		t.Fatalf("expected 2 domains across pages, got %d", len(domains))
+	}
+	if len(appliedLimits) != 2 || appliedLimits[0] != 100 || appliedLimits[1] != 100 {
+		t.Fatalf("expected every page bounded to %d, got limits %v", 100, appliedLimits)
+	}
+	tdb.qDomain.AssertExpectations(t)
+	tdb.qDomain.AssertNotCalled(t, "Scan", mock.Anything)
+}
+
+// TestListAgentIDsForDomains_BoundedWalk verifies the per-domain agent-index
+// read (issue #1061 part B, site 8) issues page-capped reads with cursor
+// resume and never a Scan.
+func TestListAgentIDsForDomains_BoundedWalk(t *testing.T) {
+	t.Parallel()
+
+	tdb := newSoulMineTestDB()
+	s := &Server{store: store.New(tdb.db)}
+
+	appliedLimits := []int{}
+	filterMockQueryCalls(tdb.qIdx, "Limit")
+	tdb.qIdx.On("Limit", 100).Return(tdb.qIdx).Times(2).Run(func(args mock.Arguments) {
+		appliedLimits = append(appliedLimits, testutil.RequireMockArg[int](t, args, 0))
+	})
+	tdb.qIdx.On("Cursor", "after-1").Return(tdb.qIdx).Once()
+	tdb.qIdx.On("AllPaginated", mock.AnythingOfType("*[]*models.SoulDomainAgentIndex")).Return(&core.PaginatedResult{HasMore: true, NextCursor: "after-1"}, nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.SoulDomainAgentIndex](t, args, 0)
+		*dest = []*models.SoulDomainAgentIndex{{Domain: "one.example", AgentID: "0xaaa"}}
+	}).Once()
+	tdb.qIdx.On("AllPaginated", mock.AnythingOfType("*[]*models.SoulDomainAgentIndex")).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.SoulDomainAgentIndex](t, args, 0)
+		*dest = []*models.SoulDomainAgentIndex{{Domain: "one.example", AgentID: "0xbbb"}}
+	}).Once()
+
+	agentIDs, appErr := s.listAgentIDsForDomains(context.Background(), map[string]struct{}{"one.example": {}})
+	if appErr != nil {
+		t.Fatalf("unexpected appErr: %v", appErr)
+	}
+	if len(agentIDs) != 2 {
+		t.Fatalf("expected 2 agent ids across pages, got %d", len(agentIDs))
+	}
+	if len(appliedLimits) != 2 || appliedLimits[0] != 100 || appliedLimits[1] != 100 {
+		t.Fatalf("expected every page bounded to %d, got limits %v", 100, appliedLimits)
+	}
+	tdb.qIdx.AssertExpectations(t)
+	tdb.qIdx.AssertNotCalled(t, "Scan", mock.Anything)
 }

@@ -12,6 +12,7 @@ import (
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
 	apptheory "github.com/theory-cloud/apptheory/v4/runtime"
+	core "github.com/theory-cloud/tabletheory/v3/pkg/core"
 	theoryErrors "github.com/theory-cloud/tabletheory/v3/pkg/errors"
 	ttmocks "github.com/theory-cloud/tabletheory/v3/pkg/mocks"
 
@@ -315,7 +316,7 @@ func TestHandleTipRegistryAdminReadHandlers_Branches(t *testing.T) {
 		tdb := newTipRegistryTestDB()
 		s := &Server{store: store.New(tdb.db)}
 
-		tdb.qOp.On("All", mock.AnythingOfType("*[]*models.TipRegistryOperation")).Return(errors.New("boom")).Once()
+		tdb.qOp.On("AllPaginated", mock.AnythingOfType("*[]*models.TipRegistryOperation")).Return(&core.PaginatedResult{}, errors.New("boom")).Once()
 
 		_, err := s.handleListTipRegistryOperations(adminCtx())
 		requireTipRegistryAppErrCode(t, err, "app.internal")

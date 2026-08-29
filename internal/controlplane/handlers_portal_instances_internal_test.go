@@ -11,6 +11,7 @@ import (
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/crypto"
 	apptheory "github.com/theory-cloud/apptheory/v4/runtime"
+	core "github.com/theory-cloud/tabletheory/v3/pkg/core"
 	theoryErrors "github.com/theory-cloud/tabletheory/v3/pkg/errors"
 	ttmocks "github.com/theory-cloud/tabletheory/v3/pkg/mocks"
 
@@ -268,7 +269,7 @@ func TestHandlePortalListInstances(t *testing.T) {
 	tdb := newPortalTestDB()
 	s := &Server{store: store.New(tdb.db)}
 
-	tdb.qInstance.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+	tdb.qInstance.On("AllPaginated", mock.Anything).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		destAny := args.Get(0)
 		dest, ok := destAny.(*[]*models.Instance)
 		if !ok {
@@ -288,6 +289,50 @@ func TestHandlePortalListInstances(t *testing.T) {
 	if resp == nil || resp.Status != 200 {
 		t.Fatalf("expected 200, got %#v", resp)
 	}
+}
+
+// TestHandlePortalListInstances_BoundedPagination verifies the portal
+// instances list (issue #1061 part B) applies the clamped Limit, forwards the
+// opaque cursor, echoes next_cursor, and never issues a Scan.
+func TestHandlePortalListInstances_BoundedPagination(t *testing.T) {
+	t.Parallel()
+
+	tdb := newPortalTestDB()
+	s := &Server{store: store.New(tdb.db)}
+
+	appliedLimit := 0
+	filterMockQueryCalls(tdb.qInstance, "Limit")
+	tdb.qInstance.On("Limit", mock.Anything).Return(tdb.qInstance).Run(func(args mock.Arguments) {
+		appliedLimit = testutil.RequireMockArg[int](t, args, 0)
+	})
+	appliedCursor := ""
+	tdb.qInstance.On("Cursor", mock.Anything).Return(tdb.qInstance).Run(func(args mock.Arguments) {
+		appliedCursor = testutil.RequireMockArg[string](t, args, 0)
+	})
+	tdb.qInstance.On("AllPaginated", mock.AnythingOfType("*[]*models.Instance")).Return(&core.PaginatedResult{HasMore: true, NextCursor: " cursor-next "}, nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.Instance](t, args, 0)
+		*dest = []*models.Instance{{Slug: "a", Owner: "alice", Status: models.InstanceStatusActive}}
+	}).Once()
+
+	ctx := &apptheory.Context{AuthIdentity: "alice", Request: apptheory.Request{Query: map[string][]string{"limit": {"3"}, "cursor": {"tok-1"}}}}
+	resp, err := s.handlePortalListInstances(ctx)
+	if err != nil || resp.Status != 200 {
+		t.Fatalf("unexpected: resp=%#v err=%v", resp, err)
+	}
+	var out listInstancesResponse
+	if err := json.Unmarshal(resp.Body, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if appliedLimit != 3 {
+		t.Fatalf("expected query Limit(3), got Limit(%d)", appliedLimit)
+	}
+	if appliedCursor != "tok-1" {
+		t.Fatalf("expected cursor tok-1 passed through, got %q", appliedCursor)
+	}
+	if out.Count != 1 || len(out.Instances) != 1 || out.Limit != 3 || out.NextCursor != "cursor-next" {
+		t.Fatalf("unexpected response: %#v", out)
+	}
+	tdb.qInstance.AssertNotCalled(t, "Scan", mock.Anything)
 }
 
 func TestHandlePortalUpdateInstanceConfig(t *testing.T) {
@@ -1332,7 +1377,7 @@ func TestHandlePortalListInstanceDomains(t *testing.T) {
 		}
 		*dest = models.Instance{Slug: "demo", Owner: "alice", Status: models.InstanceStatusActive}
 	}).Once()
-	tdb.qDomain.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+	tdb.qDomain.On("AllPaginated", mock.Anything).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		destAny := args.Get(0)
 		dest, ok := destAny.(*[]*models.Domain)
 		if !ok {
@@ -1348,6 +1393,54 @@ func TestHandlePortalListInstanceDomains(t *testing.T) {
 	if err != nil || resp == nil || resp.Status != 200 {
 		t.Fatalf("resp=%#v err=%v", resp, err)
 	}
+}
+
+// TestHandlePortalListInstanceDomains_BoundedPagination verifies the portal
+// domain list (issue #1061 part B) applies the clamped Limit, forwards the
+// opaque cursor, echoes next_cursor, and never issues a Scan.
+func TestHandlePortalListInstanceDomains_BoundedPagination(t *testing.T) {
+	t.Parallel()
+
+	tdb := newPortalTestDB()
+	s := &Server{store: store.New(tdb.db)}
+	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
+		*dest = models.Instance{Slug: "demo", Owner: "alice", Status: models.InstanceStatusActive}
+	}).Maybe()
+
+	appliedLimit := 0
+	filterMockQueryCalls(tdb.qDomain, "Limit")
+	tdb.qDomain.On("Limit", mock.Anything).Return(tdb.qDomain).Run(func(args mock.Arguments) {
+		appliedLimit = testutil.RequireMockArg[int](t, args, 0)
+	})
+	appliedCursor := ""
+	tdb.qDomain.On("Cursor", mock.Anything).Return(tdb.qDomain).Run(func(args mock.Arguments) {
+		appliedCursor = testutil.RequireMockArg[string](t, args, 0)
+	})
+	tdb.qDomain.On("AllPaginated", mock.AnythingOfType("*[]*models.Domain")).Return(&core.PaginatedResult{HasMore: true, NextCursor: " dom-next "}, nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.Domain](t, args, 0)
+		*dest = []*models.Domain{{Domain: "demo.example", InstanceSlug: "demo", Type: models.DomainTypePrimary, Status: models.DomainStatusVerified}}
+	}).Once()
+
+	ctx := &apptheory.Context{AuthIdentity: "alice", Params: map[string]string{"slug": "demo"}, Request: apptheory.Request{Query: map[string][]string{"limit": {"5"}, "cursor": {"tok-2"}}}}
+	resp, err := s.handlePortalListInstanceDomains(ctx)
+	if err != nil || resp.Status != 200 {
+		t.Fatalf("unexpected: resp=%#v err=%v", resp, err)
+	}
+	var out listDomainsResponse
+	if err := json.Unmarshal(resp.Body, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if appliedLimit != 5 {
+		t.Fatalf("expected query Limit(5), got Limit(%d)", appliedLimit)
+	}
+	if appliedCursor != "tok-2" {
+		t.Fatalf("expected cursor tok-2 passed through, got %q", appliedCursor)
+	}
+	if out.Count != 1 || len(out.Domains) != 1 || out.Limit != 5 || out.NextCursor != "dom-next" {
+		t.Fatalf("unexpected response: %#v", out)
+	}
+	tdb.qDomain.AssertNotCalled(t, "Scan", mock.Anything)
 }
 
 func TestHandlePortalInstanceDomainOps_PrimaryConflict(t *testing.T) {

@@ -30,11 +30,26 @@ const (
 //
 //	PK: SOUL#AGENT#{agentId}
 //	SK: MINT_CONVERSATION#{conversationId}
+//
+// gsi4 is the agent-scoped time-ordered index (issue #1067, part C2 of #1061). It
+// groups every conversation item of an agent by the base PK and orders them by
+// creation time, because SK is a crypto/rand token with no recency meaning:
+//
+//	gsi4PK = SOUL#AGENT#<agentId>          (same as the base PK)
+//	gsi4SK = <createdAt>#<conversationId>  (fixed-width nanosecond UTC + token)
+//
+// Both key sources are immutable after creation (agentId, createdAt), so the
+// index position of an item never changes; field-scoped updates maintain the
+// attributes on every write so pre-C2 items healed by the backfill can never
+// silently drop out of the index.
 type SoulAgentMintConversation struct {
 	_ struct{} `theorydb:"naming:camelCase"`
 
 	PK string `theorydb:"pk,attr:PK" json:"-"`
 	SK string `theorydb:"sk,attr:SK" json:"-"`
+
+	GSI4PK string `theorydb:"index:gsi4,pk,attr:gsi4PK" json:"-"`
+	GSI4SK string `theorydb:"index:gsi4,sk,attr:gsi4SK" json:"-"`
 
 	AgentID        string `theorydb:"attr:agentId" json:"agent_id"`
 	ConversationID string `theorydb:"attr:conversationId" json:"conversation_id"`
@@ -119,7 +134,47 @@ func (m *SoulAgentMintConversation) UpdateKeys() error {
 
 	m.PK = fmt.Sprintf("SOUL#AGENT#%s", m.AgentID)
 	m.SK = fmt.Sprintf("MINT_CONVERSATION#%s", m.ConversationID)
+	m.updateGSI4()
 	return nil
+}
+
+// soulMintConversationTimeKeyFmt is the fixed-width nanosecond UTC layout used
+// for the gsi4 sort key. Unlike time.RFC3339Nano it never drops trailing
+// fraction digits, so gsi4SK orders lexicographically exactly like the
+// timestamps it encodes (the HostedGenesisSession gsi2 key uses RFC3339Nano and
+// shares that caveat; the mint-conversation index is specified fresh).
+const soulMintConversationTimeKeyFmt = "2006-01-02T15:04:05.000000000Z"
+
+// SoulMintConversationGSI4PK returns the gsi4 partition key for an agent. It
+// matches the base PK (SOUL#AGENT#<agentId>) so the index groups every
+// conversation item of the agent. Exported so the operator backfill tool and
+// the store layer compute byte-identical keys.
+func SoulMintConversationGSI4PK(agentIDHex string) string {
+	return fmt.Sprintf("SOUL#AGENT#%s", strings.ToLower(strings.TrimSpace(agentIDHex)))
+}
+
+// SoulMintConversationGSI4SK returns the gsi4 sort key for a conversation:
+// a fixed-width nanosecond UTC timestamp plus the conversation id. Exported so
+// the operator backfill tool and the store layer compute byte-identical keys.
+func SoulMintConversationGSI4SK(createdAt time.Time, conversationID string) string {
+	return createdAt.UTC().Format(soulMintConversationTimeKeyFmt) + "#" + strings.TrimSpace(conversationID)
+}
+
+// updateGSI4 maintains the gsi4 agent-scoped time-ordered index keys. It
+// recomputes them from the immutable agentId + createdAt whenever createdAt is
+// present. Partial update models (field-scoped updates that do not carry
+// CreatedAt) preserve whatever gsi4 keys are already set instead of corrupting
+// them with a zero-time prefix; every conversation write site passes the stored
+// CreatedAt explicitly (see the C2 write-path enumeration).
+func (m *SoulAgentMintConversation) updateGSI4() {
+	if m == nil {
+		return
+	}
+	if m.CreatedAt.IsZero() {
+		return
+	}
+	m.GSI4PK = SoulMintConversationGSI4PK(m.AgentID)
+	m.GSI4SK = SoulMintConversationGSI4SK(m.CreatedAt, m.ConversationID)
 }
 
 // GetPK returns the partition key for SoulAgentMintConversation.

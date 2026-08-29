@@ -16,6 +16,7 @@ import (
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/core/types"
 	apptheory "github.com/theory-cloud/apptheory/v4/runtime"
+	core "github.com/theory-cloud/tabletheory/v3/pkg/core"
 	theoryErrors "github.com/theory-cloud/tabletheory/v3/pkg/errors"
 	ttmocks "github.com/theory-cloud/tabletheory/v3/pkg/mocks"
 
@@ -100,6 +101,7 @@ func newSoulOperationsTestDB() soulOperationsTestDB {
 	for _, q := range []*ttmocks.MockQuery{qOp, qID, qPromotion, qLifecycle, qWalletAgent, qChannel, qENS, qAudit} {
 		q.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(q).Maybe()
 		q.On("Index", mock.Anything).Return(q).Maybe()
+		q.On("Limit", mock.Anything).Return(q).Maybe()
 		q.On("IfExists").Return(q).Maybe()
 		q.On("Update", mock.Anything).Return(nil).Maybe()
 		q.On("Update", mock.Anything, mock.Anything).Return(nil).Maybe()
@@ -256,7 +258,7 @@ func TestHandleListSoulOperations_DefaultStatusAndInvalidStatus(t *testing.T) {
 	tdb := newSoulOperationsTestDB()
 	s := &Server{store: store.New(tdb.db)}
 
-	tdb.qOp.On("All", mock.AnythingOfType("*[]*models.SoulOperation")).Return(nil).Run(func(args mock.Arguments) {
+	tdb.qOp.On("AllPaginated", mock.AnythingOfType("*[]*models.SoulOperation")).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.SoulOperation](t, args, 0)
 		*dest = []*models.SoulOperation{
 			nil,
@@ -283,6 +285,51 @@ func TestHandleListSoulOperations_DefaultStatusAndInvalidStatus(t *testing.T) {
 	if _, err := s.handleListSoulOperations(ctxBad); err == nil {
 		t.Fatalf("expected invalid status error")
 	}
+}
+
+// TestHandleListSoulOperations_BoundedPagination verifies the soul operations
+// list (issue #1061 part B) applies the clamped Limit, forwards the opaque
+// cursor, echoes next_cursor, and never issues a Scan.
+func TestHandleListSoulOperations_BoundedPagination(t *testing.T) {
+	t.Parallel()
+
+	tdb := newSoulOperationsTestDB()
+	s := &Server{store: store.New(tdb.db)}
+
+	appliedLimit := 0
+	filterMockQueryCalls(tdb.qOp, "Limit")
+	tdb.qOp.On("Limit", mock.Anything).Return(tdb.qOp).Run(func(args mock.Arguments) {
+		appliedLimit = testutil.RequireMockArg[int](t, args, 0)
+	})
+	appliedCursor := ""
+	tdb.qOp.On("Cursor", mock.Anything).Return(tdb.qOp).Run(func(args mock.Arguments) {
+		appliedCursor = testutil.RequireMockArg[string](t, args, 0)
+	})
+	tdb.qOp.On("AllPaginated", mock.AnythingOfType("*[]*models.SoulOperation")).Return(&core.PaginatedResult{HasMore: true, NextCursor: " op-next "}, nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.SoulOperation](t, args, 0)
+		*dest = []*models.SoulOperation{{OperationID: "op1", Kind: models.SoulOperationKindMint, Status: models.SoulOperationStatusPending}}
+	}).Once()
+
+	ctx := opCtx()
+	ctx.Request.Query = map[string][]string{"limit": {"7"}, "cursor": {"tok-3"}}
+	resp, err := s.handleListSoulOperations(ctx)
+	if err != nil || resp.Status != 200 {
+		t.Fatalf("unexpected: resp=%#v err=%v", resp, err)
+	}
+	var out listSoulOperationsResponse
+	if err := json.Unmarshal(resp.Body, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if appliedLimit != 7 {
+		t.Fatalf("expected query Limit(7), got Limit(%d)", appliedLimit)
+	}
+	if appliedCursor != "tok-3" {
+		t.Fatalf("expected cursor tok-3 passed through, got %q", appliedCursor)
+	}
+	if out.Count != 1 || len(out.Operations) != 1 || out.Limit != 7 || out.NextCursor != "op-next" {
+		t.Fatalf("unexpected response: %#v", out)
+	}
+	tdb.qOp.AssertNotCalled(t, "Scan", mock.Anything)
 }
 
 func TestSyncMintPromotionAfterOperationExecution_EmitsLifecycleEvent(t *testing.T) {

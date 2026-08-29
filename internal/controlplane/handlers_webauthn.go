@@ -21,6 +21,15 @@ import (
 const (
 	webAuthnChallengeDuration = 5 * time.Minute
 	maxWebAuthnCredentials    = 10
+
+	// webAuthnCredentialListPageSize clamps the per-user credential read to
+	// one item beyond the per-user maximum (maxWebAuthnCredentials), so a
+	// legitimate partition always fits a single bounded page (issue #1061
+	// part D). webAuthnCredentialListMaxPages = 1 means the read is exactly
+	// one page; a HasMore page signals a structural-bound violation and the
+	// walk fails closed instead of silently truncating.
+	webAuthnCredentialListPageSize = maxWebAuthnCredentials + 1
+	webAuthnCredentialListMaxPages = 1
 )
 
 type webAuthnBeginLoginRequest struct {
@@ -76,16 +85,24 @@ func (s *Server) ensureWebAuthnConfigured() error {
 }
 
 func (s *Server) listUserWebAuthnCredentials(ctx *apptheory.Context, username string) ([]*models.WebAuthnCredential, error) {
-	var creds []*models.WebAuthnCredential
-	err := s.store.DB.WithContext(ctx.Context()).
-		Model(&models.WebAuthnCredential{}).
-		Where("PK", "=", "USER#"+username).
-		Where("SK", "BEGINS_WITH", "WEBAUTHN_CRED#").
-		All(&creds)
+	// Reads are bounded to a single page of webAuthnCredentialListPageSize
+	// evaluated items (issue #1061 part D). Credential creation is guarded at
+	// maxWebAuthnCredentials per user (completeWebAuthnRegistration), so a
+	// legitimate partition fits one page; a HasMore page means the structural
+	// bound was violated and the walk fails closed rather than silently
+	// truncating the credential set.
+	items, err := collectPartitionAll[models.WebAuthnCredential](
+		s.store.DB.WithContext(ctx.Context()).
+			Model(&models.WebAuthnCredential{}).
+			Where("PK", "=", "USER#"+username).
+			Where("SK", "BEGINS_WITH", "WEBAUTHN_CRED#"),
+		webAuthnCredentialListPageSize,
+		webAuthnCredentialListMaxPages,
+	)
 	if err != nil {
 		return nil, err
 	}
-	return creds, nil
+	return items, nil
 }
 
 func (s *Server) storeWebAuthnChallenge(ctx *apptheory.Context, c *models.WebAuthnChallenge) error {

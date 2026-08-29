@@ -33,8 +33,10 @@ type domainResponse struct {
 }
 
 type listDomainsResponse struct {
-	Domains []domainResponse `json:"domains"`
-	Count   int              `json:"count"`
+	Domains    []domainResponse `json:"domains"`
+	Count      int              `json:"count"`
+	Limit      int              `json:"limit,omitempty"`
+	NextCursor string           `json:"next_cursor,omitempty"`
 }
 
 type addDomainRequest struct {
@@ -88,14 +90,29 @@ func (s *Server) handleListInstanceDomains(ctx *apptheory.Context) (*apptheory.R
 		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
+	// Bounded paginated listing (issue #1061 part B): clamped Limit + opaque
+	// cursor, mirroring listSoulPublicItems. The response stays backward
+	// compatible — next_cursor/limit are additive and omitted when absent.
+	limit := envIntPositiveClampedFromString(httpx.FirstQueryValue(ctx.Request.Query, "limit"), 50, 200)
+	cursor := strings.TrimSpace(httpx.FirstQueryValue(ctx.Request.Query, "cursor"))
+
 	var items []*models.Domain
-	err := s.store.DB.WithContext(ctx.Context()).
+	qb := s.store.DB.WithContext(ctx.Context()).
 		Model(&models.Domain{}).
 		Index("gsi1").
 		Where("gsi1PK", "=", fmt.Sprintf("INSTANCE_DOMAINS#%s", slug)).
-		All(&items)
+		Limit(limit)
+	if cursor != "" {
+		qb = qb.Cursor(cursor)
+	}
+	paged, err := qb.AllPaginated(&items)
 	if err != nil {
 		return nil, newAppTheoryError("app.internal", "failed to list domains")
+	}
+
+	// Defensive response bound; the query itself is already limited.
+	if limit > 0 && len(items) > limit {
+		items = items[:limit]
 	}
 
 	out := make([]domainResponse, 0, len(items))
@@ -103,9 +120,16 @@ func (s *Server) handleListInstanceDomains(ctx *apptheory.Context) (*apptheory.R
 		out = append(out, domainResponseFromModel(d))
 	}
 
+	nextCursor := ""
+	if paged != nil {
+		nextCursor = strings.TrimSpace(paged.NextCursor)
+	}
+
 	return apptheory.JSON(http.StatusOK, listDomainsResponse{
-		Domains: out,
-		Count:   len(out),
+		Domains:    out,
+		Count:      len(out),
+		Limit:      limit,
+		NextCursor: nextCursor,
 	})
 }
 

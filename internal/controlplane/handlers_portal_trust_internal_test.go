@@ -12,6 +12,7 @@ import (
 	"time"
 
 	apptheory "github.com/theory-cloud/apptheory/v4/runtime"
+	core "github.com/theory-cloud/tabletheory/v3/pkg/core"
 	theoryErrors "github.com/theory-cloud/tabletheory/v3/pkg/errors"
 	ttmocks "github.com/theory-cloud/tabletheory/v3/pkg/mocks"
 
@@ -605,6 +606,12 @@ func newSoulTrustTestDB(t *testing.T) *soulTrustTestDB {
 		q.On("Index", mock.Anything).Return(q).Maybe()
 	}
 
+	// Bounded partition walks (issue #1061 part B) on the domain/agent-index
+	// reads; the qFailure/qEndorse/qQueue mocks keep their specific Limit
+	// expectations below instead.
+	qs["qDomain"].On("Limit", mock.Anything).Return(qs["qDomain"]).Maybe()
+	qs["qIdx"].On("Limit", mock.Anything).Return(qs["qIdx"]).Maybe()
+
 	tdb := &soulTrustTestDB{
 		db:        db,
 		qUser:     qs["qUser"],
@@ -663,13 +670,13 @@ func TestHandlePortalGetTrustData_SoulPopulatedReputation(t *testing.T) {
 	stubOwnedInstance(t, tdb.qInstance, "demo", "alice")
 
 	// 2. Verified domain for the instance
-	tdb.qDomain.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+	tdb.qDomain.On("AllPaginated", mock.Anything).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.Domain](t, args, 0)
 		*dest = []*models.Domain{{Domain: "example.com", InstanceSlug: "demo", Status: models.DomainStatusVerified}}
 	}).Once()
 
 	// 3. SoulDomainAgentIndex returns one agent
-	tdb.qIdx.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+	tdb.qIdx.On("AllPaginated", mock.Anything).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.SoulDomainAgentIndex](t, args, 0)
 		*dest = []*models.SoulDomainAgentIndex{
 			{Domain: "example.com", LocalID: "agent-0", AgentID: agentID},
@@ -735,12 +742,12 @@ func TestHandlePortalGetTrustData_SoulPopulatedVouches(t *testing.T) {
 
 	stubOwnedInstance(t, tdb.qInstance, "demo", "alice")
 
-	tdb.qDomain.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+	tdb.qDomain.On("AllPaginated", mock.Anything).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.Domain](t, args, 0)
 		*dest = []*models.Domain{{Domain: "example.com", InstanceSlug: "demo", Status: models.DomainStatusVerified}}
 	}).Once()
 
-	tdb.qIdx.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+	tdb.qIdx.On("AllPaginated", mock.Anything).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.SoulDomainAgentIndex](t, args, 0)
 		*dest = []*models.SoulDomainAgentIndex{
 			{Domain: "example.com", LocalID: "agent-0", AgentID: agentID},
@@ -823,7 +830,7 @@ func TestHandlePortalGetTrustData_SoulPopulatedSignatureFailures(t *testing.T) {
 	stubOwnedInstance(t, tdb.qInstance, "demo", "alice")
 
 	// Two verified domains
-	tdb.qDomain.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+	tdb.qDomain.On("AllPaginated", mock.Anything).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.Domain](t, args, 0)
 		*dest = []*models.Domain{
 			{Domain: "example.com", InstanceSlug: "demo", Status: models.DomainStatusVerified},
@@ -832,7 +839,7 @@ func TestHandlePortalGetTrustData_SoulPopulatedSignatureFailures(t *testing.T) {
 	}).Once()
 
 	// Two domains → two SoulDomainAgentIndex queries; return agents for both.
-	tdb.qIdx.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+	tdb.qIdx.On("AllPaginated", mock.Anything).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.SoulDomainAgentIndex](t, args, 0)
 		*dest = []*models.SoulDomainAgentIndex{
 			{Domain: "example.com", LocalID: "agent-a", AgentID: agentA},
@@ -1098,11 +1105,11 @@ func TestHandlePortalGetTrustData_QueueDepthSnapshotCountsScopedMailboxRows(t *t
 	agentID := "0x0000000000000000000000000000000000000000000000000000000000000aaa"
 
 	stubOwnedInstance(t, tdb.qInstance, "demo", "alice")
-	tdb.qDomain.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+	tdb.qDomain.On("AllPaginated", mock.Anything).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.Domain](t, args, 0)
 		*dest = []*models.Domain{{Domain: "example.com", InstanceSlug: "demo", Status: models.DomainStatusVerified}}
 	}).Once()
-	tdb.qIdx.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+	tdb.qIdx.On("AllPaginated", mock.Anything).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.SoulDomainAgentIndex](t, args, 0)
 		*dest = []*models.SoulDomainAgentIndex{{Domain: "example.com", LocalID: "agent", AgentID: agentID}}
 	}).Once()
@@ -1231,11 +1238,11 @@ func TestHandlePortalGetTrustData_QueueDepthSeriesBoundedAndScoped(t *testing.T)
 	now := time.Now().UTC().Truncate(time.Second)
 
 	stubOwnedInstance(t, tdb.qInstance, "alice-inst", "alice")
-	tdb.qDomain.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+	tdb.qDomain.On("AllPaginated", mock.Anything).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.Domain](t, args, 0)
 		*dest = []*models.Domain{{Domain: "alice.example", InstanceSlug: "alice-inst", Status: models.DomainStatusVerified}}
 	}).Once()
-	tdb.qIdx.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+	tdb.qIdx.On("AllPaginated", mock.Anything).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.SoulDomainAgentIndex](t, args, 0)
 		*dest = []*models.SoulDomainAgentIndex{{Domain: "alice.example", LocalID: "agent", AgentID: agentID}}
 	}).Once()
@@ -1289,13 +1296,13 @@ func TestHandlePortalGetTrustData_SoulNoAgentsBound(t *testing.T) {
 	stubOwnedInstance(t, tdb.qInstance, "demo", "alice")
 
 	// Instance has verified domains, but no agents are bound through the index
-	tdb.qDomain.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+	tdb.qDomain.On("AllPaginated", mock.Anything).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.Domain](t, args, 0)
 		*dest = []*models.Domain{{Domain: "example.com", InstanceSlug: "demo", Status: models.DomainStatusVerified}}
 	}).Once()
 
 	// No agent index entries
-	tdb.qIdx.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+	tdb.qIdx.On("AllPaginated", mock.Anything).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.SoulDomainAgentIndex](t, args, 0)
 		*dest = []*models.SoulDomainAgentIndex{}
 	}).Once()
@@ -1327,7 +1334,7 @@ func TestHandlePortalGetTrustData_SoulNoVerifiedDomains(t *testing.T) {
 	stubOwnedInstance(t, tdb.qInstance, "demo", "alice")
 
 	// Only pending (unverified) domains — should be filtered out
-	tdb.qDomain.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+	tdb.qDomain.On("AllPaginated", mock.Anything).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.Domain](t, args, 0)
 		*dest = []*models.Domain{{Domain: "pending.example", InstanceSlug: "demo", Status: models.DomainStatusPending}}
 	}).Once()
@@ -1359,12 +1366,12 @@ func TestHandlePortalGetTrustData_SoulRedactionProofWithPopulatedData(t *testing
 
 	stubOwnedInstance(t, tdb.qInstance, "demo", "alice")
 
-	tdb.qDomain.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+	tdb.qDomain.On("AllPaginated", mock.Anything).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.Domain](t, args, 0)
 		*dest = []*models.Domain{{Domain: "example.com", InstanceSlug: "demo", Status: models.DomainStatusVerified}}
 	}).Once()
 
-	tdb.qIdx.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+	tdb.qIdx.On("AllPaginated", mock.Anything).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.SoulDomainAgentIndex](t, args, 0)
 		*dest = []*models.SoulDomainAgentIndex{
 			{Domain: "example.com", LocalID: "agent-0", AgentID: agentID},
@@ -1442,12 +1449,12 @@ func TestHandlePortalGetTrustData_SoulTenantIsolationWithPopulatedData(t *testin
 	// Alice's instance "alice-inst" has its own agents
 	stubOwnedInstance(t, tdb.qInstance, "alice-inst", "alice")
 
-	tdb.qDomain.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+	tdb.qDomain.On("AllPaginated", mock.Anything).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.Domain](t, args, 0)
 		*dest = []*models.Domain{{Domain: "alice.example", InstanceSlug: "alice-inst", Status: models.DomainStatusVerified}}
 	}).Once()
 
-	tdb.qIdx.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+	tdb.qIdx.On("AllPaginated", mock.Anything).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.SoulDomainAgentIndex](t, args, 0)
 		*dest = []*models.SoulDomainAgentIndex{
 			{Domain: "alice.example", LocalID: "alice-agent", AgentID: agentA},
@@ -1525,12 +1532,12 @@ func TestHandlePortalGetTrustData_SoulMultiAgentAverageScore(t *testing.T) {
 
 	stubOwnedInstance(t, tdb.qInstance, "demo", "alice")
 
-	tdb.qDomain.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+	tdb.qDomain.On("AllPaginated", mock.Anything).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.Domain](t, args, 0)
 		*dest = []*models.Domain{{Domain: "example.com", InstanceSlug: "demo", Status: models.DomainStatusVerified}}
 	}).Once()
 
-	tdb.qIdx.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+	tdb.qIdx.On("AllPaginated", mock.Anything).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.SoulDomainAgentIndex](t, args, 0)
 		*dest = []*models.SoulDomainAgentIndex{
 			{Domain: "example.com", LocalID: "a", AgentID: agentA},
@@ -1613,14 +1620,14 @@ func TestHandlePortalGetTrustData_SoulIncludesManagedStageDomain(t *testing.T) {
 	}).Once()
 
 	// Verified domain
-	tdb.qDomain.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+	tdb.qDomain.On("AllPaginated", mock.Anything).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.Domain](t, args, 0)
 		*dest = []*models.Domain{{Domain: "demo.greater.website", InstanceSlug: "demo", Status: models.DomainStatusVerified}}
 	}).Once()
 
 	// Agent bound to managed stage domain (dev.demo.greater.website) — two calls:
 	// one for the verified domain, one for the managed stage domain.
-	tdb.qIdx.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+	tdb.qIdx.On("AllPaginated", mock.Anything).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.SoulDomainAgentIndex](t, args, 0)
 		*dest = []*models.SoulDomainAgentIndex{
 			{Domain: "dev.demo.greater.website", LocalID: "agent-0", AgentID: agentID},
@@ -1667,12 +1674,12 @@ func TestHandlePortalGetTrustData_SoulVouchesBoundedTo50(t *testing.T) {
 
 	stubOwnedInstance(t, tdb.qInstance, "demo", "alice")
 
-	tdb.qDomain.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+	tdb.qDomain.On("AllPaginated", mock.Anything).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.Domain](t, args, 0)
 		*dest = []*models.Domain{{Domain: "example.com", InstanceSlug: "demo", Status: models.DomainStatusVerified}}
 	}).Once()
 
-	tdb.qIdx.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+	tdb.qIdx.On("AllPaginated", mock.Anything).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.SoulDomainAgentIndex](t, args, 0)
 		*dest = []*models.SoulDomainAgentIndex{
 			{Domain: "example.com", LocalID: "agent-0", AgentID: agentID},

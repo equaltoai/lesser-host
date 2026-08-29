@@ -8,6 +8,7 @@ import (
 	"time"
 
 	apptheory "github.com/theory-cloud/apptheory/v4/runtime"
+	core "github.com/theory-cloud/tabletheory/v3/pkg/core"
 	ttmocks "github.com/theory-cloud/tabletheory/v3/pkg/mocks"
 
 	"github.com/go-webauthn/webauthn/protocol"
@@ -121,7 +122,9 @@ func TestHandleWebAuthnLoginFinish_Success(t *testing.T) {
 		}
 	}).Once()
 
-	tdb.qCred.On("All", mock.AnythingOfType("*[]*models.WebAuthnCredential")).Return(nil).Run(func(args mock.Arguments) {
+	filterMockQueryCalls(tdb.qCred, "Limit")
+	tdb.qCred.On("Limit", 11).Return(tdb.qCred).Once()
+	tdb.qCred.On("AllPaginated", mock.AnythingOfType("*[]*models.WebAuthnCredential")).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.WebAuthnCredential](t, args, 0)
 		*dest = []*models.WebAuthnCredential{
 			{ID: base64.StdEncoding.EncodeToString([]byte("id")), UserID: "alice"},
@@ -196,7 +199,9 @@ func TestHandleWebAuthnRegisterFinish_InvalidResponse(t *testing.T) {
 		}
 	}).Once()
 
-	tdb.qCred.On("All", mock.AnythingOfType("*[]*models.WebAuthnCredential")).Return(nil).Run(func(args mock.Arguments) {
+	filterMockQueryCalls(tdb.qCred, "Limit")
+	tdb.qCred.On("Limit", 11).Return(tdb.qCred).Once()
+	tdb.qCred.On("AllPaginated", mock.AnythingOfType("*[]*models.WebAuthnCredential")).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.WebAuthnCredential](t, args, 0)
 		*dest = nil
 	}).Once()

@@ -296,14 +296,29 @@ func (s *Server) handlePortalListInstances(ctx *apptheory.Context) (*apptheory.R
 	username := strings.TrimSpace(ctx.AuthIdentity)
 	pk := fmt.Sprintf("OWNER#%s", username)
 
+	// Bounded paginated listing (issue #1061 part B): clamped Limit + opaque
+	// cursor, mirroring listSoulPublicItems. The response stays backward
+	// compatible — next_cursor/limit are additive and omitted when absent.
+	limit := envIntPositiveClampedFromString(httpx.FirstQueryValue(ctx.Request.Query, "limit"), 50, 200)
+	cursor := strings.TrimSpace(httpx.FirstQueryValue(ctx.Request.Query, "cursor"))
+
 	var items []*models.Instance
-	err := s.store.DB.WithContext(ctx.Context()).
+	qb := s.store.DB.WithContext(ctx.Context()).
 		Model(&models.Instance{}).
 		Index("gsi1").
 		Where("gsi1PK", "=", pk).
-		All(&items)
+		Limit(limit)
+	if cursor != "" {
+		qb = qb.Cursor(cursor)
+	}
+	paged, err := qb.AllPaginated(&items)
 	if err != nil {
 		return nil, newAppTheoryError("app.internal", "failed to list instances")
+	}
+
+	// Defensive response bound; the query itself is already limited.
+	if limit > 0 && len(items) > limit {
+		items = items[:limit]
 	}
 
 	out := make([]instanceResponse, 0, len(items))
@@ -311,9 +326,16 @@ func (s *Server) handlePortalListInstances(ctx *apptheory.Context) (*apptheory.R
 		out = append(out, s.portalInstanceResponseFromModel(inst))
 	}
 
+	nextCursor := ""
+	if paged != nil {
+		nextCursor = strings.TrimSpace(paged.NextCursor)
+	}
+
 	return apptheory.JSON(http.StatusOK, listInstancesResponse{
-		Instances: out,
-		Count:     len(out),
+		Instances:  out,
+		Count:      len(out),
+		Limit:      limit,
+		NextCursor: nextCursor,
 	})
 }
 
@@ -795,14 +817,29 @@ func (s *Server) handlePortalListInstanceDomains(ctx *apptheory.Context) (*appth
 
 	slug := strings.ToLower(strings.TrimSpace(inst.Slug))
 
+	// Bounded paginated listing (issue #1061 part B): clamped Limit + opaque
+	// cursor, mirroring listSoulPublicItems. The response stays backward
+	// compatible — next_cursor/limit are additive and omitted when absent.
+	limit := envIntPositiveClampedFromString(httpx.FirstQueryValue(ctx.Request.Query, "limit"), 50, 200)
+	cursor := strings.TrimSpace(httpx.FirstQueryValue(ctx.Request.Query, "cursor"))
+
 	var items []*models.Domain
-	err = s.store.DB.WithContext(ctx.Context()).
+	qb := s.store.DB.WithContext(ctx.Context()).
 		Model(&models.Domain{}).
 		Index("gsi1").
 		Where("gsi1PK", "=", fmt.Sprintf("INSTANCE_DOMAINS#%s", slug)).
-		All(&items)
+		Limit(limit)
+	if cursor != "" {
+		qb = qb.Cursor(cursor)
+	}
+	paged, err := qb.AllPaginated(&items)
 	if err != nil {
 		return nil, newAppTheoryError("app.internal", "failed to list domains")
+	}
+
+	// Defensive response bound; the query itself is already limited.
+	if limit > 0 && len(items) > limit {
+		items = items[:limit]
 	}
 
 	out := make([]domainResponse, 0, len(items))
@@ -810,7 +847,12 @@ func (s *Server) handlePortalListInstanceDomains(ctx *apptheory.Context) (*appth
 		out = append(out, domainResponseFromModel(d))
 	}
 
-	return apptheory.JSON(http.StatusOK, listDomainsResponse{Domains: out, Count: len(out)})
+	nextCursor := ""
+	if paged != nil {
+		nextCursor = strings.TrimSpace(paged.NextCursor)
+	}
+
+	return apptheory.JSON(http.StatusOK, listDomainsResponse{Domains: out, Count: len(out), Limit: limit, NextCursor: nextCursor})
 }
 
 func (s *Server) handlePortalAddInstanceDomain(ctx *apptheory.Context) (*apptheory.Response, error) {

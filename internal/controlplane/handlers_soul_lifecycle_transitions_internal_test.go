@@ -355,6 +355,7 @@ func expectArchiveIdentityUpdate(t *testing.T, tb *ttmocks.MockTransactionBuilde
 		if strings.TrimSpace(ident.LifecycleReason) != "done" {
 			t.Fatalf("expected lifecycle reason, got %q", ident.LifecycleReason)
 		}
+		requireSoulIdentityUpdateGSI3Fields(t, args)
 	})
 }
 
@@ -400,8 +401,33 @@ func expectSuccessorUpdates(t *testing.T, tb *ttmocks.MockTransactionBuilder, ag
 				t.Fatalf("expected predecessor agent id %q, got %q", agentIDHex, ident.PredecessorAgentID)
 			}
 		}
+		requireSoulIdentityUpdateGSI3Fields(t, args)
 		updateCalls++
 	})
+}
+
+// requireSoulIdentityUpdateGSI3Fields asserts that a transactional identity
+// update names GSI3PK and GSI3SK in its field list, so a status transition can
+// never leave the gsi3 index on the old status partition (issue #1061 part C1
+// invariant: every identity write writes the index keys).
+func requireSoulIdentityUpdateGSI3Fields(t *testing.T, args mock.Arguments) {
+	t.Helper()
+	fields, ok := args.Get(1).([]string)
+	if !ok {
+		t.Fatalf("expected identity update field list []string, got %T", args.Get(1))
+	}
+	var hasPK, hasSK bool
+	for _, f := range fields {
+		if f == "GSI3PK" {
+			hasPK = true
+		}
+		if f == "GSI3SK" {
+			hasSK = true
+		}
+	}
+	if !hasPK || !hasSK {
+		t.Fatalf("identity update field list must include GSI3PK and GSI3SK, got %v", fields)
+	}
 }
 
 func expectSuccessorContinuityCreates(t *testing.T, tb *ttmocks.MockTransactionBuilder, agentIDHex string, successorIDHex string, declaredSigHex string, receivedSigHex string, timestamp string) map[string]bool {
