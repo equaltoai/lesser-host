@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/mock"
-	ttmocks "github.com/theory-cloud/tabletheory/v3/pkg/mocks"
+	ttmocks "github.com/theory-cloud/tabletheory/v6/pkg/mocks"
 
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
 	"github.com/equaltoai/lesser-host/internal/store/models"

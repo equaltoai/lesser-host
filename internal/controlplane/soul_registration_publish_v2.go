@@ -11,10 +11,10 @@ import (
 	"time"
 
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
-	apptheory "github.com/theory-cloud/apptheory/v4/runtime"
-	"github.com/theory-cloud/tabletheory/v3"
-	"github.com/theory-cloud/tabletheory/v3/pkg/core"
-	theoryErrors "github.com/theory-cloud/tabletheory/v3/pkg/errors"
+	apptheory "github.com/theory-cloud/apptheory/v6/runtime"
+	"github.com/theory-cloud/tabletheory/v6"
+	"github.com/theory-cloud/tabletheory/v6/pkg/core"
+	theoryErrors "github.com/theory-cloud/tabletheory/v6/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/soul"
 	"github.com/equaltoai/lesser-host/internal/store/models"
@@ -280,7 +280,10 @@ func (s *Server) finalizeSoulAgentRegistrationV2Identity(ctx context.Context, id
 
 	if len(updates) > 0 {
 		identity.UpdatedAt = now.UTC()
-		updates = append(updates, "UpdatedAt")
+		// Recompute the gsi3 status enumeration keys after the activation
+		// fields may have transitioned Status to active.
+		_ = identity.UpdateKeys()
+		updates = append(updates, "GSI3PK", "GSI3SK", "UpdatedAt")
 		if err := s.store.DB.WithContext(ctx).Model(identity).IfExists().Update(updates...); err != nil {
 			return newAppTheoryError("app.internal", "failed to update identity version")
 		}
@@ -302,7 +305,7 @@ func (s *Server) ensureSoulAgentRegistrationPublishedIdentityActive(ctx context.
 	}
 	identity.UpdatedAt = now.UTC()
 	_ = identity.UpdateKeys()
-	updates = append(updates, "UpdatedAt")
+	updates = append(updates, "GSI3PK", "GSI3SK", "UpdatedAt")
 	if err := s.store.DB.WithContext(ctx).Model(identity).IfExists().Update(updates...); err != nil {
 		return newAppTheoryError("app.internal", "failed to activate identity publication")
 	}

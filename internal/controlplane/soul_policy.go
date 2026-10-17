@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	apptheory "github.com/theory-cloud/apptheory/v4/runtime"
+	apptheory "github.com/theory-cloud/apptheory/v6/runtime"
 
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
@@ -200,6 +200,8 @@ func (s *Server) persistSoulAgentPolicyFields(ctx context.Context, identity *mod
 	}
 	update := &models.SoulAgentIdentity{
 		AgentID:                          identity.AgentID,
+		Status:                           strings.TrimSpace(identity.Status),
+		LifecycleStatus:                  strings.TrimSpace(identity.LifecycleStatus),
 		PolicyVersion:                    identity.PolicyVersion,
 		AnchorState:                      identity.AnchorState,
 		OperationalBinding:               identity.OperationalBinding,
@@ -226,6 +228,8 @@ func (s *Server) persistSoulAgentPolicyFields(ctx context.Context, identity *mod
 		"VoiceAllowed",
 		"PublicPaidCallerAccess",
 		"PolicyMigrationState",
+		"GSI3PK",
+		"GSI3SK",
 		"UpdatedAt",
 	); err != nil {
 		return newAppTheoryError("app.internal", "failed to persist soul policy")

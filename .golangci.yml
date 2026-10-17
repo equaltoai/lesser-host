@@ -35,6 +35,11 @@ linters:
     goconst:
       min-len: 3
       min-occurrences: 3
+      ignore-map-keys: true
+      ignore-tests: true
+      exclude-types:
+        - Call
+        - CompositeLit
     gocyclo:
       min-complexity: 15
     gosec:

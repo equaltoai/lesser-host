@@ -7,9 +7,10 @@ import (
 
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
-	runtimemicrovm "github.com/theory-cloud/apptheory/v4/runtime/microvm"
-	theoryErrors "github.com/theory-cloud/tabletheory/v3/pkg/errors"
-	ttmocks "github.com/theory-cloud/tabletheory/v3/pkg/mocks"
+	runtimemicrovm "github.com/theory-cloud/apptheory/v6/runtime/microvm"
+	core "github.com/theory-cloud/tabletheory/v6/pkg/core"
+	theoryErrors "github.com/theory-cloud/tabletheory/v6/pkg/errors"
+	ttmocks "github.com/theory-cloud/tabletheory/v6/pkg/mocks"
 
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
 	"github.com/equaltoai/lesser-host/internal/store/models"
@@ -67,7 +68,8 @@ func TestHostedGenesisMicroVMRegistryGetListAndDeleteUseSemanticKeys(t *testing.
 
 	db.On("Model", mock.AnythingOfType("*models.HostedGenesisMicroVMExecution")).Return(listQ).Once()
 	listQ.On("Where", "PK", "=", "HOSTED_GENESIS_MICROVM#INSTANCE#demo#NAMESPACE#hosted-genesis").Return(listQ).Once()
-	listQ.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+	listQ.On("Limit", mock.Anything).Return(listQ).Once()
+	listQ.On("AllPaginated", mock.AnythingOfType("*[]*models.HostedGenesisMicroVMExecution")).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.HostedGenesisMicroVMExecution](t, args, 0)
 		b, err := models.NewHostedGenesisMicroVMExecutionFromSessionRecord(validStoreMicroVMExecutionRecord("conv_b"))
 		require.NoError(t, err)
@@ -160,7 +162,8 @@ func TestHostedGenesisMicroVMExecutionRepositoryListCacheMissReturnsEmpty(t *tes
 	db.On("WithContext", ctx).Return(db).Once()
 	db.On("Model", mock.AnythingOfType("*models.HostedGenesisMicroVMExecution")).Return(q).Once()
 	q.On("Where", "PK", "=", "HOSTED_GENESIS_MICROVM#INSTANCE#demo#NAMESPACE#hosted-genesis").Return(q).Once()
-	q.On("All", mock.Anything).Return(theoryErrors.ErrItemNotFound).Once()
+	q.On("Limit", mock.Anything).Return(q).Once()
+	q.On("AllPaginated", mock.AnythingOfType("*[]*models.HostedGenesisMicroVMExecution")).Return(&core.PaginatedResult{}, theoryErrors.ErrItemNotFound).Once()
 
 	got, err := New(db).ListHostedGenesisMicroVMExecutions(ctx, " demo ", " hosted-genesis ")
 	require.NoError(t, err)

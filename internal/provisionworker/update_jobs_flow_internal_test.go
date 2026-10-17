@@ -17,8 +17,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 	smtypes "github.com/aws/aws-sdk-go-v2/service/secretsmanager/types"
-	theoryErrors "github.com/theory-cloud/tabletheory/v3/pkg/errors"
-	ttmocks "github.com/theory-cloud/tabletheory/v3/pkg/mocks"
+	theoryErrors "github.com/theory-cloud/tabletheory/v6/pkg/errors"
+	ttmocks "github.com/theory-cloud/tabletheory/v6/pkg/mocks"
 
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -86,8 +86,11 @@ func TestRunManagedUpdateStateMachine_HappyPath(t *testing.T) {
 	t.Cleanup(ts.Close)
 	trustBaseURL = ts.URL
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	t.Cleanup(cancel)
+	// These flow tests model a fresh worker invocation with a full budget, so
+	// use a deadline-less context: advanceUpdateVerify's budget guard defers
+	// verification when the invocation context is nearly exhausted (the same
+	// convention the store's lambda-timeout guard applies to tests).
+	ctx := context.Background()
 
 	db := ttmocks.NewMockExtendedDB()
 	qInst := new(ttmocks.MockQuery)
@@ -223,8 +226,11 @@ func TestRunManagedUpdateStateMachine_HappyPath(t *testing.T) {
 func TestRunManagedUpdateStateMachine_BodyOnlyCompletesIndependently(t *testing.T) {
 	t.Parallel()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	t.Cleanup(cancel)
+	// These flow tests model a fresh worker invocation with a full budget, so
+	// use a deadline-less context: advanceUpdateVerify's budget guard defers
+	// verification when the invocation context is nearly exhausted (the same
+	// convention the store's lambda-timeout guard applies to tests).
+	ctx := context.Background()
 
 	db := ttmocks.NewMockExtendedDB()
 	qInst := new(ttmocks.MockQuery)
@@ -378,8 +384,11 @@ func TestRunManagedUpdateStateMachine_BodyOnlyCompletesIndependently(t *testing.
 func TestRunManagedUpdateStateMachine_MCPOnlySkipsLesserAndBodyDeploy(t *testing.T) {
 	t.Parallel()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	t.Cleanup(cancel)
+	// These flow tests model a fresh worker invocation with a full budget, so
+	// use a deadline-less context: advanceUpdateVerify's budget guard defers
+	// verification when the invocation context is nearly exhausted (the same
+	// convention the store's lambda-timeout guard applies to tests).
+	ctx := context.Background()
 
 	db := ttmocks.NewMockExtendedDB()
 	qInst := new(ttmocks.MockQuery)

@@ -6,8 +6,8 @@ import (
 	"net/url"
 	"strings"
 
-	apptheory "github.com/theory-cloud/apptheory/v4/runtime"
-	theoryErrors "github.com/theory-cloud/tabletheory/v3/pkg/errors"
+	apptheory "github.com/theory-cloud/apptheory/v6/runtime"
+	theoryErrors "github.com/theory-cloud/tabletheory/v6/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/domains"
 	"github.com/equaltoai/lesser-host/internal/manageddomain"
@@ -133,12 +133,17 @@ func (s *Server) loadAttestationSubjectInstance(ctx context.Context, instanceSlu
 }
 
 func (s *Server) loadAttestationSubjectDomains(ctx context.Context, instanceSlug string) ([]*models.Domain, *apptheory.AppTheoryError) {
-	var domainItems []*models.Domain
-	err := s.store.DB.WithContext(ctx).
-		Model(&models.Domain{}).
-		Index("gsi1").
-		Where("gsi1PK", "=", "INSTANCE_DOMAINS#"+instanceSlug).
-		All(&domainItems)
+	// Bounded partition walk (issue #1061 part B): page-capped reads resumed
+	// via the opaque cursor instead of a no-Limit All; the loop fails closed
+	// if the partition exceeds the page cap.
+	domainItems, err := trustPartitionAll[models.Domain](
+		s.store.DB.WithContext(ctx).
+			Model(&models.Domain{}).
+			Index("gsi1").
+			Where("gsi1PK", "=", "INSTANCE_DOMAINS#"+instanceSlug),
+		trustPartitionWalkPageSize,
+		trustPartitionWalkMaxPages,
+	)
 	if err != nil && !theoryErrors.IsNotFound(err) {
 		return nil, newAppTheoryError("app.internal", "internal error")
 	}

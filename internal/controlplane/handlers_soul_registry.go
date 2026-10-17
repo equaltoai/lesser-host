@@ -21,8 +21,8 @@ import (
 	"github.com/cyberphone/json-canonicalization/go/src/webpki.org/jsoncanonicalizer"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
-	apptheory "github.com/theory-cloud/apptheory/v4/runtime"
-	theoryErrors "github.com/theory-cloud/tabletheory/v3/pkg/errors"
+	apptheory "github.com/theory-cloud/apptheory/v6/runtime"
+	theoryErrors "github.com/theory-cloud/tabletheory/v6/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/domains"
 	"github.com/equaltoai/lesser-host/internal/httpx"
@@ -1401,6 +1401,8 @@ func (s *Server) reconcileSoulPendingIdentity(
 
 	update := &models.SoulAgentIdentity{
 		AgentID:              agentID,
+		Status:               strings.TrimSpace(existing.Status),
+		LifecycleStatus:      strings.TrimSpace(existing.LifecycleStatus),
 		PrincipalAddress:     principalAddress,
 		PrincipalSignature:   principalSignature,
 		PrincipalDeclaration: principalDeclaration,
@@ -1408,7 +1410,7 @@ func (s *Server) reconcileSoulPendingIdentity(
 		UpdatedAt:            now,
 	}
 	_ = update.UpdateKeys()
-	if updErr := s.store.DB.WithContext(ctx).Model(update).IfExists().Update("PrincipalAddress", "PrincipalSignature", "PrincipalDeclaration", "PrincipalDeclaredAt", "UpdatedAt"); updErr != nil {
+	if updErr := s.store.DB.WithContext(ctx).Model(update).IfExists().Update("PrincipalAddress", "PrincipalSignature", "PrincipalDeclaration", "PrincipalDeclaredAt", "GSI3PK", "GSI3SK", "UpdatedAt"); updErr != nil {
 		return newAppTheoryError("app.internal", "failed to update agent identity")
 	}
 	return nil

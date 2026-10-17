@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	apptheory "github.com/theory-cloud/apptheory/v4/runtime"
-	theoryErrors "github.com/theory-cloud/tabletheory/v3/pkg/errors"
+	apptheory "github.com/theory-cloud/apptheory/v6/runtime"
+	theoryErrors "github.com/theory-cloud/tabletheory/v6/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/httpx"
 	"github.com/equaltoai/lesser-host/internal/store/models"
@@ -86,7 +86,7 @@ func (s *Server) handleSoulSelfSuspend(ctx *apptheory.Context) (*apptheory.Respo
 	identity.UpdatedAt = now
 	_ = identity.UpdateKeys()
 
-	if err := s.store.DB.WithContext(ctx.Context()).Model(identity).IfExists().Update("Status", "LifecycleStatus", "LifecycleReason", "UpdatedAt"); err != nil {
+	if err := s.store.DB.WithContext(ctx.Context()).Model(identity).IfExists().Update("Status", "LifecycleStatus", "LifecycleReason", "GSI3PK", "GSI3SK", "UpdatedAt"); err != nil {
 		return nil, newAppTheoryError("app.internal", "failed to self-suspend agent")
 	}
 
@@ -141,7 +141,7 @@ func (s *Server) handleSoulSelfReinstate(ctx *apptheory.Context) (*apptheory.Res
 	identity.UpdatedAt = now
 	_ = identity.UpdateKeys()
 
-	if err := s.store.DB.WithContext(ctx.Context()).Model(identity).IfExists().Update("Status", "LifecycleStatus", "LifecycleReason", "UpdatedAt"); err != nil {
+	if err := s.store.DB.WithContext(ctx.Context()).Model(identity).IfExists().Update("Status", "LifecycleStatus", "LifecycleReason", "GSI3PK", "GSI3SK", "UpdatedAt"); err != nil {
 		return nil, newAppTheoryError("app.internal", "failed to reinstate agent")
 	}
 

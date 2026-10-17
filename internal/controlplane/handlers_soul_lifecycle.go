@@ -6,10 +6,10 @@ import (
 	"strings"
 	"time"
 
-	apptheory "github.com/theory-cloud/apptheory/v4/runtime"
-	"github.com/theory-cloud/tabletheory/v3"
-	"github.com/theory-cloud/tabletheory/v3/pkg/core"
-	theoryErrors "github.com/theory-cloud/tabletheory/v3/pkg/errors"
+	apptheory "github.com/theory-cloud/apptheory/v6/runtime"
+	"github.com/theory-cloud/tabletheory/v6"
+	"github.com/theory-cloud/tabletheory/v6/pkg/core"
+	theoryErrors "github.com/theory-cloud/tabletheory/v6/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/httpx"
 	"github.com/equaltoai/lesser-host/internal/store/models"
@@ -206,7 +206,7 @@ func (s *Server) handleSoulArchiveAgent(ctx *apptheory.Context) (*apptheory.Resp
 
 	if err := s.store.DB.TransactWrite(ctx.Context(), func(tx core.TransactionBuilder) error {
 		tx.Delete(challenge, tabletheory.IfExists(), tabletheory.Condition("TTL", ">", now.Unix()))
-		tx.Update(identity, []string{"Status", "LifecycleStatus", "LifecycleReason", "UpdatedAt"}, tabletheory.IfExists())
+		tx.Update(identity, []string{"Status", "LifecycleStatus", "LifecycleReason", "GSI3PK", "GSI3SK", "UpdatedAt"}, tabletheory.IfExists())
 		tx.Create(continuity)
 		tx.Put(audit)
 		return nil
@@ -358,8 +358,8 @@ func (s *Server) handleSoulDesignateSuccessor(ctx *apptheory.Context) (*apptheor
 
 	if err := s.store.DB.TransactWrite(ctx.Context(), func(tx core.TransactionBuilder) error {
 		tx.Delete(challenge, tabletheory.IfExists(), tabletheory.Condition("TTL", ">", now.Unix()))
-		tx.Update(identity, []string{"Status", "LifecycleStatus", "LifecycleReason", "SuccessorAgentID", "UpdatedAt"}, tabletheory.IfExists())
-		tx.Update(successorIdentity, []string{"PredecessorAgentID", "UpdatedAt"}, tabletheory.IfExists())
+		tx.Update(identity, []string{"Status", "LifecycleStatus", "LifecycleReason", "SuccessorAgentID", "GSI3PK", "GSI3SK", "UpdatedAt"}, tabletheory.IfExists())
+		tx.Update(successorIdentity, []string{"PredecessorAgentID", "GSI3PK", "GSI3SK", "UpdatedAt"}, tabletheory.IfExists())
 		tx.Create(predContinuity)
 		tx.Create(succContinuity)
 		tx.Put(audit)

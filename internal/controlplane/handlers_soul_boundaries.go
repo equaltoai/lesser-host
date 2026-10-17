@@ -16,9 +16,9 @@ import (
 
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/ethereum/go-ethereum/crypto"
-	apptheory "github.com/theory-cloud/apptheory/v4/runtime"
-	"github.com/theory-cloud/tabletheory/v3/pkg/core"
-	theoryErrors "github.com/theory-cloud/tabletheory/v3/pkg/errors"
+	apptheory "github.com/theory-cloud/apptheory/v6/runtime"
+	"github.com/theory-cloud/tabletheory/v6/pkg/core"
+	theoryErrors "github.com/theory-cloud/tabletheory/v6/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/httpx"
 	"github.com/equaltoai/lesser-host/internal/soul"
@@ -838,12 +838,19 @@ func (s *Server) listSoulAgentBoundariesNoTruncation(ctx context.Context, agentI
 		return nil, newAppTheoryError("app.internal", "internal error")
 	}
 
-	var items []*models.SoulAgentBoundary
-	if err := s.store.DB.WithContext(ctx).
-		Model(&models.SoulAgentBoundary{}).
-		Where("PK", "=", fmt.Sprintf("SOUL#AGENT#%s", agentIDHex)).
-		Where("SK", "BEGINS_WITH", "BOUNDARY#").
-		All(&items); err != nil {
+	// Bounded partition walk (issue #1061 part B): page-capped reads resumed
+	// via the opaque cursor instead of a no-Limit All; fails closed on
+	// page-cap exhaustion so a published boundary list is never silently
+	// truncated.
+	items, err := collectPartitionAll[models.SoulAgentBoundary](
+		s.store.DB.WithContext(ctx).
+			Model(&models.SoulAgentBoundary{}).
+			Where("PK", "=", fmt.Sprintf("SOUL#AGENT#%s", agentIDHex)).
+			Where("SK", "BEGINS_WITH", "BOUNDARY#"),
+		partitionWalkPageSize,
+		partitionWalkMaxPages,
+	)
+	if err != nil {
 		return nil, newAppTheoryError("app.internal", "failed to list boundaries")
 	}
 	return items, nil
