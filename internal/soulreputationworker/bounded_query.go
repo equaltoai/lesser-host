@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	core "github.com/theory-cloud/tabletheory/v3/pkg/core"
+	core "github.com/theory-cloud/tabletheory/v6/pkg/core"
 )
 
 // Bounded partition-walk defaults (issue #1061 part B). The reputation worker

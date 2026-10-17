@@ -82,7 +82,7 @@ payload_equals() {
 }
 
 # AppTheory v3.0.1 / TableTheory v3.0.2 migration allowance, extended for the
-# AppTheory v4.0.0 line:
+# AppTheory v4.0.0 and AppTheory v6.2.0 / TableTheory v6.0.0 lines:
 # the instance-auth mechanism remains locked (sha256 bearer matching, raw-key
 # handling, revocation, and audit behavior must not change), but the framework
 # major-version migration necessarily updates the AppTheory and TableTheory
@@ -98,7 +98,10 @@ is_allowed_framework_migration_diff() {
     "internal/trust/attestations_issue.go")
       payload_equals "${payload}" \
         '-	theoryErrors "github.com/theory-cloud/tabletheory/v2/pkg/errors"' \
-        '+	theoryErrors "github.com/theory-cloud/tabletheory/v3/pkg/errors"'
+        '+	theoryErrors "github.com/theory-cloud/tabletheory/v3/pkg/errors"' \
+        || payload_equals "${payload}" \
+        '-	theoryErrors "github.com/theory-cloud/tabletheory/v3/pkg/errors"' \
+        '+	theoryErrors "github.com/theory-cloud/tabletheory/v6/pkg/errors"'
       ;;
     "internal/trust/auth_instance_test.go")
       payload_equals "${payload}" \
@@ -110,7 +113,14 @@ is_allowed_framework_migration_diff() {
         '+	ttmocks "github.com/theory-cloud/tabletheory/v3/pkg/mocks"' \
         || payload_equals "${payload}" \
         '-	apptheory "github.com/theory-cloud/apptheory/v3/runtime"' \
-        '+	apptheory "github.com/theory-cloud/apptheory/v4/runtime"'
+        '+	apptheory "github.com/theory-cloud/apptheory/v4/runtime"' \
+        || payload_equals "${payload}" \
+        '-	apptheory "github.com/theory-cloud/apptheory/v4/runtime"' \
+        '-	theoryErrors "github.com/theory-cloud/tabletheory/v3/pkg/errors"' \
+        '-	ttmocks "github.com/theory-cloud/tabletheory/v3/pkg/mocks"' \
+        '+	apptheory "github.com/theory-cloud/apptheory/v6/runtime"' \
+        '+	theoryErrors "github.com/theory-cloud/tabletheory/v6/pkg/errors"' \
+        '+	ttmocks "github.com/theory-cloud/tabletheory/v6/pkg/mocks"'
       ;;
     "internal/trust/auth_instance.go")
       payload_equals "${payload}" \
@@ -120,7 +130,12 @@ is_allowed_framework_migration_diff() {
         '+	theoryErrors "github.com/theory-cloud/tabletheory/v3/pkg/errors"' \
         || payload_equals "${payload}" \
         '-	apptheory "github.com/theory-cloud/apptheory/v3/runtime"' \
-        '+	apptheory "github.com/theory-cloud/apptheory/v4/runtime"'
+        '+	apptheory "github.com/theory-cloud/apptheory/v4/runtime"' \
+        || payload_equals "${payload}" \
+        '-	apptheory "github.com/theory-cloud/apptheory/v4/runtime"' \
+        '-	theoryErrors "github.com/theory-cloud/tabletheory/v3/pkg/errors"' \
+        '+	apptheory "github.com/theory-cloud/apptheory/v6/runtime"' \
+        '+	theoryErrors "github.com/theory-cloud/tabletheory/v6/pkg/errors"'
       ;;
     *)
       return 1

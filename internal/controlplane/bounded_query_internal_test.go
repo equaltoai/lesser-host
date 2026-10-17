@@ -6,8 +6,8 @@ import (
 
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
-	core "github.com/theory-cloud/tabletheory/v3/pkg/core"
-	ttmocks "github.com/theory-cloud/tabletheory/v3/pkg/mocks"
+	core "github.com/theory-cloud/tabletheory/v6/pkg/core"
+	ttmocks "github.com/theory-cloud/tabletheory/v6/pkg/mocks"
 
 	"github.com/equaltoai/lesser-host/internal/store/models"
 	"github.com/equaltoai/lesser-host/internal/testutil"

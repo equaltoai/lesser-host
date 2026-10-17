@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	runtimemicrovm "github.com/theory-cloud/apptheory/v4/runtime/microvm"
+	runtimemicrovm "github.com/theory-cloud/apptheory/v6/runtime/microvm"
 )
 
 // ErrMicroVMDispatchUnavailable is the fail-closed error returned when the
@@ -672,7 +672,7 @@ func (d *HTTPControllerDispatcher) invokeMicroVMTurn(ctx context.Context, reques
 	}
 	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
 		if result.Error != nil && result.Error.Code != "" {
-			return fmt.Errorf("hosted genesis microvm dispatch: workload returned status %d: %w", httpResp.StatusCode, result.Error)
+			return fmt.Errorf("hosted genesis microvm dispatch: workload returned status %d: %w", httpResp.StatusCode, *result.Error)
 		}
 		return fmt.Errorf("hosted genesis microvm dispatch: workload returned status %d", httpResp.StatusCode)
 	}

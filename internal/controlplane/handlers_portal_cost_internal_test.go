@@ -9,9 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	apptheory "github.com/theory-cloud/apptheory/v4/runtime"
-	theoryErrors "github.com/theory-cloud/tabletheory/v3/pkg/errors"
-	ttmocks "github.com/theory-cloud/tabletheory/v3/pkg/mocks"
+	apptheory "github.com/theory-cloud/apptheory/v6/runtime"
+	theoryErrors "github.com/theory-cloud/tabletheory/v6/pkg/errors"
+	ttmocks "github.com/theory-cloud/tabletheory/v6/pkg/mocks"
 
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"

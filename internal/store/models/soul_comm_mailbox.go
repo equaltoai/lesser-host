@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	theorymodel "github.com/theory-cloud/tabletheory/v3/pkg/model"
+	theorymodel "github.com/theory-cloud/tabletheory/v6/pkg/model"
 )
 
 // SoulCommMailboxRetentionDays is the bounded retention window for canonical
