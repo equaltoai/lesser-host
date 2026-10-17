@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"testing"
 
-	apptheory "github.com/theory-cloud/apptheory/v4/runtime"
-	core "github.com/theory-cloud/tabletheory/v3/pkg/core"
-	ttmocks "github.com/theory-cloud/tabletheory/v3/pkg/mocks"
+	apptheory "github.com/theory-cloud/apptheory/v6/runtime"
+	core "github.com/theory-cloud/tabletheory/v6/pkg/core"
+	ttmocks "github.com/theory-cloud/tabletheory/v6/pkg/mocks"
 
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"

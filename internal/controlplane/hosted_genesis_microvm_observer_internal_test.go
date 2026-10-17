@@ -7,11 +7,11 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/mock"
-	apptheory "github.com/theory-cloud/apptheory/v4/runtime"
-	runtimemicrovm "github.com/theory-cloud/apptheory/v4/runtime/microvm"
-	"github.com/theory-cloud/tabletheory/v3/pkg/core"
-	theoryErrors "github.com/theory-cloud/tabletheory/v3/pkg/errors"
-	ttmocks "github.com/theory-cloud/tabletheory/v3/pkg/mocks"
+	apptheory "github.com/theory-cloud/apptheory/v6/runtime"
+	runtimemicrovm "github.com/theory-cloud/apptheory/v6/runtime/microvm"
+	"github.com/theory-cloud/tabletheory/v6/pkg/core"
+	theoryErrors "github.com/theory-cloud/tabletheory/v6/pkg/errors"
+	ttmocks "github.com/theory-cloud/tabletheory/v6/pkg/mocks"
 
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
 	"github.com/equaltoai/lesser-host/internal/store/models"

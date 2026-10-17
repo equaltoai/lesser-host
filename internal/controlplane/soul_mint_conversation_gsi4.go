@@ -1,7 +1,7 @@
 package controlplane
 
 import (
-	"github.com/theory-cloud/tabletheory/v3/pkg/core"
+	"github.com/theory-cloud/tabletheory/v6/pkg/core"
 
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )

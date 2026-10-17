@@ -7,8 +7,8 @@ import (
 	"testing"
 
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
-	apptheory "github.com/theory-cloud/apptheory/v4/runtime"
-	theoryErrors "github.com/theory-cloud/tabletheory/v3/pkg/errors"
+	apptheory "github.com/theory-cloud/apptheory/v6/runtime"
+	theoryErrors "github.com/theory-cloud/tabletheory/v6/pkg/errors"
 
 	"github.com/stretchr/testify/mock"
 

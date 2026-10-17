@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	core "github.com/theory-cloud/tabletheory/v3/pkg/core"
+	core "github.com/theory-cloud/tabletheory/v6/pkg/core"
 )
 
 func clampListLimit(limit int) int {

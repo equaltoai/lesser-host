@@ -7,9 +7,9 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
-	"github.com/theory-cloud/tabletheory/v3/pkg/marshal"
-	theorymodel "github.com/theory-cloud/tabletheory/v3/pkg/model"
-	theorytypes "github.com/theory-cloud/tabletheory/v3/pkg/types"
+	"github.com/theory-cloud/tabletheory/v6/pkg/marshal"
+	theorymodel "github.com/theory-cloud/tabletheory/v6/pkg/model"
+	theorytypes "github.com/theory-cloud/tabletheory/v6/pkg/types"
 
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
 	"github.com/equaltoai/lesser-host/internal/soul"

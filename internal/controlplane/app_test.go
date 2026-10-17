@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	apptheory "github.com/theory-cloud/apptheory/v4/runtime"
-	"github.com/theory-cloud/apptheory/v4/testkit"
+	apptheory "github.com/theory-cloud/apptheory/v6/runtime"
+	"github.com/theory-cloud/apptheory/v6/testkit"
 
 	"github.com/equaltoai/lesser-host/internal/controlplane"
 )

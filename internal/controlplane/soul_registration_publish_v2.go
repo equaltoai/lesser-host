@@ -11,10 +11,10 @@ import (
 	"time"
 
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
-	apptheory "github.com/theory-cloud/apptheory/v4/runtime"
-	"github.com/theory-cloud/tabletheory/v3"
-	"github.com/theory-cloud/tabletheory/v3/pkg/core"
-	theoryErrors "github.com/theory-cloud/tabletheory/v3/pkg/errors"
+	apptheory "github.com/theory-cloud/apptheory/v6/runtime"
+	"github.com/theory-cloud/tabletheory/v6"
+	"github.com/theory-cloud/tabletheory/v6/pkg/core"
+	theoryErrors "github.com/theory-cloud/tabletheory/v6/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/soul"
 	"github.com/equaltoai/lesser-host/internal/store/models"

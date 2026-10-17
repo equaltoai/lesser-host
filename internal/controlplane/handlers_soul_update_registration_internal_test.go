@@ -16,9 +16,9 @@ import (
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
-	apptheory "github.com/theory-cloud/apptheory/v4/runtime"
-	core "github.com/theory-cloud/tabletheory/v3/pkg/core"
-	theoryErrors "github.com/theory-cloud/tabletheory/v3/pkg/errors"
+	apptheory "github.com/theory-cloud/apptheory/v6/runtime"
+	core "github.com/theory-cloud/tabletheory/v6/pkg/core"
+	theoryErrors "github.com/theory-cloud/tabletheory/v6/pkg/errors"
 
 	"github.com/stretchr/testify/mock"
 

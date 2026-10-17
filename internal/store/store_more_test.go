@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
-	ttmocks "github.com/theory-cloud/tabletheory/v3/pkg/mocks"
+	ttmocks "github.com/theory-cloud/tabletheory/v6/pkg/mocks"
 
 	"github.com/stretchr/testify/mock"
 

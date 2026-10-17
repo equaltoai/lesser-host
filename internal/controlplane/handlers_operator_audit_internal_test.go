@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	core "github.com/theory-cloud/tabletheory/v3/pkg/core"
-	ttmocks "github.com/theory-cloud/tabletheory/v3/pkg/mocks"
+	core "github.com/theory-cloud/tabletheory/v6/pkg/core"
+	ttmocks "github.com/theory-cloud/tabletheory/v6/pkg/mocks"
 
 	"github.com/stretchr/testify/mock"
 

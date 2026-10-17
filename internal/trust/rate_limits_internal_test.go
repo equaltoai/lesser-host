@@ -6,9 +6,9 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
-	ttmocks "github.com/theory-cloud/tabletheory/v3/pkg/mocks"
+	ttmocks "github.com/theory-cloud/tabletheory/v6/pkg/mocks"
 
-	apptheory "github.com/theory-cloud/apptheory/v4/runtime"
+	apptheory "github.com/theory-cloud/apptheory/v6/runtime"
 
 	"github.com/equaltoai/lesser-host/internal/store"
 )
