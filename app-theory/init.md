@@ -21,32 +21,32 @@ This section defines the **pinned destination frameworks**. These values are **c
 (do not guess; do not write UNKNOWN).
 
 ### AppTheory (pinned)
-- Go module: `github.com/theory-cloud/apptheory@v1.7.0`
-- Go runtime import: `github.com/theory-cloud/apptheory/runtime`
-- Docs entrypoints (for tag `v1.7.0`):
+- Go module: `github.com/theory-cloud/apptheory/v6@v6.2.0`
+- Go runtime import: `github.com/theory-cloud/apptheory/v6/runtime`
+- Docs entrypoints (for tag `v6.2.0`):
   - `docs/getting-started.md`
   - `docs/migration/from-lift.md`
 - Copy/paste dependency command:
-  - `go get github.com/theory-cloud/apptheory@v1.7.0`
+  - `go get github.com/theory-cloud/apptheory/v6@v6.2.0`
 - Recommended pinned docs links:
-  - `https://github.com/theory-cloud/AppTheory/blob/v1.7.0/docs/getting-started.md`
-  - `https://github.com/theory-cloud/AppTheory/blob/v1.7.0/docs/migration/from-lift.md`
+  - `https://github.com/theory-cloud/AppTheory/blob/v6.2.0/docs/getting-started.md`
+  - `https://github.com/theory-cloud/AppTheory/blob/v6.2.0/docs/migration/from-lift.md`
 - Recommended pinned CDK docs links:
-  - `https://github.com/theory-cloud/AppTheory/blob/v1.7.0/cdk/docs/getting-started.md`
-  - `https://github.com/theory-cloud/AppTheory/blob/v1.7.0/cdk/docs/api-reference.md`
+  - `https://github.com/theory-cloud/AppTheory/blob/v6.2.0/cdk/docs/getting-started.md`
+  - `https://github.com/theory-cloud/AppTheory/blob/v6.2.0/cdk/docs/api-reference.md`
 
 ### TableTheory (pinned)
-- Go module: `github.com/theory-cloud/tabletheory@v1.8.3`
-- Docs entrypoints (for tag `v1.8.3`):
+- Go module: `github.com/theory-cloud/tabletheory/v6@v6.0.0`
+- Docs entrypoints (for tag `v6.0.0`):
   - `docs/getting-started.md`
   - `docs/api-reference.md`
   - `docs/migration-guide.md`
 - Copy/paste dependency command:
-  - `go get github.com/theory-cloud/tabletheory@v1.8.3`
+  - `go get github.com/theory-cloud/tabletheory/v6@v6.0.0`
 - Recommended pinned docs links:
-  - `https://github.com/theory-cloud/TableTheory/blob/v1.8.3/docs/getting-started.md`
-  - `https://github.com/theory-cloud/TableTheory/blob/v1.8.3/docs/api-reference.md`
-  - `https://github.com/theory-cloud/TableTheory/blob/v1.8.3/docs/migration-guide.md`
+  - `https://github.com/theory-cloud/TableTheory/blob/v6.0.0/docs/getting-started.md`
+  - `https://github.com/theory-cloud/TableTheory/blob/v6.0.0/docs/api-reference.md`
+  - `https://github.com/theory-cloud/TableTheory/blob/v6.0.0/docs/migration-guide.md`
 
 ## Local agent execution plan
 
