@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	runtimemicrovm "github.com/theory-cloud/apptheory/v4/runtime/microvm"
+	runtimemicrovm "github.com/theory-cloud/apptheory/v6/runtime/microvm"
 )
 
 const (
@@ -55,7 +55,7 @@ func NewMicroVMTurnLifecycleEvent(requestID string, binding MicroVMSessionBindin
 // and failed lifecycle results are loud failures.
 func ValidateMicroVMTurnResult(result runtimemicrovm.LifecycleResult, requestID string, binding MicroVMSessionBinding) error {
 	if result.Error != nil && result.Error.Code != "" {
-		return fmt.Errorf("hosted genesis microvm invoke: workload failed: %w", result.Error)
+		return fmt.Errorf("hosted genesis microvm invoke: workload failed: %w", *result.Error)
 	}
 	if strings.TrimSpace(result.RequestID) != strings.TrimSpace(requestID) {
 		return fmt.Errorf("hosted genesis microvm invoke: workload result request binding mismatch")

@@ -13,6 +13,8 @@ validate_https_custom_domain "LESSER_HOST_ATTESTATIONS_URL" "$LESSER_HOST_ATTEST
 case "$LESSER_HOST_INSTANCE_KEY_ARN" in arn:*) ;; *) fail "LESSER_HOST_INSTANCE_KEY_ARN must start with arn:";; esac
 : "${SOUL_BINDING_INTEGRATION_KEY_ARN:?SOUL_BINDING_INTEGRATION_KEY_ARN is required}"
 case "$SOUL_BINDING_INTEGRATION_KEY_ARN" in arn:*) ;; *) fail "SOUL_BINDING_INTEGRATION_KEY_ARN must start with arn:";; esac
+: "${VAPID_SECRET_ARN:?VAPID_SECRET_ARN is required}"
+case "$VAPID_SECRET_ARN" in arn:*) ;; *) fail "VAPID_SECRET_ARN must start with arn:";; esac
 if bool_on "${TIP_ENABLED:-}"; then
   if [ -z "${TIP_CHAIN_ID:-}" ]; then fail "TIP_CHAIN_ID is required when TIP_ENABLED=true"; fi
   case "$TIP_CHAIN_ID" in *[!0-9]*|"") fail "TIP_CHAIN_ID must be a positive integer when TIP_ENABLED=true";; 0) fail "TIP_CHAIN_ID must be > 0 when TIP_ENABLED=true";; esac
@@ -47,6 +49,6 @@ if [ ! -f "$LAMBDA_METADATA_PATH" ]; then
   jq -n --slurpfile bundle "$LESSER_RELEASE_DIR/lesser-lambda-bundle.json" '{mode:"release",files:($bundle[0].files | map(.path)),prepared_at:""}' > "$LAMBDA_METADATA_PATH"
 fi
 MANAGED_RECEIPT_PATH="$STATE_DIR/state.managed.json"
-jq --slurpfile release "$LESSER_RELEASE_DIR/lesser-release.json" --slurpfile bundle "$LESSER_RELEASE_DIR/lesser-lambda-bundle.json" --slurpfile metadata "$LAMBDA_METADATA_PATH" --slurpfile instance_key "$MANAGED_INSTANCE_KEY_RECEIPT_PATH" --slurpfile soul_binding "$SOUL_BINDING_INTEGRATION_RECEIPT_PATH" '. + {managed_instance_key:$instance_key[0],soul_binding_integration:$soul_binding[0],managed_deploy_artifacts:{mode:($metadata[0].mode // "release"),checksums_path:"checksums.txt",release_manifest_path:"lesser-release.json",release:{name:($release[0].name // ""),version:($release[0].version // ""),git_sha:($release[0].git_sha // "")},deploy_artifact:{kind:"lambda_bundle",path:($bundle[0].bundle.path // ""),manifest_path:"lesser-lambda-bundle.json",files:(if (($metadata[0].files // []) | length) > 0 then $metadata[0].files else ($bundle[0].files | map(.path)) end),prepared_at:($metadata[0].prepared_at // "")}}}' "$RECEIPT_PATH" > "$MANAGED_RECEIPT_PATH"
+jq --slurpfile release "$LESSER_RELEASE_DIR/lesser-release.json" --slurpfile bundle "$LESSER_RELEASE_DIR/lesser-lambda-bundle.json" --slurpfile metadata "$LAMBDA_METADATA_PATH" --slurpfile instance_key "$MANAGED_INSTANCE_KEY_RECEIPT_PATH" --slurpfile soul_binding "$SOUL_BINDING_INTEGRATION_RECEIPT_PATH" --slurpfile vapid "$VAPID_RECEIPT_PATH" '. + {managed_instance_key:$instance_key[0],soul_binding_integration:$soul_binding[0],vapid:$vapid[0],managed_deploy_artifacts:{mode:($metadata[0].mode // "release"),checksums_path:"checksums.txt",release_manifest_path:"lesser-release.json",release:{name:($release[0].name // ""),version:($release[0].version // ""),git_sha:($release[0].git_sha // "")},deploy_artifact:{kind:"lambda_bundle",path:($bundle[0].bundle.path // ""),manifest_path:"lesser-lambda-bundle.json",files:(if (($metadata[0].files // []) | length) > 0 then $metadata[0].files else ($bundle[0].files | map(.path)) end),prepared_at:($metadata[0].prepared_at // "")}}}' "$RECEIPT_PATH" > "$MANAGED_RECEIPT_PATH"
 aws s3 cp "$MANAGED_RECEIPT_PATH" "s3://$ARTIFACT_BUCKET/$RECEIPT_S3_KEY"
 if [ -f /tmp/bootstrap.json ]; then aws s3 cp /tmp/bootstrap.json "s3://$ARTIFACT_BUCKET/$BOOTSTRAP_S3_KEY"; fi

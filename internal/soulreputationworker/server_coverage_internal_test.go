@@ -11,8 +11,9 @@ import (
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/core/types"
-	apptheory "github.com/theory-cloud/apptheory/v4/runtime"
-	ttmocks "github.com/theory-cloud/tabletheory/v3/pkg/mocks"
+	apptheory "github.com/theory-cloud/apptheory/v6/runtime"
+	"github.com/theory-cloud/tabletheory/v6/pkg/core"
+	ttmocks "github.com/theory-cloud/tabletheory/v6/pkg/mocks"
 
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -106,10 +107,16 @@ func TestHandleRecompute_SkipAndFailureBranches(t *testing.T) {
 
 		db := ttmocks.NewMockExtendedDB()
 		qIdentity := new(ttmocks.MockQuery)
+		qMarker := new(ttmocks.MockQuery)
 		db.On("WithContext", mock.Anything).Return(db).Maybe()
 		db.On("Model", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(qIdentity).Maybe()
+		db.On("Model", mock.AnythingOfType("*models.SoulAgentIdentityGSI3BackfillMarker")).Return(qMarker).Maybe()
+		qMarker.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(qMarker).Maybe()
+		qMarker.On("First", mock.AnythingOfType("*models.SoulAgentIdentityGSI3BackfillMarker")).Return(nil).Maybe()
+		qIdentity.On("Index", mock.Anything).Return(qIdentity).Maybe()
 		qIdentity.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(qIdentity).Maybe()
-		qIdentity.On("All", mock.Anything).Return(errors.New("identity boom")).Once()
+		qIdentity.On("Limit", mock.Anything).Return(qIdentity).Maybe()
+		qIdentity.On("AllPaginated", mock.Anything).Return((*core.PaginatedResult)(nil), errors.New("identity boom")).Once()
 
 		srv := makeServer(config.Config{
 			SoulEnabled:        true,

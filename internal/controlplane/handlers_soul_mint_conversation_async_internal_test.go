@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/mock"
-	apptheory "github.com/theory-cloud/apptheory/v4/runtime"
-	theoryErrors "github.com/theory-cloud/tabletheory/v3/pkg/errors"
+	apptheory "github.com/theory-cloud/apptheory/v6/runtime"
+	theoryErrors "github.com/theory-cloud/tabletheory/v6/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
 	"github.com/equaltoai/lesser-host/internal/store/models"

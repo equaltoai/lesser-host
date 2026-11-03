@@ -8,7 +8,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
-	"github.com/theory-cloud/tabletheory/v3"
+	"github.com/theory-cloud/tabletheory/v6"
 
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
@@ -63,6 +63,8 @@ func registeredModels() []any {
 		&models.SoulAgentContactPreferences{},
 		&models.SoulAgentChannel{},
 		&models.SoulAgentIdentity{},
+		&models.SoulAgentIdentityGSI3BackfillMarker{},
+		&models.SoulAgentMintConversationGSI4BackfillMarker{},
 		&models.SoulAgentPeerEndorsement{},
 		&models.SoulWalletRotationRequest{},
 		&models.SoulAgentVersion{},

@@ -16,8 +16,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 	smtypes "github.com/aws/aws-sdk-go-v2/service/secretsmanager/types"
-	theoryErrors "github.com/theory-cloud/tabletheory/v3/pkg/errors"
-	ttmocks "github.com/theory-cloud/tabletheory/v3/pkg/mocks"
+	theoryErrors "github.com/theory-cloud/tabletheory/v6/pkg/errors"
+	ttmocks "github.com/theory-cloud/tabletheory/v6/pkg/mocks"
 
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"

@@ -113,6 +113,33 @@ export class LesserHostStack extends cdk.Stack {
       sortKey: { name: "gsi2SK", type: dynamodb.AttributeType.STRING },
       projectionType: dynamodb.ProjectionType.ALL,
     });
+    // gsi3: SoulAgentIdentity status enumeration index (issue #1061 part C1).
+    // PK is IDENTITY#<status>, SK is <agentId>. Exactly one GSI is created per
+    // deploy (DynamoDB allows one GlobalSecondaryIndex creation per UpdateTable),
+    // so this index deployed in its own stack update and the operator backfilled
+    // existing items with scripts/soul-agent-identity-gsi3-backfill before the
+    // consumers trust it.
+    stateTable.addGlobalSecondaryIndex({
+      indexName: "gsi3",
+      partitionKey: { name: "gsi3PK", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "gsi3SK", type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+    // gsi4: SoulAgentMintConversation agent-scoped time-ordered index (issue
+    // #1067, part C2 of #1061). PK is SOUL#AGENT#<agentId> (the base PK), SK is
+    // <createdAt>#<conversationId> (fixed-width nanosecond UTC timestamp), so the
+    // operator mint-conversation list is a key-bounded recency-ordered GSI query
+    // instead of an SK-ordered base-table query (SK is a crypto/rand token with no
+    // recency meaning). One GSI per deploy: gsi4 is the only index added by its
+    // own stack update; the operator backfills existing items with
+    // scripts/soul-agent-identity-gsi3-backfill (now dual-model) before the
+    // consumers trust it.
+    stateTable.addGlobalSecondaryIndex({
+      indexName: "gsi4",
+      partitionKey: { name: "gsi4PK", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "gsi4SK", type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
 
     const artifactsBucket = new s3.Bucket(this, "ArtifactsBucket", {
       bucketName: `${namePrefix}-${cdk.Aws.ACCOUNT_ID}-${cdk.Aws.REGION}-artifacts`,
@@ -212,7 +239,13 @@ export class LesserHostStack extends cdk.Stack {
       queueName: `${namePrefix}-provision-queue`,
       // This queue backs managed provisioning + update orchestration. A low maxReceiveCount can
       // strand long-running jobs in "running" when a transient worker failure DLQs the next poll.
-      visibilityTimeout: cdk.Duration.minutes(2),
+      // Visibility ordering invariant for update jobs:
+      //   provision queue visibility (6m) > processing lease TTL (150s) > ProvisionWorker fn timeout (120s)
+      // A message must never become visible again while its invocation still runs (visibility > fn
+      // timeout, the standard at-least-once multiple), and the invocation must finish before its
+      // one-shot processing lease expires (lease TTL > fn timeout) so the sweep cannot re-lease a
+      // job mid-step.
+      visibilityTimeout: cdk.Duration.minutes(6),
       deadLetterQueue: { queue: provisionDLQ, maxReceiveCount: 10 },
       encryption: sqs.QueueEncryption.SQS_MANAGED,
     });
@@ -824,6 +857,11 @@ export class LesserHostStack extends cdk.Stack {
         MANAGED_PROVISION_CONSENT_ENCRYPTION_KEY_HEX:
           managedProvisionConsentEncryptionKeyHex.trim(),
       },
+      // ProvisionWorker performs sequential public HTTPS verification calls
+      // (live instance endpoints measured ~6.7s cold) plus DynamoDB writes in
+      // a single invocation; the goLambda default (10s) cannot fit that.
+      // Matches the sibling worker envelope ({ memorySize: 512, timeoutSeconds: 120 }).
+      { memorySize: 512, timeoutSeconds: 120 },
     );
 
     const commWorkerFn = this.goLambda("CommWorker", "./cmd/comm-worker", {

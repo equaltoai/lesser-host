@@ -4,7 +4,7 @@ import (
 	"context"
 	"sync"
 
-	apptheory "github.com/theory-cloud/apptheory/v4/runtime"
+	apptheory "github.com/theory-cloud/apptheory/v6/runtime"
 
 	"github.com/equaltoai/lesser-host/internal/ai"
 	"github.com/equaltoai/lesser-host/internal/artifacts"

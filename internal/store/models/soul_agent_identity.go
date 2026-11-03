@@ -53,6 +53,19 @@ type SoulAgentIdentity struct {
 	PK string `theorydb:"pk,attr:PK" json:"-"`
 	SK string `theorydb:"sk,attr:SK" json:"-"`
 
+	// gsi3 is the status enumeration index (issue #1061 part C1). It groups
+	// identity items by lifecycle status so the request-path identity
+	// enumerations are key-bounded GSI queries instead of full-table scans:
+	//
+	//	gsi3PK = IDENTITY#<status>   (e.g. IDENTITY#active)
+	//	gsi3SK = <agentId>
+	//
+	// Every status is indexed; identity lifecycle is status transitions, never
+	// item deletion, so the attributes are always populated (UpdateKeys) and a
+	// deleted item would be dropped from the index by DynamoDB automatically.
+	GSI3PK string `theorydb:"index:gsi3,pk,attr:gsi3PK" json:"-"`
+	GSI3SK string `theorydb:"index:gsi3,sk,attr:gsi3SK" json:"-"`
+
 	AgentID string `theorydb:"attr:agentId" json:"agent_id"` // hex-encoded uint256
 
 	Domain  string `theorydb:"attr:domain" json:"domain"`
@@ -223,7 +236,41 @@ func (a *SoulAgentIdentity) UpdateKeys() error {
 
 	a.PK = fmt.Sprintf("SOUL#AGENT#%s", a.AgentID)
 	a.SK = "IDENTITY"
+	a.updateGSI3()
 	return nil
+}
+
+// updateGSI3 maintains the gsi3 status enumeration index keys. It recomputes
+// them from the current status whenever status is present. Partial update
+// models (field-scoped updates that do not carry Status) preserve whatever
+// gsi3 keys are already set instead of corrupting them with an empty status
+// prefix; every identity write site passes the current status explicitly.
+func (a *SoulAgentIdentity) updateGSI3() {
+	if a == nil {
+		return
+	}
+	status := strings.ToLower(strings.TrimSpace(a.Status))
+	if status == "" {
+		return
+	}
+	a.GSI3PK = fmt.Sprintf("IDENTITY#%s", status)
+	a.GSI3SK = a.AgentID
+}
+
+// SoulAgentIdentityStatuses returns the complete set of identity lifecycle
+// statuses. The gsi3 status enumeration queries (soul reputation worker) must
+// iterate exactly this set so a new status constant can never silently vanish
+// from the enumeration.
+func SoulAgentIdentityStatuses() []string {
+	return []string{
+		SoulAgentStatusPending,
+		SoulAgentStatusActive,
+		SoulAgentStatusSuspended,
+		SoulAgentStatusSelfSuspended,
+		SoulAgentStatusArchived,
+		SoulAgentStatusSucceeded,
+		SoulAgentStatusBurned,
+	}
 }
 
 // GetPK returns the partition key for SoulAgentIdentity.

@@ -14,9 +14,9 @@ import (
 
 	"github.com/stretchr/testify/mock"
 
-	runtimemicrovm "github.com/theory-cloud/apptheory/v4/runtime/microvm"
-	theoryErrors "github.com/theory-cloud/tabletheory/v3/pkg/errors"
-	ttmocks "github.com/theory-cloud/tabletheory/v3/pkg/mocks"
+	runtimemicrovm "github.com/theory-cloud/apptheory/v6/runtime/microvm"
+	theoryErrors "github.com/theory-cloud/tabletheory/v6/pkg/errors"
+	ttmocks "github.com/theory-cloud/tabletheory/v6/pkg/mocks"
 
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
 	"github.com/equaltoai/lesser-host/internal/store"

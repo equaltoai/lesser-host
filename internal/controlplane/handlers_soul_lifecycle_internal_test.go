@@ -20,9 +20,10 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
-	apptheory "github.com/theory-cloud/apptheory/v4/runtime"
-	theoryErrors "github.com/theory-cloud/tabletheory/v3/pkg/errors"
-	ttmocks "github.com/theory-cloud/tabletheory/v3/pkg/mocks"
+	apptheory "github.com/theory-cloud/apptheory/v6/runtime"
+	core "github.com/theory-cloud/tabletheory/v6/pkg/core"
+	theoryErrors "github.com/theory-cloud/tabletheory/v6/pkg/errors"
+	ttmocks "github.com/theory-cloud/tabletheory/v6/pkg/mocks"
 
 	"github.com/stretchr/testify/mock"
 
@@ -506,7 +507,7 @@ func TestHandleSoulAgentUpdateRegistration_PublishesToS3(t *testing.T) {
 			UpdatedAt:    time.Now().Add(-time.Minute).UTC(),
 		}
 	}).Once()
-	tdb.qVersion.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+	tdb.qVersion.On("AllPaginated", mock.Anything).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.SoulAgentVersion](t, args, 0)
 		*dest = nil
 	}).Once()

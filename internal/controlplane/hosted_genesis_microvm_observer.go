@@ -6,8 +6,8 @@ import (
 	"log"
 	"strings"
 
-	apptheory "github.com/theory-cloud/apptheory/v4/runtime"
-	runtimemicrovm "github.com/theory-cloud/apptheory/v4/runtime/microvm"
+	apptheory "github.com/theory-cloud/apptheory/v6/runtime"
+	runtimemicrovm "github.com/theory-cloud/apptheory/v6/runtime/microvm"
 
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis/completion"

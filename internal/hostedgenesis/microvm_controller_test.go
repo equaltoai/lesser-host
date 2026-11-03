@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
-	runtimemicrovm "github.com/theory-cloud/apptheory/v4/runtime/microvm"
-	microvmtestkit "github.com/theory-cloud/apptheory/v4/testkit/microvm"
+	runtimemicrovm "github.com/theory-cloud/apptheory/v6/runtime/microvm"
+	microvmtestkit "github.com/theory-cloud/apptheory/v6/testkit/microvm"
 )
 
 func testMicroVMLoggingDisabled() *runtimemicrovm.ProviderLogging {
